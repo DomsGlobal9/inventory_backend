@@ -2,13 +2,16 @@ import { prisma } from '../lib/prisma';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { validateTransition } from '../utils/sales-order-state-machine';
 import { reservationService } from './reservation.service';
+import { resolveVariantForLocation } from '../utils/variant-location';
 
 export class SalesOrderService {
-  async createDraftOrder(clientId: string, customerId: string) {
+  async createDraftOrder(clientId: string, locationId: string, customerId: string, channel: any = 'POS') {
     const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
     return prisma.salesOrder.create({
       data: {
         clientId,
+        locationId,
+        channel,
         orderNumber,
         customerId,
         status: 'DRAFT',
@@ -18,40 +21,67 @@ export class SalesOrderService {
     });
   }
 
-  async createFullOrder(clientId: string, data: any) {
-    const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
-    
-    let customerCode = null;
-    if (data.customer.isNew) {
-      customerCode = await generateSequentialCode(clientId, 'CUS', 'CUSTOMER');
+  async createFullOrder(clientId: string, locationId: string, data: any, channel: any = 'POS') {
+    // 1. Idempotency Check
+    if (data.externalOrderId && data.sourceSystem) {
+      const existingOrder = await prisma.salesOrder.findFirst({
+        where: {
+          clientId,
+          externalOrderId: data.externalOrderId,
+          sourceSystem: data.sourceSystem
+        },
+        include: { items: true, customer: true }
+      });
+      if (existingOrder) {
+        return existingOrder; // Idempotent return
+      }
     }
 
+    const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
+    
     return prisma.$transaction(async (tx) => {
-      let customerId = data.customer.id;
+      let customerId = data.customer?.id;
       
-      if (data.customer.isNew) {
-        const newCustomer = await tx.customer.create({
-          data: {
-            clientId,
-            customerCode: customerCode as string,
-            name: data.customer.name || 'Walk-in Customer',
-            phone: data.customer.phone || null,
-            email: data.customer.email || null,
-            gstNumber: data.customer.gstNumber || null,
-            billingAddress: data.customer.billingAddress || null,
-            shippingAddress: data.customer.shippingAddress || null,
-            status: 'ACTIVE',
-            customerType: data.customer.customerType || 'WALK_IN'
-          }
+      // If external customer ID provided, sync/find the customer
+      if (data.customer?.externalId) {
+        let existingCustomer = await tx.customer.findFirst({
+          where: { clientId, externalCustomerId: data.customer.externalId }
         });
-        customerId = newCustomer.id;
+        
+        if (!existingCustomer) {
+          const customerCode = await generateSequentialCode(clientId, 'CUS', 'CUSTOMER');
+          existingCustomer = await tx.customer.create({
+            data: {
+              clientId,
+              customerCode,
+              externalCustomerId: data.customer.externalId,
+              name: data.customer.name || 'Unknown',
+              phone: data.customer.phone || null,
+              email: data.customer.email || null,
+              billingAddress: data.customer.billingAddress || null,
+              shippingAddress: data.customer.shippingAddress || null,
+              status: 'ACTIVE'
+            }
+          });
+        }
+        customerId = existingCustomer.id;
+      } else if (!customerId) {
+        throw new Error('Customer information or external ID is required');
       }
 
       const order = await tx.salesOrder.create({
         data: {
           clientId,
+          locationId,
+          channel,
           orderNumber,
           customerId,
+          externalOrderId: data.externalOrderId || null,
+          sourceSystem: data.sourceSystem || null,
+          customerName: data.customer?.name || null,
+          customerPhone: data.customer?.phone || null,
+          shippingAddress: data.customer?.shippingAddress || null,
+          billingAddress: data.customer?.billingAddress || null,
           status: 'DRAFT',
           subtotal: 0,
           total: 0,
@@ -65,10 +95,19 @@ export class SalesOrderService {
       const reservationItems = [];
 
       for (const item of data.items) {
-        const variant = await tx.productVariant.findFirst({ where: { id: item.variantId, clientId } });
+        const variant = await tx.productVariant.findFirst({ 
+          where: { id: item.variantId, clientId },
+          include: { locationProfiles: true }
+        });
         if (!variant) throw new Error(`Variant not found: ${item.variantId}`);
 
-        const unitPrice = variant.sellingPrice ? Number(variant.sellingPrice) : 0;
+        const locationConfig = resolveVariantForLocation(variant, locationId);
+        
+        if (!locationConfig.isAvailable) {
+          throw new Error(`Variant ${variant.sku} is not available for sale at this location`);
+        }
+
+        const unitPrice = locationConfig.price || 0;
         const unitCost = Number(variant.averageCost);
         const totalPrice = unitPrice * item.quantity;
         const totalCost = unitCost * item.quantity;
@@ -111,7 +150,7 @@ export class SalesOrderService {
       });
 
       if (data.status === 'CONFIRMED' && reservationItems.length > 0) {
-        await reservationService.reserveStock(clientId, reservationItems, tx);
+        await reservationService.reserveStock(clientId, locationId, reservationItems, tx);
       }
 
       return updatedOrder;
@@ -269,7 +308,7 @@ export class SalesOrderService {
       quantity: item.quantity
     }));
 
-    await reservationService.reserveStock(clientId, reservationItems);
+    await reservationService.reserveStock(clientId, order.locationId, reservationItems);
 
     return prisma.salesOrder.update({
       where: { id },

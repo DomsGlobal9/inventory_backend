@@ -15,13 +15,19 @@ import customerRoutes from './customer.routes';
 import salesOrderRoutes from './sales-order.routes';
 import dispatchRoutes from './dispatch.routes';
 import { returnsRoutes } from './returns.routes';
+import authRoutes from './auth.routes';
+import locationRoutes from './location.routes';
+import inventoryTransferRoutes from './inventory-transfer.routes';
+import inventoryAlertRoutes from './inventory-alert.routes';
 
 const router = Router();
 
 // Mount Routes
+router.use('/auth', authRoutes);
 router.use('/products', productRoutes);
 router.use('/variants', variantRoutes);
 router.use('/inventory/transactions', transactionRoutes);
+router.use('/inventory/alerts', inventoryAlertRoutes);
 router.use('/inventory', inventoryRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/catalog', catalogRoutes);
@@ -34,5 +40,7 @@ router.use('/customers', customerRoutes);
 router.use('/sales-orders', salesOrderRoutes);
 router.use('/dispatches', dispatchRoutes);
 router.use('/returns', returnsRoutes);
+router.use('/locations', locationRoutes);
+router.use('/inventory-transfers', inventoryTransferRoutes);
 
 export default router;

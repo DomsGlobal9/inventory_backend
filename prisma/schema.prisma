@@ -10,11 +10,39 @@ generator client {
 
 // ─── ENUMS ───
 
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
 enum ProductCategory {
   WOMEN
   MEN
   KIDS
   UNISEX
+}
+
+enum LocationType {
+  STORE
+  ONLINE
+  WAREHOUSE
+}
+
+enum SalesChannel {
+  POS
+  ONLINE
+  MANUAL
+  MARKETPLACE
+}
+
+enum TransferStatus {
+  REQUESTED
+  APPROVED
+  IN_TRANSIT
+  RECEIVED
+  COMPLETED
+  CANCELLED
 }
 
 enum ProductType {
@@ -143,6 +171,53 @@ model ClientCatalogItem {
 
 // ─── INVENTORY MODULE SCHEMA ───
 
+// 0. STOCK LOCATIONS
+model StockLocation {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  code   String
+  name   String
+  type   LocationType
+  active Boolean      @default(true)
+
+  stocks       InventoryStock[]
+  salesOrders  SalesOrder[]
+  transactions InventoryTransaction[]
+  reservations InventoryReservation[]
+
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+  locationProfiles VariantLocationProfile[]
+  InventoryAlert   InventoryAlert[]
+  InventoryEvent   InventoryEvent[]
+
+  @@unique([clientId, code])
+  @@index([clientId])
+  @@map("inventory_locations")
+}
+
+model InventoryStock {
+  id String @id @default(uuid())
+
+  clientId   String @map("client_id")
+  variantId  String @map("variant_id")
+  locationId String @map("location_id")
+
+  variant  ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  location StockLocation  @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  quantity    Int @default(0)
+  reservedQty Int @default(0) @map("reserved_qty")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([variantId, locationId])
+  @@index([clientId, locationId])
+  @@map("inventory_stocks")
+}
+
 // 1. PRODUCT
 model Product {
   id          String @id @default(uuid())
@@ -205,8 +280,6 @@ model ProductVariant {
   lastPurchaseCost Decimal? @map("last_purchase_cost") @db.Decimal(10, 2)
 
   // Inventory Control
-  quantity          Int       @default(0)
-  reservedQty       Int       @default(0) @map("reserved_qty")
   sellingPrice      Decimal?  @map("selling_price") @db.Decimal(10, 2)
   inventoryValue    Decimal   @default(0) @map("inventory_value") @db.Decimal(10, 2)
   averageCost       Decimal   @default(0) @map("average_cost") @db.Decimal(10, 2)
@@ -225,41 +298,49 @@ model ProductVariant {
   salesOrderItems    SalesOrderItem[]
   stockCountItems    StockCountItem[]
   purchaseOrderItems PurchaseOrderItem[]
+  stocks             InventoryStock[]
+  transfers          InventoryTransfer[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+  locationProfiles VariantLocationProfile[]
+  InventoryAlert   InventoryAlert[]
+  InventoryEvent   InventoryEvent[]
 
   @@unique([clientId, variantCode], name: "uq_variant_client_code")
   @@unique([clientId, sku])
   @@index([productId])
   @@index([clientId, lastMovementAt])
-  @@index([clientId, reservedQty])
   @@map("inventory_product_variants")
 }
 
 // 2.1 INVENTORY RESERVATION
 model InventoryReservation {
-  id               String   @id @default(uuid())
-  clientId         String   @map("client_id")
-  
-  variantId        String   @map("variant_id")
-  variant          ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
-  
-  salesOrderItemId String   @map("sales_order_item_id") 
-  salesOrderItem   SalesOrderItem @relation(fields: [salesOrderItemId], references: [id], onDelete: Cascade)
-  
-  status           ReservationStatus @default(ACTIVE)
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
 
-  reservedQty      Int      @map("reserved_qty")
-  dispatchedQty    Int      @default(0) @map("dispatched_qty")
-  
-  expiresAt        DateTime? @map("expires_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  variantId String         @map("variant_id")
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  salesOrderItemId String         @map("sales_order_item_id")
+  salesOrderItem   SalesOrderItem @relation(fields: [salesOrderItemId], references: [id], onDelete: Cascade)
+
+  locationId String        @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  status ReservationStatus @default(ACTIVE)
+
+  reservedQty   Int @map("reserved_qty")
+  dispatchedQty Int @default(0) @map("dispatched_qty")
+
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
 
   @@index([variantId])
   @@index([salesOrderItemId])
   @@index([clientId])
+  @@index([locationId])
   @@map("inventory_reservations")
 }
 
@@ -295,6 +376,9 @@ model InventoryTransaction {
   variantId String         @map("variant_id")
   variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
 
+  locationId String        @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
   type   TransactionType
   reason InventoryReason
 
@@ -325,9 +409,39 @@ model InventoryTransaction {
 
   @@index([clientId, createdAt])
   @@index([variantId, createdAt])
+  @@index([locationId])
   @@index([type])
   @@index([reason])
   @@map("inventory_transactions")
+}
+
+model InventoryTransfer {
+  id             String @id @default(uuid())
+  clientId       String @map("client_id")
+  transferNumber String @map("transfer_number")
+
+  fromLocationId String @map("from_location_id")
+  toLocationId   String @map("to_location_id")
+
+  variantId String         @map("variant_id")
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  quantity Int
+  status   TransferStatus @default(REQUESTED)
+
+  notes String? @db.Text
+
+  requestedBy String? @map("requested_by")
+  approvedBy  String? @map("approved_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, transferNumber])
+  @@index([clientId, status])
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@map("inventory_transfers")
 }
 
 // 5. LABEL TEMPLATE
@@ -539,31 +653,33 @@ enum CustomerType {
 }
 
 model Customer {
-  id              String @id @default(uuid())
-  clientId        String @map("client_id")
-  customerCode    String @map("customer_code")
-  
-  name            String
-  companyName     String? @map("company_name")
-  phone           String?
-  email           String?
-  gstNumber       String? @map("gst_number")
-  
-  billingAddress  String?   @db.Text
-  shippingAddress String?   @db.Text
-  
-  status          CustomerStatus @default(ACTIVE)
-  customerType    CustomerType   @default(REGISTERED) @map("customer_type")
+  id                 String  @id @default(uuid())
+  clientId           String  @map("client_id")
+  customerCode       String  @map("customer_code")
+  externalCustomerId String? @map("external_customer_id")
 
-  notes           String?   @db.Text
+  name        String
+  companyName String? @map("company_name")
+  phone       String?
+  email       String?
+  gstNumber   String? @map("gst_number")
 
-  salesOrders     SalesOrder[]
+  billingAddress  String? @db.Text
+  shippingAddress String? @db.Text
 
-  deletedAt       DateTime? @map("deleted_at")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  status       CustomerStatus @default(ACTIVE)
+  customerType CustomerType   @default(REGISTERED) @map("customer_type")
+
+  notes String? @db.Text
+
+  salesOrders SalesOrder[]
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
 
   @@unique([clientId, customerCode])
+  @@unique([clientId, externalCustomerId])
   @@index([clientId])
   @@map("customers")
 }
@@ -577,57 +693,72 @@ enum SalesOrderStatus {
 }
 
 model SalesOrder {
-  id             String @id @default(uuid())
-  clientId       String @map("client_id")
-  orderNumber    String @map("order_number")
-  
-  customerId     String @map("customer_id")
-  customer       Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  id          String @id @default(uuid())
+  clientId    String @map("client_id")
+  orderNumber String @map("order_number")
 
-  status         SalesOrderStatus @default(DRAFT)
+  externalOrderId String? @map("external_order_id")
+  sourceSystem    String? @map("source_system")
 
-  subtotal       Decimal  @default(0) @db.Decimal(10,2)
-  discountAmount Decimal  @default(0) @db.Decimal(10,2) @map("discount_amount")
-  taxAmount      Decimal  @default(0) @db.Decimal(10,2) @map("tax_amount")
-  shippingAmount Decimal  @default(0) @db.Decimal(10,2) @map("shipping_amount")
-  total          Decimal  @default(0) @db.Decimal(10,2)
+  customerId String   @map("customer_id")
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
-  items          SalesOrderItem[]
-  dispatches     Dispatch[]
-  returns        SalesReturn[]
+  // Customer Snapshot Fields
+  customerName    String? @map("customer_name")
+  customerPhone   String? @map("customer_phone")
+  shippingAddress String? @map("shipping_address") @db.Text
+  billingAddress  String? @map("billing_address") @db.Text
 
-  deletedAt      DateTime? @map("deleted_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  channel    SalesChannel  @default(POS)
+  locationId String        @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  status SalesOrderStatus @default(DRAFT)
+
+  subtotal       Decimal @default(0) @db.Decimal(10, 2)
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(10, 2)
+  taxAmount      Decimal @default(0) @map("tax_amount") @db.Decimal(10, 2)
+  shippingAmount Decimal @default(0) @map("shipping_amount") @db.Decimal(10, 2)
+  total          Decimal @default(0) @db.Decimal(10, 2)
+
+  items      SalesOrderItem[]
+  dispatches Dispatch[]
+  returns    SalesReturn[]
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
 
   @@unique([clientId, orderNumber])
+  @@unique([clientId, externalOrderId, sourceSystem], name: "uq_external_order")
   @@index([clientId])
   @@index([customerId])
+  @@index([locationId])
   @@map("sales_orders")
 }
 
 model SalesOrderItem {
-  id             String @id @default(uuid())
-  salesOrderId   String @map("sales_order_id")
-  salesOrder     SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  id           String     @id @default(uuid())
+  salesOrderId String     @map("sales_order_id")
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
 
-  variantId      String @map("variant_id")
-  variant        ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  variantId String         @map("variant_id")
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
 
-  quantity       Int
-  fulfilledQty   Int @default(0) @map("fulfilled_qty")
-  
-  unitPrice      Decimal @map("unit_price") @db.Decimal(10, 2)
-  unitCost       Decimal @map("unit_cost") @db.Decimal(10, 2)
-  totalPrice     Decimal @map("total_price") @db.Decimal(15, 2)
-  totalCost      Decimal @default(0) @map("total_cost") @db.Decimal(15, 2)
-  grossProfit    Decimal @default(0) @map("gross_profit") @db.Decimal(15, 2)
+  quantity     Int
+  fulfilledQty Int @default(0) @map("fulfilled_qty")
+
+  unitPrice   Decimal @map("unit_price") @db.Decimal(10, 2)
+  unitCost    Decimal @map("unit_cost") @db.Decimal(10, 2)
+  totalPrice  Decimal @map("total_price") @db.Decimal(15, 2)
+  totalCost   Decimal @default(0) @map("total_cost") @db.Decimal(15, 2)
+  grossProfit Decimal @default(0) @map("gross_profit") @db.Decimal(15, 2)
 
   dispatchItems         DispatchItem[]
   inventoryReservations InventoryReservation[]
 
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([salesOrderId])
   @@index([variantId])
@@ -644,20 +775,20 @@ enum DispatchStatus {
 }
 
 model Dispatch {
-  id             String @id @default(uuid())
-  clientId       String @map("client_id") 
-  salesOrderId   String @map("sales_order_id")
-  salesOrder     SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
-  
-  dispatchNumber String @map("dispatch_number")
+  id           String     @id @default(uuid())
+  clientId     String     @map("client_id")
+  salesOrderId String     @map("sales_order_id")
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+
+  dispatchNumber String         @map("dispatch_number")
   status         DispatchStatus @default(PENDING)
 
-  dispatchedAt   DateTime? @map("dispatched_at")
-  
-  items          DispatchItem[]
-  
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  dispatchedAt DateTime? @map("dispatched_at")
+
+  items DispatchItem[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@unique([clientId, dispatchNumber])
   @@index([salesOrderId])
@@ -665,17 +796,17 @@ model Dispatch {
 }
 
 model DispatchItem {
-  id                 String @id @default(uuid())
-  dispatchId         String @map("dispatch_id")
-  dispatch           Dispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  id         String   @id @default(uuid())
+  dispatchId String   @map("dispatch_id")
+  dispatch   Dispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
 
-  salesOrderItemId   String @map("sales_order_item_id")
-  salesOrderItem     SalesOrderItem @relation(fields: [salesOrderItemId], references: [id], onDelete: Restrict)
-  
-  quantity           Int
-  returnedQty        Int @default(0) @map("returned_qty")
+  salesOrderItemId String         @map("sales_order_item_id")
+  salesOrderItem   SalesOrderItem @relation(fields: [salesOrderItemId], references: [id], onDelete: Restrict)
 
-  returnItems        SalesReturnItem[]
+  quantity    Int
+  returnedQty Int @default(0) @map("returned_qty")
+
+  returnItems SalesReturnItem[]
 
   @@index([dispatchId])
   @@index([salesOrderItemId])
@@ -683,23 +814,22 @@ model DispatchItem {
 }
 
 model SalesLedger {
-  id              String @id @default(uuid())
-  clientId        String @map("client_id")
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
 
-  salesOrderId    String @map("sales_order_id")
-  dispatchId      String? @map("dispatch_id")
+  salesOrderId String  @map("sales_order_id")
+  dispatchId   String? @map("dispatch_id")
 
   transactionDate DateTime @default(now()) @map("transaction_date")
 
-  revenue         Decimal @db.Decimal(15,2)
-  costOfGoods     Decimal @map("cost_of_goods") @db.Decimal(15,2)
-  grossProfit     Decimal @map("gross_profit") @db.Decimal(15,2)
+  revenue     Decimal @db.Decimal(15, 2)
+  costOfGoods Decimal @map("cost_of_goods") @db.Decimal(15, 2)
+  grossProfit Decimal @map("gross_profit") @db.Decimal(15, 2)
 
-  createdAt       DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@index([clientId])
   @@index([salesOrderId])
-
   @@map("sales_ledger")
 }
 
@@ -730,24 +860,24 @@ enum ReturnReason {
 }
 
 model SalesReturn {
-  id             String @id @default(uuid())
-  clientId       String @map("client_id")
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
 
-  returnNumber   String @map("return_number")
+  returnNumber String @map("return_number")
 
-  salesOrderId   String @map("sales_order_id")
-  salesOrder     SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  salesOrderId String     @map("sales_order_id")
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
 
-  status         ReturnStatus @default(REQUESTED)
-  reason         ReturnReason
+  status ReturnStatus @default(REQUESTED)
+  reason ReturnReason
 
-  notes          String?
+  notes String?
 
-  items          SalesReturnItem[]
+  items SalesReturnItem[]
 
-  completedAt    DateTime? @map("completed_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
   @@unique([clientId, returnNumber])
   @@index([salesOrderId])
@@ -756,22 +886,213 @@ model SalesReturn {
 }
 
 model SalesReturnItem {
-  id              String @id @default(uuid())
+  id String @id @default(uuid())
 
-  salesReturnId   String @map("sales_return_id")
-  salesReturn     SalesReturn @relation(fields: [salesReturnId], references: [id], onDelete: Cascade)
+  salesReturnId String      @map("sales_return_id")
+  salesReturn   SalesReturn @relation(fields: [salesReturnId], references: [id], onDelete: Cascade)
 
-  dispatchItemId  String @map("dispatch_item_id")
-  dispatchItem    DispatchItem @relation(fields: [dispatchItemId], references: [id], onDelete: Restrict)
+  dispatchItemId String       @map("dispatch_item_id")
+  dispatchItem   DispatchItem @relation(fields: [dispatchItemId], references: [id], onDelete: Restrict)
 
-  quantity         Int
+  quantity Int
 
-  disposition      ReturnDisposition @default(PENDING)
+  disposition ReturnDisposition @default(PENDING)
 
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([salesReturnId])
   @@index([dispatchItemId])
   @@map("sales_return_items")
+}
+
+// ─── RBAC & AUTH ───
+
+model User {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  name     String
+  email    String
+  password String
+
+  status UserStatus @default(ACTIVE)
+
+  roles UserRole[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, email])
+  @@index([clientId])
+  @@map("users")
+}
+
+model Role {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  name        String
+  description String?
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([clientId, name])
+  @@map("roles")
+}
+
+model UserRole {
+  userId String @map("user_id")
+  roleId String @map("role_id")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model Permission {
+  id          String  @id @default(uuid())
+  key         String  @unique
+  description String?
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ─── AUDIT ───
+
+model AuditLog {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  userId String? @map("user_id")
+
+  action     String
+  entityType String @map("entity_type")
+  entityId   String @map("entity_id")
+
+  before Json?
+  after  Json?
+
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId])
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@map("audit_logs")
+}
+
+model VariantLocationProfile {
+  id         String @id @default(uuid())
+  variantId  String @map("variant_id")
+  locationId String @map("location_id")
+
+  isAvailable   Boolean  @default(true) @map("is_available")
+  priceOverride Decimal? @map("price_override") @db.Decimal(10, 2)
+
+  variant  ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  location StockLocation  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([variantId, locationId])
+  @@map("variant_location_profiles")
+}
+
+// ─── ALERT AND OUTBOX SYSTEM ───
+
+enum InventoryAlertType {
+  LOW_STOCK
+  OUT_OF_STOCK
+  OVERSTOCK
+  REORDER_REQUIRED
+  STOCK_DISCREPANCY
+  SYSTEM_ERROR
+}
+
+enum InventoryAlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+model InventoryAlert {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  type     InventoryAlertType
+  severity InventoryAlertSeverity
+
+  title   String
+  message String
+
+  variantId  String? @map("variant_id")
+  locationId String? @map("location_id")
+
+  currentQuantity Int? @map("current_quantity")
+  threshold       Int?
+
+  isRead     Boolean @default(false) @map("is_read")
+  isResolved Boolean @default(false) @map("is_resolved")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  variant  ProductVariant? @relation(fields: [variantId], references: [id])
+  location StockLocation?  @relation(fields: [locationId], references: [id])
+
+  @@index([clientId])
+  @@index([isResolved])
+  @@index([isRead])
+  @@index([type])
+  @@index([variantId])
+  @@index([locationId])
+  @@map("inventory_alerts")
+}
+
+model InventoryEvent {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  eventType String @map("event_type")
+
+  variantId  String @map("variant_id")
+  locationId String @map("location_id")
+
+  previousQuantity Int? @map("previous_quantity")
+  quantity         Int
+
+  available Boolean
+  status    String  @default("PENDING") // PENDING or PROCESSED
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  processedAt DateTime? @map("processed_at")
+
+  variant  ProductVariant @relation(fields: [variantId], references: [id])
+  location StockLocation  @relation(fields: [locationId], references: [id])
+
+  @@index([clientId])
+  @@index([variantId])
+  @@index([locationId])
+  @@index([eventType])
+  @@index([status])
+  @@index([createdAt])
+  @@map("inventory_events")
 }

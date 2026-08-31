@@ -1,9 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 
 export const tenantMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  // In a real scenario, clientId comes from JWT claims decoded by an auth middleware.
-  // We simulate it here being extracted from headers or JWT.
-  const clientId = req.headers['x-client-id'] as string;
+  // If requireAuth middleware ran first, use the verified clientId from the JWT
+  let clientId = (req as any).user?.clientId;
+
+  // Fallback to header for routes not yet protected by requireAuth
+  if (!clientId) {
+    clientId = req.headers['x-client-id'] as string;
+  }
 
   if (!clientId) {
     return res.status(401).json({
@@ -14,6 +18,11 @@ export const tenantMiddleware = (req: Request, res: Response, next: NextFunction
 
   // Inject into request object for controllers to use
   (req as any).clientId = clientId;
+  
+  const locationId = req.headers['x-location-id'] as string | undefined;
+  if (locationId) {
+    (req as any).locationId = locationId;
+  }
 
   next();
 };

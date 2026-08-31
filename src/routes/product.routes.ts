@@ -3,6 +3,7 @@ import { productController } from '../controllers/product.controller';
 import { variantController } from '../controllers/variant.controller';
 import { imageController } from '../controllers/image.controller';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
+import { upsertVariantLocationProfile } from '../controllers/variant-location.controller';
 
 const router = Router();
 
@@ -24,6 +25,7 @@ router.delete('/:id/hard', productController.hardDelete);
 router.post('/:productId/variants/bulk', variantController.bulkCreate);
 router.post('/:productId/variants', variantController.create);
 router.get('/:productId/variants', variantController.getByProduct);
+router.patch('/:productId/variants/:variantId/locations/:locationId', upsertVariantLocationProfile);
 
 // Nested Image Routes
 router.post('/:productId/images', imageController.create);

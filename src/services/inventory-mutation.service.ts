@@ -1,9 +1,12 @@
 import { prisma } from '../lib/prisma';
-import { TransactionType, InventoryReason } from '@prisma/client';
+import { TransactionType, InventoryReason, Prisma } from '@prisma/client';
+import { InventoryAlertService } from './inventory-alert.service';
+import { InventoryEventService } from './inventory-event.service';
 
 interface MovementInput {
   clientId: string;
   variantId: string;
+  locationId: string; // NEW: Required for multi-location
   movementType: TransactionType;
   reason: InventoryReason;
   quantityDelta: number; // positive for IN, negative for OUT
@@ -15,113 +18,133 @@ interface MovementInput {
 }
 
 export class InventoryMutationService {
-  /**
-   * Centralized inventory mutation.
-   * Handles:
-   * 1. Quantity updates
-   * 2. WAC and Inventory Value calculation (only for IN movements)
-   * 3. lastMovementAt updates
-   * 4. Transaction ledger logging
-   */
   async applyMovement(input: MovementInput) {
     const {
-      clientId, variantId, movementType, reason, quantityDelta,
+      clientId, variantId, locationId, movementType, reason, quantityDelta,
       unitCost, notes, referenceType, referenceId, createdBy
     } = input;
 
     return prisma.$transaction(async (tx) => {
-      // Use a CTE to atomically update the variant and return the before/after state
-      // We only recalculate averageCost if it's an IN movement (quantityDelta > 0).
-      const result = await tx.$queryRaw<any[]>`
-        WITH old_state AS (
-          SELECT 
-            quantity AS old_quantity, 
-            average_cost AS old_average_cost,
-            inventory_value AS old_inventory_value,
-            sku,
-            variant_code,
-            barcode
-          FROM "inventory_product_variants"
-          WHERE id = ${variantId} AND client_id = ${clientId}
-        ),
-        updated_variant AS (
-          UPDATE "inventory_product_variants" v
-          SET 
-            quantity = v.quantity + ${quantityDelta},
-            
-            -- Recalculate averageCost ONLY if quantity increases and we have a unitCost.
-            -- Otherwise keep existing averageCost.
-            average_cost = CASE 
-              WHEN ${quantityDelta} > 0 AND ${unitCost !== undefined ? unitCost : null}::numeric IS NOT NULL THEN
-                (v.inventory_value + (${quantityDelta} * ${unitCost !== undefined ? unitCost : 0}::numeric)) / (v.quantity + ${quantityDelta})
-              ELSE
-                v.average_cost
-            END,
-            
-            -- Recalculate inventoryValue based on the (potentially updated) averageCost
-            inventory_value = (v.quantity + ${quantityDelta}) * (
-              CASE 
-                WHEN ${quantityDelta} > 0 AND ${unitCost !== undefined ? unitCost : null}::numeric IS NOT NULL THEN
-                  (v.inventory_value + (${quantityDelta} * ${unitCost !== undefined ? unitCost : 0}::numeric)) / (v.quantity + ${quantityDelta})
-                ELSE
-                  v.average_cost
-              END
-            ),
-            
-            last_movement_at = NOW(),
-            last_cost_updated_at = CASE WHEN ${quantityDelta} > 0 AND ${unitCost !== undefined ? unitCost : null}::numeric IS NOT NULL THEN NOW() ELSE v.last_cost_updated_at END,
-            updated_at = NOW()
-          FROM old_state
-          WHERE v.id = ${variantId} AND v.client_id = ${clientId}
-          RETURNING 
-            old_state.old_quantity,
-            old_state.old_average_cost,
-            old_state.sku,
-            old_state.variant_code,
-            old_state.barcode,
-            v.quantity AS new_quantity,
-            v.average_cost AS new_average_cost
-        )
-        SELECT * FROM updated_variant;
-      `;
+      // 1. Get the current variant and its global stock to calculate average cost
+      const variant = await tx.productVariant.findUnique({
+        where: { id: variantId },
+        include: { stocks: true }
+      });
 
-      if (!result || result.length === 0) {
-        throw new Error(`Variant ${variantId} not found or update failed.`);
+      if (!variant || variant.clientId !== clientId) {
+        throw new Error(`Variant ${variantId} not found.`);
       }
 
-      const state = result[0];
+      // Calculate global current quantity
+      const globalQty = variant.stocks.reduce((acc, stock) => acc + stock.quantity, 0);
+
+      // 2. Atomically update the specific location stock
+      // We use upsert in case the location doesn't have stock record for this variant yet
+      const stock = await tx.inventoryStock.findUnique({
+        where: { variantId_locationId: { variantId, locationId } }
+      });
       
-      // Check for negative stock and rollback if necessary
-      if (state.new_quantity < 0) {
-        throw new Error("Insufficient stock to complete this transaction");
+      const oldLocationQty = stock ? stock.quantity : 0;
+      const newLocationQty = oldLocationQty + quantityDelta;
+
+      if (newLocationQty < 0) {
+        throw new Error("Insufficient stock in this location to complete the transaction.");
       }
 
-      // Create the transaction record
+      const updatedStock = await tx.inventoryStock.upsert({
+        where: { variantId_locationId: { variantId, locationId } },
+        update: { quantity: newLocationQty },
+        create: {
+          clientId,
+          variantId,
+          locationId,
+          quantity: newLocationQty,
+          reservedQty: 0
+        }
+      });
+
+      // 3. Update financial metrics on ProductVariant if it's an IN movement with cost
+      let newAverageCost = Number(variant.averageCost);
+      if (quantityDelta > 0 && unitCost !== undefined && unitCost !== null) {
+        const currentGlobalValue = Number(variant.inventoryValue);
+        const incomingValue = quantityDelta * unitCost;
+        const newGlobalQty = globalQty + quantityDelta;
+        
+        newAverageCost = (currentGlobalValue + incomingValue) / newGlobalQty;
+        
+        await tx.productVariant.update({
+          where: { id: variantId },
+          data: {
+            averageCost: newAverageCost,
+            inventoryValue: newGlobalQty * newAverageCost,
+            lastMovementAt: new Date(),
+            lastCostUpdatedAt: new Date()
+          }
+        });
+      } else {
+        // Just update lastMovementAt and recalculate global inventory value
+        const newGlobalQty = globalQty + quantityDelta;
+        await tx.productVariant.update({
+          where: { id: variantId },
+          data: {
+            inventoryValue: newGlobalQty * newAverageCost,
+            lastMovementAt: new Date()
+          }
+        });
+      }
+
+      // 4. Create the transaction record
       await tx.inventoryTransaction.create({
         data: {
           clientId,
           variantId,
+          locationId,
           type: movementType,
           reason,
           quantity: quantityDelta,
-          balanceBefore: state.old_quantity,
-          balanceAfter: state.new_quantity,
-          unitCost: unitCost || state.old_average_cost,
-          totalCost: Math.abs(quantityDelta) * Number(unitCost || state.old_average_cost),
+          balanceBefore: oldLocationQty,
+          balanceAfter: newLocationQty,
+          unitCost: unitCost || newAverageCost,
+          totalCost: Math.abs(quantityDelta) * (unitCost || newAverageCost),
           notes,
           referenceType,
           referenceId,
           createdBy,
-          sku: state.sku,
-          variantCode: state.variant_code,
-          barcode: state.barcode
+          sku: variant.sku,
+          variantCode: variant.variantCode,
+          barcode: variant.barcode
         }
       });
 
+      // 5. Evaluate Operational Alerts
+      await InventoryAlertService.evaluateStockAlert(
+        tx,
+        clientId,
+        variantId,
+        locationId,
+        newLocationQty,
+        variant.reorderLevel
+      );
+
+      // 6. Dispatch Outbox Event for external systems
+      await InventoryEventService.createStockUpdatedEvent(
+        tx,
+        clientId,
+        variantId,
+        locationId,
+        oldLocationQty,
+        newLocationQty
+      );
+
       return {
-        quantity: state.new_quantity,
-        averageCost: state.new_average_cost
+        quantity: newLocationQty,
+        globalQuantity: globalQty + quantityDelta,
+        averageCost: newAverageCost
       };
+    }, {
+      maxWait: 10000,
+      timeout: 30000,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });
   }
 }

@@ -122,7 +122,7 @@ export class ReturnService {
           items: {
             include: {
               dispatchItem: {
-                include: { salesOrderItem: true }
+                include: { salesOrderItem: { include: { salesOrder: true } } }
               }
             }
           } 
@@ -163,6 +163,7 @@ export class ReturnService {
           // Increase physical stock
           await inventoryMutationService.applyMovement({
             clientId,
+            locationId: item.dispatchItem.salesOrderItem.salesOrder.locationId!,
             variantId: item.dispatchItem.salesOrderItem.variantId,
             movementType: 'IN',
             reason: 'CUSTOMER_RETURN',

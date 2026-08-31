@@ -24,12 +24,13 @@ export class DashboardService {
         SELECT COUNT(*)::int as count 
         FROM inventory_product_variants v
         JOIN inventory_products p ON v.product_id = p.id
+        LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId} 
           AND p.status != 'TRASHED' 
-          AND v.quantity <= v.reorder_level
+          AND COALESCE(s.qty, 0) <= v.reorder_level
       `.then((res: any) => res?.[0]?.count || 0),
-      prisma.productVariant.aggregate({
-        where: { clientId, product: { status: { notIn: ['TRASHED'] } } },
+      prisma.inventoryStock.aggregate({
+        where: { clientId, variant: { product: { status: { notIn: ['TRASHED'] } } } },
         _sum: { quantity: true }
       }),
       prisma.inventoryTransaction.findMany({
@@ -70,9 +71,10 @@ export class DashboardService {
       }),
       // Inventory Value
       prisma.$queryRaw`
-        SELECT SUM(v.quantity * COALESCE(v.last_purchase_cost, v.cost_price, v.compare_at_price, 0)) as "totalValue"
+        SELECT SUM(COALESCE(s.qty, 0) * COALESCE(v.last_purchase_cost, v.cost_price, v.compare_at_price, 0)) as "totalValue"
         FROM inventory_product_variants v
         JOIN inventory_products p ON v.product_id = p.id
+        LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId} AND p.status != 'TRASHED'
       `
     ]);

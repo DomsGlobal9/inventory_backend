@@ -8,9 +8,18 @@ export class InventoryController {
   async stockIn(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const { variantId, quantity, reason, referenceType, reference, unitCost, notes } = stockChangeSchema.parse(req.body);
+      const { variantId, quantity, reason, referenceType, reference, unitCost, notes, locationId } = req.body;
+      
+      let targetLocationId = locationId;
+      if (!targetLocationId) {
+        // Fallback for transition phase
+        const defaultLoc = await import('../lib/prisma').then(m => m.prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } }));
+        if (!defaultLoc) throw new Error("Location ID required");
+        targetLocationId = defaultLoc.id;
+      }
+
       if (quantity <= 0) return res.status(400).json({ success: false, message: "Quantity must be positive" });
-      const result = await inventoryService.stockIn(clientId, variantId, quantity, reason, referenceType, reference, unitCost, notes);
+      const result = await inventoryService.stockIn(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, unitCost, notes);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -20,9 +29,18 @@ export class InventoryController {
   async stockOut(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const { variantId, quantity, reason, referenceType, reference, notes } = stockChangeSchema.parse(req.body);
+      const { variantId, quantity, reason, referenceType, reference, notes, locationId } = req.body;
+      
+      let targetLocationId = locationId;
+      if (!targetLocationId) {
+        // Fallback for transition phase
+        const defaultLoc = await import('../lib/prisma').then(m => m.prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } }));
+        if (!defaultLoc) throw new Error("Location ID required");
+        targetLocationId = defaultLoc.id;
+      }
+
       if (quantity <= 0) return res.status(400).json({ success: false, message: "Quantity must be positive" });
-      const result = await inventoryService.stockOut(clientId, variantId, quantity, reason, referenceType, reference, notes);
+      const result = await inventoryService.stockOut(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, notes);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -37,12 +55,19 @@ export class InventoryController {
       // Let's parse manually or adjust schema if we wanted negative.
       // For this MVP, we assume the payload dictates the exact change.
       
-      const { variantId, quantity, reason, referenceType, reference, notes } = req.body;
+      const { variantId, quantity, reason, referenceType, reference, notes, locationId } = req.body;
       if (!variantId || typeof quantity !== 'number') {
         return res.status(400).json({ success: false, message: "variantId and quantity (number) required" });
       }
 
-      const result = await inventoryService.adjustment(clientId, variantId, quantity, reason, referenceType, reference, notes);
+      let targetLocationId = locationId;
+      if (!targetLocationId) {
+        const defaultLoc = await import('../lib/prisma').then(m => m.prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } }));
+        if (!defaultLoc) throw new Error("Location ID required");
+        targetLocationId = defaultLoc.id;
+      }
+
+      const result = await inventoryService.adjustment(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, notes);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);

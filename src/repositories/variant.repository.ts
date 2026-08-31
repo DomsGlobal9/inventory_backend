@@ -19,10 +19,16 @@ export class VariantRepository {
     return count > 0;
   }
 
-  async findManyByProduct(productId: string, clientId: string): Promise<ProductVariant[]> {
+  async findManyByProduct(productId: string, clientId: string) {
     return prisma.productVariant.findMany({
       where: { productId, clientId },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
+      include: {
+        stocks: {
+          include: { location: true }
+        },
+        locationProfiles: true
+      }
     });
   }
 
@@ -62,7 +68,13 @@ export class VariantRepository {
     if (stockCountItemCount > 0) {
       throw new Error("Cannot delete variant: it appears in audit/stock count records.");
     }
-    if (existing.quantity > 0) {
+    const stocks = await prisma.inventoryStock.findMany({
+      where: { variantId: id }
+    });
+    
+    const hasStock = stocks.some(s => s.quantity > 0);
+
+    if (hasStock) {
       throw new Error("Cannot delete variant: it still has stock on hand. Adjust stock to 0 first.");
     }
 
@@ -70,14 +82,24 @@ export class VariantRepository {
       where: { id }
     });
   }
-  async searchVariants(clientId: string, params: { q: string, page: number, limit: number, includeInventory?: boolean, includeCosting?: boolean }) {
-    const { q, page, limit } = params;
+  async searchVariants(clientId: string, params: { q: string, page: number, limit: number, locationId?: string, includeInventory?: boolean, includeCosting?: boolean }) {
+    const { q, page, limit, locationId } = params;
     const skip = (page - 1) * limit;
+
+    const locationFilter = locationId ? {
+      locationProfiles: {
+        none: {
+          locationId: locationId,
+          isAvailable: false
+        }
+      }
+    } : {};
 
     // 1. Exact Match Phase
     if (q) {
       const exactWhere: Prisma.ProductVariantWhereInput = {
         clientId,
+        ...locationFilter,
         OR: [
           { barcode: q },
           { variantCode: q },
@@ -104,6 +126,7 @@ export class VariantRepository {
     // 2. Fallback Fuzzy Search Phase
     const fuzzyWhere: Prisma.ProductVariantWhereInput = {
       clientId,
+      ...locationFilter,
       ...(q && {
         OR: [
           { sku: { contains: q, mode: 'insensitive' } },
@@ -121,7 +144,7 @@ export class VariantRepository {
         where: fuzzyWhere,
         skip,
         take: limit,
-        include: { product: true },
+        include: { product: true, locationProfiles: true, stocks: { include: { location: true } } },
         orderBy: { createdAt: 'desc' }
       }),
       prisma.productVariant.count({ where: fuzzyWhere })

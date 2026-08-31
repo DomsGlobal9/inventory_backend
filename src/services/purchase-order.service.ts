@@ -72,7 +72,7 @@ export class PurchaseOrderService {
           include: {
             variant: {
               select: { 
-                quantity: true,
+                stocks: { select: { quantity: true } },
                 product: {
                   select: { title: true }
                 }
@@ -145,51 +145,22 @@ export class PurchaseOrderService {
           throw new Error(`Cannot receive more than remaining quantity for SKU ${poItem.sku}`);
         }
 
-        // 2. Adjust Inventory atomically with WAC Calculation
-        const variants = await tx.$queryRaw<any[]>`
-          WITH updated_variant AS (
-            UPDATE "inventory_product_variants"
-            SET 
-              "quantity" = "quantity" + ${receipt.quantityReceived},
-              "inventory_value" = "inventory_value" + (${receipt.quantityReceived} * ${Number(poItem.unitPrice)}),
-              "average_cost" = CASE 
-                WHEN ("quantity" + ${receipt.quantityReceived}) > 0 
-                THEN ("inventory_value" + (${receipt.quantityReceived} * ${Number(poItem.unitPrice)})) / ("quantity" + ${receipt.quantityReceived})
-                ELSE "average_cost" 
-              END,
-              "last_purchase_cost" = ${Number(poItem.unitPrice)},
-              "last_received_at" = NOW(),
-              "last_cost_updated_at" = NOW(),
-              "updated_at" = NOW()
-            WHERE "id" = ${poItem.variantId}
-            RETURNING *
-          )
-          SELECT uv.*, p.title as "product_title" 
-          FROM updated_variant uv
-          LEFT JOIN "inventory_products" p ON uv.product_id = p.id;
-        `;
-
-        if (!variants || variants.length === 0) throw new Error("Variant not found");
-        const variant = variants[0];
-
-        await tx.inventoryTransaction.create({
-          data: {
-            clientId,
-            variantId: variant.id,
-            sku: variant.sku,
-            variantCode: variant.variant_code,
-            barcode: variant.barcode,
-            productTitle: variant.product_title || '',
-            type: 'IN',
-            quantity: receipt.quantityReceived,
-            balanceBefore: variant.quantity - receipt.quantityReceived,
-            balanceAfter: variant.quantity,
-            reason: InventoryReason.PURCHASE_RECEIPT,
-            referenceType: 'PO',
-            referenceId: po.poNumber,
-            unitCost: poItem.unitPrice,
-            createdBy: 'Admin'
-          } as any
+        // 2. Adjust Inventory atomically with WAC Calculation using central mutation service
+        // Get default location
+        const defaultLoc = await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
+        
+        await inventoryMutationService.applyMovement({
+          clientId,
+          locationId: defaultLoc!.id,
+          variantId: poItem.variantId,
+          movementType: 'IN',
+          reason: InventoryReason.PURCHASE_RECEIPT,
+          quantityDelta: receipt.quantityReceived,
+          unitCost: Number(poItem.unitPrice),
+          referenceType: 'PO',
+          referenceId: po.poNumber,
+          notes: 'PO Receipt',
+          createdBy: 'Admin'
         });
       }
 

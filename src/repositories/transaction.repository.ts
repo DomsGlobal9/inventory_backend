@@ -16,15 +16,12 @@ export class TransactionRepository {
   }) {
     return prisma.$transaction(async (tx) => {
       // 1. Fetch current variant quantity
-      const variant = await tx.productVariant.findFirst({
-        where: { id: data.variantId, clientId }
+      const defaultLoc = await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
+      const stock = await tx.inventoryStock.findFirst({
+        where: { variantId: data.variantId, locationId: defaultLoc!.id }
       });
 
-      if (!variant) {
-        throw new Error("Variant not found");
-      }
-
-      const balanceBefore = variant.quantity;
+      const balanceBefore = stock?.quantity || 0;
       let balanceAfter = balanceBefore;
 
       // 3. Calculate new quantity
@@ -33,20 +30,6 @@ export class TransactionRepository {
       } else if (data.type === 'OUT') {
         balanceAfter = balanceBefore - data.quantity;
       } else if (data.type === 'ADJUSTMENT') {
-        // For adjustment, we usually allow positive or negative, but our schema quantity is positive
-        // Let's assume adjustment can be either depending on reason, or maybe the API passes a signed quantity?
-        // Wait, the user said: newQty = currentQty +/- quantity. 
-        // We will assume data.quantity is positive for IN/OUT, but for ADJUSTMENT it could be positive or negative?
-        // Actually, the user's validation schema says positive integer. Let's just assume ADJUSTMENT acts like IN or OUT based on some rule, 
-        // OR we just use a single math rule: + for IN, - for OUT, and for ADJUSTMENT maybe it's just setting the exact quantity?
-        // Let's assume ADJUSTMENT is an absolute override (setting balanceAfter = data.quantity) OR a relative offset. 
-        // Let's just treat ADJUSTMENT as adding/subtracting based on signed quantity. Since Zod forces positive, maybe we just use IN/OUT for everything. 
-        // But ADJUSTMENT exists. Let's assume ADJUSTMENT always ADDS the given quantity. If they want to remove stock, they use OUT.
-        // Wait, "ADJUSTMENT -> MANUAL_CORRECTION". Let's assume ADJUSTMENT sets the balance directly if it's an absolute correction? 
-        // Let's go with absolute override for ADJUSTMENT.
-        // Actually, no, `currentQty +/- quantity` is what the user said. 
-        // Let's accept signed quantity in Zod for ADJUSTMENT if needed? I'll change Zod schema to allow negative for ADJUSTMENT.
-        // Wait, if it's a signed quantity, we can just do balanceAfter = balanceBefore + data.quantity.
         balanceAfter = balanceBefore + data.quantity;
       }
 
@@ -59,6 +42,7 @@ export class TransactionRepository {
       const transaction = await tx.inventoryTransaction.create({
         data: {
           clientId,
+          locationId: defaultLoc!.id,
           variantId: data.variantId,
           type: data.type,
           reason: data.reason,
@@ -74,8 +58,8 @@ export class TransactionRepository {
       });
 
       // 6. Update variant quantity
-      await tx.productVariant.update({
-        where: { id: data.variantId },
+      await tx.inventoryStock.update({
+        where: { variantId_locationId: { variantId: data.variantId, locationId: defaultLoc!.id } },
         data: { quantity: balanceAfter }
       });
 

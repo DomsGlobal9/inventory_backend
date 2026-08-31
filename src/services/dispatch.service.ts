@@ -50,6 +50,7 @@ export class DispatchService {
       // b) Update Physical Inventory (decrements physical quantity)
       await inventoryMutationService.applyMovement({
         clientId,
+        locationId: order.locationId!,
         variantId: orderItem.variantId,
         movementType: 'OUT',
         reason: 'SALE',

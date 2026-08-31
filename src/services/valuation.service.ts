@@ -6,21 +6,21 @@ export class ValuationService {
    * Returns the total inventory value for the entire tenant.
    */
   async getTenantValue(clientId: string) {
-    const result = await prisma.productVariant.aggregate({
-      where: { clientId, quantity: { gt: 0 } },
-      _sum: {
-        inventoryValue: true,
-        quantity: true
-      },
-      _count: {
-        id: true
-      }
+    const variantResult = await prisma.productVariant.aggregate({
+      where: { clientId },
+      _sum: { inventoryValue: true },
+      _count: { id: true }
+    });
+
+    const stockResult = await prisma.inventoryStock.aggregate({
+      where: { clientId },
+      _sum: { quantity: true }
     });
 
     return {
-      totalValue: Number(result._sum.inventoryValue || 0),
-      totalUnits: Number(result._sum.quantity || 0),
-      totalVariants: result._count.id
+      totalValue: Number(variantResult._sum.inventoryValue || 0),
+      totalUnits: Number(stockResult._sum.quantity || 0),
+      totalVariants: variantResult._count.id
     };
   }
 
@@ -34,10 +34,16 @@ export class ValuationService {
       SELECT 
         p.category,
         SUM(v.inventory_value) as total_value,
-        SUM(v.quantity) as total_units
+        SUM(COALESCE(s.qty, 0)) as total_units
       FROM "inventory_product_variants" v
       JOIN "inventory_products" p ON v.product_id = p.id
-      WHERE v.client_id = ${clientId} AND v.quantity > 0
+      LEFT JOIN (
+        SELECT variant_id, SUM(quantity) as qty 
+        FROM inventory_stocks 
+        WHERE client_id = ${clientId} 
+        GROUP BY variant_id
+      ) s ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId}
       GROUP BY p.category
       ORDER BY total_value DESC;
     `;
@@ -103,7 +109,8 @@ export class ValuationService {
    */
   async reconcileValuation(clientId: string, mode: 'report' | 'repair' = 'report') {
     const variants = await prisma.productVariant.findMany({
-      where: { clientId }
+      where: { clientId },
+      include: { stocks: true }
     });
 
     let variantsScanned = 0;
@@ -113,7 +120,8 @@ export class ValuationService {
 
     for (const variant of variants) {
       variantsScanned++;
-      const expectedValue = Number(variant.quantity) * Number(variant.averageCost);
+      const globalQty = variant.stocks.reduce((acc, s) => acc + s.quantity, 0);
+      const expectedValue = globalQty * Number(variant.averageCost);
       const actualValue = Number(variant.inventoryValue);
       const drift = Math.abs(expectedValue - actualValue);
 
@@ -125,7 +133,7 @@ export class ValuationService {
         items.push({
           variantId: variant.id,
           sku: variant.sku,
-          quantity: variant.quantity,
+          quantity: globalQty,
           averageCost: Number(variant.averageCost),
           expectedValue,
           actualValue,

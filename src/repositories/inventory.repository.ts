@@ -21,17 +21,24 @@ export class InventoryRepository {
 
     if (!variant) throw new Error("Variant not found or unauthorized");
 
+    const defaultLoc = await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
+    const stock = await prisma.inventoryStock.findFirst({
+      where: { variantId, locationId: defaultLoc!.id }
+    });
+    const balanceBefore = stock?.quantity || 0;
+    
     // Execute in a transaction to guarantee atomicity
     return prisma.$transaction(async (tx) => {
       // 1. Create the audit record
       const transaction = await tx.inventoryTransaction.create({
         data: {
           clientId,
+          locationId: defaultLoc!.id,
           variantId,
           type,
           reason,
-          balanceBefore: variant.quantity,
-          balanceAfter: variant.quantity + quantityChange,
+          balanceBefore,
+          balanceAfter: balanceBefore + quantityChange,
           quantity: quantityChange, // can be positive or negative
           notes,
           createdBy
@@ -47,11 +54,10 @@ export class InventoryRepository {
         await tx.$executeRaw`
           UPDATE "inventory_product_variants"
           SET 
-            "quantity" = "quantity" + ${quantityChange},
             "inventory_value" = "inventory_value" + (${quantityChange} * ${costToApply}),
             "average_cost" = CASE 
-              WHEN ("quantity" + ${quantityChange}) > 0 
-              THEN ("inventory_value" + (${quantityChange} * ${costToApply})) / ("quantity" + ${quantityChange})
+              WHEN (COALESCE((SELECT SUM(quantity) FROM inventory_stocks WHERE variant_id = ${variantId}), 0) + ${quantityChange}) > 0 
+              THEN ("inventory_value" + (${quantityChange} * ${costToApply})) / (COALESCE((SELECT SUM(quantity) FROM inventory_stocks WHERE variant_id = ${variantId}), 0) + ${quantityChange})
               ELSE "average_cost" 
             END,
             "last_cost_updated_at" = NOW(),
@@ -63,8 +69,7 @@ export class InventoryRepository {
         await tx.$executeRaw`
           UPDATE "inventory_product_variants"
           SET 
-            "quantity" = "quantity" + ${quantityChange},
-            "inventory_value" = ("quantity" + ${quantityChange}) * "average_cost",
+            "inventory_value" = (COALESCE((SELECT SUM(quantity) FROM inventory_stocks WHERE variant_id = ${variantId}), 0) + ${quantityChange}) * "average_cost",
             "updated_at" = NOW()
           WHERE "id" = ${variantId}
         `;
@@ -74,8 +79,12 @@ export class InventoryRepository {
         where: { id: variantId }
       });
 
+      const updatedStock = await tx.inventoryStock.findFirst({
+        where: { variantId, locationId: defaultLoc!.id }
+      });
+
       // Prevent negative stock
-      if (!updatedVariant || updatedVariant.quantity < 0) {
+      if (!updatedStock || updatedStock.quantity < 0) {
         throw new Error("Insufficient stock to complete this transaction");
       }
 
@@ -126,14 +135,15 @@ export class InventoryRepository {
     // without queryRaw in older versions, we can use $queryRaw. Wait, in Prisma 5, we can use `quantity: { lte: prisma.productVariant.fields.reorderLevel }` but it's simpler to just fetch all low stock using a raw query, or fetch everything and filter (bad at scale). Let's use raw query.
     return prisma.$queryRaw`
       SELECT 
-        v.id, v.sku, v.quantity, v.reorder_level as "reorderLevel", v.variant_code as "variantCode", v.barcode, v.size, v.color_name as "colorName", v.hex_code as "hexCode",
+        v.id, v.sku, COALESCE(s.qty, 0) as quantity, v.reorder_level as "reorderLevel", v.variant_code as "variantCode", v.barcode, v.size, v.color_name as "colorName", v.hex_code as "hexCode",
         p.title as "productTitle", p.id as "productId"
       FROM inventory_product_variants v
       JOIN inventory_products p ON v.product_id = p.id
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
       WHERE v.client_id = ${clientId}
         AND p.status IN ('ACTIVE', 'ARCHIVED')
-        AND v.quantity <= v.reorder_level
-      ORDER BY (v.quantity::float / GREATEST(v.reorder_level, 1)) ASC
+        AND COALESCE(s.qty, 0) <= v.reorder_level
+      ORDER BY (COALESCE(s.qty, 0)::float / GREATEST(v.reorder_level, 1)) ASC
     `;
   }
 }

@@ -6,6 +6,7 @@ import { errorHandler } from './middleware/error.middleware';
 
 import { prisma } from './lib/prisma';
 import { tenantRateLimiter } from './middleware/rate-limiter.middleware';
+import { WebhookDispatcherService } from './services/webhook-dispatcher.service';
 
 const app = express();
 
@@ -43,4 +44,5 @@ const PORT = env.PORT;
 
 app.listen(PORT, () => {
   console.log(`🚀 Inventory Microservice running on port ${PORT}`);
+  WebhookDispatcherService.startPolling();
 });

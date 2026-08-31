@@ -5,9 +5,10 @@ import { prisma } from '../lib/prisma';
 
 export class InventoryService {
   
-  async stockIn(clientId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, unitCost?: number, notes?: string) {
+  async stockIn(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, unitCost?: number, notes?: string) {
     return inventoryMutationService.applyMovement({
       clientId, 
+      locationId,
       variantId, 
       movementType: 'IN', 
       quantityDelta: Math.abs(quantity), // Stock In is always positive
@@ -20,9 +21,10 @@ export class InventoryService {
     });
   }
 
-  async stockOut(clientId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, notes?: string) {
+  async stockOut(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, notes?: string) {
     return inventoryMutationService.applyMovement({
       clientId, 
+      locationId,
       variantId, 
       movementType: 'OUT', 
       quantityDelta: -Math.abs(quantity), // Stock Out is always negative
@@ -34,10 +36,11 @@ export class InventoryService {
     });
   }
 
-  async adjustment(clientId: string, variantId: string, quantityChange: number, reason?: string, referenceType?: string, reference?: string, notes?: string) {
+  async adjustment(clientId: string, locationId: string, variantId: string, quantityChange: number, reason?: string, referenceType?: string, reference?: string, notes?: string) {
     // Adjustment can be positive or negative
     return inventoryMutationService.applyMovement({
       clientId, 
+      locationId,
       variantId, 
       movementType: 'ADJUSTMENT', 
       quantityDelta: quantityChange,
@@ -70,24 +73,25 @@ export class InventoryService {
     }
 
     // Map inventoryStatus filter values to actual DB conditions
+    // We now filter by global quantity. If a specific location is passed, we filter by that location's quantity instead.
+    // For now, assume global aggregated filters unless locationId is passed in filters (TODO).
     if (status === 'ARCHIVED') {
-      // ARCHIVED inventoryStatus = product itself is archived or trashed
       where.product = { status: { in: ['ARCHIVED', 'TRASHED'] as any } };
     } else if (status === 'OUT_OF_STOCK') {
-      where.quantity = { lte: 0 };
+      where.stocks = { none: { quantity: { gt: 0 } } };
       where.product = { status: { in: ['ACTIVE', 'DRAFT'] as any } };
     } else if (status === 'LOW_STOCK') {
-      where.quantity = { gt: 0, lte: 10 };
+      where.stocks = { some: { quantity: { gt: 0, lte: 10 } } };
       where.product = { status: { in: ['ACTIVE', 'DRAFT'] as any } };
     } else if (status === 'HEALTHY') {
-      where.quantity = { gt: 10 };
+      where.stocks = { some: { quantity: { gt: 10 } } };
       where.product = { status: { in: ['ACTIVE', 'DRAFT'] as any } };
     }
 
     if (outOfStock === 'true') {
-      where.quantity = { lte: 0 };
+      where.stocks = { none: { quantity: { gt: 0 } } };
     } else if (lowStock === 'true') {
-      where.quantity = { gt: 0, lte: 10 };
+      where.stocks = { some: { quantity: { gt: 0, lte: 10 } } };
     }
 
     const orderBy: any = {};
@@ -106,7 +110,8 @@ export class InventoryService {
         skip,
         take: Number(limit),
         include: {
-          product: { select: { title: true, category: true, status: true } }
+          product: { select: { title: true, category: true, status: true } },
+          stocks: true
         }
       }),
       prisma.productVariant.count({ where })
@@ -114,12 +119,15 @@ export class InventoryService {
 
     // Map to UI-ready DTO
     const items = variants.map(v => {
+      // Calculate global quantity across all locations
+      const globalQty = v.stocks.reduce((acc, s) => acc + s.quantity, 0);
+
       let inventoryStatus = 'HEALTHY';
       if (v.product.status === 'ARCHIVED' || v.product.status === 'TRASHED') {
         inventoryStatus = 'ARCHIVED';
-      } else if (v.quantity <= 0) {
+      } else if (globalQty <= 0) {
         inventoryStatus = 'OUT_OF_STOCK';
-      } else if (v.quantity <= Math.max(v.reorderLevel || 0, 10)) {
+      } else if (globalQty <= Math.max(v.reorderLevel || 0, 10)) {
         inventoryStatus = 'LOW_STOCK';
       }
 
@@ -129,7 +137,7 @@ export class InventoryService {
         sku: v.sku,
         productTitle: v.product.title,
         category: v.product.category,
-        quantity: v.quantity,
+        quantity: globalQty,
         averageCost: Number(v.averageCost),
         inventoryValue: Number(v.inventoryValue),
         status: v.product.status,

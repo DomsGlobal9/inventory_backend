@@ -16,19 +16,21 @@ export class ReportService {
 
     const lowStockCountRes = await prisma.$queryRaw<any[]>`
       SELECT COUNT(*) as count 
-      FROM "inventory_product_variants" 
-      WHERE "client_id" = ${clientId} 
-      AND "quantity" <= "reorder_level"
-      AND "reorder_level" > 0;
+      FROM "inventory_product_variants" v
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId} 
+      AND COALESCE(s.qty, 0) <= v.reorder_level
+      AND v.reorder_level > 0;
     `;
 
     const deadStockValueRes = await prisma.$queryRaw<any[]>`
-      SELECT SUM(inventory_value) as value
-      FROM "inventory_product_variants"
-      WHERE "client_id" = ${clientId}
-      AND "quantity" > 0
-      AND "last_movement_at" IS NOT NULL
-      AND "last_movement_at" < NOW() - INTERVAL '90 days';
+      SELECT SUM(v.inventory_value) as value
+      FROM "inventory_product_variants" v
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId}
+      AND COALESCE(s.qty, 0) > 0
+      AND v.last_movement_at IS NOT NULL
+      AND v.last_movement_at < NOW() - INTERVAL '90 days';
     `;
 
     return {
@@ -54,10 +56,14 @@ export class ReportService {
       where: {
         clientId,
         reorderLevel: { gt: 0 }
-      }
+      },
+      include: { stocks: true }
     });
 
-    const actualLowStock = lowStockVariants.filter((v: any) => v.quantity <= v.reorderLevel);
+    const actualLowStock = lowStockVariants.map(v => {
+      const globalQty = v.stocks.reduce((acc, s) => acc + s.quantity, 0);
+      return { ...v, quantity: globalQty };
+    }).filter((v: any) => v.quantity <= v.reorderLevel);
     
     let lowStockValue = 0;
     let reorderExposure = 0;
@@ -83,15 +89,16 @@ export class ReportService {
     const rows = await prisma.$queryRaw<any[]>`
       SELECT 
         CASE 
-          WHEN "last_movement_at" >= NOW() - INTERVAL '30 days' THEN '0-30'
-          WHEN "last_movement_at" >= NOW() - INTERVAL '60 days' THEN '31-60'
-          WHEN "last_movement_at" >= NOW() - INTERVAL '90 days' THEN '61-90'
+          WHEN v.last_movement_at >= NOW() - INTERVAL '30 days' THEN '0-30'
+          WHEN v.last_movement_at >= NOW() - INTERVAL '60 days' THEN '31-60'
+          WHEN v.last_movement_at >= NOW() - INTERVAL '90 days' THEN '61-90'
           ELSE '90+'
         END as "ageBracket",
-        SUM(inventory_value) as "totalValue",
-        COUNT(*) as "variantCount"
-      FROM "inventory_product_variants"
-      WHERE "client_id" = ${clientId} AND "quantity" > 0 AND "last_movement_at" IS NOT NULL
+        SUM(v.inventory_value) as "totalValue",
+        COUNT(v.id) as "variantCount"
+      FROM "inventory_product_variants" v
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId} AND COALESCE(s.qty, 0) > 0 AND v.last_movement_at IS NOT NULL
       GROUP BY "ageBracket"
     `;
 
@@ -106,22 +113,28 @@ export class ReportService {
     const products = await prisma.product.count({ where: { clientId, status: 'ACTIVE' } });
     const variants = await prisma.productVariant.aggregate({
       where: { clientId },
-      _sum: { quantity: true, inventoryValue: true },
+      _sum: { inventoryValue: true },
       _count: { id: true }
+    });
+    
+    const stocks = await prisma.inventoryStock.aggregate({
+      where: { clientId },
+      _sum: { quantity: true }
     });
 
     const lowStockCount = await prisma.$queryRaw<any[]>`
       SELECT COUNT(*) as count 
-      FROM "inventory_product_variants" 
-      WHERE "client_id" = ${clientId} 
-      AND "quantity" <= "reorder_level"
-      AND "reorder_level" > 0;
+      FROM "inventory_product_variants" v
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId} 
+      AND COALESCE(s.qty, 0) <= v.reorder_level
+      AND v.reorder_level > 0;
     `;
 
     return {
       totalProducts: products,
       totalVariants: variants._count.id,
-      totalUnits: Number(variants._sum.quantity || 0),
+      totalUnits: Number(stocks._sum.quantity || 0),
       totalValue: Number(variants._sum.inventoryValue || 0),
       lowStockItems: Number(lowStockCount[0].count)
     };
@@ -130,11 +143,12 @@ export class ReportService {
   async getDeadStock(clientId: string, thresholdDays: number = 90) {
     // Using last_movement_at instead of lastReceivedAt
     const rawRows = await prisma.$queryRaw<any[]>`
-      SELECT v.id, v.sku, v.quantity, v.inventory_value, v.last_movement_at, p.title as "productTitle", p.category
+      SELECT v.id, v.sku, COALESCE(s.qty, 0) as quantity, v.inventory_value, v.last_movement_at, p.title as "productTitle", p.category
       FROM "inventory_product_variants" v
       LEFT JOIN "inventory_products" p ON v.product_id = p.id
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
       WHERE v.client_id = ${clientId}
-      AND v.quantity > 0
+      AND COALESCE(s.qty, 0) > 0
       AND v.last_movement_at IS NOT NULL
       AND v.last_movement_at < NOW() - INTERVAL '90 days'
       ORDER BY v.inventory_value DESC

@@ -47,15 +47,15 @@ export class ProductRepository {
         skip,
         take: limit,
         orderBy: { [sortBy]: order },
-        include: { variants: true }
+        include: { variants: { include: { stocks: true } } }
       }),
       prisma.product.count({ where })
     ]);
 
     const data = rawData.map(product => {
       const variantCount = product.variants.length;
-      const totalUnits = product.variants.reduce((sum, v) => sum + v.quantity, 0);
-      const lowStockVariants = product.variants.filter((v) => v.quantity <= v.reorderLevel).length;
+      const totalUnits = product.variants.reduce((sum, v) => sum + v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0), 0);
+      const lowStockVariants = product.variants.filter((v) => v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0) <= v.reorderLevel).length;
       
       const { variants, ...rest } = product;
       return {
@@ -81,6 +81,7 @@ export class ProductRepository {
       include: {
         variants: {
           include: {
+            stocks: true,
             transactions: { take: 1 },
             purchaseOrderItems: {
               include: { po: true },
@@ -106,8 +107,9 @@ export class ProductRepository {
     }
 
     // 2. Check variants history
-    for (const variant of product.variants) {
-      if (variant.quantity > 0) {
+    for (const variant of product.variants as any[]) {
+      const globalQty = variant.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0);
+      if (globalQty > 0) {
         return { canHardDelete: false, reason: "Product still has stock on hand" };
       }
       if (variant.transactions.length > 0) {
@@ -129,14 +131,14 @@ export class ProductRepository {
   async findById(id: string, clientId: string): Promise<any> {
     const product = await prisma.product.findFirst({
       where: { id, clientId },
-      include: { variants: true }
+      include: { variants: { include: { stocks: true } } }
     });
     
     if (!product) return null;
 
     const variantCount = product.variants.length;
-    const totalUnits = product.variants.reduce((sum, v) => sum + v.quantity, 0);
-    const lowStockVariants = product.variants.filter((v) => v.quantity <= v.reorderLevel).length;
+    const totalUnits = product.variants.reduce((sum, v) => sum + v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0), 0);
+    const lowStockVariants = product.variants.filter((v) => v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0) <= v.reorderLevel).length;
 
     // Exclude the raw variants array from the response to keep it clean, just send summary
     const { variants, ...productWithoutVariants } = product;

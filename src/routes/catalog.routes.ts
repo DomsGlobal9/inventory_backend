@@ -27,17 +27,16 @@ async function getUsageCount(clientId: string, type: string, value: string): Pro
   }
 }
 
+import { tenantMiddleware } from '../middleware/tenant.middleware';
+
 const router = Router();
+router.use(tenantMiddleware);
 
 // GET /api/v1/catalog/config
 // Returns all active catalog config values grouped by type for the current tenant
 router.get('/config', async (req: Request, res: Response) => {
   try {
-    const clientId = req.headers['x-client-id'] as string;
-
-    if (!clientId) {
-      return res.status(400).json({ success: false, message: 'Missing client ID' });
-    }
+    const clientId = (req as any).clientId;
 
     const items = await prisma.clientCatalogItem.findMany({
       where: { 
@@ -72,11 +71,7 @@ router.get('/config', async (req: Request, res: Response) => {
 // Returns all items (active and inactive) for the current tenant
 router.get('/items', async (req: Request, res: Response) => {
   try {
-    const clientId = req.headers['x-client-id'] as string;
-
-    if (!clientId) {
-      return res.status(400).json({ success: false, message: 'Missing client ID' });
-    }
+    const clientId = (req as any).clientId;
 
     const items = await prisma.clientCatalogItem.findMany({
       where: { clientId },
@@ -98,12 +93,8 @@ router.get('/items', async (req: Request, res: Response) => {
 // Add a new custom item for the client
 router.post('/items', async (req: Request, res: Response) => {
   try {
-    const clientId = req.headers['x-client-id'] as string;
+    const clientId = (req as any).clientId;
     const { type, value, label, category, metadata, sortOrder } = req.body;
-
-    if (!clientId) {
-      return res.status(400).json({ success: false, message: 'Missing client ID' });
-    }
 
     const item = await prisma.clientCatalogItem.create({
       data: {
@@ -129,13 +120,9 @@ router.post('/items', async (req: Request, res: Response) => {
 // Update an existing item (e.g., label, sortOrder, isActive)
 router.patch('/items/:id', async (req: Request, res: Response) => {
   try {
-    const clientId = req.headers['x-client-id'] as string;
+    const clientId = (req as any).clientId;
     const id = req.params.id as string;
     const { label, value, category, metadata, sortOrder, isActive } = req.body;
-
-    if (!clientId) {
-      return res.status(400).json({ success: false, message: 'Missing client ID' });
-    }
 
     // Ensure item belongs to client
     const existing = await prisma.clientCatalogItem.findFirst({
@@ -168,12 +155,8 @@ router.patch('/items/:id', async (req: Request, res: Response) => {
 // Soft delete an item
 router.delete('/items/:id', async (req: Request, res: Response) => {
   try {
-    const clientId = req.headers['x-client-id'] as string;
+    const clientId = (req as any).clientId;
     const id = req.params.id as string;
-
-    if (!clientId) {
-      return res.status(400).json({ success: false, message: 'Missing client ID' });
-    }
 
     // Ensure item belongs to client
     const existing = await prisma.clientCatalogItem.findFirst({

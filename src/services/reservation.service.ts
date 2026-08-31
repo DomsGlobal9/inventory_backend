@@ -7,34 +7,35 @@ export class ReservationService {
    * Attempts to reserve stock for multiple items.
    * Runs in a transaction to ensure either all items are reserved or none are.
    */
-  async reserveStock(clientId: string, items: { variantId: string; salesOrderItemId: string; quantity: number }[], txClient?: any) {
+  async reserveStock(clientId: string, locationId: string, items: { variantId: string; salesOrderItemId: string; quantity: number }[], txClient?: any) {
     const execute = async (tx: any) => {
       const reservations = [];
       
       for (const item of items) {
         // Find variant and lock it for update to prevent concurrent race conditions
-        const variants = await tx.$queryRaw<any[]>`
+        const stocks = await tx.$queryRaw<any[]>`
           SELECT id, quantity, reserved_qty as "reservedQty"
-          FROM inventory_product_variants
-          WHERE id = ${item.variantId} AND client_id = ${clientId}
+          FROM inventory_stocks
+          WHERE variant_id = ${item.variantId} AND location_id = ${locationId} AND client_id = ${clientId}
           FOR UPDATE
         `;
 
-        if (variants.length === 0) {
-          throw new Error(`Variant ${item.variantId} not found`);
+        if (stocks.length === 0) {
+          throw new Error(`Stock for variant ${item.variantId} not found in location ${locationId}`);
         }
 
-        const variant = variants[0];
-        const availableQty = variant.quantity - variant.reservedQty;
+        const stock = stocks[0];
+        const availableQty = stock.quantity - stock.reservedQty;
 
         if (item.quantity > availableQty) {
-          throw new Error(`Insufficient stock for variant ${item.variantId}. Requested: ${item.quantity}, Available: ${availableQty}`);
+          throw new Error(`Insufficient stock for variant ${item.variantId} in location ${locationId}. Requested: ${item.quantity}, Available: ${availableQty}`);
         }
 
         // Create reservation record
         const reservation = await tx.inventoryReservation.create({
           data: {
             clientId,
+            locationId,
             variantId: item.variantId,
             salesOrderItemId: item.salesOrderItemId,
             reservedQty: item.quantity,
@@ -42,9 +43,9 @@ export class ReservationService {
           }
         });
 
-        // Update variant reserved quantity
-        await tx.productVariant.update({
-          where: { id: item.variantId },
+        // Update variant reserved quantity on location
+        await tx.inventoryStock.update({
+          where: { variantId_locationId: { variantId: item.variantId, locationId } },
           data: {
             reservedQty: { increment: item.quantity }
           }
@@ -78,9 +79,9 @@ export class ReservationService {
         data: { status: 'CANCELLED' }
       });
 
-      // Release reserved stock from variant
-      await tx.productVariant.update({
-        where: { id: reservation.variantId },
+      // Release reserved stock from location stock
+      await tx.inventoryStock.update({
+        where: { variantId_locationId: { variantId: reservation.variantId, locationId: reservation.locationId as string } },
         data: {
           reservedQty: { decrement: reservation.reservedQty - reservation.dispatchedQty }
         }
@@ -97,7 +98,7 @@ export class ReservationService {
     return prisma.$transaction(async (tx) => {
       // Find the active or partially fulfilled reservation and lock it
       const reservations = await tx.$queryRaw<any[]>`
-        SELECT id, variant_id as "variantId", reserved_qty as "reservedQty", dispatched_qty as "dispatchedQty"
+        SELECT id, variant_id as "variantId", location_id as "locationId", reserved_qty as "reservedQty", dispatched_qty as "dispatchedQty"
         FROM inventory_reservations
         WHERE sales_order_item_id = ${salesOrderItemId} AND client_id = ${clientId} AND status IN ('ACTIVE', 'PARTIALLY_FULFILLED')
         FOR UPDATE
@@ -126,12 +127,12 @@ export class ReservationService {
         }
       });
 
-      // Update variant: remove from physical AND reserved
-      await tx.productVariant.update({
-        where: { id: reservation.variantId },
+      // Update stock: remove from reserved (physical removed via dispatch)
+      await tx.inventoryStock.update({
+        where: { variantId_locationId: { variantId: reservation.variantId, locationId: reservation.locationId } },
         data: {
           reservedQty: { decrement: dispatchQuantity }
-          // physical quantity is updated via inventoryMutationService below
+          // physical quantity is updated via inventoryMutationService later during dispatch
         }
       });
       

@@ -3,6 +3,7 @@ import { productRepository } from '../repositories/product.repository';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { generateUniqueCode, generateSequentialCode } from '../utils/codeGenerator';
+import { inventoryMutationService } from './inventory-mutation.service';
 
 export class VariantService {
   
@@ -24,7 +25,6 @@ export class VariantService {
       size: data.size,
       colorName: data.colorName,
       hexCode: data.hexCode,
-      quantity: data.quantity,
       reorderLevel: data.reorderLevel
     };
 
@@ -51,7 +51,6 @@ export class VariantService {
             size: v.size,
             colorName: v.colorName,
             hexCode: v.hexCode,
-            quantity: v.quantity,
             reorderLevel: v.reorderLevel
           });
           return created;
@@ -87,22 +86,28 @@ export class VariantService {
           if (priceOverride !== undefined) dataToUpdate.compareAtPrice = priceOverride;
           if (reorderLevel !== undefined) dataToUpdate.reorderLevel = reorderLevel;
 
-          if (quantity !== undefined && quantity !== variant.quantity) {
-            dataToUpdate.quantity = quantity;
+          if (quantity !== undefined) {
+            // Find default location
+            const defaultLoc = await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
             
-            await tx.inventoryTransaction.create({
-              data: {
+            // Get current stock
+            const stock = await tx.inventoryStock.findFirst({ 
+              where: { variantId: variant.id, locationId: defaultLoc!.id }
+            });
+            const currentQty = stock?.quantity || 0;
+
+            if (quantity !== currentQty) {
+              await inventoryMutationService.applyMovement({
                 clientId,
+                locationId: defaultLoc!.id,
                 variantId: variant.id,
-                type: 'ADJUSTMENT',
+                movementType: 'ADJUSTMENT',
                 reason: 'MANUAL_CORRECTION',
-                quantity: quantity - variant.quantity,
-                balanceBefore: variant.quantity,
-                balanceAfter: quantity,
+                quantityDelta: quantity - currentQty,
                 notes: 'Bulk CSV Update',
                 createdBy: clientId
-              }
-            });
+              });
+            }
           }
 
           if (Object.keys(dataToUpdate).length > 0) {
@@ -127,7 +132,34 @@ export class VariantService {
   }
 
   async getVariants(productId: string, clientId: string) {
-    return variantRepository.findManyByProduct(productId, clientId);
+    const variants = await variantRepository.findManyByProduct(productId, clientId);
+    
+    return variants.map((v: any) => {
+      const stocks = v.stocks || [];
+      const totalQuantity = stocks.reduce((acc: number, s: any) => acc + s.quantity, 0);
+      
+      const stockByLocation = stocks.map((s: any) => ({
+        locationId: s.locationId,
+        name: s.location?.name || s.locationId,
+        quantity: s.quantity
+      }));
+      
+      const locationSettings = (v.locationProfiles || []).map((p: any) => ({
+        locationId: p.locationId,
+        isAvailable: p.isAvailable,
+        priceOverride: p.priceOverride ? Number(p.priceOverride) : null
+      }));
+
+      // Add missing locations to settings conceptually in the service if needed,
+      // but UI can also just rely on this explicit list and fallback to global
+
+      return {
+        ...v,
+        totalQuantity,
+        stockByLocation,
+        locationSettings
+      };
+    });
   }
 
   async updateVariant(id: string, clientId: string, data: any) {
@@ -143,7 +175,7 @@ export class VariantService {
     
     // Map to procurement-friendly flattened structure
     const mappedItems = result.data.map((variant: any) => {
-      const stock = variant.quantity || 0;
+      const stock = variant.stocks ? variant.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0) : 0;
       const reorderLevel = variant.reorderLevel || 0;
       
       return {

@@ -24,7 +24,7 @@ export class StockCountService {
           include: {
             variant: {
               select: { 
-                quantity: true,
+                stocks: { select: { quantity: true } },
                 product: {
                   select: { title: true }
                 }
@@ -46,6 +46,9 @@ export class StockCountService {
         clientId,
         ...(categoryId ? { product: { category: categoryId as any } } : {})
       },
+      include: {
+        stocks: { select: { quantity: true } }
+      }
     });
 
     if (variants.length === 0) {
@@ -69,7 +72,7 @@ export class StockCountService {
         sku: v.sku,
         variantCode: v.variantCode,
         barcode: v.barcode,
-        expectedQty: v.quantity
+        expectedQty: v.stocks.reduce((sum, s) => sum + s.quantity, 0)
       }))
     });
 
@@ -138,8 +141,12 @@ export class StockCountService {
         // Use central mutation service for adjustments
         // Note: we can't use `tx` easily with `inventoryMutationService`, but `applyMovement`
         // manages its own atomic CTEs and ledger inserts. It's safe to call here.
+        // Fetch default location for adjustment
+        const defaultLoc = await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
+        
         await inventoryMutationService.applyMovement({
           clientId,
+          locationId: defaultLoc?.id as string,
           variantId: item.variantId,
           movementType: 'ADJUSTMENT',
           reason: 'AUDIT_CORRECTION',
