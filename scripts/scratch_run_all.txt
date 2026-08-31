@@ -1,4 +1,0 @@
-  await runRound18();
-    await runRound19();
-    await runRound20();
-    await runRound21();
