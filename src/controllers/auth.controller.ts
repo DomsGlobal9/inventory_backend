@@ -108,6 +108,11 @@ export const login = async (req: Request, res: Response) => {
       data: {
         user: {
           id: user.id,
+          // The tenant the session belongs to. /auth/session already exposed this (as
+          // client.id) but login did not, so a freshly logged-in client had no way to know
+          // its own tenant until a page reload -- which is why image upload fell back to a
+          // hardcoded VITE_CLIENT_ID build constant instead.
+          clientId: user.clientId,
           name: user.name,
           email: user.email,
           roles,

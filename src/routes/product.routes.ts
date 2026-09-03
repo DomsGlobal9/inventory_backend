@@ -29,6 +29,8 @@ router.get('/:productId/variants', requirePermission('product:view'), variantCon
 router.patch('/:productId/variants/:variantId/locations/:locationId', requirePermission('product:update'), upsertVariantLocationProfile);
 
 // Nested Image Routes
+// Must be declared before the generic images route so it is not shadowed.
+router.post('/:productId/images/upload-url', requirePermission('product:update'), imageController.createUploadUrl.bind(imageController));
 router.post('/:productId/images', requirePermission('product:update'), imageController.create);
 router.get('/:productId/images', requirePermission('product:view'), imageController.getByProduct);
 router.patch('/images/:id', requirePermission('product:update'), imageController.update);
