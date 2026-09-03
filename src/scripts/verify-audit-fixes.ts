@@ -243,6 +243,46 @@ async function run() {
     assert(r.status === 401, `expected 401, got ${r.status}`);
   });
 
+  // ---- concurrent stock movements must not be rejected or double-applied
+  console.log('\n-- Concurrency --');
+  await test('6 simultaneous receipts on one variant all succeed with exact arithmetic', async () => {
+    const stock = await prisma.inventoryStock.findFirst({
+      where: { clientId, locationId, quantity: { gt: 20 } }
+    });
+    if (!stock) { console.log('     (no suitable stocked variant)'); return; }
+
+    const before = stock.quantity;
+    const N = 6;
+    // applyMovement runs at READ COMMITTED behind a FOR UPDATE lock on the variant row.
+    // Before that, under SERIALIZABLE with no retry, 3 of these 6 came back as 500s:
+    // Postgres resolves a concurrent read-modify-write by aborting a writer (40001), and
+    // nothing retried. Two people receiving the same SKU hit this for real.
+    const results = await Promise.all(
+      Array.from({ length: N }, () =>
+        api.post('/inventory/stock-in', {
+          variantId: stock.variantId, locationId, quantity: 1,
+          unitCost: 100, reason: 'PURCHASE_RECEIPT'
+        })
+      )
+    );
+
+    const rejected = results.filter(r => r.status >= 400);
+    // Build the detail lazily: template args are evaluated even when the assertion holds,
+    // and JSON.stringify(undefined) returns undefined -- .slice() on which throws, so a
+    // PASSING test reported itself as a failure.
+    if (rejected.length > 0) {
+      const detail = JSON.stringify(rejected[0]?.data ?? {}).slice(0, 160);
+      throw new Error(`${rejected.length}/${N} rejected: ${detail}`);
+    }
+
+    const after = await prisma.inventoryStock.findUnique({ where: { id: stock.id } });
+    assert(after?.quantity === before + N,
+      `expected ${before + N}, got ${after?.quantity} -- a write was lost or double-applied`);
+
+    // leave the fixture as we found it
+    await prisma.inventoryStock.update({ where: { id: stock.id }, data: { quantity: before } });
+  });
+
   console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
   await prisma.$disconnect();
   process.exit(failed > 0 ? 1 : 0);

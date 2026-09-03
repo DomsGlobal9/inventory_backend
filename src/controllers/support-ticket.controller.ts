@@ -1,13 +1,17 @@
 import { Request, Response } from 'express';
 import { supportTicketService } from '../services/support-ticket.service';
+import { createSupportTicketSchema } from '../validations/support-ticket.schema';
 
 export const createTicket = async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
-    const { subject, description, category, priority, linkedErrorId } = req.body;
-    if (!subject || !description) {
-      return res.status(400).json({ success: false, message: 'subject and description are required' });
+    // Validate before anything reaches Prisma: an out-of-enum category/priority used to
+    // surface as a 500 with a raw stack trace rather than a 400 naming the bad field.
+    const parsed = createSupportTicketSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.errors });
     }
+    const { subject, description, category, priority, linkedErrorId } = parsed.data;
 
     const ticket = await supportTicketService.createTicket({
       clientId: user.clientId,
@@ -18,7 +22,8 @@ export const createTicket = async (req: Request, res: Response) => {
       description,
       category,
       priority,
-      linkedErrorId
+      // schema allows null ("explicitly not linked"); the service takes string | undefined
+      linkedErrorId: linkedErrorId ?? undefined
     });
     res.status(201).json({ success: true, data: ticket });
   } catch (error: any) {

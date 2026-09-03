@@ -15,15 +15,86 @@ export class PlatformAdminService {
   // There is no local `Client` registry (see SUPER_ADMIN_PLAN.md) -- every clientId this
   // console can ever show is derived from the `User` table, so a client with zero users
   // is invisible here. That's a known, documented limitation, not a bug.
+  // Aggregated across ALL tenants in a fixed number of queries.
+  //
+  // This used to be `Promise.all(clientIds.map(id => this.getClientSummary(id)))`, and
+  // getClientSummary itself fires 7 queries in its own Promise.all -- so the console's
+  // front page issued 7 x (tenant count) queries simultaneously. At 16 tenants that is 112
+  // concurrent queries against a Prisma pool of ~17 over a pgbouncer pooler: measured at
+  // 6.8s for a single load, and 4 of 6 concurrent loads failing outright with pool-timeout
+  // 500s. It degraded linearly with every client onboarded -- i.e. it got worse precisely
+  // as the product succeeded. Now it is 6 grouped queries regardless of tenant count.
   async listClients() {
-    const clientIds = await prisma.user.findMany({
-      distinct: ['clientId'],
-      select: { clientId: true }
-    });
+    const [tenants, userStats, productCounts, activeProductCounts, alertCounts, valueSums, superAdmins] =
+      await Promise.all([
+        prisma.user.findMany({ distinct: ['clientId'], select: { clientId: true } }),
+        prisma.user.groupBy({
+          by: ['clientId'],
+          _count: { _all: true },
+          _max: { lastLoginAt: true, lastActiveAt: true }
+        }),
+        prisma.product.groupBy({
+          by: ['clientId'],
+          where: { status: { notIn: ['TRASHED'] as any } },
+          _count: { _all: true }
+        }),
+        prisma.product.groupBy({
+          by: ['clientId'],
+          where: { status: 'ACTIVE' as any },
+          _count: { _all: true }
+        }),
+        prisma.inventoryAlert.groupBy({
+          by: ['clientId'],
+          where: { isResolved: false },
+          _count: { _all: true }
+        }),
+        prisma.productVariant.groupBy({
+          by: ['clientId'],
+          _sum: { inventoryValue: true }
+        }),
+        // Earliest SUPER_ADMIN per client -- ordered ascending so the first row seen for a
+        // clientId is the one getClientSummary would have picked.
+        prisma.user.findMany({
+          where: { roles: { some: { role: { name: 'SUPER_ADMIN' } } } },
+          select: { clientId: true, name: true, email: true },
+          orderBy: { createdAt: 'asc' }
+        })
+      ]);
 
-    return Promise.all(
-      clientIds.map(({ clientId }) => this.getClientSummary(clientId))
-    );
+    const byClient = <T extends { clientId: string }>(rows: T[]) =>
+      new Map(rows.map(r => [r.clientId, r]));
+
+    const users = byClient(userStats);
+    const products = byClient(productCounts);
+    const activeProducts = byClient(activeProductCounts);
+    const alerts = byClient(alertCounts);
+    const values = byClient(valueSums);
+
+    const admins = new Map<string, { name: string | null; email: string | null }>();
+    for (const a of superAdmins) if (!admins.has(a.clientId)) admins.set(a.clientId, a);
+
+    return tenants.map(({ clientId }) => {
+      const productCount = products.get(clientId)?._count._all ?? 0;
+      const activeProductCount = activeProducts.get(clientId)?._count._all ?? 0;
+      const admin = admins.get(clientId);
+
+      return {
+        clientId,
+        userCount: users.get(clientId)?._count._all ?? 0,
+        lastLoginAt: users.get(clientId)?._max.lastLoginAt ?? null,
+        lastActiveAt: users.get(clientId)?._max.lastActiveAt ?? null,
+        productCount,
+        activeProductCount,
+        activeAlertCount: alerts.get(clientId)?._count._all ?? 0,
+        inventoryValue: Number(values.get(clientId)?._sum.inventoryValue || 0),
+        // Same heuristic as getClientSummary -- kept identical so the list and the
+        // single-client overview can never disagree about a client's status.
+        onboardingStatus:
+          productCount === 0 ? 'NOT_STARTED' : activeProductCount === 0 ? 'IN_PROGRESS' : 'ACTIVE',
+        adminName: admin?.name || null,
+        adminEmail: admin?.email || null
+      };
+    });
   }
 
   async getClientSummary(clientId: string) {

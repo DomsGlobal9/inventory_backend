@@ -31,14 +31,34 @@ export class InventoryMutationService {
     } = input;
 
     const run = async (tx: Prisma.TransactionClient) => {
+      // 0. Serialize every movement for this VARIANT before reading anything else.
+      //
+      // The lock is on the variant, not the stock row, because a movement also rewrites
+      // the variant's averageCost/inventoryValue from a sum across ALL its locations.
+      // Locking only inventory_stocks would let two movements at different locations of
+      // the same variant run concurrently and clobber each other's WAC.
+      //
+      // Taking it first also matters: a read performed before the lock establishes a
+      // snapshot dependency, so a writer that locked later could still be aborted for a
+      // read it did earlier.
+      await tx.$queryRaw`
+        SELECT id FROM inventory_product_variants WHERE id = ${variantId} FOR UPDATE
+      `;
+
       // 1. Get the current variant and its global stock to calculate average cost
       const variant = await tx.productVariant.findUnique({
         where: { id: variantId },
         include: { stocks: true }
       });
 
+      // These three are USER errors, not server faults. Thrown bare they inherited
+      // errorHandler's `err.statusCode || 500` default, so "you asked to issue more stock
+      // than you have" came back as HTTP 500 -- wrong semantics (a 5xx invites a retry
+      // that can never succeed) and, because errorHandler persists only 5xx, every one of
+      // them was written to the Platform Console's Errors page. That page is meant for
+      // crashes; routine rejections were burying the real ones.
       if (!variant || variant.clientId !== clientId) {
-        throw new Error(`Variant ${variantId} not found.`);
+        throw Object.assign(new Error(`Variant ${variantId} not found.`), { statusCode: 404 });
       }
 
       // Guard against a locationId belonging to a different tenant being used here —
@@ -46,13 +66,16 @@ export class InventoryMutationService {
       // the one place that can actually enforce it regardless of which caller forgot to.
       const location = await tx.stockLocation.findUnique({ where: { id: locationId } });
       if (!location || location.clientId !== clientId) {
-        throw new Error(`Location ${locationId} not found for this tenant.`);
+        throw Object.assign(new Error(`Location ${locationId} not found for this tenant.`), { statusCode: 404 });
       }
 
       // Calculate global current quantity
       const globalQty = variant.stocks.reduce((acc, stock) => acc + stock.quantity, 0);
 
-      // 2. Atomically update the specific location stock
+      // 2. Apply the change to this location's stock. Safe to read-modify-write here:
+      // the FOR UPDATE above means no other writer holds this row. Retries remain the
+      // backstop for conflicts the lock cannot cover (notably the row not existing yet,
+      // where there is nothing to lock).
       // We use upsert in case the location doesn't have stock record for this variant yet
       const stock = await tx.inventoryStock.findUnique({
         where: { variantId_locationId: { variantId, locationId } }
@@ -62,7 +85,10 @@ export class InventoryMutationService {
       const newLocationQty = oldLocationQty + quantityDelta;
 
       if (newLocationQty < 0) {
-        throw new Error("Insufficient stock in this location to complete the transaction.");
+        throw Object.assign(
+          new Error("Insufficient stock in this location to complete the transaction."),
+          { statusCode: 400 }
+        );
       }
 
       const updatedStock = await tx.inventoryStock.upsert({
@@ -158,15 +184,63 @@ export class InventoryMutationService {
     };
 
     if (externalTx) {
+      // Already inside a caller's transaction -- retrying here is not ours to do. The
+      // caller owns the transaction boundary and must retry the whole thing itself.
       return run(externalTx);
     }
 
-    return prisma.$transaction(run, {
-      maxWait: 10000,
-      timeout: 30000,
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
-    });
+    // Serializable transactions are EXPECTED to abort under concurrency: Postgres raises
+    // 40001 ("could not serialize access due to read/write dependencies") and the caller is
+    // supposed to retry. There was no retry, so a stock movement that merely overlapped
+    // another writer failed outright -- and there is a permanent concurrent writer here,
+    // the webhook dispatcher polling the same outbox table every 30s (server.ts:76), which
+    // applyMovement also writes to via createStockUpdatedEvent.
+    //
+    // The whole `run` closure is re-executed, so every read is re-taken against the new
+    // snapshot -- that is what makes the retry safe rather than a way to double-apply a
+    // movement. Only serialization/deadlock aborts are retried; a business rejection like
+    // "Insufficient stock" carries a statusCode and is rethrown on the first attempt.
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await prisma.$transaction(run, {
+          maxWait: 10000,
+          timeout: 30000,
+          // READ COMMITTED, not SERIALIZABLE. Correctness here comes from the explicit
+          // FOR UPDATE above: it gives real mutual exclusion, so writers wait instead of
+          // one of them being aborted. SERIALIZABLE added nothing on top of that lock but
+          // did add spurious 40001 aborts from predicate locks -- measured at 3/6
+          // concurrent receipts rejected, and still 1/6 once the lock was in place.
+          // Every read below happens while holding the variant lock, and READ COMMITTED
+          // takes a fresh snapshot per statement, so those reads see the latest committed
+          // state. Retries stay as the backstop for deadlocks.
+          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
+        });
+      } catch (error: any) {
+        if (attempt >= MAX_ATTEMPTS || !isRetryableTransactionError(error)) throw error;
+        // Short randomised backoff so two contending writers don't retry in lockstep.
+        const delay = 40 * attempt + Math.floor(Math.random() * 40);
+        console.warn(
+          `[applyMovement] serialization conflict on attempt ${attempt}/${MAX_ATTEMPTS} ` +
+          `(variant ${variantId}) -- retrying in ${delay}ms`
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
   }
+}
+
+/**
+ * True only for aborts Postgres/Prisma expect the caller to retry:
+ *   - P2034: Prisma's "write conflict or deadlock" wrapper
+ *   - 40001: serialization failure   - 40P01: deadlock detected
+ * Deliberately narrow: retrying anything else would mask real faults.
+ */
+function isRetryableTransactionError(error: any): boolean {
+  if (!error) return false;
+  if (error.code === 'P2034' || error.code === '40001' || error.code === '40P01') return true;
+  const message = String(error.message || '');
+  return /could not serialize access|deadlock detected|write conflict/i.test(message);
 }
 
 export const inventoryMutationService = new InventoryMutationService();

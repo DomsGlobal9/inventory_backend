@@ -16,10 +16,20 @@ function looksLikeId(segment: string) {
 // POST /products -> CREATED / PRODUCT, POST /purchase-orders/:id/receive -> RECEIVE /
 // PURCHASE_ORDER. Approximate by design -- this is an activity feed for a platform admin
 // to skim, not a byte-exact record, so it doesn't need every controller to opt in.
+// Stripping a single trailing "S" turned DISPATCHES into "DISPATCHE" in the audit feed
+// (and would do the same to any -CHES/-SHES/-SES/-XES resource). Handle the -ES and -IES
+// plurals properly; everything else is still just the trailing S.
+function singularize(word: string): string {
+  if (/IES$/.test(word)) return word.replace(/IES$/, 'Y');          // CATEGORIES -> CATEGORY
+  if (/(CH|SH|SS|X|Z)ES$/.test(word)) return word.replace(/ES$/, ''); // DISPATCHES -> DISPATCH
+  if (/S$/.test(word)) return word.replace(/S$/, '');                // PRODUCTS -> PRODUCT
+  return word;
+}
+
 function inferActionAndEntity(method: string, path: string) {
   const segments = path.split('/').filter(Boolean);
   const resource = segments[0] || 'unknown';
-  const entityType = resource.replace(/-/g, '_').toUpperCase().replace(/S$/, '');
+  const entityType = singularize(resource.replace(/-/g, '_').toUpperCase());
 
   const last = segments[segments.length - 1];
   let action: string;
