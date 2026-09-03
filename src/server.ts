@@ -13,6 +13,18 @@ import helmet from 'helmet';
 
 const app = express();
 
+// Render (like any PaaS) terminates TLS at a load balancer and forwards the real client
+// address in X-Forwarded-For. Without this, Express reports the proxy's address as req.ip
+// for every request, which quietly breaks two things: express-rate-limit buckets every
+// user together, so one caller can exhaust the limit for everybody, and the audit log
+// records the proxy instead of whoever actually performed the action.
+//
+// Exactly one hop is trusted, not `true`. Trusting all hops would let a client set its own
+// X-Forwarded-For and choose the identity used for rate limiting and audit records.
+if (env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
 // Global Middleware
 app.use(helmet()); // HTTP Security Headers
 app.use(cors({
