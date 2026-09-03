@@ -134,8 +134,9 @@ const _env = envSchema.superRefine((val, ctx) => {
   // decision rather than an accident.
   if (!val.STOREFRONT_WEBHOOK_URL) {
     console.warn(
-      "[env] STOREFRONT_WEBHOOK_URL is not set. The webhook dispatcher will fall back to " +
-      "http://localhost:4000 and retry against it every 30s. Set it, or accept the noise."
+      "[env] STOREFRONT_WEBHOOK_URL is not set. Inventory changes will not be pushed to a " +
+      "storefront; the dispatcher stays idle rather than posting to a made-up target. Set " +
+      "it if a storefront should be notified."
     );
   }
 }).safeParse(process.env);

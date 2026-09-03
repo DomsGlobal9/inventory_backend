@@ -2,14 +2,9 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { platformAdminService } from '../services/platform-admin.service';
+import { authCookieOptions, platformAdminCookieOptions, clearCookieOptions } from '../lib/cookies';
 
-const isProd = process.env.NODE_ENV === 'production';
-const cookieOptions = {
-  httpOnly: true,
-  secure: isProd,
-  sameSite: 'lax' as 'lax' | 'strict' | 'none',
-  maxAge: 8 * 60 * 60 * 1000 // 8 hours
-};
+const cookieOptions = platformAdminCookieOptions;
 
 export const login = async (req: Request, res: Response) => {
   try {
@@ -47,11 +42,7 @@ export const logout = async (req: Request, res: Response) => {
   // caller's options over its own `expires: new Date(1)`, and res.cookie then
   // recomputes expires from maxAge -- so passing the 8h cookieOptions through
   // re-issued the cookie for another 8 hours instead of deleting it.
-  const clearOptions = {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: 'lax' as 'lax' | 'strict' | 'none'
-  };
+  const clearOptions = clearCookieOptions;
 
   try {
     const token = req.cookies?.platform_admin_token;
@@ -148,13 +139,7 @@ export const assumeClient = async (req: Request, res: Response) => {
     const session = await platformAdminService.assumeClient(platformAdminId, clientId);
 
     const clientToken = AuthService.generateToken({ userId: assumedUser.id, clientId });
-    const clientCookieOptions = {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: 'lax' as 'lax' | 'strict' | 'none',
-      maxAge: 24 * 60 * 60 * 1000
-    };
-    res.cookie('token', clientToken, clientCookieOptions);
+    res.cookie('token', clientToken, authCookieOptions);
 
     res.json({
       success: true,

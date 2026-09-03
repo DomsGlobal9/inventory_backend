@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
+import { authCookieOptions, clearCookieOptions } from '../lib/cookies';
 
 const userWithRolesInclude = {
   roles: {
@@ -92,16 +93,7 @@ export const login = async (req: Request, res: Response) => {
 
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date(), lastActiveAt: new Date() } });
 
-    // Environment-aware secure cookie
-    const isProd = process.env.NODE_ENV === 'production';
-    const cookieOptions = {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: (isProd ? 'lax' : 'lax') as 'lax' | 'strict' | 'none',
-      maxAge: 24 * 60 * 60 * 1000 // 24 hours
-    };
-
-    res.cookie('token', token, cookieOptions);
+    res.cookie('token', token, authCookieOptions);
 
     res.json({
       success: true,
@@ -126,12 +118,8 @@ export const login = async (req: Request, res: Response) => {
 };
 
 export const logout = async (req: Request, res: Response) => {
-  const isProd = process.env.NODE_ENV === 'production';
-  res.clearCookie('token', {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: (isProd ? 'lax' : 'lax') as 'lax' | 'strict' | 'none',
-  });
+  // Must match the attributes the cookie was set with, or the browser keeps it.
+  res.clearCookie('token', clearCookieOptions);
   res.json({ success: true, message: 'Logged out successfully' });
 };
 
