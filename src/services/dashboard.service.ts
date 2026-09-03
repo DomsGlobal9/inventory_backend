@@ -1,8 +1,11 @@
 import { prisma } from '../lib/prisma';
+import { Prisma } from '@prisma/client';
 
 export class DashboardService {
-  
-  async getSummary(clientId: string) {
+
+  async getSummary(clientId: string, locationId?: string) {
+    const stockJoinFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
+
     const [
       totalProducts,
       activeProducts,
@@ -21,20 +24,20 @@ export class DashboardService {
         where: { clientId, status: 'ACTIVE' }
       }),
       prisma.$queryRaw`
-        SELECT COUNT(*)::int as count 
+        SELECT COUNT(*)::int as count
         FROM inventory_product_variants v
         JOIN inventory_products p ON v.product_id = p.id
-        LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
-        WHERE v.client_id = ${clientId} 
-          AND p.status != 'TRASHED' 
+        LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
+        WHERE v.client_id = ${clientId}
+          AND p.status != 'TRASHED'
           AND COALESCE(s.qty, 0) <= v.reorder_level
       `.then((res: any) => res?.[0]?.count || 0),
       prisma.inventoryStock.aggregate({
-        where: { clientId, variant: { product: { status: { notIn: ['TRASHED'] } } } },
+        where: { clientId, variant: { product: { status: { notIn: ['TRASHED'] } } }, ...(locationId ? { locationId } : {}) },
         _sum: { quantity: true }
       }),
       prisma.inventoryTransaction.findMany({
-        where: { variant: { clientId } },
+        where: { variant: { clientId }, ...(locationId ? { locationId } : {}) },
         orderBy: { createdAt: 'desc' },
         take: 5,
         include: {
@@ -45,18 +48,18 @@ export class DashboardService {
           }
         }
       }),
-      // Open Purchase Orders
+      // Open Purchase Orders - not location-scoped (a PO isn't "at" a location until received)
       prisma.purchaseOrder.count({
         where: {
           clientId,
           status: { in: ['DRAFT', 'SENT', 'PARTIALLY_RECEIVED'] }
         }
       }),
-      // Total Suppliers
+      // Total Suppliers - not location-scoped (catalog-level entity)
       prisma.supplier.count({
         where: { clientId, isActive: true }
       }),
-      // Pending Receipts
+      // Pending Receipts - not location-scoped (POs aren't location-specific pre-receipt)
       prisma.purchaseOrderItem.aggregate({
         where: {
           po: {
@@ -74,7 +77,7 @@ export class DashboardService {
         SELECT SUM(COALESCE(s.qty, 0) * COALESCE(v.last_purchase_cost, v.cost_price, v.compare_at_price, 0)) as "totalValue"
         FROM inventory_product_variants v
         JOIN inventory_products p ON v.product_id = p.id
-        LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+        LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId} AND p.status != 'TRASHED'
       `
     ]);

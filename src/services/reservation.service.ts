@@ -65,8 +65,13 @@ export class ReservationService {
    */
   async releaseReservation(clientId: string, salesOrderItemId: string) {
     return prisma.$transaction(async (tx) => {
+      // PARTIALLY_FULFILLED counts too: cancelling an order that was partly dispatched
+      // must still release the un-shipped remainder. Matching only 'ACTIVE' meant that
+      // remainder stayed reserved forever -- invisible stock that no future order could
+      // ever claim. The decrement below already handles it correctly, subtracting only
+      // (reserved - dispatched), so nothing already shipped is double-counted.
       const reservation = await tx.inventoryReservation.findFirst({
-        where: { clientId, salesOrderItemId, status: 'ACTIVE' }
+        where: { clientId, salesOrderItemId, status: { in: ['ACTIVE', 'PARTIALLY_FULFILLED'] } }
       });
 
       if (!reservation) {
@@ -94,8 +99,8 @@ export class ReservationService {
   /**
    * Dispatches a reserved item. Reduces both physical stock and reserved stock.
    */
-  async dispatchReservation(clientId: string, salesOrderItemId: string, dispatchQuantity: number, dispatchReference: string) {
-    return prisma.$transaction(async (tx) => {
+  async dispatchReservation(clientId: string, salesOrderItemId: string, dispatchQuantity: number, dispatchReference: string, txClient?: any) {
+    const execute = async (tx: any) => {
       // Find the active or partially fulfilled reservation and lock it
       const reservations = await tx.$queryRaw<any[]>`
         SELECT id, variant_id as "variantId", location_id as "locationId", reserved_qty as "reservedQty", dispatched_qty as "dispatchedQty"
@@ -135,9 +140,11 @@ export class ReservationService {
           // physical quantity is updated via inventoryMutationService later during dispatch
         }
       });
-      
+
       return updatedReservation;
-    });
+    };
+
+    return txClient ? execute(txClient) : prisma.$transaction(execute);
   }
 }
 

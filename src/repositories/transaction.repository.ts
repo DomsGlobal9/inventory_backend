@@ -112,7 +112,14 @@ export class TransactionRepository {
         take: filters.limit,
         include: {
           variant: {
-            select: { sku: true, size: true, colorName: true }
+            // The ledger's "Product & SKU" column renders tx.variant.product.title above
+            // the SKU; without this relation it was blank on every single row.
+            select: {
+              sku: true,
+              size: true,
+              colorName: true,
+              product: { select: { title: true } }
+            }
           }
         }
       })

@@ -6,7 +6,8 @@ export class DashboardController {
   async getSummary(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const summary = await dashboardService.getSummary(clientId);
+      const locationId = (req as any).locationId as string | undefined;
+      const summary = await dashboardService.getSummary(clientId, locationId);
       res.status(200).json({ success: true, data: summary });
     } catch (error) {
       next(error);

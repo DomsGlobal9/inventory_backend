@@ -15,16 +15,22 @@ interface MovementInput {
   referenceType?: string;
   referenceId?: string;
   createdBy?: string;
+  // Pass the caller's own transaction client here when applyMovement is invoked
+  // from inside an already-open prisma.$transaction. Opening a second, independent
+  // transaction from within another one is a connection-pool deadlock risk against
+  // pooled Postgres (observed in practice as "Unable to start a transaction in the
+  // given time") — always thread the outer `tx` through instead of nesting.
+  tx?: Prisma.TransactionClient;
 }
 
 export class InventoryMutationService {
   async applyMovement(input: MovementInput) {
     const {
       clientId, variantId, locationId, movementType, reason, quantityDelta,
-      unitCost, notes, referenceType, referenceId, createdBy
+      unitCost, notes, referenceType, referenceId, createdBy, tx: externalTx
     } = input;
 
-    return prisma.$transaction(async (tx) => {
+    const run = async (tx: Prisma.TransactionClient) => {
       // 1. Get the current variant and its global stock to calculate average cost
       const variant = await tx.productVariant.findUnique({
         where: { id: variantId },
@@ -33,6 +39,14 @@ export class InventoryMutationService {
 
       if (!variant || variant.clientId !== clientId) {
         throw new Error(`Variant ${variantId} not found.`);
+      }
+
+      // Guard against a locationId belonging to a different tenant being used here —
+      // applyMovement is the single choke point for every stock mutation, so this is
+      // the one place that can actually enforce it regardless of which caller forgot to.
+      const location = await tx.stockLocation.findUnique({ where: { id: locationId } });
+      if (!location || location.clientId !== clientId) {
+        throw new Error(`Location ${locationId} not found for this tenant.`);
       }
 
       // Calculate global current quantity
@@ -141,7 +155,13 @@ export class InventoryMutationService {
         globalQuantity: globalQty + quantityDelta,
         averageCost: newAverageCost
       };
-    }, {
+    };
+
+    if (externalTx) {
+      return run(externalTx);
+    }
+
+    return prisma.$transaction(run, {
       maxWait: 10000,
       timeout: 30000,
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable

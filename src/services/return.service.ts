@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 
@@ -93,11 +94,30 @@ export class ReturnService {
         throw new Error(`Cannot transition from ${salesReturn.status} to INSPECTED`);
       }
 
+      // Every item must get a real disposition in this one call. Previously the UI's
+      // "Pending" default was accepted verbatim and untouched items weren't sent at all,
+      // yet the status still flipped to INSPECTED below -- and that combination is a
+      // dead end: inspectReturn refuses to run again on an INSPECTED return, while
+      // completeReturn refuses to finish while any item is PENDING. The return could
+      // then only ever be rejected.
+      const validDispositions = ['RESTOCK', 'DAMAGED', 'SCRAP'];
+      const byItemId = new Map(itemsDisposition.map(u => [u.salesReturnItemId, u.disposition]));
+
+      for (const item of salesReturn.items) {
+        const disposition = byItemId.get(item.id);
+        if (!disposition || !validDispositions.includes(disposition)) {
+          throw new Error(`Every returned item needs a disposition of RESTOCK, DAMAGED or SCRAP before inspection can be saved`);
+        }
+      }
+
       for (const update of itemsDisposition) {
-        await tx.salesReturnItem.update({
-          where: { id: update.salesReturnItemId },
+        // Scoped to this return: `id` is globally unique, so an unscoped update let a
+        // crafted payload rewrite another return's -- or another tenant's -- line item.
+        const changed = await tx.salesReturnItem.updateMany({
+          where: { id: update.salesReturnItemId, salesReturnId: id },
           data: { disposition: update.disposition }
         });
+        if (changed.count === 0) throw new Error(`Return item ${update.salesReturnItemId} does not belong to this return`);
       }
 
       // We also update the main reason if provided, but the user requested ReturnReason at the top level
@@ -170,19 +190,20 @@ export class ReturnService {
             quantityDelta: item.quantity,
             notes: `Restock from return ${salesReturn.returnNumber}`,
             referenceType: 'SALES_RETURN',
-            referenceId: salesReturn.id
+            referenceId: salesReturn.id,
+            tx
           });
         }
       }
 
       return tx.salesReturn.update({
         where: { id },
-        data: { 
+        data: {
           status: 'COMPLETED',
           completedAt: new Date()
         }
       });
-    }, { timeout: 15000 });
+    }, { timeout: 30000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   /**

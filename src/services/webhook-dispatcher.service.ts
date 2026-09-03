@@ -7,11 +7,28 @@ export class WebhookDispatcherService {
    */
   static async dispatchPendingEvents() {
     try {
-      // Get batch of pending events
-      const pendingEvents = await prisma.inventoryEvent.findMany({
+      // Get batch of pending event ids
+      const candidates = await prisma.inventoryEvent.findMany({
         where: { status: 'PENDING' },
         take: 50,
         orderBy: { createdAt: 'asc' },
+        select: { id: true }
+      });
+
+      if (candidates.length === 0) return;
+      const candidateIds = candidates.map(c => c.id);
+
+      // Atomically claim this batch (PENDING -> PROCESSING) before doing any network
+      // I/O. If this service is ever scaled horizontally, each row's WHERE status =
+      // 'PENDING' guard means only one instance's updateMany can win the transition
+      // per row, so two instances can never both deliver the same event.
+      await prisma.inventoryEvent.updateMany({
+        where: { id: { in: candidateIds }, status: 'PENDING' },
+        data: { status: 'PROCESSING' }
+      });
+
+      const pendingEvents = await prisma.inventoryEvent.findMany({
+        where: { id: { in: candidateIds }, status: 'PROCESSING' },
         include: {
           variant: { select: { id: true, barcode: true } },
           location: { select: { id: true, code: true, name: true } }
@@ -21,7 +38,14 @@ export class WebhookDispatcherService {
       if (pendingEvents.length === 0) return;
 
       const STOREFRONT_WEBHOOK_URL = process.env.STOREFRONT_WEBHOOK_URL || 'http://localhost:4000/api/v1/internal-webhooks/inventory-updated';
-      const EVENT_SIGNATURE = process.env.INTERNAL_SERVICE_KEY || 'development_secret_key_123';
+      // No hardcoded fallback — an unset key means we cannot sign outbound webhooks
+      // truthfully, so we skip dispatching rather than send a signature anyone
+      // could forge by reading this file.
+      const EVENT_SIGNATURE = process.env.INTERNAL_SERVICE_KEY;
+      if (!EVENT_SIGNATURE) {
+        console.warn('WebhookDispatcher: INTERNAL_SERVICE_KEY not configured — skipping this batch, events remain claimed as PROCESSING and will need a manual reset or an env fix + restart.');
+        return;
+      }
 
       for (const event of pendingEvents) {
         try {
@@ -57,7 +81,11 @@ export class WebhookDispatcherService {
           });
         } catch (err: any) {
           console.error(`Failed to dispatch event ${event.id}:`, err.message);
-          // Leave it as PENDING to retry next time
+          // Release the claim so the next poll retries it
+          await prisma.inventoryEvent.update({
+            where: { id: event.id },
+            data: { status: 'PENDING' }
+          }).catch(() => {});
         }
       }
     } catch (err) {

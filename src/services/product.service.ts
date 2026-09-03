@@ -1,6 +1,8 @@
 import { productRepository } from '../repositories/product.repository';
 import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
+import { prisma } from '../lib/prisma';
+import { supabase } from '../lib/supabase';
 
 export class ProductService {
   
@@ -9,11 +11,15 @@ export class ProductService {
   }
 
   async createProduct(clientId: string, data: any) {
-    const slug = this.generateSlug(data.title);
-    
     // Generate sequential product code
     const productCode = await generateSequentialCode(clientId, 'PRD', 'PRODUCT');
-    
+
+    // Slug is derived only from title, so two products with the same title (a retry
+    // after a failed publish, a duplicated draft, etc.) would otherwise collide on the
+    // (clientId, slug) unique constraint. productCode is already unique per client, so
+    // suffixing with it guarantees the slug is too, without needing a collision-retry loop.
+    const slug = `${this.generateSlug(data.title)}-${productCode.toLowerCase()}`;
+
     const productData: Prisma.ProductUncheckedCreateInput = {
       clientId,
       slug,
@@ -44,10 +50,12 @@ export class ProductService {
   }
 
   async updateProduct(id: string, clientId: string, data: any) {
-    // Re-generate slug if title changes
+    // Re-generate slug if title changes, suffixed with the product's own (already
+    // unique) productCode for the same reason as createProduct above.
     let updateData = { ...data };
     if (data.title) {
-      updateData.slug = this.generateSlug(data.title);
+      const existing = await this.getProductById(id, clientId);
+      updateData.slug = `${this.generateSlug(data.title)}-${existing.productCode.toLowerCase()}`;
     }
     return productRepository.updateSafe(id, clientId, updateData);
   }
@@ -75,7 +83,24 @@ export class ProductService {
   }
 
   async hardDeleteProduct(id: string, clientId: string) {
-    return productRepository.hardDelete(id, clientId);
+    // Read image storage paths *before* the delete, since Prisma cascade will remove
+    // the ProductImage rows along with the Product -- once that happens the paths are gone.
+    const images = await prisma.productImage.findMany({
+      where: { productId: id, product: { clientId } },
+      select: { storagePath: true }
+    });
+
+    const deleted = await productRepository.hardDelete(id, clientId);
+
+    const paths = images.map(i => i.storagePath).filter((p): p is string => !!p);
+    if (paths.length > 0) {
+      const { error } = await supabase.storage.from('inventory-images').remove(paths);
+      if (error) {
+        console.error(`Failed to clean up ${paths.length} storage file(s) for deleted product ${id}:`, error);
+      }
+    }
+
+    return deleted;
   }
 }
 

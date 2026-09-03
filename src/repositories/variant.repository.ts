@@ -27,7 +27,10 @@ export class VariantRepository {
         stocks: {
           include: { location: true }
         },
-        locationProfiles: true
+        locationProfiles: true,
+        // basePrice is the catalogue-wide fallback price. Without it the barcode-label
+        // generator had nothing to fall back to and printed "Rs.N/A" on every sticker.
+        product: { select: { title: true, basePrice: true } }
       }
     });
   }

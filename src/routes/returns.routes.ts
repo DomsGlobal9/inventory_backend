@@ -2,12 +2,10 @@ import { Router } from 'express';
 import { returnService } from '../services/return.service';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 
-import { requireAuth } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 
 export const returnsRoutes = Router();
 
-returnsRoutes.use(requireAuth);
 returnsRoutes.use(tenantMiddleware);
 
 returnsRoutes.get('/', requirePermission('return:view'), async (req, res) => {

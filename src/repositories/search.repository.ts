@@ -13,11 +13,16 @@ export class SearchRepository {
     const q = query.trim();
 
     // 1. EXACT MATCHES FIRST (Identifiers)
+    // Identifier matches are case-INSENSITIVE. A hardware scanner transmits exactly what
+    // the barcode encodes, so case never mattered for scanning -- but this same box invites
+    // typing ("Search products, SKU, barcode..."), and a typed `svm-46p3d3tj` used to find
+    // nothing while every other search bar in the app (/variants/search,
+    // /inventory/variants) matched it. This makes global search agree with them.
     const exactProducts = await prisma.product.findMany({
       where: {
         clientId,
         status: { notIn: ['TRASHED'] as any },
-        productCode: q
+        productCode: { equals: q, mode: 'insensitive' }
       },
       include: {
         images: {
@@ -32,9 +37,9 @@ export class SearchRepository {
         clientId,
         product: { status: { notIn: ['TRASHED'] as any } },
         OR: [
-          { barcode: q },
-          { variantCode: q },
-          { sku: q }
+          { barcode: { equals: q, mode: 'insensitive' } },
+          { variantCode: { equals: q, mode: 'insensitive' } },
+          { sku: { equals: q, mode: 'insensitive' } }
         ]
       },
       include: {

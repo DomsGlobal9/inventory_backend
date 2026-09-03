@@ -6,7 +6,7 @@ export const requirePermission = (requiredPermission: string): RequestHandler =>
     try {
       const user = (req as any).user;
       
-      if (!user || !user.userId) {
+      if (!user || !user.id) {
         return res.status(401).json({ success: false, message: 'Unauthorized: User context missing' });
       }
 
@@ -34,7 +34,7 @@ export const requireRole = (requiredRole: string): RequestHandler => {
     try {
       const user = (req as any).user;
       
-      if (!user || !user.userId) {
+      if (!user || !user.id) {
         return res.status(401).json({ success: false, message: 'Unauthorized: User context missing' });
       }
 

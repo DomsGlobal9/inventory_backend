@@ -1,16 +1,27 @@
 import { Request, Response } from 'express';
 import { salesOrderService } from '../services/sales-order.service';
 import { prisma } from '../lib/prisma';
+import { createOrderSchema, createFullOrderSchema } from '../validations/sales-order.schema';
 
 export const createOrder = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
-    let locationId = req.body.locationId;
+    
+    const parsed = createOrderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+    }
+
+    let locationId = parsed.data.locationId;
     if (!locationId) {
       const defaultLoc = await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
-      locationId = defaultLoc?.id;
+      if (!defaultLoc) {
+        return res.status(400).json({ success: false, message: "locationId is required (no MAIN-STORE default configured for this tenant)" });
+      }
+      locationId = defaultLoc.id;
     }
-    const order = await salesOrderService.createDraftOrder(clientId, locationId, req.body.customerId);
+
+    const order = await salesOrderService.createDraftOrder(clientId, locationId, parsed.data.customerId as string);
     res.status(201).json(order);
   } catch (error: any) {
     res.status(400).json({ error: error.message });
@@ -20,12 +31,15 @@ export const createOrder = async (req: Request, res: Response) => {
 export const createFullOrder = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
-    let locationId = req.body.locationId;
-    if (!locationId) {
-      const defaultLoc = await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
-      locationId = defaultLoc?.id;
+    
+    const parsed = createFullOrderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
     }
-    const order = await salesOrderService.createFullOrder(clientId, locationId, req.body);
+
+    let locationId = parsed.data.locationId;
+
+    const order = await salesOrderService.createFullOrder(clientId, locationId, parsed.data as any);
     res.status(201).json(order);
   } catch (error: any) {
     res.status(400).json({ error: error.message });

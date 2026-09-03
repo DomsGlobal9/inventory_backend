@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { purchaseOrderService } from '../services/purchase-order.service';
+import { purchaseOrderCreateSchema, purchaseOrderReceiveSchema } from '../validations/purchase-order.schema';
 
 /** Read the verified tenant ID set by tenantMiddleware — never trust the request body. */
 function getClientId(req: Request, res: Response): string | null {
@@ -39,7 +40,13 @@ export const createPO = async (req: Request, res: Response, next: NextFunction) 
   try {
     const clientId = getClientId(req, res);
     if (!clientId) return;
-    const data = await purchaseOrderService.createPO(clientId, req.body);
+    
+    const parsed = purchaseOrderCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+    }
+
+    const data = await purchaseOrderService.createPO(clientId, parsed.data as any);
     res.status(201).json({ success: true, data });
   } catch (error) {
     next(error);
@@ -63,9 +70,14 @@ export const receiveGoods = async (req: Request, res: Response, next: NextFuncti
   try {
     const clientId = getClientId(req, res);
     if (!clientId) return;
+    
+    const parsed = purchaseOrderReceiveSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+    }
+
     const id = req.params.id as string;
-    const { receipts } = req.body;
-    const data = await purchaseOrderService.receiveGoods(clientId, id, receipts);
+    const data = await purchaseOrderService.receiveGoods(clientId, id, parsed.data.receipts as any);
     res.json({ success: true, data });
   } catch (error) {
     next(error);

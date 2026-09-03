@@ -21,7 +21,8 @@ export class VariantController {
       const clientId = (req as any).clientId as string;
       const productId = req.params.productId as string;
       const validatedData = createVariantSchema.parse(req.body);
-      const variant = await variantService.createVariant(productId, clientId, validatedData);
+      const locationId = validatedData.locationId || (req as any).locationId;
+      const variant = await variantService.createVariant(productId, clientId, validatedData, locationId);
       res.status(201).json({ success: true, data: variant });
     } catch (error) {
       next(error);
@@ -33,8 +34,11 @@ export class VariantController {
       const clientId = (req as any).clientId as string;
       const productId = req.params.productId as string;
       const validatedData = bulkCreateVariantSchema.parse(req.body);
-      
-      const result = await variantService.bulkCreateVariants(productId, clientId, validatedData.variants);
+      const locationId = validatedData.locationId || (req as any).locationId;
+
+      const result = await variantService.bulkCreateVariants(
+        productId, clientId, validatedData.variants, locationId, validatedData.applyToAllLocations
+      );
       res.status(201).json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -95,7 +99,6 @@ export class VariantController {
       const { q, page, limit } = searchQuerySchema.parse(req.query);
       
       const results = await variantService.searchVariants(clientId, { q, page, limit });
-      
       res.status(200).json({ success: true, data: results });
     } catch (error) {
       next(error);

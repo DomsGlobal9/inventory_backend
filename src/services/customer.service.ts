@@ -49,7 +49,12 @@ export class CustomerService {
       include: {
         salesOrders: {
           orderBy: { createdAt: 'desc' },
-          take: 10
+          take: 10,
+          // The Dispatches tab derives its list from customer.salesOrders[i].dispatches,
+          // and the "Create Return Request" flow then reads dispatch.items to work out
+          // what's still returnable -- both were undefined before, so the tab showed
+          // "No dispatches" for everyone and the return button threw on .filter().
+          include: { dispatches: { include: { items: true } } }
         }
       }
     });

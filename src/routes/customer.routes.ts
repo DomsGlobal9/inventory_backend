@@ -7,17 +7,14 @@ import {
 } from '../controllers/customer.controller';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 
-import { requireAuth } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
-import { serviceAuthMiddleware } from '../middleware/serviceAuth.middleware';
 
 const router = Router();
 
-router.use(requireAuth);
 router.use(tenantMiddleware);
 
-// Strict service-to-service ingestion endpoint
-router.post('/', serviceAuthMiddleware, createCustomer);
+// Customer ingestion endpoint
+router.post('/', requirePermission('customer:create'), createCustomer);
 
 router.get('/', requirePermission('customer:view'), getCustomers);
 router.get('/:id', requirePermission('customer:view'), getCustomerById);

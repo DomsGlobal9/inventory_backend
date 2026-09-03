@@ -1,16 +1,24 @@
 import { Request, Response, NextFunction } from 'express';
+import { InventoryReason } from '@prisma/client';
 import { inventoryService } from '../services/inventory.service';
 import { valuationService } from '../services/valuation.service';
 import { stockChangeSchema } from '../validations/inventory.schema';
 
+const VALID_REASONS: string[] = Object.values(InventoryReason);
+
 export class InventoryController {
-  
+
   async stockIn(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
       const { variantId, quantity, reason, referenceType, reference, unitCost, notes, locationId } = req.body;
-      
-      let targetLocationId = locationId;
+
+      if (!variantId) return res.status(400).json({ success: false, message: "variantId is required" });
+      if (reason !== undefined && !VALID_REASONS.includes(reason)) {
+        return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
+      }
+
+      let targetLocationId = locationId || (req as any).locationId;
       if (!targetLocationId) {
         // Fallback for transition phase
         const defaultLoc = await import('../lib/prisma').then(m => m.prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } }));
@@ -30,8 +38,13 @@ export class InventoryController {
     try {
       const clientId = (req as any).clientId as string;
       const { variantId, quantity, reason, referenceType, reference, notes, locationId } = req.body;
-      
-      let targetLocationId = locationId;
+
+      if (!variantId) return res.status(400).json({ success: false, message: "variantId is required" });
+      if (reason !== undefined && !VALID_REASONS.includes(reason)) {
+        return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
+      }
+
+      let targetLocationId = locationId || (req as any).locationId;
       if (!targetLocationId) {
         // Fallback for transition phase
         const defaultLoc = await import('../lib/prisma').then(m => m.prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } }));
@@ -59,8 +72,11 @@ export class InventoryController {
       if (!variantId || typeof quantity !== 'number') {
         return res.status(400).json({ success: false, message: "variantId and quantity (number) required" });
       }
+      if (reason !== undefined && !VALID_REASONS.includes(reason)) {
+        return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
+      }
 
-      let targetLocationId = locationId;
+      let targetLocationId = locationId || (req as any).locationId;
       if (!targetLocationId) {
         const defaultLoc = await import('../lib/prisma').then(m => m.prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } }));
         if (!defaultLoc) throw new Error("Location ID required");
@@ -87,7 +103,12 @@ export class InventoryController {
   async getVariants(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const variants = await inventoryService.getVariants(clientId, req.query);
+      // An explicit ?locationId= query param overrides the x-location-id header (the
+      // globally-selected TopNav location) -- callers that need a *specific* location's
+      // view regardless of what's currently selected app-wide (e.g. the Transfers page
+      // scoping the variant picker to whichever Origin was just chosen) pass this.
+      const locationId = (req.query.locationId as string | undefined) || ((req as any).locationId as string | undefined);
+      const variants = await inventoryService.getVariants(clientId, req.query, locationId);
       res.status(200).json({ success: true, data: variants });
     } catch (error) {
       next(error);

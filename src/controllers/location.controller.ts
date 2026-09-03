@@ -15,11 +15,20 @@ export const getLocations = async (req: Request, res: Response) => {
   }
 };
 
+const VALID_LOCATION_TYPES: string[] = ['STORE', 'ONLINE', 'WAREHOUSE'];
+
 export const createLocation = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
     const { name, code, type, active } = req.body;
-    
+
+    if (!name || !code) {
+      return res.status(400).json({ error: 'name and code are required' });
+    }
+    if (type !== undefined && !VALID_LOCATION_TYPES.includes(type)) {
+      return res.status(400).json({ error: `Invalid type. Must be one of: ${VALID_LOCATION_TYPES.join(', ')}` });
+    }
+
     const location = await prisma.stockLocation.create({
       data: {
         clientId,
@@ -40,9 +49,16 @@ export const updateLocation = async (req: Request, res: Response) => {
     const clientId = (req as any).clientId as string;
     const id = req.params.id as string;
     const { name, code, type, active } = req.body;
-    
-    const location = await prisma.stockLocation.update({
-      where: { id },
+
+    if (type !== undefined && !VALID_LOCATION_TYPES.includes(type)) {
+      return res.status(400).json({ error: `Invalid type. Must be one of: ${VALID_LOCATION_TYPES.join(', ')}` });
+    }
+
+    // updateMany + a scoped where clause is the safe way to enforce tenant
+    // ownership on an update — `update({ where: { id } })` alone ignores clientId
+    // entirely and would let a caller mutate another tenant's location by id.
+    const result = await prisma.stockLocation.updateMany({
+      where: { id, clientId },
       data: {
         name,
         code,
@@ -50,6 +66,12 @@ export const updateLocation = async (req: Request, res: Response) => {
         active
       }
     });
+
+    if (result.count === 0) {
+      return res.status(404).json({ error: 'Location not found' });
+    }
+
+    const location = await prisma.stockLocation.findUnique({ where: { id } });
     res.json(location);
   } catch (error: any) {
     res.status(400).json({ error: error.message });

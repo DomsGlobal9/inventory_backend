@@ -54,9 +54,11 @@ export class ReportController {
   // Admin endpoint to manually trigger the global snapshot batch for all tenants
   async runGlobalSnapshot(req: Request, res: Response, next: NextFunction) {
     try {
-      // Typically protected by strict admin-only middleware in production
+      // Typically protected by strict admin-only middleware in production.
+      // No hardcoded fallback: if ADMIN_SECRET isn't configured, this branch
+      // can never be satisfied rather than silently accepting a known default.
       const adminSecret = req.headers['x-admin-secret'];
-      if (adminSecret !== process.env.ADMIN_SECRET && adminSecret !== 'local-dev-secret') {
+      if (!process.env.ADMIN_SECRET || adminSecret !== process.env.ADMIN_SECRET) {
         res.status(401).json({ success: false, message: 'Unauthorized: Invalid admin secret' });
         return;
       }
@@ -72,7 +74,8 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const data = await reportService.getDashboardSummary(clientId);
+      const locationId = (req as any).locationId as string | undefined;
+      const data = await reportService.getDashboardSummary(clientId, locationId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -94,7 +97,8 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const data = await reportService.getLowStockValue(clientId);
+      const locationId = (req as any).locationId as string | undefined;
+      const data = await reportService.getLowStockValue(clientId, locationId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -105,7 +109,8 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const data = await reportService.getMovementAging(clientId);
+      const locationId = (req as any).locationId as string | undefined;
+      const data = await reportService.getMovementAging(clientId, locationId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -116,7 +121,8 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const data = await reportService.getInventorySummary(clientId);
+      const locationId = (req as any).locationId as string | undefined;
+      const data = await reportService.getInventorySummary(clientId, locationId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -128,7 +134,8 @@ export class ReportController {
       const clientId = getClientId(req, res);
       if (!clientId) return;
       const days = req.query.days ? parseInt(req.query.days as string, 10) : 90;
-      const data = await reportService.getDeadStock(clientId, days);
+      const locationId = (req as any).locationId as string | undefined;
+      const data = await reportService.getDeadStock(clientId, days, locationId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -151,7 +158,8 @@ export class ReportController {
       const clientId = getClientId(req, res);
       if (!clientId) return;
       const days = req.query.days ? parseInt(req.query.days as string, 10) : 30;
-      const data = await reportService.getStockMovement(clientId, days);
+      const locationId = (req as any).locationId as string | undefined;
+      const data = await reportService.getStockMovement(clientId, days, locationId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -163,7 +171,8 @@ export class ReportController {
       const clientId = getClientId(req, res);
       if (!clientId) return;
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 10;
-      const data = await reportService.getRecentTransactions(clientId, limit);
+      const locationId = (req as any).locationId as string | undefined;
+      const data = await reportService.getRecentTransactions(clientId, limit, locationId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);

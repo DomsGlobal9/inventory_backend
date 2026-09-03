@@ -161,7 +161,7 @@ export class ProductRepository {
   // We first ensure the record exists for this client.
   async updateSafe(id: string, clientId: string, data: Prisma.ProductUpdateInput): Promise<Product> {
     const existing = await this.findById(id, clientId);
-    if (!existing) throw new Error("Product not found");
+    if (!existing) throw { statusCode: 404, message: "Product not found" };
 
     return prisma.product.update({
       where: { id },
@@ -171,11 +171,11 @@ export class ProductRepository {
 
   async hardDelete(id: string, clientId: string): Promise<Product> {
     const existing = await this.findById(id, clientId);
-    if (!existing) throw new Error("Product not found");
+    if (!existing) throw { statusCode: 404, message: "Product not found" };
 
     const eligibility = await this.checkHardDeleteEligibility(id);
     if (!eligibility.canHardDelete) {
-      throw new Error(`Cannot delete product: ${eligibility.reason}`);
+      throw { statusCode: 400, message: `Cannot delete product: ${eligibility.reason}` };
     }
 
     // Prisma Cascade delete on Product Variant will delete variants, images.

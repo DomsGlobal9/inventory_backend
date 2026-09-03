@@ -14,11 +14,39 @@ export class AuthService {
     return bcrypt.compare(password, hash);
   }
 
-  static generateToken(payload: { userId: string; clientId: string; roles: string[]; permissions?: string[] }): string {
-    return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  static generateToken(payload: { userId: string; clientId: string }): string {
+    const jwtPayload = {
+      sub: payload.userId,
+      clientId: payload.clientId,
+      iss: 'scal_easy_auth',
+      aud: 'scal_easy_inventory',
+    };
+    return jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
   }
 
   static verifyToken(token: string): any {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, JWT_SECRET, {
+      issuer: 'scal_easy_auth',
+      audience: 'scal_easy_inventory'
+    });
+  }
+
+  // Platform Admin tokens are deliberately a distinct iss/aud pair so a leaked/misused
+  // client token can never be mistaken for (or replayed as) a platform-admin one, and
+  // vice versa -- verifyToken() above will reject a platform admin token outright.
+  static generatePlatformAdminToken(payload: { platformAdminId: string }): string {
+    const jwtPayload = {
+      sub: payload.platformAdminId,
+      iss: 'scal_easy_platform_admin',
+      aud: 'scal_easy_platform_console',
+    };
+    return jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '8h' });
+  }
+
+  static verifyPlatformAdminToken(token: string): any {
+    return jwt.verify(token, JWT_SECRET, {
+      issuer: 'scal_easy_platform_admin',
+      audience: 'scal_easy_platform_console'
+    });
   }
 }

@@ -28,13 +28,14 @@ async function getUsageCount(clientId: string, type: string, value: string): Pro
 }
 
 import { tenantMiddleware } from '../middleware/tenant.middleware';
+import { requirePermission } from '../middleware/permission.middleware';
 
 const router = Router();
 router.use(tenantMiddleware);
 
 // GET /api/v1/catalog/config
 // Returns all active catalog config values grouped by type for the current tenant
-router.get('/config', async (req: Request, res: Response) => {
+router.get('/config', requirePermission('product:view'), async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId;
 
@@ -69,7 +70,7 @@ router.get('/config', async (req: Request, res: Response) => {
 
 // GET /api/v1/catalog/items
 // Returns all items (active and inactive) for the current tenant
-router.get('/items', async (req: Request, res: Response) => {
+router.get('/items', requirePermission('product:view'), async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId;
 
@@ -91,7 +92,7 @@ router.get('/items', async (req: Request, res: Response) => {
 
 // POST /api/v1/catalog/items
 // Add a new custom item for the client
-router.post('/items', async (req: Request, res: Response) => {
+router.post('/items', requirePermission('admin:catalog'), async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId;
     const { type, value, label, category, metadata, sortOrder } = req.body;
@@ -118,7 +119,7 @@ router.post('/items', async (req: Request, res: Response) => {
 
 // PATCH /api/v1/catalog/items/:id
 // Update an existing item (e.g., label, sortOrder, isActive)
-router.patch('/items/:id', async (req: Request, res: Response) => {
+router.patch('/items/:id', requirePermission('admin:catalog'), async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId;
     const id = req.params.id as string;
@@ -153,7 +154,7 @@ router.patch('/items/:id', async (req: Request, res: Response) => {
 
 // DELETE /api/v1/catalog/items/:id
 // Soft delete an item
-router.delete('/items/:id', async (req: Request, res: Response) => {
+router.delete('/items/:id', requirePermission('admin:catalog'), async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId;
     const id = req.params.id as string;

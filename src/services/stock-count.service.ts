@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { StockCountStatus, TransactionType, InventoryReason } from '@prisma/client';
+import { StockCountStatus, TransactionType, InventoryReason, Prisma } from '@prisma/client';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { inventoryRepository } from '../repositories/inventory.repository';
 
@@ -23,8 +23,8 @@ export class StockCountService {
         items: {
           include: {
             variant: {
-              select: { 
-                stocks: { select: { quantity: true } },
+              select: {
+                stocks: { select: { locationId: true, quantity: true } },
                 product: {
                   select: { title: true }
                 }
@@ -34,31 +34,51 @@ export class StockCountService {
         }
       }
     });
-    
+
     if (!count) throw new Error('Stock count not found');
-    return count;
+
+    // The audit is scoped to a single location, but `stocks` above returns every
+    // location's row for the variant -- flatten to the one this audit actually cares
+    // about so the frontend's `item.variant.quantity` reflects current on-hand stock
+    // at THIS location, not an arbitrary/undefined value.
+    const items = count.items.map(item => {
+      const stockAtLocation = item.variant.stocks.find(s => s.locationId === count.locationId);
+      return {
+        ...item,
+        variant: {
+          ...item.variant,
+          quantity: stockAtLocation?.quantity ?? 0
+        }
+      };
+    });
+
+    return { ...count, items };
   }
 
-  async createCount(clientId: string, name: string, categoryId?: string, createdBy?: string) {
-    // Determine variants to snapshot
+  async createCount(clientId: string, name: string, locationId: string, categoryId?: string, createdBy?: string) {
+    // Determine variants to snapshot for this specific location
     const variants = await prisma.productVariant.findMany({
       where: { 
         clientId,
         ...(categoryId ? { product: { category: categoryId as any } } : {})
       },
       include: {
-        stocks: { select: { quantity: true } }
+        stocks: {
+          where: { locationId },
+          select: { quantity: true }
+        }
       }
     });
 
     if (variants.length === 0) {
-      throw new Error('No variants found to audit.');
+      throw new Error('No variants found to audit for this location.');
     }
 
     const count = await prisma.stockCount.create({
       data: {
         clientId,
         name,
+        locationId,
         createdBy,
         status: StockCountStatus.DRAFT,
       }
@@ -72,7 +92,8 @@ export class StockCountService {
         sku: v.sku,
         variantCode: v.variantCode,
         barcode: v.barcode,
-        expectedQty: v.stocks.reduce((sum, s) => sum + s.quantity, 0)
+        // Since we filtered stocks by locationId, there's at most 1 element
+        expectedQty: v.stocks.length > 0 ? v.stocks[0].quantity : 0
       }))
     });
 
@@ -98,7 +119,7 @@ export class StockCountService {
     });
   }
 
-  async updateItemCount(clientId: string, id: string, itemId: string, countedQty: number) {
+  async updateItemCount(clientId: string, id: string, itemId: string, countedQty: number | null) {
     // Validate count exists and is in progress
     const count = await prisma.stockCount.findFirst({ where: { id, clientId } });
     if (!count) throw new Error('Stock count not found');
@@ -118,6 +139,7 @@ export class StockCountService {
 
     if (!count) throw new Error('Stock count not found');
     if (count.status === StockCountStatus.COMPLETED) throw new Error('Audit is already completed');
+    if (!count.locationId) throw new Error('Legacy stock count without a location cannot be completed in multi-location mode.');
 
     // Filter items with discrepancies
     const itemsWithDifferences = count.items.filter(
@@ -133,31 +155,25 @@ export class StockCountService {
     const itemsCounted = matchedItems + adjustedItems;
     const accuracy = itemsCounted > 0 ? (matchedItems / itemsCounted) * 100 : null;
 
-    // Execute completion
-    // 1. Process all discrepancies
-    for (const item of itemsWithDifferences) {
+    // Execute completion atomically
+    await prisma.$transaction(async (tx) => {
+      for (const item of itemsWithDifferences) {
         const difference = item.countedQty! - item.expectedQty;
-        
-        // Use central mutation service for adjustments
-        // Note: we can't use `tx` easily with `inventoryMutationService`, but `applyMovement`
-        // manages its own atomic CTEs and ledger inserts. It's safe to call here.
-        // Fetch default location for adjustment
-        const defaultLoc = await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
-        
+
         await inventoryMutationService.applyMovement({
           clientId,
-          locationId: defaultLoc?.id as string,
+          locationId: count.locationId!,
           variantId: item.variantId,
           movementType: 'ADJUSTMENT',
           reason: 'AUDIT_CORRECTION',
           quantityDelta: difference,
           notes: `Audit Correction (Count: ${count.name})`,
-          createdBy: completedBy
+          createdBy: completedBy,
+          tx
         });
       }
 
-      // 2. Mark count as completed
-      await prisma.stockCount.update({
+      await tx.stockCount.update({
         where: { id },
         data: {
           status: StockCountStatus.COMPLETED,
@@ -169,6 +185,10 @@ export class StockCountService {
           accuracy: accuracy !== null ? accuracy : undefined
         }
       });
+    }, {
+      timeout: 30000,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+    });
 
     return prisma.stockCount.findUnique({ where: { id } });
   }

@@ -1,32 +1,49 @@
 import { prisma } from '../lib/prisma';
-import { TransactionType } from '@prisma/client';
+import { TransactionType, Prisma } from '@prisma/client';
 
 export class ReportService {
-  async getDashboardSummary(clientId: string) {
+  async getDashboardSummary(clientId: string, locationId?: string) {
+    // Catalog-level and pre-receipt PO figures aren't meaningful per-location, so they stay tenant-wide.
     const products = await prisma.product.count({ where: { clientId, status: 'ACTIVE' } });
-    const variants = await prisma.productVariant.aggregate({
-      where: { clientId },
-      _sum: { inventoryValue: true }
-    });
-
     const openPos = await prisma.purchaseOrder.aggregate({
       where: { clientId, status: { in: ['SENT', 'PARTIALLY_RECEIVED'] } },
       _sum: { totalAmount: true }
     });
 
+    const stockJoinFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
+
+    let inventoryValue: number;
+    if (locationId) {
+      // averageCost is a company-wide weighted average (not tracked per location), so scoped
+      // inventoryValue is recomputed as this location's quantity x company-wide average cost.
+      const scopedValueRes = await prisma.$queryRaw<any[]>`
+        SELECT SUM(s.quantity * v.average_cost) as value
+        FROM "inventory_stocks" s
+        JOIN "inventory_product_variants" v ON v.id = s.variant_id
+        WHERE s.client_id = ${clientId} AND s.location_id = ${locationId};
+      `;
+      inventoryValue = Number(scopedValueRes[0]?.value || 0);
+    } else {
+      const variants = await prisma.productVariant.aggregate({
+        where: { clientId },
+        _sum: { inventoryValue: true }
+      });
+      inventoryValue = Number(variants._sum.inventoryValue || 0);
+    }
+
     const lowStockCountRes = await prisma.$queryRaw<any[]>`
-      SELECT COUNT(*) as count 
+      SELECT COUNT(*) as count
       FROM "inventory_product_variants" v
-      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
-      WHERE v.client_id = ${clientId} 
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId}
       AND COALESCE(s.qty, 0) <= v.reorder_level
       AND v.reorder_level > 0;
     `;
 
     const deadStockValueRes = await prisma.$queryRaw<any[]>`
-      SELECT SUM(v.inventory_value) as value
+      SELECT SUM(COALESCE(s.qty, 0) * v.average_cost) as value
       FROM "inventory_product_variants" v
-      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
       WHERE v.client_id = ${clientId}
       AND COALESCE(s.qty, 0) > 0
       AND v.last_movement_at IS NOT NULL
@@ -34,7 +51,7 @@ export class ReportService {
     `;
 
     return {
-      inventoryValue: Number(variants._sum.inventoryValue || 0),
+      inventoryValue,
       openPoValue: Number(openPos._sum.totalAmount || 0),
       lowStockCount: Number(lowStockCountRes[0].count),
       deadStockValue: Number(deadStockValueRes[0].value || 0),
@@ -50,7 +67,7 @@ export class ReportService {
     return { openPoValue: Number(openPos._sum.totalAmount || 0) };
   }
 
-  async getLowStockValue(clientId: string) {
+  async getLowStockValue(clientId: string, locationId?: string) {
     // We fetch variants where quantity <= reorderLevel
     const lowStockVariants = await prisma.productVariant.findMany({
       where: {
@@ -61,8 +78,9 @@ export class ReportService {
     });
 
     const actualLowStock = lowStockVariants.map(v => {
-      const globalQty = v.stocks.reduce((acc, s) => acc + s.quantity, 0);
-      return { ...v, quantity: globalQty };
+      const scopedStocks = locationId ? v.stocks.filter(s => s.locationId === locationId) : v.stocks;
+      const qty = scopedStocks.reduce((acc, s) => acc + s.quantity, 0);
+      return { ...v, quantity: qty, inventoryValue: locationId ? qty * Number(v.averageCost) : v.inventoryValue };
     }).filter((v: any) => v.quantity <= v.reorderLevel);
     
     let lowStockValue = 0;
@@ -85,19 +103,20 @@ export class ReportService {
     };
   }
 
-  async getMovementAging(clientId: string) {
+  async getMovementAging(clientId: string, locationId?: string) {
+    const stockJoinFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
     const rows = await prisma.$queryRaw<any[]>`
-      SELECT 
-        CASE 
+      SELECT
+        CASE
           WHEN v.last_movement_at >= NOW() - INTERVAL '30 days' THEN '0-30'
           WHEN v.last_movement_at >= NOW() - INTERVAL '60 days' THEN '31-60'
           WHEN v.last_movement_at >= NOW() - INTERVAL '90 days' THEN '61-90'
           ELSE '90+'
         END as "ageBracket",
-        SUM(v.inventory_value) as "totalValue",
+        SUM(COALESCE(s.qty, 0) * v.average_cost) as "totalValue",
         COUNT(v.id) as "variantCount"
       FROM "inventory_product_variants" v
-      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
       WHERE v.client_id = ${clientId} AND COALESCE(s.qty, 0) > 0 AND v.last_movement_at IS NOT NULL
       GROUP BY "ageBracket"
     `;
@@ -109,49 +128,68 @@ export class ReportService {
     }));
   }
 
-  async getInventorySummary(clientId: string) {
+  async getInventorySummary(clientId: string, locationId?: string) {
     const products = await prisma.product.count({ where: { clientId, status: 'ACTIVE' } });
     const variants = await prisma.productVariant.aggregate({
       where: { clientId },
-      _sum: { inventoryValue: true },
       _count: { id: true }
     });
-    
+
     const stocks = await prisma.inventoryStock.aggregate({
-      where: { clientId },
+      where: { clientId, ...(locationId ? { locationId } : {}) },
       _sum: { quantity: true }
     });
 
+    const stockJoinFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
+
     const lowStockCount = await prisma.$queryRaw<any[]>`
-      SELECT COUNT(*) as count 
+      SELECT COUNT(*) as count
       FROM "inventory_product_variants" v
-      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
-      WHERE v.client_id = ${clientId} 
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId}
       AND COALESCE(s.qty, 0) <= v.reorder_level
       AND v.reorder_level > 0;
     `;
+
+    let totalValue: number;
+    if (locationId) {
+      const scopedValueRes = await prisma.$queryRaw<any[]>`
+        SELECT SUM(s.quantity * v.average_cost) as value
+        FROM "inventory_stocks" s
+        JOIN "inventory_product_variants" v ON v.id = s.variant_id
+        WHERE s.client_id = ${clientId} AND s.location_id = ${locationId};
+      `;
+      totalValue = Number(scopedValueRes[0]?.value || 0);
+    } else {
+      const valueAgg = await prisma.productVariant.aggregate({
+        where: { clientId },
+        _sum: { inventoryValue: true }
+      });
+      totalValue = Number(valueAgg._sum.inventoryValue || 0);
+    }
 
     return {
       totalProducts: products,
       totalVariants: variants._count.id,
       totalUnits: Number(stocks._sum.quantity || 0),
-      totalValue: Number(variants._sum.inventoryValue || 0),
+      totalValue,
       lowStockItems: Number(lowStockCount[0].count)
     };
   }
 
-  async getDeadStock(clientId: string, thresholdDays: number = 90) {
+  async getDeadStock(clientId: string, thresholdDays: number = 90, locationId?: string) {
     // Using last_movement_at instead of lastReceivedAt
+    const stockJoinFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
     const rawRows = await prisma.$queryRaw<any[]>`
-      SELECT v.id, v.sku, COALESCE(s.qty, 0) as quantity, v.inventory_value, v.last_movement_at, p.title as "productTitle", p.category
+      SELECT v.id, v.sku, COALESCE(s.qty, 0) as quantity, COALESCE(s.qty, 0) * v.average_cost as inventory_value, v.last_movement_at, p.title as "productTitle", p.category
       FROM "inventory_product_variants" v
       LEFT JOIN "inventory_products" p ON v.product_id = p.id
-      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
       WHERE v.client_id = ${clientId}
       AND COALESCE(s.qty, 0) > 0
       AND v.last_movement_at IS NOT NULL
       AND v.last_movement_at < NOW() - INTERVAL '90 days'
-      ORDER BY v.inventory_value DESC
+      ORDER BY inventory_value DESC
       LIMIT 50;
     `;
 
@@ -197,7 +235,7 @@ export class ReportService {
     }).sort((a, b) => b.totalSpend - a.totalSpend);
   }
 
-  async getStockMovement(clientId: string, days: number = 30) {
+  async getStockMovement(clientId: string, days: number = 30, locationId?: string) {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
@@ -205,7 +243,8 @@ export class ReportService {
       by: ['type'],
       where: {
         clientId,
-        createdAt: { gte: startDate }
+        createdAt: { gte: startDate },
+        ...(locationId ? { locationId } : {})
       },
       _sum: {
         quantity: true
@@ -222,9 +261,9 @@ export class ReportService {
     }));
   }
 
-  async getRecentTransactions(clientId: string, limit: number = 10) {
+  async getRecentTransactions(clientId: string, limit: number = 10, locationId?: string) {
     const txs = await prisma.inventoryTransaction.findMany({
-      where: { clientId },
+      where: { clientId, ...(locationId ? { locationId } : {}) },
       orderBy: { createdAt: 'desc' },
       take: limit,
       include: {

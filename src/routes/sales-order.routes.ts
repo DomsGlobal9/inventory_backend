@@ -12,18 +12,15 @@ import {
   cancelOrder
 } from '../controllers/sales-order.controller';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
-import { requireAuth } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
-import { serviceAuthMiddleware } from '../middleware/serviceAuth.middleware';
 
 const router = Router();
 
-router.use(requireAuth);
 router.use(tenantMiddleware);
 
-// Strict service-to-service ingestion endpoints
-router.post('/', serviceAuthMiddleware, createOrder);
-router.post('/full', serviceAuthMiddleware, createFullOrder);
+// Sales order endpoints
+router.post('/', requirePermission('sales_order:create'), createOrder);
+router.post('/full', requirePermission('sales_order:create'), createFullOrder);
 
 router.get('/', requirePermission('sales_order:view'), getOrders);
 router.get('/:id', requirePermission('sales_order:view'), getOrderById);

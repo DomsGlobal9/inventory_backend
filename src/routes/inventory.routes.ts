@@ -1,12 +1,10 @@
 import { Router } from 'express';
 import { inventoryController } from '../controllers/inventory.controller';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
-import { requireAuth } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 
 const router = Router();
 
-router.use(requireAuth);
 router.use(tenantMiddleware);
 
 router.post('/stock-in', requirePermission('inventory:receive'), inventoryController.stockIn);

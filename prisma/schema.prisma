@@ -191,6 +191,7 @@ model StockLocation {
   locationProfiles VariantLocationProfile[]
   InventoryAlert   InventoryAlert[]
   InventoryEvent   InventoryEvent[]
+  stockCounts      StockCount[]
 
   @@unique([clientId, code])
   @@index([clientId])
@@ -478,8 +479,10 @@ model ClientSequence {
 model StockCount {
   id       String           @id @default(uuid())
   clientId String           @map("client_id")
-  name     String // e.g., "August Monthly Count"
-  status   StockCountStatus @default(DRAFT)
+  name       String // e.g., "August Monthly Count"
+  status     StockCountStatus @default(DRAFT)
+  locationId String?          @map("location_id")
+  location   StockLocation?   @relation(fields: [locationId], references: [id])
 
   startedAt   DateTime? @map("started_at")
   completedAt DateTime? @map("completed_at")
@@ -915,10 +918,23 @@ model User {
   name     String
   email    String
   password String
+  // AES-256-GCM encrypted copy of the current password, decryptable server-side, so a
+  // Super Admin/Admin can view (not just reset) a staff member's password to re-share it.
+  // `password` above (bcrypt, one-way) is what login actually checks -- this field is never
+  // used for authentication. Nullable: platform-admin-onboarded SUPER_ADMIN accounts and
+  // any row predating this feature won't have one until their password is next set here.
+  passwordEncrypted String? @map("password_encrypted")
 
   status UserStatus @default(ACTIVE)
 
   roles UserRole[]
+
+  lastLoginAt  DateTime? @map("last_login_at")
+  // Bumped on every authenticated business-API request (see activity-tracker.middleware.ts),
+  // not just on login -- lastLoginAt alone under-represents a user who logged in once and
+  // then stayed busy in the app for hours, or over-represents someone who logged in and
+  // immediately went idle.
+  lastActiveAt DateTime? @map("last_active_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -926,6 +942,67 @@ model User {
   @@unique([clientId, email])
   @@index([clientId])
   @@map("users")
+}
+
+// Captures both backend 500s (from error.middleware.ts) and uncaught frontend errors
+// (posted from the client via activity-tracker's sibling, the /client-errors route) so the
+// Platform Console can see a tenant's crash the moment it happens instead of relying on
+// the client to report it. clientId/userId/userEmail are nullable and userEmail is a
+// snapshot (not a join) because an error can legitimately happen before login resolves who
+// the visitor is, or reference a user later deleted -- the log must never depend on a row
+// that might not exist.
+model ClientErrorLog {
+  id String @id @default(uuid())
+
+  clientId  String? @map("client_id")
+  userId    String? @map("user_id")
+  userEmail String? @map("user_email")
+
+  source     String // BACKEND | FRONTEND
+  message    String
+  stack      String?
+  route      String?
+  statusCode Int?    @map("status_code")
+  userAgent  String? @map("user_agent")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId])
+  @@index([createdAt])
+  @@map("client_error_logs")
+}
+
+// ─── PLATFORM ADMIN (Scaleezy-wide console, cross-tenant) ───
+// Separate credential store, deliberately NOT a `User` row -- a platform admin isn't
+// scoped to any single clientId. See SUPER_ADMIN_PLAN.md for the full design.
+model PlatformAdmin {
+  id       String     @id @default(uuid())
+  email    String     @unique
+  password String
+  name     String
+  status   UserStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sessions PlatformAdminSession[]
+
+  @@map("platform_admins")
+}
+
+// One row per "assumed a client's session" event -- the audit trail for cross-tenant access.
+model PlatformAdminSession {
+  id              String        @id @default(uuid())
+  platformAdminId String        @map("platform_admin_id")
+  platformAdmin   PlatformAdmin @relation(fields: [platformAdminId], references: [id])
+
+  clientId  String    @map("client_id")
+  startedAt DateTime  @default(now()) @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+
+  @@index([platformAdminId])
+  @@index([clientId])
+  @@map("platform_admin_sessions")
 }
 
 model Role {
@@ -1033,6 +1110,77 @@ enum InventoryAlertSeverity {
   CRITICAL
 }
 
+// ─── SUPPORT TICKETS (client-raised, Platform Console-handled) ───
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum TicketCategory {
+  BUG
+  QUESTION
+  BILLING
+  FEATURE_REQUEST
+  OTHER
+}
+
+// Ticket-level fields snapshot who opened it (name/email) rather than relying on a live
+// User join -- same reasoning as ClientErrorLog: the ticket must stay readable even if that
+// user is later deactivated or deleted.
+model SupportTicket {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  createdByUserId String @map("created_by_user_id")
+  createdByName   String @map("created_by_name")
+  createdByEmail  String @map("created_by_email")
+
+  subject  String
+  category TicketCategory @default(OTHER)
+  priority TicketPriority @default(NORMAL)
+  status   TicketStatus   @default(OPEN)
+
+  // Best-effort link to the ClientErrorLog row the reporter was looking at, if they raised
+  // this ticket via a "Report this error" shortcut. No FK/relation on purpose -- an error
+  // log entry is disposable data, and a dangling reference here must never block a ticket
+  // from loading.
+  linkedErrorId String? @map("linked_error_id")
+
+  messages SupportTicketMessage[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId])
+  @@index([status])
+  @@map("support_tickets")
+}
+
+model SupportTicketMessage {
+  id       String        @id @default(uuid())
+  ticketId String        @map("ticket_id")
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  authorType String @map("author_type") // CLIENT | PLATFORM_ADMIN
+  authorName String @map("author_name")
+  body       String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([ticketId])
+  @@map("support_ticket_messages")
+}
+
 model InventoryAlert {
   id       String @id @default(uuid())
   clientId String @map("client_id")
@@ -1051,20 +1199,37 @@ model InventoryAlert {
 
   isRead     Boolean @default(false) @map("is_read")
   isResolved Boolean @default(false) @map("is_resolved")
+  isPinned   Boolean @default(false) @map("is_pinned")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  variant  ProductVariant? @relation(fields: [variantId], references: [id])
-  location StockLocation?  @relation(fields: [locationId], references: [id])
+  variant  ProductVariant?      @relation(fields: [variantId], references: [id])
+  location StockLocation?       @relation(fields: [locationId], references: [id])
+  reads    InventoryAlertRead[]
 
   @@index([clientId])
   @@index([isResolved])
   @@index([isRead])
+  @@index([isPinned])
   @@index([type])
   @@index([variantId])
   @@index([locationId])
   @@map("inventory_alerts")
+}
+
+model InventoryAlertRead {
+  id      String @id @default(uuid())
+  alertId String @map("alert_id")
+  userId  String @map("user_id")
+
+  readAt DateTime @default(now()) @map("read_at")
+
+  alert InventoryAlert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@unique([alertId, userId])
+  @@index([userId])
+  @@map("inventory_alert_reads")
 }
 
 model InventoryEvent {

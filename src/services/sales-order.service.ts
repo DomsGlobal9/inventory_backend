@@ -95,14 +95,14 @@ export class SalesOrderService {
       const reservationItems = [];
 
       for (const item of data.items) {
-        const variant = await tx.productVariant.findFirst({ 
+        const variant = await tx.productVariant.findFirst({
           where: { id: item.variantId, clientId },
-          include: { locationProfiles: true }
+          include: { locationProfiles: true, product: { select: { basePrice: true } } }
         });
         if (!variant) throw new Error(`Variant not found: ${item.variantId}`);
 
-        const locationConfig = resolveVariantForLocation(variant, locationId);
-        
+        const locationConfig = resolveVariantForLocation(variant, locationId, Number(variant.product.basePrice));
+
         if (!locationConfig.isAvailable) {
           throw new Error(`Variant ${variant.sku} is not available for sale at this location`);
         }
@@ -154,7 +154,12 @@ export class SalesOrderService {
       }
 
       return updatedOrder;
-    });
+    }, { timeout: 30000 });
+    // No custom timeout previously — Prisma's 5000ms default was too short for the
+    // per-item loop above (2 round-trips per item) under this environment's DB
+    // latency, and failed with "Transaction not found" once the connection was
+    // reclaimed mid-transaction. Same fix already applied to the other multi-step
+    // transactions in inventory-mutation.service.ts / purchase-order.service.ts / etc.
   }
 
   async getOrders(clientId: string, filters: any = {}) {
@@ -226,10 +231,22 @@ export class SalesOrderService {
       const order = await tx.salesOrder.findFirst({ where: { id: orderId, clientId, deletedAt: null } });
       if (!order || order.status !== 'DRAFT') throw new Error('Cannot add items to non-DRAFT order');
 
-      const variant = await tx.productVariant.findFirst({ where: { id: variantId, clientId } });
+      // Same location-aware price + availability resolution as createFullOrder -- this
+      // path used to skip both entirely (flat `variant.sellingPrice` with a silent ₹0
+      // fallback, no per-location override, no availability check), so the same item
+      // could price differently depending on which of the two endpoints added it.
+      const variant = await tx.productVariant.findFirst({
+        where: { id: variantId, clientId },
+        include: { locationProfiles: true, product: { select: { basePrice: true } } }
+      });
       if (!variant) throw new Error('Variant not found');
 
-      const unitPrice = variant.sellingPrice ? Number(variant.sellingPrice) : 0;
+      const locationConfig = resolveVariantForLocation(variant, order.locationId, Number(variant.product.basePrice));
+      if (!locationConfig.isAvailable) {
+        throw new Error(`Variant ${variant.sku} is not available for sale at this location`);
+      }
+
+      const unitPrice = locationConfig.price || 0;
       const unitCost = Number(variant.averageCost);
       const totalPrice = unitPrice * quantity;
       const totalCost = unitCost * quantity;
@@ -250,7 +267,7 @@ export class SalesOrderService {
 
       await this.recalculateOrderTotals(clientId, orderId, tx);
       return item;
-    });
+    }, { timeout: 30000 });
   }
 
   async removeOrderItem(clientId: string, orderId: string, itemId: string) {
@@ -258,12 +275,16 @@ export class SalesOrderService {
       const order = await tx.salesOrder.findFirst({ where: { id: orderId, clientId, deletedAt: null } });
       if (!order || order.status !== 'DRAFT') throw new Error('Cannot remove items from non-DRAFT order');
 
-      await tx.salesOrderItem.delete({
-        where: { id: itemId }
+      // Scope the delete to THIS order. `id` alone is globally unique, so an itemId
+      // belonging to a different order -- including another tenant's -- was accepted and
+      // destroyed, while this order's totals were then recalculated as if nothing changed.
+      const deleted = await tx.salesOrderItem.deleteMany({
+        where: { id: itemId, salesOrderId: orderId }
       });
+      if (deleted.count === 0) throw new Error('Order item not found on this order');
 
       await this.recalculateOrderTotals(clientId, orderId, tx);
-    });
+    }, { timeout: 30000 });
   }
 
   private async recalculateOrderTotals(clientId: string, orderId: string, transactionClient: any = prisma) {
@@ -289,31 +310,38 @@ export class SalesOrderService {
   }
 
   async confirmOrder(clientId: string, id: string) {
-    const order = await prisma.salesOrder.findFirst({
-      where: { clientId, id, deletedAt: null },
-      include: { items: true }
-    });
+    // Re-read, validate, reserve and flip status inside ONE transaction. Previously
+    // reserveStock opened its own transaction and the status update was a separate
+    // statement, so two concurrent confirms both saw DRAFT, both passed validateTransition
+    // and both reserved -- doubling reservedQty. Cancel then released only the first row
+    // (findFirst), stranding the rest as stock nobody could ever sell. It also meant a
+    // failed status write left live reservations against an order still shown as DRAFT.
+    return prisma.$transaction(async (tx) => {
+      const order = await tx.salesOrder.findFirst({
+        where: { clientId, id, deletedAt: null },
+        include: { items: true }
+      });
 
-    if (!order) throw new Error("Order not found");
-    validateTransition(order.status, 'CONFIRMED');
+      if (!order) throw new Error("Order not found");
+      validateTransition(order.status, 'CONFIRMED');
 
-    if (order.items.length === 0) {
-      throw new Error("Cannot confirm an order with no items");
-    }
+      if (order.items.length === 0) {
+        throw new Error("Cannot confirm an order with no items");
+      }
 
-    // Attempt to reserve stock
-    const reservationItems = order.items.map((item: any) => ({
-      variantId: item.variantId,
-      salesOrderItemId: item.id,
-      quantity: item.quantity
-    }));
+      const reservationItems = order.items.map((item: any) => ({
+        variantId: item.variantId,
+        salesOrderItemId: item.id,
+        quantity: item.quantity
+      }));
 
-    await reservationService.reserveStock(clientId, order.locationId, reservationItems);
+      await reservationService.reserveStock(clientId, order.locationId, reservationItems, tx);
 
-    return prisma.salesOrder.update({
-      where: { id },
-      data: { status: 'CONFIRMED' }
-    });
+      return tx.salesOrder.update({
+        where: { id },
+        data: { status: 'CONFIRMED' }
+      });
+    }, { timeout: 30000 });
   }
 
   async cancelOrder(clientId: string, id: string) {

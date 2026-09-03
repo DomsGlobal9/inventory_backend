@@ -1,4 +1,4 @@
-import { PurchaseOrderStatus, InventoryReason } from '@prisma/client';
+import { PurchaseOrderStatus, InventoryReason, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
@@ -71,11 +71,16 @@ export class PurchaseOrderService {
         items: {
           include: {
             variant: {
-              select: { 
+              select: {
                 stocks: { select: { quantity: true } },
                 product: {
                   select: { title: true }
-                }
+                },
+                // Needed so a reopened Draft PO can still show the margin warning --
+                // previously omitted, which silently disabled it for anything but a
+                // brand-new PO (see PurchaseOrderDetails.jsx's getMarginWarning).
+                sellingPrice: true,
+                averageCost: true
               }
             }
           }
@@ -85,11 +90,16 @@ export class PurchaseOrderService {
   }
 
   async updatePOStatus(clientId: string, id: string, status: PurchaseOrderStatus) {
-    // If sent, we might want to update the supplier's last order date & total orders
-    if (status === PurchaseOrderStatus.SENT) {
-      const po = await prisma.purchaseOrder.findUnique({ where: { id }, select: { supplierId: true } });
-      if (po) {
-        await prisma.supplier.update({
+    return prisma.$transaction(async (tx) => {
+      // Scope the lookup by clientId too — otherwise a caller could pass another
+      // tenant's PO id and corrupt that tenant's supplier counters below even
+      // though the final update (correctly scoped) would go on to 404.
+      const po = await tx.purchaseOrder.findFirst({ where: { id, clientId }, select: { supplierId: true } });
+      if (!po) throw new Error('Purchase Order not found');
+
+      // If sent, we might want to update the supplier's last order date & total orders
+      if (status === PurchaseOrderStatus.SENT) {
+        await tx.supplier.update({
           where: { id: po.supplierId },
           data: {
             lastOrderDate: new Date(),
@@ -97,15 +107,15 @@ export class PurchaseOrderService {
           }
         });
       }
-    }
 
-    return prisma.purchaseOrder.update({
-      where: { id, clientId },
-      data: { status }
+      return tx.purchaseOrder.update({
+        where: { id, clientId },
+        data: { status }
+      });
     });
   }
 
-  async receiveGoods(clientId: string, id: string, receipts: { poItemId: string; quantityReceived: number }[]) {
+  async receiveGoods(clientId: string, id: string, receipts: { poItemId: string; quantityReceived: number; locationId?: string }[]) {
     // Wrap the entire receive logic in a transaction
     return await prisma.$transaction(async (tx) => {
       const po = await tx.purchaseOrder.findFirst({
@@ -123,6 +133,13 @@ export class PurchaseOrderService {
 
       for (const receipt of receipts) {
         if (receipt.quantityReceived <= 0) continue;
+
+        // itemMap is built from THIS po's items; without this check the findUnique below
+        // matched a line on any other PO in the tenant and booked the receipt -- and the
+        // resulting stock/lastPurchaseCost writes -- against that unrelated PO instead.
+        if (!itemMap.has(receipt.poItemId)) {
+          throw new Error(`PO Item ${receipt.poItemId} does not belong to this purchase order`);
+        }
 
         const currentPoItem = await tx.purchaseOrderItem.findUnique({ where: { id: receipt.poItemId } });
         if (!currentPoItem) throw new Error(`PO Item ${receipt.poItemId} not found`);
@@ -146,12 +163,15 @@ export class PurchaseOrderService {
         }
 
         // 2. Adjust Inventory atomically with WAC Calculation using central mutation service
-        // Get default location
-        const defaultLoc = await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
+        let targetLocationId = receipt.locationId;
+        if (!targetLocationId) {
+          const defaultLoc = await tx.stockLocation.findFirst({ where: { clientId } });
+          targetLocationId = defaultLoc?.id;
+        }
         
         await inventoryMutationService.applyMovement({
           clientId,
-          locationId: defaultLoc!.id,
+          locationId: targetLocationId!,
           variantId: poItem.variantId,
           movementType: 'IN',
           reason: InventoryReason.PURCHASE_RECEIPT,
@@ -160,7 +180,17 @@ export class PurchaseOrderService {
           referenceType: 'PO',
           referenceId: po.poNumber,
           notes: 'PO Receipt',
-          createdBy: 'Admin'
+          createdBy: 'Admin',
+          tx
+        });
+
+        // applyMovement above already blends this into averageCost; lastPurchaseCost is
+        // a separate, simpler field -- "what did the last PO actually charge", not a
+        // blended figure -- and was never being written anywhere despite existing on
+        // the schema and being exposed in variant API responses.
+        await tx.productVariant.update({
+          where: { id: poItem.variantId },
+          data: { lastPurchaseCost: poItem.unitPrice }
         });
       }
 
@@ -191,7 +221,8 @@ export class PurchaseOrderService {
         }
       });
     }, {
-      timeout: 15000
+      timeout: 30000,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });
   }
 }

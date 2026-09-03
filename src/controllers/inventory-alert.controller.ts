@@ -3,8 +3,9 @@ import { prisma } from '../lib/prisma';
 
 export const getAlerts = async (req: Request, res: Response) => {
   try {
-    const { clientId } = req.user!;
-    const { status = 'active', locationId } = req.query;
+    const { clientId, id: userId } = (req as any).user;
+    const status = req.query.status as string || 'active';
+    const locationId = (req.query.locationId as string | undefined) || (req as any).locationId;
 
     const where: any = { clientId };
 
@@ -21,13 +22,14 @@ export const getAlerts = async (req: Request, res: Response) => {
     const alerts = await prisma.inventoryAlert.findMany({
       where,
       orderBy: [
+        { isPinned: 'desc' }, // Pinned alerts float to the top
         { severity: 'asc' }, // CRITICAL before WARNING before INFO
         { updatedAt: 'desc' }
       ],
       include: {
         variant: {
-          select: { 
-            id: true, 
+          select: {
+            id: true,
             sku: true,
             variantCode: true,
             colorName: true,
@@ -39,6 +41,10 @@ export const getAlerts = async (req: Request, res: Response) => {
         },
         location: {
           select: { id: true, name: true }
+        },
+        reads: {
+          where: { userId },
+          select: { id: true }
         }
       }
     });
@@ -46,7 +52,7 @@ export const getAlerts = async (req: Request, res: Response) => {
     const unreadCount = await prisma.inventoryAlert.count({
       where: {
         ...where,
-        isRead: false
+        reads: { none: { userId } }
       }
     });
 
@@ -71,8 +77,9 @@ export const getAlerts = async (req: Request, res: Response) => {
       locationName: alert.location?.name,
       currentQuantity: alert.currentQuantity,
       threshold: alert.threshold,
-      isRead: alert.isRead,
+      isRead: alert.reads.length > 0, // Per-user read state
       isResolved: alert.isResolved,
+      isPinned: alert.isPinned,
       createdAt: alert.createdAt,
       updatedAt: alert.updatedAt
     }));
@@ -91,20 +98,21 @@ export const getAlerts = async (req: Request, res: Response) => {
 
 export const markAsRead = async (req: Request, res: Response) => {
   try {
-    const { clientId } = req.user!;
+    const { clientId, id: userId } = (req as any).user;
     const { id } = req.params;
 
     const alert = await prisma.inventoryAlert.findFirst({
-      where: { id, clientId }
+      where: { id: id as string, clientId }
     });
 
     if (!alert) {
       return res.status(404).json({ success: false, message: 'Alert not found' });
     }
 
-    await prisma.inventoryAlert.update({
-      where: { id },
-      data: { isRead: true }
+    await prisma.inventoryAlertRead.upsert({
+      where: { alertId_userId: { alertId: id as string, userId } },
+      create: { alertId: id as string, userId },
+      update: {}
     });
 
     res.json({ success: true, message: 'Alert marked as read' });
@@ -115,21 +123,70 @@ export const markAsRead = async (req: Request, res: Response) => {
 
 export const markAllAsRead = async (req: Request, res: Response) => {
   try {
-    const { clientId } = req.user!;
-    const { locationId } = req.body;
+    const { clientId, id: userId } = (req as any).user;
+    const locationId = req.body?.locationId || (req as any).locationId;
 
-    const where: any = { clientId, isRead: false, isResolved: false };
+    const where: any = { clientId, isResolved: false, reads: { none: { userId } } };
     if (locationId) {
       where.locationId = locationId;
     }
 
-    await prisma.inventoryAlert.updateMany({
-      where,
-      data: { isRead: true }
-    });
+    const unread = await prisma.inventoryAlert.findMany({ where, select: { id: true } });
+
+    if (unread.length > 0) {
+      await prisma.inventoryAlertRead.createMany({
+        data: unread.map(a => ({ alertId: a.id, userId })),
+        skipDuplicates: true
+      });
+    }
 
     res.json({ success: true, message: 'All active alerts marked as read' });
   } catch (error: any) {
     res.status(500).json({ success: false, message: 'Failed to update alerts', error: error.message });
+  }
+};
+
+export const togglePin = async (req: Request, res: Response) => {
+  try {
+    const { clientId } = (req as any).user;
+    const { id } = req.params;
+
+    const alert = await prisma.inventoryAlert.findFirst({
+      where: { id: id as string, clientId }
+    });
+
+    if (!alert) {
+      return res.status(404).json({ success: false, message: 'Alert not found' });
+    }
+
+    const updated = await prisma.inventoryAlert.update({
+      where: { id: id as string },
+      data: { isPinned: !alert.isPinned }
+    });
+
+    res.json({ success: true, data: { isPinned: updated.isPinned } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to update alert', error: error.message });
+  }
+};
+
+export const deleteAlert = async (req: Request, res: Response) => {
+  try {
+    const { clientId } = (req as any).user;
+    const { id } = req.params;
+
+    const alert = await prisma.inventoryAlert.findFirst({
+      where: { id: id as string, clientId }
+    });
+
+    if (!alert) {
+      return res.status(404).json({ success: false, message: 'Alert not found' });
+    }
+
+    await prisma.inventoryAlert.delete({ where: { id: id as string } });
+
+    res.json({ success: true, message: 'Alert dismissed' });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to delete alert', error: error.message });
   }
 };

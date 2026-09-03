@@ -16,7 +16,7 @@ export class SearchService {
       code: p.productCode,
       barcode: null,
       imageUrl: p.images?.[0]?.url || null,
-      url: `/dashboard/inventory/products/${p.id}`
+      url: `/products/${p.id}`
     }));
 
     const formattedVariants = variants.map((v: any) => {
@@ -32,7 +32,11 @@ export class SearchService {
         barcode: v.barcode,
         sku: v.sku,
         imageUrl: v.product?.images?.[0]?.url || null,
-        url: `/dashboard/inventory/products/${v.productId}?tab=variants&variantId=${v.id}`
+        // Deep-link to the Variants tab with this exact variant flagged. The URL used to be
+        // a bare `/products/:id`, so scanning one size/colour dropped you on the product's
+        // Overview tab with every sibling variant hidden behind another click -- on a
+        // product with nine variants, the scan told you nothing about which one you held.
+        url: `/products/${v.productId}?tab=variants&variant=${v.id}`
       };
     });
 

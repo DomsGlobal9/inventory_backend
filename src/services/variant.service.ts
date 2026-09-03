@@ -7,7 +7,36 @@ import { inventoryMutationService } from './inventory-mutation.service';
 
 export class VariantService {
   
-  async createVariant(productId: string, clientId: string, data: any) {
+  // Resolves the location(s) that should receive a variant's initial stock quantity.
+  // Falls back to MAIN-STORE when no location is selected/passed, matching the
+  // fallback chain used by the manual Stock In/Out/Adjust endpoints.
+  private async resolveInitialStockLocationIds(clientId: string, locationId?: string, applyToAllLocations?: boolean): Promise<string[]> {
+    if (applyToAllLocations) {
+      const locations = await prisma.stockLocation.findMany({ where: { clientId, active: true }, select: { id: true } });
+      return locations.map(l => l.id);
+    }
+    if (locationId) return [locationId];
+    const defaultLoc = await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
+    return defaultLoc ? [defaultLoc.id] : [];
+  }
+
+  private async applyInitialStock(clientId: string, variantId: string, quantity: number, locationIds: string[], createdBy: string) {
+    if (quantity <= 0) return;
+    for (const targetLocationId of locationIds) {
+      await inventoryMutationService.applyMovement({
+        clientId,
+        locationId: targetLocationId,
+        variantId,
+        movementType: 'IN',
+        quantityDelta: quantity,
+        reason: 'INITIAL_STOCK',
+        referenceType: 'VARIANT_CREATION',
+        createdBy
+      });
+    }
+  }
+
+  async createVariant(productId: string, clientId: string, data: any, locationId?: string) {
     // Ensure product exists and belongs to client
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
@@ -25,15 +54,26 @@ export class VariantService {
       size: data.size,
       colorName: data.colorName,
       hexCode: data.hexCode,
-      reorderLevel: data.reorderLevel
+      reorderLevel: data.reorderLevel,
+      sellingPrice: data.sellingPrice,
+      costPrice: data.costPrice
     };
 
-    return variantRepository.create(variantData);
+    const created = await variantRepository.create(variantData);
+
+    if (data.quantity > 0) {
+      const locationIds = await this.resolveInitialStockLocationIds(clientId, locationId);
+      await this.applyInitialStock(clientId, created.id, data.quantity, locationIds, clientId);
+    }
+
+    return created;
   }
 
-  async bulkCreateVariants(productId: string, clientId: string, variants: any[]) {
+  async bulkCreateVariants(productId: string, clientId: string, variants: any[], locationId?: string, applyToAllLocations?: boolean) {
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
+
+    const locationIds = await this.resolveInitialStockLocationIds(clientId, locationId, applyToAllLocations);
 
     const results = await Promise.allSettled(
       variants.map(async (v) => {
@@ -53,6 +93,11 @@ export class VariantService {
             hexCode: v.hexCode,
             reorderLevel: v.reorderLevel
           });
+
+          if (v.quantity > 0) {
+            await this.applyInitialStock(clientId, created.id, v.quantity, locationIds, clientId);
+          }
+
           return created;
         } catch (error: any) {
           throw { sku: v.sku, reason: error.message || 'Variant already exists or invalid data' };
@@ -72,8 +117,8 @@ export class VariantService {
   async bulkUpdateVariants(clientId: string, updates: any[]) {
     const results = await Promise.allSettled(
       updates.map(async (update) => {
-        const { sku, quantity, priceOverride, reorderLevel } = update;
-        
+        const { sku, quantity, priceOverride, sellingPrice, costPrice, reorderLevel } = update;
+
         const variant = await prisma.productVariant.findFirst({
           where: { clientId, sku }
         });
@@ -82,8 +127,10 @@ export class VariantService {
 
         return prisma.$transaction(async (tx) => {
           let dataToUpdate: Prisma.ProductVariantUpdateInput = {};
-          
+
           if (priceOverride !== undefined) dataToUpdate.compareAtPrice = priceOverride;
+          if (sellingPrice !== undefined) dataToUpdate.sellingPrice = sellingPrice;
+          if (costPrice !== undefined) dataToUpdate.costPrice = costPrice;
           if (reorderLevel !== undefined) dataToUpdate.reorderLevel = reorderLevel;
 
           if (quantity !== undefined) {
@@ -105,7 +152,8 @@ export class VariantService {
                 reason: 'MANUAL_CORRECTION',
                 quantityDelta: quantity - currentQty,
                 notes: 'Bulk CSV Update',
-                createdBy: clientId
+                createdBy: clientId,
+                tx
               });
             }
           }
@@ -192,6 +240,10 @@ export class VariantService {
         availableToOrder: Math.max(reorderLevel - stock, 0),
         costPrice: Number(variant.costPrice || 0),
         lastPurchaseCost: Number(variant.lastPurchaseCost || 0),
+        // Needed by the Purchase Order screen to warn when an entered PO cost would
+        // shrink the margin against what this variant actually sells for.
+        sellingPrice: variant.sellingPrice ? Number(variant.sellingPrice) : null,
+        averageCost: Number(variant.averageCost || 0),
         isLowStock: stock <= reorderLevel
       };
     });
