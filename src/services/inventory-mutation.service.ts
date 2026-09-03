@@ -204,8 +204,20 @@ export class InventoryMutationService {
     for (let attempt = 1; ; attempt++) {
       try {
         return await prisma.$transaction(run, {
-          maxWait: 10000,
-          timeout: 30000,
+          // Budgets sized for a QUEUE, not a race. Now that writers take a FOR UPDATE
+          // lock they wait their turn instead of aborting, so the last of N concurrent
+          // movements on one variant must sit through the N-1 ahead of it. Against a
+          // high-latency database (this one averages ~1.3s per round trip) six queued
+          // writers exceeded the old 30s budget and died with "Transaction not found --
+          // refers to an old closed transaction", which is a timeout, not a conflict, and
+          // is therefore not something the retry above can rescue.
+          //
+          // Waiting is the correct behaviour here: the lock guarantees each writer will
+          // get its turn, so the only question is whether we are patient enough. On a
+          // normal-latency database these transactions run in tens of milliseconds and
+          // neither budget is approached.
+          maxWait: 20000,
+          timeout: 60000,
           // READ COMMITTED, not SERIALIZABLE. Correctness here comes from the explicit
           // FOR UPDATE above: it gives real mutual exclusion, so writers wait instead of
           // one of them being aborted. SERIALIZABLE added nothing on top of that lock but

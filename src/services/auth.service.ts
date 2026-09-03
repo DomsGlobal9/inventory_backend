@@ -1,7 +1,13 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { env } from '../config/env';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_v1';
+// Every session token on the platform is signed with this. It previously fell back to the
+// literal 'super_secret_jwt_key_v1' -- a value committed to this repository, so anyone who
+// could read the source could mint a valid token for any user in any tenant. There is no
+// safe default for a signing key: env.ts validates JWT_SECRET at boot and refuses to start
+// without it, so read it from there rather than reintroducing a fallback here.
+const JWT_SECRET = env.JWT_SECRET;
 const JWT_EXPIRES_IN = '24h';
 
 export class AuthService {

@@ -37,7 +37,15 @@ export class WebhookDispatcherService {
 
       if (pendingEvents.length === 0) return;
 
-      const STOREFRONT_WEBHOOK_URL = process.env.STOREFRONT_WEBHOOK_URL || 'http://localhost:4000/api/v1/internal-webhooks/inventory-updated';
+      // A localhost default is right for dev and wrong in production, where it means
+      // posting inventory events to a machine that isn't there, forever, every 30s.
+      // Unset means "no storefront configured" -- stay idle instead of inventing a target.
+      const STOREFRONT_WEBHOOK_URL = process.env.STOREFRONT_WEBHOOK_URL
+        || (process.env.NODE_ENV === 'production' ? null : 'http://localhost:4000/api/v1/internal-webhooks/inventory-updated');
+      if (!STOREFRONT_WEBHOOK_URL) {
+        console.warn('WebhookDispatcher: STOREFRONT_WEBHOOK_URL not set — no storefront to notify, skipping this batch.');
+        return;
+      }
       // No hardcoded fallback — an unset key means we cannot sign outbound webhooks
       // truthfully, so we skip dispatching rather than send a signature anyone
       // could forge by reading this file.

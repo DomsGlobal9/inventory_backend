@@ -97,6 +97,19 @@ const _env = envSchema.superRefine((val, ctx) => {
   // production each one is a feature that would otherwise break in front of a user.
   if (!isProd) return;
 
+  // 'super_secret_jwt_key_v1' was a hardcoded fallback in auth.service.ts and is committed
+  // to this repository. Anyone able to read the source could forge a session token for any
+  // user in any tenant, so it must never reach production -- and a short secret is barely
+  // better. Refuse both rather than start and hope.
+  const PUBLISHED_DEV_SECRET = 'super_secret_jwt_key_v1';
+  if (val.JWT_SECRET === PUBLISHED_DEV_SECRET) {
+    require('JWT_SECRET',
+      "this is the development default committed to the repository -- anyone who can read the source could forge a token for any user. Generate a new one: node -e \"console.log(require('crypto').randomBytes(48).toString('base64url'))\"");
+  } else if (val.JWT_SECRET.length < 32) {
+    require('JWT_SECRET',
+      `must be at least 32 characters in production (currently ${val.JWT_SECRET.length})`);
+  }
+
   if (!val.CREDENTIAL_ENCRYPTION_KEY) {
     require('CREDENTIAL_ENCRYPTION_KEY',
       "required in production -- client onboarding and Team & Users password viewing throw without it");
