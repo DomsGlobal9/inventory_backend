@@ -77,8 +77,22 @@ async function main() {
   console.log('SIGNUP -- validation');
   const base = { companyName: 'Verify Traders', contactName: 'Test Person' };
 
-  const noPhone = await call('POST', '/leads', { ...base, email: LEAD_EMAIL });
-  check('signup without phone is rejected', noPhone.status === 400, `got ${noPhone.status}`);
+  // The signup endpoint is rate limited to a handful of submissions per hour per address,
+  // which is correct for a public form and fatal for a suite that posts to it thirty times.
+  // Once the limit is hit every later assertion fails for the same uninteresting reason, so
+  // the run stops here and says so rather than printing a wall of misleading failures.
+  const probe = await call('POST', '/leads', { ...base, email: LEAD_EMAIL });
+  if (probe.status === 429) {
+    console.log('');
+    console.log('  The signup rate limit is currently exhausted for this address.');
+    console.log('  These checks post many enquiries, so they need a fresh window.');
+    console.log('  Wait for the hour to roll over, or restart the API with a higher');
+    console.log('  SIGNUP_RATE_LIMIT_MAX (for example SIGNUP_RATE_LIMIT_MAX=500), then re-run.');
+    console.log('');
+    process.exit(2);
+  }
+
+  check('signup without phone is rejected', probe.status === 400, `got ${probe.status}`);
 
   const noEmail = await call('POST', '/leads', { ...base, phone: '9876543210' });
   check('signup without email is rejected', noEmail.status === 400, `got ${noEmail.status}`);
