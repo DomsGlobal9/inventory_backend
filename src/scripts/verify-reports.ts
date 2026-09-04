@@ -163,18 +163,31 @@ async function main() {
 
   // The bug this catches: ?days= was parsed, passed down, and then ignored by a hardcoded
   // 90-day interval in the SQL, so every threshold returned the same answer.
-  const dead1 = (await call('GET', '/reports/dead-stock?days=1', jar)).json?.data || [];
-  const dead3650 = (await call('GET', '/reports/dead-stock?days=3650', jar)).json?.data || [];
-  check('a shorter dead-stock window never finds fewer items than a longer one',
-    dead1.length >= dead3650.length, `days=1 -> ${dead1.length}, days=3650 -> ${dead3650.length}`);
-  check('the dead-stock window changes the answer',
-    dead1.length !== dead3650.length,
-    `both returned ${dead1.length} -- the threshold may be ignored again`);
-  check('every dead-stock item really has sat still that long',
-    dead1.every((r: any) => r.daysSinceLastMovement === null || r.daysSinceLastMovement >= 1),
-    JSON.stringify(dead1.map((r: any) => r.daysSinceLastMovement)));
-  check('dead-stock only lists items that are actually in stock',
-    dead1.every((r: any) => Number(r.quantity) > 0));
+  //
+  // Comparing two thresholds against each other and demanding they differ only works while
+  // the tenant happens to hold something in the gap between them, which other suites' stock
+  // movements can close at any time. Each threshold is instead checked against a count worked
+  // out directly from the database, so the assertion holds whatever the data looks like --
+  // including when the honest answer at every threshold is zero.
+  for (const days of [1, 30, 90, 3650]) {
+    const api = (await call('GET', `/reports/dead-stock?days=${days}`, jar)).json?.data || [];
+    const expected = await prisma.$queryRaw<any[]>`
+      SELECT COUNT(*)::int as c
+      FROM "inventory_product_variants" v
+      LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s
+        ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId}
+        AND COALESCE(s.qty, 0) > 0
+        AND v.last_movement_at IS NOT NULL
+        AND v.last_movement_at < NOW() - make_interval(days => ${days}::int)`;
+    check(`dead stock at ${days} day(s) matches the database`,
+      api.length === expected[0].c, `api ${api.length} vs database ${expected[0].c}`);
+    check(`every item listed at ${days} day(s) really has sat still that long`,
+      api.every((r: any) => r.daysSinceLastMovement === null || r.daysSinceLastMovement >= days),
+      JSON.stringify(api.map((r: any) => r.daysSinceLastMovement)));
+    check(`dead stock at ${days} day(s) lists only items actually in stock`,
+      api.every((r: any) => Number(r.quantity) > 0));
+  }
 
   const limited = (await call('GET', '/reports/recent-transactions?limit=3', jar)).json?.data || [];
   check('recent-transactions honours its limit', limited.length <= 3, `got ${limited.length}`);
@@ -223,7 +236,9 @@ async function main() {
     summary?.totalVariants === variantCount && otherVariants > 0,
     `${summary?.totalVariants} here, ${otherVariants} belonging to other tenants`);
 
-  const deadSkus = [...new Set(dead1.map((r: any) => r.sku))] as string[];
+  // The widest window, so this checks whatever dead stock exists rather than nothing.
+  const deadAll = (await call('GET', '/reports/dead-stock?days=1', jar)).json?.data || [];
+  const deadSkus = [...new Set(deadAll.map((r: any) => r.sku))] as string[];
   const mine = await prisma.productVariant.count({ where: { clientId, sku: { in: deadSkus } } });
   check('every dead-stock row belongs to this tenant',
     deadSkus.length === 0 || mine === deadSkus.length, `${mine} of ${deadSkus.length} are this tenant's`);
