@@ -78,6 +78,17 @@ const envSchema = z.object({
   INTERNAL_SERVICE_KEY: optionalStr(z.string().min(16, "INTERNAL_SERVICE_KEY should be at least 16 characters")),
   ADMIN_SECRET: optionalStr(z.string().min(16, "ADMIN_SECRET should be at least 16 characters")),
 
+  // Submissions allowed per address per hour on the PUBLIC signup form. Deliberately low:
+  // that endpoint is unauthenticated and each row costs a human's attention rather than
+  // CPU. Configurable because a low ceiling is right for production but makes the endpoint
+  // untestable end to end -- a suite that checks the validation rules exhausts the quota
+  // before it ever reaches a valid submission. The default is the production value, so
+  // omitting it stays safe.
+  SIGNUP_RATE_LIMIT_MAX: z.preprocess(
+    v => (v === undefined || v === '' ? 5 : parseInt(String(v), 10)),
+    z.number().int().min(1, "SIGNUP_RATE_LIMIT_MAX must be at least 1").default(5)
+  ),
+
   // The webhook dispatcher polls every 30s and falls back to a localhost URL, which in
   // production means it retries against localhost forever. Shape-checked here; the
   // production check below makes the omission explicit.

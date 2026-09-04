@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { submitLead } from '../controllers/lead.controller';
+import { env } from '../config/env';
 
 /**
  * Far tighter than the global 100/min: this endpoint is unauthenticated and writes a row
@@ -10,7 +11,7 @@ import { submitLead } from '../controllers/lead.controller';
  */
 const signupLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 5,
+  max: env.SIGNUP_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
