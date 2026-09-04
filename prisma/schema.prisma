@@ -307,6 +307,7 @@ model ProductVariant {
   purchaseOrderItems PurchaseOrderItem[]
   stocks             InventoryStock[]
   transfers          InventoryTransfer[]
+  supplierLinks      SupplierProduct[]
 
   createdAt        DateTime                 @default(now()) @map("created_at")
   updatedAt        DateTime                 @updatedAt @map("updated_at")
@@ -551,6 +552,7 @@ model Supplier {
   totalOrders   Int       @default(0) @map("total_orders")
 
   purchaseOrders PurchaseOrder[]
+  suppliedItems  SupplierProduct[]
 
   createdBy String? @map("created_by")
   updatedBy String? @map("updated_by")
@@ -1315,4 +1317,65 @@ model SignupLead {
   @@index([email])
   @@index([createdAt])
   @@map("signup_leads")
+}
+
+
+/// Which supplier sells which item, and on what terms.
+///
+/// Nothing connected a product to a supplier before this: Supplier was referenced by
+/// PurchaseOrder alone, so building a PO meant searching the whole catalogue with no
+/// indication of what that supplier actually stocks, and questions like "who do we buy this
+/// from" or "what is running low from this vendor" had no answer at all.
+///
+/// Many-to-many rather than a supplierId column on the variant, because the existing
+/// purchase history already contains items bought from more than one supplier -- collapsing
+/// that to a single source would discard real data and remove any ability to compare prices.
+model SupplierProduct {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  supplierId String   @map("supplier_id")
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  variantId String         @map("variant_id")
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  /// The supplier's own code for this item, which is what appears on their invoice and is
+  /// what they recognise on an order. PurchaseOrderItem has carried a supplierSku column
+  /// since it was written but nothing ever populated it -- there was nowhere to source it
+  /// from. This is that source.
+  supplierSku String? @map("supplier_sku")
+
+  /// What this supplier charges. Distinct from ProductVariant.averageCost (a weighted
+  /// average of what was actually paid across every source) and from lastPurchaseCost
+  /// (whatever the most recent receipt happened to cost) -- this is the agreed price with
+  /// this vendor, which is what makes comparing suppliers possible.
+  costPrice Decimal? @map("cost_price") @db.Decimal(18, 6)
+
+  /// Days between placing an order and it arriving. Reordering at the reorder level assumes
+  /// replenishment is instant; with a lead time the system can flag an item that will run
+  /// out before a delivery could land.
+  leadTimeDays Int? @map("lead_time_days")
+
+  /// Smallest quantity this supplier will accept for this item.
+  minOrderQty Int? @map("min_order_qty")
+
+  /// The default source when an order is raised automatically. At most one per variant --
+  /// enforced in the service, since a partial unique index is not expressible here.
+  isPreferred Boolean @default(false) @map("is_preferred")
+
+  notes String? @db.Text
+
+  createdBy String? @map("created_by")
+  updatedBy String? @map("updated_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// One row per supplier-item pair; re-linking updates the terms rather than duplicating.
+  @@unique([supplierId, variantId], name: "uq_supplier_variant")
+  @@index([clientId])
+  @@index([variantId])
+  @@index([supplierId])
+  @@map("supplier_products")
 }

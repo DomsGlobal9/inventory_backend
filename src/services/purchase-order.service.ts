@@ -25,7 +25,18 @@ export class PurchaseOrderService {
 
     const variantMap = new Map(variants.map(v => [v.id, v]));
 
-    return prisma.purchaseOrder.create({
+    // The supplier's own code for each item, snapshotted onto the line the same way the SKU
+    // and barcode are. PurchaseOrderItem.supplierSku has existed since the model was written
+    // but nothing ever populated it -- there was no supplier catalogue to read it from --
+    // so every PO ever raised carried a null there. It is what the vendor recognises on
+    // their side, which is precisely what belongs on an order sent to them.
+    const supplierLinks = await prisma.supplierProduct.findMany({
+      where: { clientId, supplierId: data.supplierId, variantId: { in: variantIds } },
+      select: { variantId: true, supplierSku: true }
+    });
+    const supplierSkuMap = new Map(supplierLinks.map(l => [l.variantId, l.supplierSku]));
+
+    const created = await prisma.purchaseOrder.create({
       data: {
         clientId,
         poNumber,
@@ -44,6 +55,7 @@ export class PurchaseOrderService {
               sku: variant.sku,
               variantCode: variant.variantCode,
               barcode: variant.barcode,
+              supplierSku: supplierSkuMap.get(variant.id) || null,
               productTitle: item.productTitle || variant.product?.title || 'Unknown Product',
               color: item.color || variant.colorName,
               size: item.size || variant.size,
@@ -58,6 +70,32 @@ export class PurchaseOrderService {
         supplier: true
       }
     });
+
+    // Ordering an item from a supplier IS the statement that they supply it, so the link is
+    // recorded here rather than asking the user to maintain a catalogue by hand -- which
+    // nobody would, leaving the supplier's item list permanently empty and the feature
+    // useless. createMany with skipDuplicates so an existing link keeps its agreed price,
+    // lead time and supplier SKU: those are negotiated terms and must not be overwritten by
+    // whatever a single order happened to cost.
+    //
+    // Deliberately outside the create above and non-fatal: a failure to record the
+    // relationship must never lose the purchase order the user just raised.
+    try {
+      await prisma.supplierProduct.createMany({
+        data: created.items.map(item => ({
+          clientId,
+          supplierId: data.supplierId,
+          variantId: item.variantId,
+          costPrice: item.unitPrice,
+          notes: `Linked automatically from ${poNumber}.`
+        })),
+        skipDuplicates: true
+      });
+    } catch (error) {
+      console.error(`[createPO] could not link items to supplier for ${poNumber}`, error);
+    }
+
+    return created;
   }
 
   async getPOs(clientId: string) {

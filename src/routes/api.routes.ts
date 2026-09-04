@@ -26,6 +26,7 @@ import inventoryAlertRoutes from './inventory-alert.routes';
 import internalRoutes from './internal.routes';
 import { platformAdminAuthRoutes, platformAdminConsoleRoutes } from './platform-admin.routes';
 import leadRoutes from './lead.routes';
+import supplierProductRoutes from './supplier-product.routes';
 import clientErrorRoutes from './client-error.routes';
 import supportTicketRoutes from './support-ticket.routes';
 import teamRoutes from './team.routes';
@@ -77,6 +78,9 @@ router.use('/catalog-tryon', catalogTryOnRoutes);
 router.use('/search', searchRoutes);
 router.use('/stock-counts', stockCountRoutes);
 router.use('/suppliers', supplierRoutes);
+// Mounted at the root because it spans two nouns -- /suppliers/:id/products and
+// /variants/:id/suppliers are the same relationship read from either end.
+router.use('/', supplierProductRoutes);
 router.use('/purchase-orders', purchaseOrderRoutes);
 router.use('/reports', reportRoutes);
 router.use('/customers', customerRoutes);
