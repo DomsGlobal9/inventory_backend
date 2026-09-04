@@ -115,26 +115,6 @@ async function main() {
   const again = await call('POST', '/leads', { ...base, email: DUP_EMAIL, phone: '9876543210' });
   check('same email may enquire twice (no unique constraint leak)', again.status === 201, `got ${again.status}`);
 
-  // ─── SIGNUP: rate limiting ──────────────────────────────────────────────────
-  // Only meaningful when the server was started with a known ceiling; skipped otherwise so
-  // the suite does not depend on how many requests happened before it ran.
-  const ceiling = Number(process.env.TEST_SIGNUP_LIMIT || 0);
-  if (ceiling > 0) {
-    console.log('
-SIGNUP -- rate limiting');
-    let sawLimit = false;
-    // +2 past the ceiling: everything so far already counted, so this must trip it.
-    for (let i = 0; i < ceiling + 2; i++) {
-      const r = await call('POST', '/leads', {
-        companyName: 'Flood Co', contactName: 'Flood Person',
-        email: `flood.${stamp}.${i}@example.com`, phone: '9876543210'
-      });
-      if (r.status === 429) { sawLimit = true; break; }
-    }
-    check('the public form is rate limited', sawLimit);
-    await call('DELETE', '/__noop', undefined); // no-op, keeps shape simple
-  }
-
   // ─── SIGNUP: provisions nothing ─────────────────────────────────────────────
   console.log('\nSIGNUP -- provisions nothing');
   const anon = new Jar();
@@ -173,7 +153,11 @@ SIGNUP -- rate limiting');
   const list = await call('GET', '/admin/leads', undefined, admin);
   check('leads list loads for a platform admin', list.status === 200, `got ${list.status}`);
 
-  const mine = (list.json?.data || []).find((l: any) => l.email === LEAD_EMAIL.toLowerCase());
+  // Looked up by email rather than scanned out of the default page: the list is paginated
+  // and newest-first, so any other lead created meanwhile would push this one off page one
+  // and every assertion below would fail for a reason that has nothing to do with the code.
+  const found = await call('GET', `/admin/leads?search=${encodeURIComponent(LEAD_EMAIL)}`, undefined, admin);
+  const mine = (found.json?.data || []).find((l: any) => l.email === LEAD_EMAIL.toLowerCase());
   check('the submitted lead appears in the list', !!mine);
   check('email is normalised to lowercase and trimmed', mine?.email === LEAD_EMAIL.toLowerCase(), mine?.email);
   check('company name is trimmed', mine?.companyName === 'Verify Traders', JSON.stringify(mine?.companyName));
@@ -272,10 +256,62 @@ SIGNUP -- rate limiting');
   const afterLogout = await call('GET', '/products', undefined, clientSession);
   check('the session is dead after logout', afterLogout.status === 401, `got ${afterLogout.status}`);
 
+  // ─── SIGNUP: rate limiting ──────────────────────────────────────────────────
+  // Deliberately last: it submits dozens of leads, which would push the lead under test off
+  // the first page of every listing above.
+  // Only meaningful when the server was started with a known ceiling; skipped otherwise so
+  // the suite does not depend on how many requests happened before it ran.
+  // Capped hard. This was driven straight off the configured ceiling, so running against a
+  // server started with a high limit fired hundreds of submissions -- and an interrupted run
+  // left every one of them sitting in the Platform Console, burying the real enquiries under
+  // pages of "Flood Co". A limit above this is simply not exercised; that is the right
+  // trade for a test that writes rows a human has to look at.
+  const MAX_FLOOD = 12;
+  const configured = Number(process.env.TEST_SIGNUP_LIMIT || 0);
+  const ceiling = configured > 0 && configured <= MAX_FLOOD ? configured : 0;
+  if (configured > MAX_FLOOD) {
+    console.log(`\nSIGNUP -- rate limiting  [SKIPPED] ceiling ${configured} exceeds the ${MAX_FLOOD}-request cap`);
+  }
+  if (ceiling > 0) {
+    console.log('\nSIGNUP -- rate limiting');
+    let sawLimit = false;
+    // +2 past the ceiling: everything so far already counted, so this must trip it.
+    for (let i = 0; i < ceiling + 2; i++) {
+      const r = await call('POST', '/leads', {
+        companyName: 'Flood Co', contactName: 'Flood Person',
+        email: `flood.${stamp}.${i}@example.com`, phone: '9876543210'
+      });
+      if (r.status === 429) { sawLimit = true; break; }
+    }
+    check('the public form is rate limited', sawLimit);
+  }
+
   // ─── CLEANUP ────────────────────────────────────────────────────────────────
+  await cleanup(creds?.clientId);
+
+  console.log(`\n================ RESULT: ${passed} passed | ${failed} failed ================`);
+  if (failed) {
+    console.log('Failed:\n' + failures.map(f => `  - ${f}`).join('\n'));
+    process.exit(1);
+  }
+}
+
+/**
+ * Removes everything this run created.
+ *
+ * Called on the normal path, on a thrown error, and from the signal handlers. Leaving rows
+ * behind is not a tidiness problem here: leads land in a console a human reads, so stranded
+ * test data masquerades as real customers -- an interrupted run once left over two hundred
+ * "Flood Co" enquiries burying a genuine one.
+ */
+let cleanedUp = false;
+async function cleanup(clientId?: string) {
+  if (cleanedUp) return;
+  cleanedUp = true;
+
   console.log('\nCLEANUP');
   const { prisma } = await import('../lib/prisma');
-  const clientId = creds?.clientId;
+
   if (clientId) {
     await prisma.userRole.deleteMany({ where: { user: { clientId } } });
     await prisma.user.deleteMany({ where: { clientId } });
@@ -285,6 +321,9 @@ SIGNUP -- rate limiting');
     await prisma.role.deleteMany({ where: { clientId } });
     console.log(`  removed test workspace ${clientId}`);
   }
+
+  // Every address this suite can submit is derived from `stamp`, so this removes exactly
+  // what this run created and nothing a person entered.
   const removed = await prisma.signupLead.deleteMany({
     where: {
       OR: [
@@ -295,12 +334,17 @@ SIGNUP -- rate limiting');
   });
   console.log(`  removed ${removed.count} test lead(s)`);
   await prisma.$disconnect();
-
-  console.log(`\n================ RESULT: ${passed} passed | ${failed} failed ================`);
-  if (failed) {
-    console.log('Failed:\n' + failures.map(f => `  - ${f}`).join('\n'));
-    process.exit(1);
-  }
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// Ctrl+C or a kill mid-run would otherwise strand every lead this suite submitted.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    cleanup().then(() => process.exit(130)).catch(() => process.exit(130));
+  });
+}
+
+main().catch(async (e) => {
+  console.error(e);
+  await cleanup().catch(() => {});
+  process.exit(1);
+});
