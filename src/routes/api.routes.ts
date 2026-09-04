@@ -25,6 +25,7 @@ import inventoryTransferRoutes from './inventory-transfer.routes';
 import inventoryAlertRoutes from './inventory-alert.routes';
 import internalRoutes from './internal.routes';
 import { platformAdminAuthRoutes, platformAdminConsoleRoutes } from './platform-admin.routes';
+import leadRoutes from './lead.routes';
 import clientErrorRoutes from './client-error.routes';
 import supportTicketRoutes from './support-ticket.routes';
 import teamRoutes from './team.routes';
@@ -48,6 +49,11 @@ router.use('/admin', platformAdminConsoleRoutes);
 // so error reporting must not require a valid session -- same reasoning as the platform
 // admin routes above, mounted ahead of the global authentication gate.
 router.use('/client-errors', clientErrorRoutes);
+
+// Public signup form. Mounted above the global `authenticate` below because the whole point
+// is that a prospect has no account yet. It only records an enquiry -- it creates no client,
+// workspace, login or role -- so there is nothing here for an anonymous caller to provision.
+router.use('/leads', leadRoutes);
 
 // Global Authentication Enforcement for all business APIs
 router.use(authenticate);

@@ -1267,3 +1267,52 @@ model InventoryEvent {
   @@index([createdAt])
   @@map("inventory_events")
 }
+
+// ─── SIGNUP LEADS ───
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  CONVERTED
+  REJECTED
+}
+
+/// A self-serve signup enquiry. Deliberately NOT a tenant: signing up creates no client, no
+/// workspace, no login and no roles -- it only records that someone asked. The platform team
+/// reviews the lead, contacts them, and converts it, which is the point at which the normal
+/// onboarding runs and credentials are issued. Keeping the two apart means a public form can
+/// never provision anything, so it cannot be used to spam real workspaces into existence.
+model SignupLead {
+  id String @id @default(uuid())
+
+  companyName String  @map("company_name")
+  contactName String  @map("contact_name")
+  // Both required at signup -- the whole purpose of a lead is that someone can be reached.
+  email       String
+  phone       String
+  message     String? @db.Text
+
+  status LeadStatus @default(NEW)
+  // Free-text working notes kept by whoever is handling the lead.
+  notes  String?    @db.Text
+
+  // Set when the lead is accepted and onboarded; links the enquiry to the workspace it
+  // became, so the console can show the outcome rather than just "converted".
+  convertedClientId String?   @map("converted_client_id")
+  convertedAt       DateTime? @map("converted_at")
+
+  // Kept for triage of abuse or duplicate submissions from the public form.
+  sourceIp  String?  @map("source_ip")
+  userAgent String?  @map("user_agent") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Not unique: the same person legitimately enquires twice, and a unique index would let
+  // an outsider probe which addresses are already known by watching for a rejection.
+  @@index([status])
+  @@index([email])
+  @@index([createdAt])
+  @@map("signup_leads")
+}

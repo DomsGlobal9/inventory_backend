@@ -19,6 +19,7 @@ import {
   viewUserPassword,
   setUserPassword
 } from '../controllers/platform-admin.controller';
+import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 
 const authRouter = Router();
 authRouter.post('/login', login);
@@ -44,5 +45,12 @@ consoleRouter.patch('/support-tickets/:id', updateSupportTicketStatus);
 // hierarchy guard applies (unlike team.routes.ts's equivalent, client-scoped endpoints).
 consoleRouter.post('/users/:id/password/view', viewUserPassword);
 consoleRouter.post('/users/:id/password', setUserPassword);
+
+// Signup enquiries. Reading and triaging them is ordinary console work; converting one runs
+// the same onboarding as the Onboarding screen and is the only path that creates a tenant
+// from a lead -- the public form itself provisions nothing.
+consoleRouter.get('/leads', listLeads);
+consoleRouter.patch('/leads/:id', updateLead);
+consoleRouter.post('/leads/:id/convert', convertLead);
 
 export { authRouter as platformAdminAuthRoutes, consoleRouter as platformAdminConsoleRoutes };
