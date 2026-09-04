@@ -22,6 +22,21 @@ export class VariantService {
 
   private async applyInitialStock(clientId: string, variantId: string, quantity: number, locationIds: string[], createdBy: string) {
     if (quantity <= 0) return;
+
+    // An empty locationIds list used to mean this loop ran zero times: the caller asked to
+    // stock N units, no movement was made, and nothing anywhere said so -- the product and
+    // variant were created, the UI reported success, and the opening stock simply
+    // evaporated. Stock quietly disappearing is the worst failure mode an inventory system
+    // has, so refuse loudly instead. 400, not 500: it is a setup problem the user can fix.
+    if (locationIds.length === 0) {
+      throw Object.assign(
+        new Error(
+          'No stock location exists to receive this opening stock. ' +
+          'Create one under Settings -> Stock Locations, then add the quantity.'
+        ),
+        { statusCode: 400 }
+      );
+    }
     for (const targetLocationId of locationIds) {
       await inventoryMutationService.applyMovement({
         clientId,

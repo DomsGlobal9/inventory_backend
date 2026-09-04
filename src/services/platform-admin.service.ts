@@ -242,6 +242,18 @@ export class PlatformAdminService {
     const roleIds = await seedRolesForClient(clientId);
     await seedCatalogDefaultsForClient(clientId);
 
+    // Every stock movement requires a locationId, and a freshly onboarded client had NO
+    // locations at all -- so their very first product silently lost its opening stock:
+    // variant.service's resolveInitialStockLocationIds returned [], applyInitialStock
+    // looped over nothing, and the UI still reported "Product created successfully" while
+    // the quantity went nowhere. That resolver already looks for exactly this code, so the
+    // MAIN-STORE location was always the intended default -- onboarding just never made it.
+    // Created here so a new workspace is usable the moment the client logs in; they can
+    // rename it or add more under Settings -> Stock Locations.
+    await prisma.stockLocation.create({
+      data: { clientId, code: 'MAIN-STORE', name: 'Main Store', type: 'STORE', active: true }
+    });
+
     const user = await prisma.user.create({
       data: { clientId, name: adminName, email: adminEmail, password: hashed, passwordEncrypted, status: 'ACTIVE' }
     });

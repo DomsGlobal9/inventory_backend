@@ -3,6 +3,14 @@ import { prisma } from '../lib/prisma';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 
+/**
+ * Every rejection below carries an explicit statusCode. Thrown bare they inherited
+ * errorHandler's `err.statusCode || 500`, so "you tried to receive more than you ordered"
+ * came back as a 500 -- wrong semantics for a request that can never succeed on retry, and
+ * errorHandler persists 5xx, so each one was written to the Platform Console's Errors page.
+ * That page is for crashes; routine rejections were burying the real faults (one such entry,
+ * "Cannot receive goods for PO in status ...", was visible there in production).
+ */
 export class PurchaseOrderService {
   async createPO(clientId: string, data: { supplierId: string; expectedDeliveryDate?: Date; notes?: string; items: { variantId: string; orderedQty: number; unitPrice: number; productTitle?: string; color?: string; size?: string }[] }) {
     // Generate PO- code
@@ -29,7 +37,7 @@ export class PurchaseOrderService {
         items: {
           create: data.items.map(item => {
             const variant = variantMap.get(item.variantId);
-            if (!variant) throw new Error(`Variant ${item.variantId} not found`);
+            if (!variant) throw Object.assign(new Error(`Variant ${item.variantId} not found`), { statusCode: 404 });
             
             return {
               variantId: variant.id,
@@ -95,7 +103,7 @@ export class PurchaseOrderService {
       // tenant's PO id and corrupt that tenant's supplier counters below even
       // though the final update (correctly scoped) would go on to 404.
       const po = await tx.purchaseOrder.findFirst({ where: { id, clientId }, select: { supplierId: true } });
-      if (!po) throw new Error('Purchase Order not found');
+      if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
 
       // If sent, we might want to update the supplier's last order date & total orders
       if (status === PurchaseOrderStatus.SENT) {
@@ -123,9 +131,9 @@ export class PurchaseOrderService {
         include: { items: true }
       });
 
-      if (!po) throw new Error('Purchase Order not found');
+      if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
       if (po.status === PurchaseOrderStatus.RECEIVED || po.status === PurchaseOrderStatus.CANCELLED) {
-        throw new Error(`Cannot receive goods for PO in status ${po.status}`);
+        throw Object.assign(new Error(`Cannot receive goods for PO in status ${po.status}`), { statusCode: 400 });
       }
 
       const itemMap = new Map(po.items.map(i => [i.id, i]));
@@ -138,14 +146,14 @@ export class PurchaseOrderService {
         // matched a line on any other PO in the tenant and booked the receipt -- and the
         // resulting stock/lastPurchaseCost writes -- against that unrelated PO instead.
         if (!itemMap.has(receipt.poItemId)) {
-          throw new Error(`PO Item ${receipt.poItemId} does not belong to this purchase order`);
+          throw Object.assign(new Error(`PO Item ${receipt.poItemId} does not belong to this purchase order`), { statusCode: 400 });
         }
 
         const currentPoItem = await tx.purchaseOrderItem.findUnique({ where: { id: receipt.poItemId } });
-        if (!currentPoItem) throw new Error(`PO Item ${receipt.poItemId} not found`);
+        if (!currentPoItem) throw Object.assign(new Error(`PO Item ${receipt.poItemId} not found`), { statusCode: 404 });
 
         if (currentPoItem.receivedQty + receipt.quantityReceived > currentPoItem.orderedQty) {
-          throw new Error(`Cannot receive more than remaining quantity for SKU ${currentPoItem.sku}`);
+          throw Object.assign(new Error(`Cannot receive more than remaining quantity for SKU ${currentPoItem.sku}`), { statusCode: 400 });
         }
 
         // 1. Update PO Item atomically
@@ -159,7 +167,7 @@ export class PurchaseOrderService {
 
         // Atomic double-check
         if (poItem.receivedQty > poItem.orderedQty) {
-          throw new Error(`Cannot receive more than remaining quantity for SKU ${poItem.sku}`);
+          throw Object.assign(new Error(`Cannot receive more than remaining quantity for SKU ${poItem.sku}`), { statusCode: 400 });
         }
 
         // 2. Adjust Inventory atomically with WAC Calculation using central mutation service
