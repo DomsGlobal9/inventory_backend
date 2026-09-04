@@ -192,6 +192,7 @@ model StockLocation {
   InventoryAlert   InventoryAlert[]
   InventoryEvent   InventoryEvent[]
   stockCounts      StockCount[]
+  dailySnapshots   DailyLocationSnapshot[]
 
   @@unique([clientId, code])
   @@index([clientId])
@@ -1378,4 +1379,62 @@ model SupplierProduct {
   @@index([variantId])
   @@index([supplierId])
   @@map("supplier_products")
+}
+
+// ─── SHOP SETTINGS ───
+
+/// Per-shop configuration. There was no home for this at all: "General Info" in Settings is
+/// the signed-in person's profile, not the business, so anything belonging to the shop had
+/// nowhere to live.
+///
+/// Timezone is the reason it exists now. Everything is stored in UTC, which is right for
+/// storage and wrong for a day book -- India runs 5.5 hours ahead, so a sale at 2am on the
+/// 5th is 20:30 UTC on the 4th and a UTC-based daily report files it under the wrong date.
+model ClientSettings {
+  id       String @id @default(uuid())
+  clientId String @unique @map("client_id")
+
+  /// IANA zone, e.g. "Asia/Kolkata". Defines when the business day starts and ends.
+  timezone String @default("Asia/Kolkata")
+
+  /// The shop's own name, as opposed to the signed-in user's. Purchase orders sent on
+  /// WhatsApp currently sign off with whoever happens to be logged in, because this did not
+  /// exist anywhere.
+  businessName String? @map("business_name")
+
+  /// ISO code. Formatting stays in the frontend; this records the intent.
+  currency String @default("INR")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("client_settings")
+}
+
+/// End-of-day stock per LOCATION, alongside the company-wide DailyInventorySnapshot.
+///
+/// Kept separate rather than adding a locationId to that table, because the company-wide row
+/// carries figures that do not divide by location at all -- open purchase order value and
+/// active product count belong to the business, not to a warehouse. Mixing them would mean
+/// either duplicating those numbers against every location or leaving them null on most rows.
+///
+/// This is what makes a transfer legible: moving 40 units from warehouse to store changes
+/// both locations while leaving the company total untouched. Without a per-location record
+/// that movement is invisible in the daily figures.
+model DailyLocationSnapshot {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  locationId String        @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  snapshotDate DateTime @map("snapshot_date")
+  totalUnits   Int      @default(0) @map("total_units")
+  totalValue   Decimal  @default(0) @map("total_value") @db.Decimal(18, 6)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([locationId, snapshotDate], name: "uq_location_snapshot_day")
+  @@index([clientId, snapshotDate])
+  @@map("inventory_daily_location_snapshots")
 }

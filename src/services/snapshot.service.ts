@@ -1,6 +1,9 @@
 import { prisma } from '../lib/prisma';
 import { ReportService } from './report.service';
 import { ValuationService } from './valuation.service';
+import {
+  localDayKey, startOfLocalDay, localDayKeyFromParts, todayKey, DEFAULT_TIMEZONE
+} from '../utils/businessDay';
 
 /**
  * Daily inventory snapshots.
@@ -41,10 +44,26 @@ export class SnapshotService {
     return clients.map(c => c.clientId);
   }
 
-  private static startOfUtcDay(date: Date): Date {
-    const d = new Date(date);
-    d.setUTCHours(0, 0, 0, 0);
-    return d;
+  /**
+   * A snapshot is a BUSINESS day, so it is dated by the shop's own calendar rather than UTC.
+   *
+   * These were stored on UTC midnight, which put them out of step with anything that reports
+   * by local day: for an Indian shop the UTC day for 4 September holds 10 movements while the
+   * local day holds 11, so an opening balance taken from a UTC snapshot and movements counted
+   * over a local day do not reconcile -- the day book's closing figure came out 8 units wrong
+   * for exactly that reason.
+   */
+  async getTimezone(clientId: string): Promise<string> {
+    const settings = await prisma.clientSettings.findUnique({
+      where: { clientId }, select: { timezone: true }
+    });
+    return settings?.timezone || DEFAULT_TIMEZONE;
+  }
+
+  /** Next calendar day, as a "YYYY-MM-DD" key. */
+  private static nextDayKey(dayKey: string): string {
+    const [y, m, d] = dayKey.split('-').map(Number);
+    return localDayKeyFromParts(y, m, d, 1);
   }
 
   /**
@@ -52,9 +71,12 @@ export class SnapshotService {
    * figures the dashboard shows and stores them against today's date.
    */
   async takeSnapshot(clientId: string, date: Date = new Date()) {
+    const timezone = await this.getTimezone(clientId);
     const summary = await this.reportService.getDashboardSummary(clientId);
     const valuation = await this.valuationService.getTenantValue(clientId);
-    const snapshotDate = SnapshotService.startOfUtcDay(date);
+    // Dated by the shop's calendar, and re-run through the day so the row always holds the
+    // most recent figure -- by closing time that is the day's true end state.
+    const snapshotDate = startOfLocalDay(localDayKey(date, timezone), timezone);
 
     const values = {
       totalValue: summary.inventoryValue,
@@ -120,6 +142,10 @@ export class SnapshotService {
   async reconstructFromLedger(clientId: string, options: { apply?: boolean } = {}) {
     const { apply = false } = options;
 
+    // Days are bucketed by the shop's calendar, so the reconstructed rows line up exactly
+    // with the windows the day book counts movements over.
+    const timezone = await this.getTimezone(clientId);
+
     const [transactions, variants] = await Promise.all([
       prisma.inventoryTransaction.findMany({
         where: { clientId },
@@ -147,7 +173,10 @@ export class SnapshotService {
       snapshotDate: Date; totalValue: number; totalUnits: number; totalVariants: number;
     }[] = [];
 
-    const totalsAt = (date: Date) => {
+    // Days are the SHOP's days, not UTC ones -- see getTimezone. Day keys are compared as
+    // "YYYY-MM-DD" strings, which sort correctly and sidestep the arithmetic traps of adding
+    // 24 hours across a daylight-saving change.
+    const totalsAt = (dayKey: string) => {
       let totalValue = 0;
       let totalUnits = 0;
       for (const [, s] of state) {
@@ -159,27 +188,27 @@ export class SnapshotService {
       // contradicts the units beside it: counting against start-of-day reported 0 variants
       // on a day that closed holding 265 units, because the variants were created later that
       // same morning.
-      const endOfDay = new Date(date.getTime() + 86400000);
+      const endOfDay = startOfLocalDay(SnapshotService.nextDayKey(dayKey), timezone);
       return {
-        snapshotDate: date,
+        snapshotDate: startOfLocalDay(dayKey, timezone),
         totalValue: Number(totalValue.toFixed(2)),
         totalUnits,
         totalVariants: variants.filter(v => v.createdAt < endOfDay).length
       };
     };
 
-    let cursor = SnapshotService.startOfUtcDay(transactions[0].createdAt);
-    const today = SnapshotService.startOfUtcDay(new Date());
+    let cursorKey = localDayKey(transactions[0].createdAt, timezone);
+    const lastKey = todayKey(timezone);
 
     for (const tx of transactions) {
-      const txDay = SnapshotService.startOfUtcDay(tx.createdAt);
+      const txKey = localDayKey(tx.createdAt, timezone);
 
       // Close off every day between the last transaction and this one. Days with no movement
       // still need a row, or the chart would join across gaps and imply a change that never
       // happened.
-      while (cursor < txDay) {
-        snapshots.push(totalsAt(new Date(cursor)));
-        cursor = new Date(cursor.getTime() + 86400000);
+      while (cursorKey < txKey) {
+        snapshots.push(totalsAt(cursorKey));
+        cursorKey = SnapshotService.nextDayKey(cursorKey);
       }
 
       const current = state.get(tx.variantId) || { qty: 0, avgCost: 0 };
@@ -199,9 +228,9 @@ export class SnapshotService {
     }
 
     // Carry forward to today so the series ends where the dashboard does.
-    while (cursor <= today) {
-      snapshots.push(totalsAt(new Date(cursor)));
-      cursor = new Date(cursor.getTime() + 86400000);
+    while (cursorKey <= lastKey) {
+      snapshots.push(totalsAt(cursorKey));
+      cursorKey = SnapshotService.nextDayKey(cursorKey);
     }
 
     // ─── VERIFY AGAINST REALITY ───────────────────────────────────────────────

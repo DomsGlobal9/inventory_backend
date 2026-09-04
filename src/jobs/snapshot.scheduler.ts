@@ -16,32 +16,31 @@ import { SnapshotService } from '../services/snapshot.service';
  */
 export class SnapshotScheduler {
   private static timer: NodeJS.Timeout | null = null;
-  private static lastRunDay: string | null = null;
 
-  /** Checked hourly rather than timed to midnight, so a restart cannot skip the day. */
+  /** Hourly rather than timed to midnight, so a restart cannot skip a day. */
   private static readonly CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
   static start() {
     if (this.timer) return;
 
     const tick = async () => {
-      // UTC day, matching how snapshotDate is normalised. A local-time key would produce two
-      // rows for one day, or none, depending on the host's timezone.
-      const today = new Date().toISOString().slice(0, 10);
-      if (this.lastRunDay === today) return;
-
+      // Runs every hour with no "already done today" guard, deliberately.
+      //
+      // Each tenant is dated by its OWN timezone, so a single process-wide day key would be
+      // wrong for anyone not sharing the server's calendar -- it would skip a tenant whose
+      // day had already rolled over. And because takeSnapshot upserts on (client, day), a
+      // repeat is harmless: it refreshes today's row rather than adding one. The last write
+      // before midnight is therefore the day's true closing figure, which is exactly what an
+      // opening balance needs to read the next morning.
       try {
         const service = new SnapshotService();
         const results = await service.runDailyBatch();
         const failed = results.filter(r => !r.success).length;
-        this.lastRunDay = today;
-        console.log(
-          `[SnapshotScheduler] ${today}: recorded ${results.length - failed}/${results.length} tenant(s)` +
-          (failed ? `, ${failed} failed` : '')
-        );
+        if (failed) {
+          console.warn(`[SnapshotScheduler] recorded ${results.length - failed}/${results.length} tenant(s), ${failed} failed`);
+        }
       } catch (error) {
-        // Deliberately does NOT set lastRunDay, so the next hourly tick retries.
-        console.error('[SnapshotScheduler] Daily snapshot failed; will retry next hour.', error);
+        console.error('[SnapshotScheduler] Snapshot run failed; will retry next hour.', error);
       }
     };
 

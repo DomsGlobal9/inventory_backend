@@ -11,6 +11,7 @@
  */
 import { prisma } from '../lib/prisma';
 import { SnapshotService } from '../services/snapshot.service';
+import { localDayKey, startOfLocalDay } from '../utils/businessDay';
 
 async function main() {
   const apply = process.argv.includes('--apply');
@@ -62,6 +63,27 @@ async function main() {
     where: { snapshotDate: { lt: todayUtc } }
   });
   console.log(`\npurged ${purged.count} fabricated row(s); today's real measurements untouched`);
+
+  // Rows written before snapshots became timezone-aware sit on UTC midnight instead of the
+  // shop's midnight. Left in place they get picked up as opening balances by the day book,
+  // which counts movements over the LOCAL day -- mixing the two is what made a closing figure
+  // come out 8 units wrong. Anything not sitting exactly on its tenant's local midnight is
+  // stale by definition, so it goes.
+  let staleFormat = 0;
+  for (const clientId of tenants) {
+    const tz = await service.getTimezone(clientId);
+    const rows = await prisma.dailyInventorySnapshot.findMany({
+      where: { clientId }, select: { id: true, snapshotDate: true }
+    });
+    for (const row of rows) {
+      const correct = startOfLocalDay(localDayKey(row.snapshotDate, tz), tz);
+      if (correct.getTime() !== row.snapshotDate.getTime()) {
+        await prisma.dailyInventorySnapshot.delete({ where: { id: row.id } });
+        staleFormat++;
+      }
+    }
+  }
+  console.log(`removed ${staleFormat} row(s) dated on UTC midnight instead of the shop's midnight`);
 
   let written = 0;
   for (const plan of rebuildable) {

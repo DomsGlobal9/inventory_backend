@@ -28,6 +28,7 @@ import { platformAdminAuthRoutes, platformAdminConsoleRoutes } from './platform-
 import leadRoutes from './lead.routes';
 import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
+import dayBookRoutes from './daybook.routes';
 import clientErrorRoutes from './client-error.routes';
 import supportTicketRoutes from './support-ticket.routes';
 import teamRoutes from './team.routes';
@@ -84,6 +85,7 @@ router.use('/suppliers', supplierRoutes);
 router.use('/', supplierProductRoutes);
 router.use('/purchase-orders', purchaseOrderRoutes);
 router.use('/reorder', reorderRoutes);
+router.use('/daybook', dayBookRoutes);
 router.use('/reports', reportRoutes);
 router.use('/customers', customerRoutes);
 router.use('/sales-orders', salesOrderRoutes);
