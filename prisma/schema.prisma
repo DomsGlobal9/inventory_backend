@@ -283,7 +283,13 @@ model ProductVariant {
   // Inventory Control
   sellingPrice      Decimal?  @map("selling_price") @db.Decimal(10, 2)
   inventoryValue    Decimal   @default(0) @map("inventory_value") @db.Decimal(10, 2)
-  averageCost       Decimal   @default(0) @map("average_cost") @db.Decimal(10, 2)
+  // 6 dp, not 2. Weighted average cost is a DERIVED figure -- receiving 10 units at 1200
+  // onto 8 units held at 0 gives 12000/18 = 666.666... -- and inventoryValue is then
+  // computed as quantity x averageCost. Rounded to 2 dp the average became 666.67 and the
+  // value came back as 12000.06 for stock that cost exactly 12000.00. Small per movement,
+  // but it is real money and it compounds over every subsequent receipt. The extra places
+  // keep the derived value exact to the paisa; displayed costs are still formatted to 2 dp.
+  averageCost       Decimal   @default(0) @map("average_cost") @db.Decimal(18, 6)
   lastCostUpdatedAt DateTime? @map("last_cost_updated_at")
   lastReceivedAt    DateTime? @map("last_received_at")
   lastMovementAt    DateTime? @map("last_movement_at")
