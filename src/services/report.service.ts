@@ -178,7 +178,6 @@ export class ReportService {
   }
 
   async getDeadStock(clientId: string, thresholdDays: number = 90, locationId?: string) {
-    // Using last_movement_at instead of lastReceivedAt
     const stockJoinFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
     const rawRows = await prisma.$queryRaw<any[]>`
       SELECT v.id, v.sku, COALESCE(s.qty, 0) as quantity, COALESCE(s.qty, 0) * v.average_cost as inventory_value, v.last_movement_at, p.title as "productTitle", p.category
@@ -188,7 +187,7 @@ export class ReportService {
       WHERE v.client_id = ${clientId}
       AND COALESCE(s.qty, 0) > 0
       AND v.last_movement_at IS NOT NULL
-      AND v.last_movement_at < NOW() - INTERVAL '90 days'
+      AND v.last_movement_at < NOW() - make_interval(days => ${thresholdDays}::int)
       ORDER BY inventory_value DESC
       LIMIT 50;
     `;
@@ -198,7 +197,11 @@ export class ReportService {
       sku: item.sku,
       productTitle: item.productTitle,
       category: item.category,
-      quantity: item.quantity,
+      // SUM() over an integer column comes back from Postgres as bigint, which Prisma hands
+      // over as a JS BigInt and JSON.stringify refuses to serialize. Left unconverted this
+      // endpoint returns 500 for exactly the tenants it is meant to help -- the ones that
+      // actually have dead stock -- and 200 for the ones that have none.
+      quantity: Number(item.quantity),
       inventoryValue: Number(item.inventory_value),
       daysSinceLastMovement: item.last_movement_at ? Math.floor((new Date().getTime() - new Date(item.last_movement_at).getTime()) / (1000 * 3600 * 24)) : null
     }));
@@ -218,7 +221,7 @@ export class ReportService {
 
     const supplierIds = spend.map(s => s.supplierId);
     const suppliers = await prisma.supplier.findMany({
-      where: { id: { in: supplierIds } },
+      where: { id: { in: supplierIds }, clientId },
       select: { id: true, name: true, supplierCode: true }
     });
 

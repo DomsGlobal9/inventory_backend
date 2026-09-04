@@ -25,22 +25,36 @@ export class ValuationService {
   }
 
   /**
-   * Returns the inventory value broken down by product category.
+   * Inventory value broken down by product category.
+   *
+   * Honours the location filter, like every other stock figure on the reports page. It used
+   * not to, which meant that with a location selected this table quietly reported the whole
+   * company while the cards above it reported one branch -- two different totals for the same
+   * stock, side by side, with nothing saying why.
+   *
+   * When scoped to a location the value is that location's quantity times the company-wide
+   * weighted average cost, because average cost is not tracked per location. That is the same
+   * convention the summary and dashboard figures already use, so the numbers reconcile.
+   *
+   * Raw SQL because grouping by a relation's column is not expressible in Prisma's group-by.
    */
-  async getCategoryValue(clientId: string) {
-    // Prisma group-by doesn't support relation fields directly without raw queries
-    // if we want to group by Product.category.
+  async getCategoryValue(clientId: string, locationId?: string) {
+    const stockFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
+    const valueExpr = locationId
+      ? Prisma.sql`SUM(COALESCE(s.qty, 0) * v.average_cost)`
+      : Prisma.sql`SUM(v.inventory_value)`;
+
     const result = await prisma.$queryRaw<any[]>`
       SELECT 
         p.category,
-        SUM(v.inventory_value) as total_value,
+        ${valueExpr} as total_value,
         SUM(COALESCE(s.qty, 0)) as total_units
       FROM "inventory_product_variants" v
       JOIN "inventory_products" p ON v.product_id = p.id
       LEFT JOIN (
         SELECT variant_id, SUM(quantity) as qty 
         FROM inventory_stocks 
-        WHERE client_id = ${clientId} 
+        WHERE client_id = ${clientId} ${stockFilter}
         GROUP BY variant_id
       ) s ON s.variant_id = v.id
       WHERE v.client_id = ${clientId}

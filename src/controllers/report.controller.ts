@@ -15,6 +15,18 @@ const getClientId = (req: Request, res: Response) => {
   return clientId;
 };
 
+/**
+ * Query strings are user input: "?days=abc" parses to NaN and "?days=-5" is nonsense. While
+ * these numbers were being silently ignored that did not matter; now that they reach SQL and
+ * Prisma's take, an unusable value has to be turned back into the default rather than passed on.
+ */
+function intParam(raw: unknown, fallback: number, min: number, max: number): number {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const n = parseInt(String(raw), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, min), max);
+}
+
 export class ReportController {
   
   async getTenantValue(req: Request, res: Response, next: NextFunction) {
@@ -32,7 +44,8 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const data = await valuationService.getCategoryValue(clientId);
+      const locationId = (req as any).locationId as string | undefined;
+      const data = await valuationService.getCategoryValue(clientId, locationId);
       res.json({ success: true, data });
     } catch (error) {
       next(error);
@@ -133,7 +146,7 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const days = req.query.days ? parseInt(req.query.days as string, 10) : 90;
+      const days = intParam(req.query.days, 90, 1, 3650);
       const locationId = (req as any).locationId as string | undefined;
       const data = await reportService.getDeadStock(clientId, days, locationId);
       res.json({ success: true, data });
@@ -157,7 +170,7 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const days = req.query.days ? parseInt(req.query.days as string, 10) : 30;
+      const days = intParam(req.query.days, 30, 1, 3650);
       const locationId = (req as any).locationId as string | undefined;
       const data = await reportService.getStockMovement(clientId, days, locationId);
       res.json({ success: true, data });
@@ -170,7 +183,7 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 10;
+      const limit = intParam(req.query.limit, 10, 1, 200);
       const locationId = (req as any).locationId as string | undefined;
       const data = await reportService.getRecentTransactions(clientId, limit, locationId);
       res.json({ success: true, data });
@@ -183,7 +196,7 @@ export class ReportController {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const days = req.query.days ? parseInt(req.query.days as string, 10) : 30;
+      const days = intParam(req.query.days, 30, 1, 3650);
       const data = await reportService.getSnapshots(clientId, days);
       res.json({ success: true, data });
     } catch (error) {

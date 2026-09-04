@@ -129,13 +129,20 @@ export class InventoryRepository {
     };
   }
 
+  /**
+   * Variants at or below their reorder level. Raw SQL because the condition compares two
+   * columns of the same row, which Prisma's where clause cannot express; fetching everything
+   * and filtering in JS would not survive a real catalog.
+   *
+   * The ::int cast on the quantity matters: SUM() over an integer column returns bigint,
+   * which Prisma surfaces as a JS BigInt, and JSON.stringify throws on those. Without it this
+   * would serialize fine for tenants with nothing running low and fail with a 500 for exactly
+   * the tenants the query is meant to help.
+   */
   async getInventoryAlerts(clientId: string) {
-    // We use a raw query or Prisma's filter capabilities to find low stock.
-    // Since Prisma cannot directly compare two columns in a single where clause (e.g. quantity <= reorderLevel)
-    // without queryRaw in older versions, we can use $queryRaw. Wait, in Prisma 5, we can use `quantity: { lte: prisma.productVariant.fields.reorderLevel }` but it's simpler to just fetch all low stock using a raw query, or fetch everything and filter (bad at scale). Let's use raw query.
     return prisma.$queryRaw`
       SELECT 
-        v.id, v.sku, COALESCE(s.qty, 0) as quantity, v.reorder_level as "reorderLevel", v.variant_code as "variantCode", v.barcode, v.size, v.color_name as "colorName", v.hex_code as "hexCode",
+        v.id, v.sku, COALESCE(s.qty, 0)::int as quantity, v.reorder_level as "reorderLevel", v.variant_code as "variantCode", v.barcode, v.size, v.color_name as "colorName", v.hex_code as "hexCode",
         p.title as "productTitle", p.id as "productId"
       FROM inventory_product_variants v
       JOIN inventory_products p ON v.product_id = p.id
