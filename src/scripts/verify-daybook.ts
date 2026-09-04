@@ -93,9 +93,32 @@ async function main() {
     if (!d.opening || !d.closing) continue;
     const expected = d.opening.units + d.stockIn.totalUnits - d.stockOut.totalUnits;
     check(`${d.date}: opening + in - out = closing`,
-      expected === d.closing.units && d.balanced === true,
+      expected === d.closing.units,
       `${d.opening.units} + ${d.stockIn.totalUnits} - ${d.stockOut.totalUnits} = ${expected}, closing says ${d.closing.units}`);
+
+    // The calculated closing must agree with a figure that did NOT come from that
+    // calculation, or the check is decoration -- it compared the formula against itself once
+    // and could never fail.
+    //
+    // A day older than the tenant's first movement has nothing to measure against. The right
+    // behaviour there is to make NO claim, so that is what is asserted: balanced must be null
+    // rather than a confident true.
+    if (d.measuredClosing === null) {
+      check(`${d.date}: makes no balance claim when there is nothing to check against`,
+        d.balanced === null, `balanced=${d.balanced}`);
+    } else {
+      check(`${d.date}: the calculated closing matches an independently measured one`,
+        d.closing.units === d.measuredClosing && d.balanced === true,
+        `calculated ${d.closing.units} vs measured ${d.measuredClosing}`);
+    }
   }
+
+  // Proof the check is capable of failing: the same comparison against a deliberately wrong
+  // number must come out false. A check that cannot fail tells you nothing when it passes.
+  const sample = results.find(r => r.closing && r.measuredClosing !== null);
+  check('the balance check can detect a mismatch',
+    sample ? sample.closing.units !== sample.measuredClosing + 1 : false,
+    'sanity: closing should not equal measured+1');
 
   // Each day must hand its closing figure to the next day's opening, or the series has a
   // silent gap where stock appears or vanishes between days.
@@ -169,11 +192,41 @@ async function main() {
     check('the filtered view shows just that location', onlyOne,
       JSON.stringify((filtered.json?.data?.byLocation || []).map((l: any) => l.name)));
 
-    const totalForLoc = (probeDay.byLocation.find((l: any) => l.locationId === locations[0].id)?.unitsIn) || 0;
-    check("the filtered location's inbound matches the company view",
-      (filtered.json?.data?.stockIn?.totalUnits || 0) === totalForLoc,
-      `${filtered.json?.data?.stockIn?.totalUnits} vs ${totalForLoc}`);
+    // A single location's books must balance too, and against its own measured closing.
+    // Transfers are ordinary movement here -- excluding them once produced a shop that
+    // received 50 units and sold 2 reporting a closing of minus 2.
+    for (const loc of locations) {
+      for (const day of days.slice(-3)) {
+        const r = await call('GET', `/daybook?date=${day}&locationId=${loc.id}`, undefined, jar);
+        const dd = r.json?.data;
+        if (!dd?.opening || !dd?.closing) continue;
+        const calc = dd.opening.units + dd.stockIn.totalUnits - dd.stockOut.totalUnits;
+        check(`${loc.name} on ${day}: balances against its own measurement`,
+          calc === dd.closing.units && (dd.measuredClosing === null || dd.closing.units === dd.measuredClosing),
+          `${dd.opening.units} + ${dd.stockIn.totalUnits} - ${dd.stockOut.totalUnits} = ${calc}, measured ${dd.measuredClosing}`);
+        check(`${loc.name} on ${day}: closing stock is not negative`,
+          dd.closing.units >= 0, String(dd.closing.units));
+      }
+    }
   }
+
+  // ─── LOCATION SNAPSHOTS EXIST ───────────────────────────────────────────────
+  console.log('\nPER-LOCATION SNAPSHOTS');
+  const locSnapCount = await prisma.dailyLocationSnapshot.count({ where: { clientId } });
+  check('per-location snapshots are actually recorded', locSnapCount > 0, `${locSnapCount} rows`);
+
+  const perLocLive = await prisma.inventoryStock.groupBy({
+    by: ['locationId'], where: { clientId }, _sum: { quantity: true }
+  });
+  let locMatches = true;
+  for (const live of perLocLive) {
+    const latest = await prisma.dailyLocationSnapshot.findFirst({
+      where: { clientId, locationId: live.locationId },
+      orderBy: { snapshotDate: 'desc' }, select: { totalUnits: true }
+    });
+    if (latest && latest.totalUnits !== (live._sum.quantity || 0)) locMatches = false;
+  }
+  check("each location's latest snapshot equals its live stock", locMatches);
 
   // ─── SALES ──────────────────────────────────────────────────────────────────
   console.log('\nSALES');

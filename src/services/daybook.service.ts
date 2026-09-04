@@ -48,12 +48,24 @@ export interface DayBookLine {
 }
 
 export class DayBookService {
-  /** A shop's timezone, defaulting to India, created lazily so no tenant needs setting up. */
-  async getTimezone(clientId: string): Promise<string> {
+  /**
+   * The shop's own settings. Timezone defaults to India so no tenant needs setting up before
+   * the day book works; the business name is optional and only used for printed output, which
+   * falls back to the account name when it is not set.
+   */
+  async getShop(clientId: string): Promise<{ timezone: string; businessName: string | null }> {
     const settings = await prisma.clientSettings.findUnique({
-      where: { clientId }, select: { timezone: true }
+      where: { clientId }, select: { timezone: true, businessName: true }
     });
-    return settings?.timezone || DEFAULT_TIMEZONE;
+    return {
+      timezone: settings?.timezone || DEFAULT_TIMEZONE,
+      businessName: settings?.businessName || null
+    };
+  }
+
+  /** Kept for the callers that only need the timezone. */
+  async getTimezone(clientId: string): Promise<string> {
+    return (await this.getShop(clientId)).timezone;
   }
 
   /**
@@ -64,7 +76,27 @@ export class DayBookService {
    * it is derived instead: current stock minus every movement since the day began. Both are
    * real; the second is just slower.
    */
-  private async getOpening(clientId: string, dayKey: string, dayStart: Date) {
+  private async getOpening(clientId: string, dayKey: string, dayStart: Date, locationId?: string) {
+    // A filtered view reads the per-location series, so picking one shop still gives a real
+    // opening balance rather than dropping the balance line entirely.
+    if (locationId) {
+      const locSnap = await prisma.dailyLocationSnapshot.findFirst({
+        where: { clientId, locationId, snapshotDate: { lt: dayStart } },
+        orderBy: { snapshotDate: 'desc' },
+        select: { snapshotDate: true, totalUnits: true, totalValue: true }
+      });
+      if (locSnap) {
+        return {
+          units: locSnap.totalUnits,
+          value: Number(locSnap.totalValue),
+          source: 'snapshot' as const,
+          asOf: locSnap.snapshotDate
+        };
+      }
+      // Before this location has any history, it held nothing.
+      return { units: 0, value: 0, source: 'derived' as const, asOf: dayStart };
+    }
+
     const snapshot = await prisma.dailyInventorySnapshot.findFirst({
       where: { clientId, snapshotDate: { lt: dayStart } },
       orderBy: { snapshotDate: 'desc' },
@@ -111,12 +143,50 @@ export class DayBookService {
   }
 
   /**
+   * The day's closing stock, taken from somewhere other than the day's own arithmetic.
+   *
+   * This is what makes the balance check real. A finished day has a snapshot recorded at the
+   * time; today has no snapshot yet, so the stock actually on the shelves is used instead.
+   * Either way the number arrives independently of opening + in - out, which is the only way
+   * a disagreement can ever surface.
+   *
+   * Returns null when neither source exists -- a day too old to have a snapshot -- in which
+   * case the page shows no claim rather than a false one.
+   */
+  private async getMeasuredClosing(
+    clientId: string, dayKey: string, dayStart: Date, dayEnd: Date,
+    inProgress: boolean, locationId?: string
+  ): Promise<number | null> {
+    if (inProgress) {
+      const stocks = await prisma.inventoryStock.aggregate({
+        where: { clientId, ...(locationId ? { locationId } : {}) },
+        _sum: { quantity: true }
+      });
+      return stocks._sum.quantity ?? 0;
+    }
+
+    if (locationId) {
+      const snap = await prisma.dailyLocationSnapshot.findFirst({
+        where: { clientId, locationId, snapshotDate: { gte: dayStart, lt: dayEnd } },
+        select: { totalUnits: true }
+      });
+      return snap ? snap.totalUnits : null;
+    }
+
+    const snap = await prisma.dailyInventorySnapshot.findFirst({
+      where: { clientId, snapshotDate: { gte: dayStart, lt: dayEnd } },
+      select: { totalUnits: true }
+    });
+    return snap ? snap.totalUnits : null;
+  }
+
+  /**
    * Everything that happened on one business day.
    *
    * @param dayKey "YYYY-MM-DD" in the SHOP's timezone, not UTC.
    */
   async getDay(clientId: string, dayKey: string, locationId?: string) {
-    const timezone = await this.getTimezone(clientId);
+    const { timezone, businessName } = await this.getShop(clientId);
     const { start, end } = localDayRange(dayKey, timezone);
     const inProgress = isDayInProgress(dayKey, timezone);
 
@@ -176,20 +246,28 @@ export class DayBookService {
       const value = Math.abs(units) * Number(m.unitCost || 0);
 
       // A transfer is the same stock in two places at once: it leaves one location and
-      // arrives at another. Counted as purchases and sales it would inflate both sides of the
-      // day and break the balance, so it is tracked on its own.
+      // arrives at another.
       //
-      // Only the outbound leg is counted. A transfer writes TWO rows -- minus 50 at the
-      // origin and plus 50 at the destination -- so summing both reported 50 moved units as
-      // "100 units moved", double what actually left a shelf.
+      // Company-wide it nets to zero, so counting it as a purchase and a sale would inflate
+      // both sides of the day for stock that never entered or left the business. Only the
+      // outbound leg is tallied for the "moved" figure -- a transfer writes TWO rows, so
+      // summing both reported 50 moved units as "100 units moved".
+      //
+      // For ONE location it is the opposite: the stock really did arrive or leave, and
+      // excluding it made the balance nonsense -- a shop that received 50 in a transfer and
+      // sold 2 reported a closing of minus 2. So when a location is selected the legs are
+      // counted as ordinary movement, under their own label.
       if (m.reason === InventoryReason.TRANSFER) {
         if (units < 0) transferUnits += Math.abs(units);
-        continue;
+        if (!locationId) continue;
       }
 
       const bucket = units > 0 ? inbound : outbound;
       const key = m.reason;
-      const line = bucket.get(key) || { reason: key, label: label(key), units: 0, value: 0 };
+      const lineLabel = m.reason === InventoryReason.TRANSFER
+        ? (units > 0 ? 'Moved in from another location' : 'Moved out to another location')
+        : label(key);
+      const line = bucket.get(key) || { reason: key, label: lineLabel, units: 0, value: 0 };
       line.units += Math.abs(units);
       line.value += value;
       bucket.set(key, line);
@@ -207,16 +285,27 @@ export class DayBookService {
     const totalOutValue = round(outLines.reduce((s, l) => s + l.value, 0));
 
     // ─── OPENING AND CLOSING ──────────────────────────────────────────────────
-    // Location-filtered views cannot use the company snapshot, so opening is only meaningful
-    // company-wide for now; a filtered view reports its movements without a balance claim.
-    const opening = locationId ? null : await this.getOpening(clientId, dayKey, start);
+    // Both views balance now: company-wide from DailyInventorySnapshot, a single location
+    // from DailyLocationSnapshot.
+    const opening = await this.getOpening(clientId, dayKey, start, locationId);
+
+    // Closing is CALCULATED from the day's movements.
     const closing = opening
       ? { units: opening.units + totalIn - totalOut, value: round(opening.value + totalInValue - totalOutValue) }
       : null;
 
-    const balanced = opening && closing
-      ? opening.units + totalIn - totalOut === closing.units
-      : null;
+    // ...and then checked against something that did not come from that calculation.
+    //
+    // The check used to compare `opening + in - out` with `closing`, which is how closing was
+    // produced in the first place -- so it could never fail, and reported "the books balance"
+    // no matter how wrong the figures were. A check has to have an independent source or it
+    // is decoration.
+    //
+    // For a finished day that source is the day's own snapshot, measured at the time. For
+    // today, which has no closing snapshot yet, it is the stock physically on the shelves.
+    const measured = await this.getMeasuredClosing(clientId, dayKey, start, end, inProgress, locationId);
+
+    const balanced = closing && measured !== null ? closing.units === measured : null;
 
     // ─── SALES, MEASURED AT DISPATCH ──────────────────────────────────────────
     const soldLine = outLines.find(l => l.reason === InventoryReason.SALE);
@@ -266,6 +355,31 @@ export class DayBookService {
       if (m.quantity < 0) e.unitsOut += Math.abs(m.quantity); else e.unitsIn += m.quantity;
       moverMap.set(key, e);
     }
+    // sku and productTitle are denormalised onto the transaction at write time, and not every
+    // write path fills the title in -- rows exist with a SKU and no title, which showed up as a
+    // dash where the product name should be, on the page and in the printed report. The names
+    // are looked up once from the variants involved, so rows already written read correctly
+    // rather than only ones written after the write path is corrected.
+    const needTitle = [...new Set(
+      movements.filter(m => !m.productTitle).map(m => m.variantId)
+    )];
+    const titleByVariant = new Map<string, { title: string; sku: string }>();
+    if (needTitle.length) {
+      const variants = await prisma.productVariant.findMany({
+        where: { id: { in: needTitle }, clientId },
+        select: { id: true, sku: true, product: { select: { title: true } } }
+      });
+      for (const v of variants) {
+        titleByVariant.set(v.id, { title: v.product?.title || '', sku: v.sku || '' });
+      }
+    }
+    for (const [variantId, e] of moverMap) {
+      const found = titleByVariant.get(variantId);
+      if (!found) continue;
+      if (!e.title) e.title = found.title;
+      if (!e.sku) e.sku = found.sku;
+    }
+
     const topMovers = [...moverMap.values()]
       .sort((a, b) => (b.unitsOut + b.unitsIn) - (a.unitsOut + a.unitsIn))
       .slice(0, 5);
@@ -280,18 +394,24 @@ export class DayBookService {
     const adjustments = movements
       .filter(m => adjustmentReasons.has(m.reason))
       .map(m => ({
-        sku: m.sku, title: m.productTitle, units: m.quantity,
+        sku: m.sku || titleByVariant.get(m.variantId)?.sku || null,
+        title: m.productTitle || titleByVariant.get(m.variantId)?.title || null,
+        units: m.quantity,
         reason: label(m.reason), by: m.createdBy, at: m.createdAt
       }));
 
     return {
       date: dayKey,
       timezone,
+      // Printed reports carry the shop's name in the header; the page ignores it.
+      businessName,
       inProgress,
       quiet: movements.length === 0 && dispatches.length === 0,
 
       opening,
       closing,
+      // What the independent source says, so a mismatch can be shown rather than just flagged.
+      measuredClosing: measured,
       balanced,
 
       stockIn: { lines: inLines, totalUnits: totalIn, totalValue: totalInValue },

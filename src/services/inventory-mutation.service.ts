@@ -48,7 +48,9 @@ export class InventoryMutationService {
       // 1. Get the current variant and its global stock to calculate average cost
       const variant = await tx.productVariant.findUnique({
         where: { id: variantId },
-        include: { stocks: true }
+        // product.title is copied onto the transaction below so the day book can name the
+        // item without a second lookup per row.
+        include: { stocks: true, product: { select: { title: true } } }
       });
 
       // These three are USER errors, not server faults. Thrown bare they inherited
@@ -151,6 +153,7 @@ export class InventoryMutationService {
           referenceId,
           createdBy,
           sku: variant.sku,
+          productTitle: variant.product?.title ?? null,
           variantCode: variant.variantCode,
           barcode: variant.barcode
         }
