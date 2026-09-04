@@ -88,11 +88,59 @@ export class SnapshotService {
       openPoValue: summary.openPoValue
     };
 
-    return prisma.dailyInventorySnapshot.upsert({
+    const snapshot = await prisma.dailyInventorySnapshot.upsert({
       where: { clientId_snapshotDate: { clientId, snapshotDate } },
       update: values,
       create: { clientId, snapshotDate, ...values }
     });
+
+    await this.takeLocationSnapshots(clientId, snapshotDate);
+    return snapshot;
+  }
+
+  /**
+   * The same measurement, per location.
+   *
+   * Kept alongside the company-wide row because a transfer is invisible in the company total
+   * -- moving 40 units from the warehouse to the shop changes nothing overall, and without a
+   * per-location record there is no way to see it happened at all.
+   *
+   * Value uses the variant's average cost, which is a single figure across every location:
+   * the same item is not valued differently depending on which shelf it sits on. That matches
+   * how inventoryValue is calculated everywhere else.
+   */
+  async takeLocationSnapshots(clientId: string, snapshotDate: Date) {
+    const stocks = await prisma.inventoryStock.findMany({
+      where: { clientId },
+      select: { locationId: true, quantity: true, variant: { select: { averageCost: true } } }
+    });
+
+    const byLocation = new Map<string, { units: number; value: number }>();
+    for (const row of stocks) {
+      const acc = byLocation.get(row.locationId) || { units: 0, value: 0 };
+      acc.units += row.quantity;
+      acc.value += row.quantity * Number(row.variant?.averageCost || 0);
+      byLocation.set(row.locationId, acc);
+    }
+
+    // Locations holding nothing still get a row. A location that emptied out today would
+    // otherwise keep yesterday's figure as its most recent snapshot and read as still full.
+    const locations = await prisma.stockLocation.findMany({
+      where: { clientId }, select: { id: true }
+    });
+    for (const loc of locations) {
+      if (!byLocation.has(loc.id)) byLocation.set(loc.id, { units: 0, value: 0 });
+    }
+
+    for (const [locationId, totals] of byLocation) {
+      await prisma.dailyLocationSnapshot.upsert({
+        where: { uq_location_snapshot_day: { locationId, snapshotDate } },
+        update: { totalUnits: totals.units, totalValue: totals.value },
+        create: { clientId, locationId, snapshotDate, totalUnits: totals.units, totalValue: totals.value }
+      });
+    }
+
+    return byLocation.size;
   }
 
   /** Runs today's snapshot for every tenant. One failure must not stop the rest. */
@@ -149,12 +197,17 @@ export class SnapshotService {
     const [transactions, variants] = await Promise.all([
       prisma.inventoryTransaction.findMany({
         where: { clientId },
-        select: { variantId: true, quantity: true, unitCost: true, createdAt: true },
+        select: { variantId: true, locationId: true, quantity: true, unitCost: true, createdAt: true },
         orderBy: { createdAt: 'asc' }
       }),
       prisma.productVariant.findMany({
         where: { clientId },
-        select: { id: true, createdAt: true, stocks: { select: { quantity: true } }, averageCost: true }
+        select: {
+          id: true, createdAt: true, averageCost: true,
+          // locationId is needed so the replay can be checked location by location, not just
+          // in total.
+          stocks: { select: { quantity: true, locationId: true } }
+        }
       })
     ]);
 
@@ -169,8 +222,14 @@ export class SnapshotService {
     // quantity x averageCost, and averageCost only moves on a receipt that carries a cost.
     const state = new Map<string, { qty: number; avgCost: number }>();
 
+    // The same replay split by location. Average cost stays global -- an item is not worth
+    // more because of which shelf it is on -- so only quantities are tracked per place, and
+    // valued against the variant's cost at that moment.
+    const locationState = new Map<string, Map<string, number>>(); // locationId -> variantId -> qty
+
     const snapshots: {
       snapshotDate: Date; totalValue: number; totalUnits: number; totalVariants: number;
+      locations: { locationId: string; totalUnits: number; totalValue: number }[];
     }[] = [];
 
     // Days are the SHOP's days, not UTC ones -- see getTimezone. Day keys are compared as
@@ -189,11 +248,22 @@ export class SnapshotService {
       // on a day that closed holding 265 units, because the variants were created later that
       // same morning.
       const endOfDay = startOfLocalDay(SnapshotService.nextDayKey(dayKey), timezone);
+
+      const locations = [...locationState.entries()].map(([locationId, held]) => {
+        let units = 0, value = 0;
+        for (const [variantId, qty] of held) {
+          units += qty;
+          value += qty * (state.get(variantId)?.avgCost || 0);
+        }
+        return { locationId, totalUnits: units, totalValue: Number(value.toFixed(2)) };
+      });
+
       return {
         snapshotDate: startOfLocalDay(dayKey, timezone),
         totalValue: Number(totalValue.toFixed(2)),
         totalUnits,
-        totalVariants: variants.filter(v => v.createdAt < endOfDay).length
+        totalVariants: variants.filter(v => v.createdAt < endOfDay).length,
+        locations
       };
     };
 
@@ -225,6 +295,11 @@ export class SnapshotService {
 
       current.qty = newQty;
       state.set(tx.variantId, current);
+
+      // Same movement, applied to the location it happened at.
+      if (!locationState.has(tx.locationId)) locationState.set(tx.locationId, new Map());
+      const held = locationState.get(tx.locationId)!;
+      held.set(tx.variantId, (held.get(tx.variantId) || 0) + delta);
     }
 
     // Carry forward to today so the series ends where the dashboard does.
@@ -251,14 +326,33 @@ export class SnapshotService {
     const valueDrift = Math.abs(replayedValue - actualValue);
     const valueMatch = valueDrift < Math.max(1, actualValue * 0.001);
 
+    // Locations are verified the same way as the company total. A per-location series that
+    // drifts is worse than none: the company figure would still look right while the
+    // breakdown underneath it quietly disagreed.
+    const actualByLocation = new Map<string, number>();
+    for (const v of variants) {
+      for (const st of v.stocks) {
+        actualByLocation.set(st.locationId, (actualByLocation.get(st.locationId) || 0) + st.quantity);
+      }
+    }
+    const locationMismatches: string[] = [];
+    for (const [locationId, held] of locationState) {
+      const replayed = [...held.values()].reduce((a, b) => a + b, 0);
+      const actual = actualByLocation.get(locationId) || 0;
+      if (replayed !== actual) locationMismatches.push(`${locationId}: replayed ${replayed} vs actual ${actual}`);
+    }
+
     const verification = {
-      ok: unitsMatch && valueMatch,
+      ok: unitsMatch && valueMatch && locationMismatches.length === 0,
+      locationMismatches,
       replayedUnits, actualUnits,
       replayedValue: Number(replayedValue.toFixed(2)),
       actualValue: Number(actualValue.toFixed(2)),
       valueDrift: Number(valueDrift.toFixed(2)),
-      reason: unitsMatch && valueMatch
+      reason: unitsMatch && valueMatch && locationMismatches.length === 0
         ? 'Replay reproduces the current state.'
+        : locationMismatches.length && unitsMatch && valueMatch
+          ? `Company totals match but ${locationMismatches.length} location(s) do not.`
         : !unitsMatch
           ? 'Replayed units do not match current stock -- the ledger is incomplete, so history cannot be trusted.'
           : 'Replayed value diverges beyond tolerance from current stock value.'
@@ -289,6 +383,17 @@ export class SnapshotService {
           // defaults -- see the note above on what history does not exist.
         }
       });
+
+      for (const loc of snap.locations) {
+        await prisma.dailyLocationSnapshot.upsert({
+          where: { uq_location_snapshot_day: { locationId: loc.locationId, snapshotDate: snap.snapshotDate } },
+          update: { totalUnits: loc.totalUnits, totalValue: loc.totalValue },
+          create: {
+            clientId, locationId: loc.locationId, snapshotDate: snap.snapshotDate,
+            totalUnits: loc.totalUnits, totalValue: loc.totalValue
+          }
+        });
+      }
     }
 
     return { clientId, days: snapshots.length, snapshots, applied: true, verification };
