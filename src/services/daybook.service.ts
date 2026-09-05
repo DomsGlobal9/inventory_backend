@@ -196,7 +196,14 @@ export class DayBookService {
       ...(locationId ? { locationId } : {})
     };
 
-    const [movements, locations, dispatches, posRaised, posReceived, newVariants] = await Promise.all([
+    // opening and measuredClosing depend only on the day window, not on the movements, so they
+    // are issued with the rest rather than after them. Each round trip to the database costs
+    // roughly 1.4s from the app's region, so a stage that waits for no reason is 1.4s the
+    // report takes to load for nothing.
+    const [
+      movements, locations, dispatches, posRaised, posReceived, newVariants,
+      opening, measured
+    ] = await Promise.all([
       prisma.inventoryTransaction.findMany({
         where: movementWhere,
         select: {
@@ -233,7 +240,9 @@ export class DayBookService {
       }),
       prisma.purchaseOrder.count({ where: { clientId, createdAt: { gte: start, lt: end } } }),
       prisma.purchaseOrder.count({ where: { clientId, receivedAt: { gte: start, lt: end } } }),
-      prisma.productVariant.count({ where: { clientId, createdAt: { gte: start, lt: end } } })
+      prisma.productVariant.count({ where: { clientId, createdAt: { gte: start, lt: end } } }),
+      this.getOpening(clientId, dayKey, start, locationId),
+      this.getMeasuredClosing(clientId, dayKey, start, end, inProgress, locationId)
     ]);
 
     // ─── IN / OUT, GROUPED BY REASON ──────────────────────────────────────────
@@ -287,7 +296,6 @@ export class DayBookService {
     // ─── OPENING AND CLOSING ──────────────────────────────────────────────────
     // Both views balance now: company-wide from DailyInventorySnapshot, a single location
     // from DailyLocationSnapshot.
-    const opening = await this.getOpening(clientId, dayKey, start, locationId);
 
     // Closing is CALCULATED from the day's movements.
     const closing = opening
@@ -303,7 +311,6 @@ export class DayBookService {
     //
     // For a finished day that source is the day's own snapshot, measured at the time. For
     // today, which has no closing snapshot yet, it is the stock physically on the shelves.
-    const measured = await this.getMeasuredClosing(clientId, dayKey, start, end, inProgress, locationId);
 
     const balanced = closing && measured !== null ? closing.units === measured : null;
 
