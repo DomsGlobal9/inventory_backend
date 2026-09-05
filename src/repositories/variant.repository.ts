@@ -110,9 +110,13 @@ export class VariantRepository {
         ]
       };
       
+      // Same includes as the fuzzy branch below. Without `stocks` the caller sums an
+      // undefined relation to 0, so an exact hit -- scanning a barcode, or pasting a whole
+      // SKU, which is how a purchase order line is usually added -- reported "Stock: 0" and
+      // flagged the item as low, while searching part of the same SKU reported it correctly.
       const exactMatches = await prisma.productVariant.findMany({
         where: exactWhere,
-        include: { product: true }
+        include: { product: true, locationProfiles: true, stocks: { include: { location: true } } }
       });
 
       if (exactMatches.length > 0) {
