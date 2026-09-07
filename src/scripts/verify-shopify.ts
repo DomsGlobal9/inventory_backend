@@ -173,6 +173,54 @@ async function main() {
 
   await prisma.shopifyOAuthState.deleteMany({ where: { nonce: { in: [nonce, expiredNonce] } } });
 
+  // ─── A RENAMED SHOP IS STILL THE SAME SHOP ────────────────────────────────
+  console.log('\nA RENAMED SHOP IS RECOGNISED, NOT DUPLICATED');
+
+  // Shopify lets a merchant change their .myshopify.com domain once. Keyed on the domain
+  // alone, a renamed store comes back as a stranger: a second installation, an empty id map,
+  // and the catalogue duplicated into their live storefront. The numeric shop id never changes,
+  // so it is what actually identifies a shop.
+  const shopId = `gid://shopify/Shop/${Date.now()}`;
+  const oldDomain = `before-${Date.now()}.myshopify.com`;
+  const newDomain = `after-${Date.now()}.myshopify.com`;
+
+  const created = await prisma.shopifyInstallation.create({
+    data: {
+      shopDomain: oldDomain, shopifyShopId: shopId, clientId: 'verify-tenant',
+      accessTokenEncrypted: encryptCredential('probe'), scopes: 'read_products'
+    },
+    select: { id: true }
+  });
+  await prisma.shopifyIdMap.create({
+    data: {
+      installationId: created.id, clientId: 'verify-tenant',
+      variantId: 'probe-variant', sku: 'PROBE-SKU',
+      shopifyProductId: 'gid://shopify/Product/1', shopifyVariantId: 'gid://shopify/ProductVariant/1'
+    }
+  });
+
+  // What completeInstall does when a callback arrives for an unfamiliar domain.
+  const sameShop = await prisma.shopifyInstallation.findFirst({
+    where: { shopifyShopId: shopId, shopDomain: { not: newDomain } },
+    select: { id: true, shopDomain: true }
+  });
+  check('a renamed shop is found by its permanent id, not its domain',
+    sameShop?.id === created.id, sameShop?.shopDomain ?? 'not found');
+
+  if (sameShop) {
+    await prisma.shopifyInstallation.update({ where: { id: sameShop.id }, data: { shopDomain: newDomain } });
+  }
+
+  const afterRename = await prisma.shopifyInstallation.count({ where: { shopifyShopId: shopId } });
+  check('the rename moves the installation rather than creating a second one', afterRename === 1,
+    `${afterRename} installations for one shop id`);
+
+  const mapsSurvived = await prisma.shopifyIdMap.count({ where: { installationId: created.id } });
+  check('the product mapping survives the rename, so nothing is duplicated on the storefront',
+    mapsSurvived === 1, `${mapsSurvived} mappings`);
+
+  await prisma.shopifyInstallation.delete({ where: { id: created.id } });
+
   // ─── SCOPES ───────────────────────────────────────────────────────────────
   console.log('\nDECLINED SCOPES ARE NOTICED');
 

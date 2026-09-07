@@ -2,7 +2,7 @@ import axios from 'axios';
 import { prisma } from '../lib/prisma';
 import { env } from '../config/env';
 import { encryptCredential, decryptCredential } from '../lib/credentialEncryption';
-import { normaliseShopDomain } from '../utils/shopifyDomain';
+import { normaliseShopDomain, adminApiBase } from '../utils/shopifyDomain';
 import { verifyOAuthCallback, generateNonce } from '../utils/shopifyHmac';
 
 /**
@@ -165,6 +165,30 @@ export class ShopifyInstallationService {
     const expiresIn: number | undefined = response.data.expires_in;
     const refreshExpiresIn: number | undefined = response.data.refresh_token_expires_in;
 
+    // Shopify's own numeric id for the shop, which never changes.
+    //
+    // A merchant CAN change their .myshopify.com domain -- once, but once is enough. Keyed on
+    // the domain alone, a renamed store comes back as a stranger: a second installation, an
+    // empty id map, and a catalogue duplicated into their live storefront. The id is read here
+    // so a rename is recognised as the same shop and only the domain moves.
+    const shopId = await this.fetchShopId(shopDomain, response.data.access_token);
+
+    if (shopId) {
+      const previous = await prisma.shopifyInstallation.findFirst({
+        where: { shopifyShopId: shopId, shopDomain: { not: shopDomain } },
+        select: { id: true, shopDomain: true }
+      });
+      if (previous) {
+        console.warn(
+          `[Shopify] ${previous.shopDomain} now answers as ${shopDomain} (same shop id ${shopId}). ` +
+          `Moving the existing installation rather than creating a second one.`
+        );
+        await prisma.shopifyInstallation.update({
+          where: { id: previous.id }, data: { shopDomain }
+        });
+      }
+    }
+
     // A merchant can approve fewer scopes than were asked for. Recorded rather than assumed, so
     // an operation that needs one can say which is missing instead of failing as "403 from
     // Shopify", which reads like our bug.
@@ -172,6 +196,7 @@ export class ShopifyInstallationService {
       where: { shopDomain },
       create: {
         shopDomain,
+        shopifyShopId: shopId,
         clientId: state.clientId,
         source: state.clientId ? 'SCALEEZY' : 'SHOPIFY',
         accessTokenEncrypted: encryptCredential(response.data.access_token),
@@ -187,6 +212,7 @@ export class ShopifyInstallationService {
         // A reinstall after an uninstall reuses the row and clears the tombstone, so the id
         // maps built last time survive -- otherwise every reinstall duplicates the catalogue.
         uninstalledAt: null,
+        shopifyShopId: shopId ?? undefined,
         clientId: state.clientId ?? undefined,
         accessTokenEncrypted: encryptCredential(response.data.access_token),
         refreshTokenEncrypted: response.data.refresh_token
@@ -201,6 +227,33 @@ export class ShopifyInstallationService {
     });
 
     return { installation, grantedScopes: granted, requestedScopes: env.SHOPIFY_SCOPES };
+  }
+
+  /**
+   * Reads the shop's permanent numeric id, immediately after the token is issued.
+   *
+   * Deliberately best-effort. If Shopify is briefly unavailable the install still succeeds --
+   * we hold a working token, and refusing the whole installation over a missing identifier
+   * would be a worse outcome than filling it in on the next install or sync. Null is recorded,
+   * not an error thrown.
+   */
+  private async fetchShopId(shopDomain: string, accessToken: string): Promise<string | null> {
+    try {
+      const response = await axios.post(
+        `${adminApiBase(shopDomain, env.SHOPIFY_API_VERSION)}/graphql.json`,
+        { query: '{ shop { id name } }' },
+        {
+          timeout: REQUEST_TIMEOUT_MS,
+          headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
+          validateStatus: () => true
+        }
+      );
+      const id = response.data?.data?.shop?.id;
+      return typeof id === 'string' && id ? id : null;
+    } catch (error) {
+      console.error(`[Shopify] could not read the shop id for ${shopDomain}; the install continues`, error);
+      return null;
+    }
   }
 
   /**
@@ -341,9 +394,21 @@ export class ShopifyInstallationService {
     return count;
   }
 
-  /** Which of the scopes we asked for the merchant did not grant. */
+  /**
+   * Which of the scopes we asked for the merchant did not grant.
+   *
+   * `write_x` implies `read_x`, and Shopify COLLAPSES the pair when it records what was
+   * granted: ask for `read_products,write_products` and it reports back `write_products`
+   * alone. Comparing the two lists literally therefore reports `read_products` as declined
+   * when it was granted -- and the merchant is told to reconnect and approve a permission
+   * they already approved, which they cannot fix because there is nothing wrong.
+   */
   missingScopes(granted: string): string[] {
     const have = new Set(granted.split(',').map(s => s.trim()).filter(Boolean));
+    // A granted write implies the matching read, so expand before comparing.
+    for (const scope of [...have]) {
+      if (scope.startsWith('write_')) have.add(scope.replace(/^write_/, 'read_'));
+    }
     return env.SHOPIFY_SCOPES.split(',')
       .map(s => s.trim())
       .filter(Boolean)

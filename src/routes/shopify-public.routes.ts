@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { env } from '../config/env';
-import { verifyWebhook } from '../utils/shopifyHmac';
+import { verifyWebhook, verifyOAuthCallback } from '../utils/shopifyHmac';
 import { normaliseShopDomain } from '../utils/shopifyDomain';
 import {
   shopifyInstallationService,
@@ -28,6 +28,52 @@ function frontendReturn(path: string, params: Record<string, string>) {
   const base = env.FRONTEND_URL.replace(/\/$/, '');
   return `${base}${path}?${new URLSearchParams(params)}`;
 }
+
+/**
+ * The App URL: where Shopify sends a merchant who installs from Shopify's side.
+ *
+ * This is a GET carrying `shop`, `timestamp` and `hmac`, and Shopify expects a 3xx to the
+ * grant screen. It is NOT the same as the authenticated POST a merchant uses from inside
+ * ScaleEzy, and both have to exist:
+ *
+ *   POST /shopify-connect/install   a signed-in merchant -- the tenant is known before OAuth
+ *   GET  /shopify/install           Shopify itself       -- no tenant is knowable at all
+ *
+ * Without this route the App URL has nothing to answer it, and installing from a listing or a
+ * shared link silently does nothing. There is no error to see; the merchant simply never
+ * arrives at the grant screen.
+ *
+ * The install still completes: the token is stored, and the installation lands UNCLAIMED --
+ * inert, syncing nothing -- until someone signs in and says it is theirs.
+ */
+router.get('/install', async (req: Request, res: Response) => {
+  const secret = env.SHOPIFY_API_SECRET;
+  if (!secret) {
+    return res.status(503).json({ success: false, message: 'Shopify is not configured here.' });
+  }
+
+  // Shopify signs this request too, with the same query-string scheme as the callback. Checked
+  // before anything else, because the next thing we do is build a URL out of `shop` -- and an
+  // unverified `shop` is a request to send a merchant somewhere we did not choose.
+  if (!verifyOAuthCallback(req.query as Record<string, unknown>, secret)) {
+    return res.status(401).json({ success: false, message: 'This request did not come from Shopify.' });
+  }
+
+  try {
+    const { authorizeUrl } = await shopifyInstallationService.beginInstall({
+      shop: String(req.query.shop ?? '')
+      // No clientId: nothing here can know which ScaleEzy workspace this shop belongs to, and
+      // guessing would bind a stranger's store to a tenant. It is claimed later, by a human.
+    });
+    return res.redirect(authorizeUrl);
+  } catch (error) {
+    const message = error instanceof ShopifyConfigurationError || error instanceof ShopifyInstallError
+      ? error.message
+      : 'Could not start the Shopify installation.';
+    console.error('[Shopify] install entry failed', error);
+    return res.redirect(frontendReturn('/settings', { shopify: 'failed', reason: message }));
+  }
+});
 
 /**
  * The OAuth callback.

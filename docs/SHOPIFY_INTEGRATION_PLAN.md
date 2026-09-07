@@ -238,20 +238,98 @@ uninstall actually stops delivery.
 
 ---
 
-## 5. Open decisions
+## 5. Decisions — settled
 
-These need answers from you, in roughly this order:
+All four are now closed. They are recorded here so Phase B starts from settled ground rather
+than re-deriving them, and so a later change is a visible decision rather than a drift.
 
-1. **The public hostname** — dedicated Shopify subdomain, gateway, or direct to the inventory
-   service? Blocks the Shopify app configuration.
-2. **Listed or unlisted** to begin with?
-3. **When Shopify and ScaleEzy disagree on stock**, and it is not our echo — does ScaleEzy
-   correct Shopify silently, or tell the merchant and wait?
-4. **Products in Shopify that ScaleEzy has never heard of** — leave alone, or import into
-   ScaleEzy? Leaving them alone is safer and probably right, but it means the storefront sells
-   things the inventory does not know about.
+| Question | Decision | Where it is enforced |
+|---|---|---|
+| Public hostname | `shopify.scaleezy.com`, pointed at the deployed inventory service | `SHOPIFY_APP_URL`, and nowhere else — no code reads a Host header |
+| Distribution | Public app, initially unlisted | Shopify app configuration; no code implication |
+| Stock disagreement that is not our echo | ScaleEzy stays authoritative: correct Shopify, and log the external change rather than adopting it | `ShopifyInventoryEcho` distinguishes our own writes from real external ones |
+| Shopify-only products | Left alone | Nothing writes to a product without a `ShopifyIdMap` row |
+| Locations | Explicit merchant mapping only | `ShopifyLocationMap`; there is no inference path to remove later |
+
+### Why the hostname is the one that could not be undone
+
+A Shopify redirect URL is compared as a string and is fixed for the life of every installation.
+Changing it means every merchant who has installed reinstalls. So it is deliberately a name we
+own rather than the hosting provider's — the service behind it can move without any merchant
+noticing.
+
+The gateway was ruled out on evidence rather than preference: its proxy requires a super-admin
+session or an `x-api-key`, and resolves the tenant from `x-active-client-id`. An OAuth callback
+is an anonymous browser redirect and a webhook is an anonymous POST. Neither can carry any of
+the three.
+
+## 5a. Infrastructure state
+
+| | |
+|---|---|
+| Inventory backend | `https://inventory-backend-6vk5.onrender.com` |
+| Gateway registry (`inventory`, PRODUCTION) | corrected from `http://localhost:3001` to the above; `healthEndpoint` set to `/health` |
+| `shopify.scaleezy.com` | not yet created — the remaining blocker |
+| Shopify credentials | not set anywhere; the routes fail closed until they are |
+
+Migrations run automatically on deploy (`build` is `prisma generate && prisma migrate deploy &&
+tsc`), and both Shopify migrations are already applied to this database, so a deploy records
+them as done rather than running them.
 
 ---
+
+## 5b. Shopify Dev Dashboard — the exact values
+
+Fill these in only once `shopify.scaleezy.com` resolves. Every URL below uses the permanent
+hostname, never the Render one, for the reason in §5.
+
+| Field | Value |
+|---|---|
+| App URL | `https://shopify.scaleezy.com/api/v1/shopify/install` |
+| Allowed redirection URL | `https://shopify.scaleezy.com/api/v1/shopify/callback` |
+| Embed app in Shopify admin | **Off** |
+| Webhooks endpoint | `https://shopify.scaleezy.com/api/v1/shopify/webhooks` |
+| Webhook API version | `2026-07` (must match `SHOPIFY_API_VERSION`) |
+| Legacy install flow | Off |
+
+Scopes:
+
+```
+read_products, write_products,
+read_inventory, write_inventory,
+read_locations,
+read_publications, write_publications
+```
+
+`read_publications` / `write_publications` are there because publish and unpublish are
+expressed as Online Store channel membership. `read_orders` is added in Phase D and
+deliberately not before -- an app that asks for order data it does not yet use is asking a
+merchant to grant something for nothing.
+
+Webhook topics to subscribe:
+
+| Topic | Why |
+|---|---|
+| `app/uninstalled` | otherwise a dead connection retries forever |
+| `customers/data_request` | required of a distributed app |
+| `customers/redact` | required of a distributed app |
+| `shop/redact` | required of a distributed app |
+
+`orders/create`, `orders/cancelled`, `refunds/create` and `inventory_levels/update` belong to
+Phase D and are not subscribed yet. Subscribing early would mean receiving order webhooks
+before anything can act on them.
+
+### Why the App URL is an endpoint and not a marketing page
+
+When a merchant installs from Shopify's side, Shopify sends a GET to the App URL carrying
+`shop`, `timestamp` and `hmac`, and expects a 3xx to the OAuth grant screen. So the App URL has
+to be a live endpoint that verifies that signature and redirects -- a static page there means
+installing from Shopify simply does nothing.
+
+That entry point is `GET /api/v1/shopify/install`, which is public and distinct from the
+authenticated `POST /api/v1/shopify-connect/install` a signed-in merchant uses. The two exist
+separately because they know different things: the authenticated one knows the tenant before
+OAuth begins, the public one cannot, so its installs land unclaimed.
 
 ## 6. Honest assessment of size
 
