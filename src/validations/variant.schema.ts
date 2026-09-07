@@ -35,5 +35,10 @@ export const bulkUpdateVariantSchema = z.object({
     sellingPrice: z.number().positive().optional(),
     costPrice: z.number().positive().optional(),
     reorderLevel: z.number().int().min(0).optional(),
-  })).min(1, "At least one update is required")
+  })).min(1, "At least one update is required"),
+  // Where a `quantity` applies. A quantity is a level at one place, and a business with a
+  // warehouse and a shop has no single obvious answer, so the caller states it. Ownership is
+  // checked against the tenant before it is used. Optional: a file that only sets prices or
+  // reorder levels changes properties of the variant itself and needs no location.
+  locationId: z.string().uuid().optional()
 });

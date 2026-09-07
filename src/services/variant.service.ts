@@ -36,11 +36,17 @@ export class VariantService {
     preferredLocationId: string | undefined,
     tx: Prisma.TransactionClient | typeof prisma
   ): Promise<string> {
+    // Asked for by name: honour it or refuse. Falling back would put the stock somewhere
+    // other than where the user said, which is worse than not importing at all -- and the
+    // tenant check is what stops one tenant writing into another's location.
     if (preferredLocationId) {
       const chosen = await tx.stockLocation.findFirst({
         where: { id: preferredLocationId, clientId }, select: { id: true }
       });
-      if (chosen) return chosen.id;
+      if (!chosen) {
+        throw new Error('That stock location does not exist for this account.');
+      }
+      return chosen.id;
     }
 
     const main = await tx.stockLocation.findFirst({

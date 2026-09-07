@@ -50,9 +50,10 @@ export class VariantController {
       const clientId = (req as any).clientId as string;
       const validatedData = bulkUpdateVariantSchema.parse(req.body);
       
-      // A CSV row gives one quantity, so it has to land somewhere. The location the user is
-      // working in is the right answer when there is one; the service falls back from there.
-      const locationId = (req as any).locationId as string | undefined;
+      // A CSV row gives one quantity, so it has to land somewhere. What the caller chose in
+      // the import dialog wins; the header's location is the fallback for API clients that
+      // did not say. The service verifies whichever it gets belongs to this tenant.
+      const locationId = validatedData.locationId || ((req as any).locationId as string | undefined);
       const result = await variantService.bulkUpdateVariants(clientId, validatedData.updates, locationId);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
