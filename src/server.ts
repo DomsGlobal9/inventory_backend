@@ -43,6 +43,12 @@ app.use(cookieParser());
 // exceed the default 100kb JSON limit -- raise it only for this path, ahead of the
 // global parser below, so every other endpoint keeps the smaller DoS-safe default.
 app.use('/api/v1/catalog-tryon', express.json({ limit: '30mb' }));
+// Shopify signs its webhooks over the RAW BYTES of the body. express.json() would parse them
+// away, and a re-serialised copy has different key order and whitespace, so the signature
+// would never verify again -- the single most common way a Shopify integration fails. Mounted
+// ahead of the global parser for that reason, exactly like the oversized path above.
+// The cap is Shopify's own maximum webhook payload; anything larger is not from them.
+app.use('/api/v1/shopify/webhooks', express.raw({ type: '*/*', limit: '5mb' }));
 app.use(express.json());
 app.use(requestLogger);
 

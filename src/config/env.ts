@@ -87,6 +87,34 @@ const envSchema = z.object({
   // silently dropped. The feature simply does not deliver until it is configured.
   STOREFRONT_SIGNING_SECRET: optionalStr(z.string().min(32, "STOREFRONT_SIGNING_SECRET should be at least 32 characters")),
 
+  // --- Shopify -----------------------------------------------------------------------
+  //
+  // All optional, and the integration fails SAFE without them: the OAuth routes refuse to
+  // start an install and say why, rather than redirecting a merchant to Shopify with an empty
+  // client_id and letting them meet an error on Shopify's own domain.
+  SHOPIFY_API_KEY: optionalStr(z.string().min(1)),
+  SHOPIFY_API_SECRET: optionalStr(z.string().min(1)),
+
+  // The public origin Shopify redirects back to, e.g. https://shopify.scaleezy.com. It must
+  // match the redirect URL registered in the Shopify app EXACTLY -- Shopify compares strings,
+  // not hosts. No trailing slash.
+  //
+  // This is env rather than derived from the request because the redirect_uri is part of the
+  // OAuth signature: taking it from the Host header would let anyone who can spoof that header
+  // choose where the authorization code is delivered.
+  SHOPIFY_APP_URL: optionalStr(z.string().url("SHOPIFY_APP_URL must be a valid https URL")),
+
+  // Shopify retires API versions on a fixed quarterly schedule, so this is pinned and dated
+  // rather than "latest" -- an integration that silently follows the newest version breaks on
+  // Shopify's timetable instead of ours.
+  SHOPIFY_API_VERSION: z.string().default('2026-07'),
+
+  // Requested at install. A merchant can grant fewer, so what was actually granted is stored
+  // per installation and checked before any operation that needs one.
+  SHOPIFY_SCOPES: z.string().default(
+    'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications'
+  ),
+
   // Submissions allowed per address per hour on the PUBLIC signup form. Deliberately low:
   // that endpoint is unauthenticated and each row costs a human's attention rather than
   // CPU. Configurable because a low ceiling is right for production but makes the endpoint

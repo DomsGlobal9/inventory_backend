@@ -175,13 +175,31 @@ export class StorefrontDispatcherService {
         },
         // Read now, not when the row was queued, so a rotated secret or a changed URL applies
         // to work already in the queue.
-        connection: { select: { id: true, baseUrl: true, credentialPrefix: true, status: true } }
+        connection: { select: { id: true, baseUrl: true, credentialPrefix: true, status: true, type: true } }
       }
     });
     if (!delivery) return false;
 
     if (delivery.connection.status === 'DISABLED' || delivery.connection.status === 'REVOKED') {
       await this.cancel(delivery.id, `Connection ${delivery.connection.status.toLowerCase()}`);
+      return false;
+    }
+
+    // Everything below this line speaks the GENERIC contract: a signed JSON envelope POSTed to
+    // a URL the merchant's developer built for us. Shopify does not have such an endpoint --
+    // the direction is reversed, and we must call Shopify's Admin API with an OAuth token
+    // instead.
+    //
+    // Without this check a Shopify connection would be handled here anyway. It would POST our
+    // envelope at the shop's domain, Shopify would answer 404, and the delivery would retry for
+    // days looking exactly like a network problem at the merchant's end. Failing with the real
+    // reason costs one branch and saves that entire investigation.
+    if (delivery.connection.type !== 'GENERIC') {
+      await this.cancel(
+        delivery.id,
+        `Deliveries to a ${delivery.connection.type} storefront need that platform's adapter, ` +
+        `which is not enabled on this deployment. Nothing was sent.`
+      );
       return false;
     }
 

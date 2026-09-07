@@ -27,6 +27,8 @@ import internalRoutes from './internal.routes';
 import { platformAdminAuthRoutes, platformAdminConsoleRoutes } from './platform-admin.routes';
 import leadRoutes from './lead.routes';
 import storefrontPublicRoutes from './storefront-public.routes';
+import shopifyPublicRoutes from './shopify-public.routes';
+import shopifyMerchantRoutes from './shopify-merchant.routes';
 import storefrontConnectionRoutes from './storefront-connection.routes';
 import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
@@ -67,6 +69,12 @@ router.use('/leads', leadRoutes);
 // clientId the caller sent.
 router.use('/storefront/v1', storefrontPublicRoutes);
 
+// Shopify's OAuth callback and its webhooks. Also ahead of the gate, and for a stronger
+// reason: a callback is a browser redirect and a webhook is a POST from Shopify's servers, so
+// neither can carry a session, an API key or a tenant header. Both prove themselves with
+// Shopify's HMAC instead, which is verified inside every handler before anything is read.
+router.use('/shopify', shopifyPublicRoutes);
+
 // Global Authentication Enforcement for all business APIs
 router.use(authenticate);
 // Platform-wide "latest activity" signal for the Platform Console -- every authenticated
@@ -103,6 +111,8 @@ router.use('/returns', returnsRoutes);
 router.use('/locations', locationRoutes);
 // Managing storefront connections: the merchant's side, behind the normal session.
 router.use('/storefront-connections', storefrontConnectionRoutes);
+// Connecting and claiming a Shopify store. Behind the session, unlike /shopify above.
+router.use('/shopify-connect', shopifyMerchantRoutes);
 router.use('/inventory-transfers', inventoryTransferRoutes);
 router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);

@@ -485,8 +485,8 @@ model ClientSequence {
 
 // 7. STOCK COUNT (AUDIT)
 model StockCount {
-  id       String           @id @default(uuid())
-  clientId String           @map("client_id")
+  id         String           @id @default(uuid())
+  clientId   String           @map("client_id")
   name       String // e.g., "August Monthly Count"
   status     StockCountStatus @default(DRAFT)
   locationId String?          @map("location_id")
@@ -924,9 +924,9 @@ model User {
   id       String @id @default(uuid())
   clientId String @map("client_id")
 
-  name     String
-  email    String
-  password String
+  name              String
+  email             String
+  password          String
   // AES-256-GCM encrypted copy of the current password, decryptable server-side, so a
   // Super Admin/Admin can view (not just reset) a staff member's password to re-share it.
   // `password` above (bcrypt, one-way) is what login actually checks -- this field is never
@@ -1316,8 +1316,8 @@ model SignupLead {
   convertedAt       DateTime? @map("converted_at")
 
   // Kept for triage of abuse or duplicate submissions from the public form.
-  sourceIp  String?  @map("source_ip")
-  userAgent String?  @map("user_agent") @db.Text
+  sourceIp  String? @map("source_ip")
+  userAgent String? @map("user_agent") @db.Text
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1329,7 +1329,6 @@ model SignupLead {
   @@index([createdAt])
   @@map("signup_leads")
 }
-
 
 /// Which supplier sells which item, and on what terms.
 ///
@@ -1489,9 +1488,9 @@ model StorefrontEvent {
 
   clientId String @map("client_id")
 
-  eventType StorefrontEventType @map("event_type")
+  eventType    StorefrontEventType @map("event_type")
   /// Part of the public contract. Old integrations must not break when `payload` grows.
-  eventVersion Int @default(1) @map("event_version")
+  eventVersion Int                 @default(1) @map("event_version")
 
   /// What the event is about, by PUBLIC identity. SKU and product code are stable, unique per
   /// tenant and meaningful to a merchant; internal uuids would couple every storefront's
@@ -1549,7 +1548,7 @@ model StorefrontConnection {
 
   /// The secret is shown once at creation and never stored. Only its hash is kept, so a leak
   /// of this table does not hand anyone the ability to impersonate us to a merchant.
-  credentialHash String @map("credential_hash")
+  credentialHash   String @map("credential_hash")
   /// A short, non-secret prefix so a credential can be named in the UI and in logs without
   /// printing anything usable.
   credentialPrefix String @map("credential_prefix")
@@ -1601,7 +1600,7 @@ model StorefrontDelivery {
   eventId      String @map("event_id")
   connectionId String @map("connection_id")
   /// Denormalised so the queue can be made fair per tenant without a join.
-  clientId String @map("client_id")
+  clientId     String @map("client_id")
 
   status   DeliveryStatus @default(PENDING)
   attempts Int            @default(0)
@@ -1611,7 +1610,7 @@ model StorefrontDelivery {
   /// When a worker claimed this row. A claim older than the lease means the process died
   /// mid-send; it is reclaimed rather than stranded, which is the failure that left every row
   /// of the previous outbox stuck forever.
-  lockedAt DateTime? @map("locked_at")
+  lockedAt      DateTime? @map("locked_at")
 
   lastResponseStatus Int?      @map("last_response_status")
   lastError          String?   @map("last_error")
@@ -1629,4 +1628,228 @@ model StorefrontDelivery {
   @@index([clientId, status])
   @@index([connectionId, createdAt])
   @@map("storefront_deliveries")
+}
+
+// =============================================================================
+// SHOPIFY
+// =============================================================================
+//
+// Shopify inverts the generic storefront contract in every direction, which is why it needs
+// tables of its own rather than more columns on StorefrontConnection:
+//
+//   generic    we POST to a URL the merchant gave us, holding a one-way HASH we only verify
+//   Shopify    we CALL Shopify's Admin API, holding a token we must REPLAY on every request
+//
+// A hash cannot be replayed. That single fact is why credentialHash is left alone here and the
+// token lives encrypted, reversibly, in a column of its own.
+
+/// Where an install came from, because the two directions have different security properties.
+enum ShopifyInstallSource {
+  /// The merchant was already signed in to ScaleEzy and pressed Connect, so the tenant is
+  /// known before OAuth begins and the installation is bound on arrival.
+  SCALEEZY
+  /// The install began on Shopify's side -- a listing, a link, a partner recommendation -- so
+  /// the callback arrives with a shop domain and NO idea which tenant it belongs to. It is
+  /// parked unclaimed and syncs nothing until a signed-in merchant claims it.
+  SHOPIFY
+}
+
+/// One Shopify store that has installed the app.
+///
+/// Separate from StorefrontConnection because the lifecycles genuinely differ: a shop can be
+/// installed but unclaimed (nobody knows whose it is yet), and a connection can be paused
+/// without the app being uninstalled.
+model ShopifyInstallation {
+  id String @id @default(uuid())
+
+  /// e.g. "my-store.myshopify.com". The stable identity Shopify uses everywhere; the
+  /// merchant-facing store name can change, this cannot.
+  shopDomain    String  @unique @map("shop_domain")
+  /// Shopify's own numeric id for the shop, read on the first API call. Survives a rename.
+  shopifyShopId String? @map("shopify_shop_id")
+
+  /// Null until claimed. An unclaimed installation is inert: no sync, no delivery, nothing
+  /// leaves ScaleEzy -- because we do not yet know whose data it would be.
+  clientId String? @map("client_id")
+
+  source ShopifyInstallSource @default(SCALEEZY)
+
+  /// AES-256-GCM via lib/credentialEncryption. Deliberately NOT hashed: every Admin API call
+  /// replays this. Never returned to a browser, never logged, never sent to the frontend.
+  accessTokenEncrypted  String    @map("access_token_encrypted")
+  /// Offline tokens now expire after an hour and are renewed with a refresh token, which
+  /// itself rotates on every use. Public apps must use expiring tokens for GraphQL Admin
+  /// requests, so a permanent token is not something to design around.
+  refreshTokenEncrypted String?   @map("refresh_token_encrypted")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+
+  /// What Shopify actually granted, which is not necessarily what was asked for -- a merchant
+  /// can decline scopes. Checked before any operation that depends on one.
+  scopes String
+
+  installedAt   DateTime  @default(now()) @map("installed_at")
+  uninstalledAt DateTime? @map("uninstalled_at")
+  claimedAt     DateTime? @map("claimed_at")
+  claimedByUser String?   @map("claimed_by_user")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  idMap       ShopifyIdMap[]
+  locationMap ShopifyLocationMap[]
+  echoes      ShopifyInventoryEcho[]
+
+  @@index([clientId])
+  @@index([uninstalledAt])
+  @@map("shopify_installations")
+}
+
+/// Our variant, and Shopify's ids for the same thing.
+///
+/// Without this every push is a search by SKU, and a create that timed out and was retried
+/// produces a second product. Shopify's own ids are the only safe way to say "update THAT one".
+model ShopifyIdMap {
+  id             String @id @default(uuid())
+  installationId String @map("installation_id")
+  clientId       String @map("client_id")
+
+  /// Ours.
+  variantId String @map("variant_id")
+  sku       String
+
+  /// Theirs. inventoryItemId is separate from the variant id because inventory is set against
+  /// the inventory item, not the variant -- a distinction that is easy to miss and produces
+  /// "not found" errors that read like a permissions problem.
+  shopifyProductId       String  @map("shopify_product_id")
+  shopifyVariantId       String  @map("shopify_variant_id")
+  shopifyInventoryItemId String? @map("shopify_inventory_item_id")
+
+  /// MATCHED when an existing Shopify variant was adopted by SKU, CREATED when we made it.
+  /// Kept because "we created this" is what makes a destructive change safe, and adoption of
+  /// something the merchant built by hand is not.
+  origin String @default("MATCHED")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  installation ShopifyInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@unique([installationId, variantId], name: "uq_shopify_map_variant")
+  @@unique([installationId, shopifyVariantId], name: "uq_shopify_map_shopify_variant")
+  @@index([clientId])
+  @@index([installationId, sku])
+  @@map("shopify_id_maps")
+}
+
+/// Our StockLocation, and the Shopify Location the merchant paired it with.
+///
+/// Never inferred. Guessing here publishes back-office warehouse stock to the public web.
+model ShopifyLocationMap {
+  id             String @id @default(uuid())
+  installationId String @map("installation_id")
+  clientId       String @map("client_id")
+
+  locationId        String @map("location_id")
+  shopifyLocationId String @map("shopify_location_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  installation ShopifyInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@unique([installationId, locationId], name: "uq_shopify_location_ours")
+  @@unique([installationId, shopifyLocationId], name: "uq_shopify_location_theirs")
+  @@index([clientId])
+  @@map("shopify_location_maps")
+}
+
+/// Every inbound Shopify webhook, recorded before it is acted on.
+///
+/// Shopify delivers the same webhook more than once by design, so an order must not be
+/// ingested twice -- the unique key is what makes that structural rather than hopeful.
+model ShopifyWebhookReceipt {
+  id String @id @default(uuid())
+
+  /// Shopify's X-Shopify-Webhook-Id, stable across redeliveries of the same event.
+  webhookId  String @map("webhook_id")
+  topic      String
+  shopDomain String @map("shop_domain")
+
+  processedAt DateTime? @map("processed_at")
+  /// APPLIED | DUPLICATE | ECHO | IGNORED | FAILED
+  outcome     String?
+  error       String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([webhookId, topic], name: "uq_shopify_webhook")
+  @@index([shopDomain, createdAt])
+  @@map("shopify_webhook_receipts")
+}
+
+/// The last inventory value WE wrote to Shopify, per item per location.
+///
+/// This is the echo-loop cure. We set Shopify to 25; Shopify dutifully fires
+/// inventory_levels/update saying 25; without this we read that as a merchant change, correct
+/// ourselves, raise an event, and push again -- forever. A webhook whose value matches what we
+/// last wrote is our own voice coming back, and is dropped. Anything else is a real external
+/// change and is surfaced rather than silently applied, because ScaleEzy is the authority.
+///
+/// A time window alone cannot do this: Shopify webhooks can arrive minutes late under load.
+model ShopifyInventoryEcho {
+  id             String @id @default(uuid())
+  installationId String @map("installation_id")
+
+  shopifyInventoryItemId String @map("shopify_inventory_item_id")
+  shopifyLocationId      String @map("shopify_location_id")
+
+  quantity  Int
+  writtenAt DateTime @default(now()) @map("written_at")
+
+  installation ShopifyInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@unique([installationId, shopifyInventoryItemId, shopifyLocationId], name: "uq_shopify_echo")
+  @@map("shopify_inventory_echoes")
+}
+
+/// A pending OAuth install, held server-side between the redirect out and the callback back.
+///
+/// Shopify's guide suggests keeping the `state` nonce in a signed cookie. A row is stronger and
+/// solves a second problem at the same time:
+///
+///   1. it proves the callback belongs to an install WE started, which a cookie also does; and
+///   2. it carries the ScaleEzy clientId across the round trip WITHOUT the browser holding it.
+///
+/// The second matters. The tenant a shop gets bound to decides whose inventory is published to
+/// that storefront. If that binding travelled through the browser, anyone able to edit a cookie
+/// could attach their own Shopify store to somebody else's tenant, or somebody else's store to
+/// theirs. Here the browser carries only an opaque nonce, and the binding is read from a row it
+/// cannot reach.
+///
+/// Rows are single-use and short-lived: consumed on the callback, and expired otherwise, so a
+/// nonce captured from a browser's history cannot be replayed later.
+model ShopifyOAuthState {
+  id String @id @default(uuid())
+
+  /// The opaque value sent to Shopify as `state` and compared on the way back.
+  nonce String @unique
+
+  /// Which shop this install is for. Compared against the `shop` Shopify returns -- a callback
+  /// that quotes our nonce but a different shop is an attempt to redirect the binding.
+  shopDomain String @map("shop_domain")
+
+  /// Null for an install that began on Shopify's side, where no tenant is known yet.
+  clientId      String? @map("client_id")
+  /// Who pressed Connect, for the audit trail of who bound this shop to this tenant.
+  startedByUser String? @map("started_by_user")
+
+  /// Set when the callback consumes it. A second callback with the same nonce is a replay and
+  /// is refused rather than quietly creating a second installation.
+  consumedAt DateTime? @map("consumed_at")
+
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("shopify_oauth_states")
 }
