@@ -89,11 +89,21 @@ export class WebhookDispatcherService {
           });
         } catch (err: any) {
           console.error(`Failed to dispatch event ${event.id}:`, err.message);
-          // Release the claim so the next poll retries it
+          // Release the claim so the next poll retries it. If THIS write fails the event is
+          // stranded in PROCESSING -- the poll only picks up PENDING, so it is never retried
+          // and never delivered, and the storefront's stock quietly drifts from ours. That is
+          // worth a line in the log rather than an empty catch: it cannot be recovered here,
+          // but it must not be invisible.
           await prisma.inventoryEvent.update({
             where: { id: event.id },
             data: { status: 'PENDING' }
-          }).catch(() => {});
+          }).catch((releaseErr: any) => {
+            console.error(
+              `[WebhookDispatcher] Event ${event.id} is stuck in PROCESSING: the claim could ` +
+              `not be released, so it will not be retried. Reset it to PENDING to redeliver.`,
+              releaseErr?.message || releaseErr
+            );
+          });
         }
       }
     } catch (err) {
