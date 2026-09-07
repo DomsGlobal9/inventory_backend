@@ -52,12 +52,18 @@ export class ReportController {
     }
   }
 
-  // Admin endpoint to manually trigger a snapshot for the current tenant
+  /**
+   * Records any finished day this tenant has no snapshot for.
+   *
+   * There is deliberately no way to snapshot TODAY: a snapshot is a day's closing figure, and
+   * one taken at noon would be a partial day filed under a label that reads as final. Today's
+   * numbers are live all day and the day book reads them straight from stock.
+   */
   async createSnapshot(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = getClientId(req, res);
       if (!clientId) return;
-      const data = await snapshotService.takeSnapshot(clientId);
+      const data = await snapshotService.catchUpTenant(clientId);
       res.status(201).json({ success: true, data });
     } catch (error) {
       next(error);
@@ -76,7 +82,7 @@ export class ReportController {
         return;
       }
 
-      const data = await snapshotService.runDailyBatch();
+      const data = await snapshotService.catchUpAll();
       res.status(200).json({ success: true, data });
     } catch (error) {
       next(error);

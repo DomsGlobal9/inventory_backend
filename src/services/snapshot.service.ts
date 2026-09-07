@@ -2,7 +2,7 @@ import { prisma } from '../lib/prisma';
 import { ReportService } from './report.service';
 import { ValuationService } from './valuation.service';
 import {
-  localDayKey, startOfLocalDay, localDayKeyFromParts, todayKey, DEFAULT_TIMEZONE
+  localDayKey, startOfLocalDay, localDayKeyFromParts, todayKey, previousDayKey, DEFAULT_TIMEZONE
 } from '../utils/businessDay';
 
 /**
@@ -67,25 +67,132 @@ export class SnapshotService {
   }
 
   /**
-   * Records today's state. This is measurement, not reconstruction -- it reads the live
-   * figures the dashboard shows and stores them against today's date.
+   * The closing state at the end of a business day, worked back from live stock.
+   *
+   *     closing(D) = what is on the shelves now  -  everything that moved after D ended
+   *
+   * Done per variant, so units are exact at both company and location level. Value uses each
+   * variant's average cost as it stands today, because cost history is not stored -- the same
+   * caveat the day book already carries, stated rather than hidden. Per-variant rather than
+   * scaling one total keeps the approximation confined to cost drift on each item.
+   *
+   * Deriving it this way rather than reading live stock at midnight is the point: the answer
+   * does not depend on WHEN this runs. A tick at 00:05, or at 09:00 the next morning after
+   * the host slept all night, both produce the same figure for that day. Reading live stock
+   * only gives a day's closing if the job happens to fire in the last moments before
+   * midnight, and silently gives a partial day if it does not.
    */
-  async takeSnapshot(clientId: string, date: Date = new Date()) {
+  async closingForDay(clientId: string, dayKey: string) {
     const timezone = await this.getTimezone(clientId);
-    const summary = await this.reportService.getDashboardSummary(clientId);
-    const valuation = await this.valuationService.getTenantValue(clientId);
-    // Dated by the shop's calendar, and re-run through the day so the row always holds the
-    // most recent figure -- by closing time that is the day's true end state.
-    const snapshotDate = startOfLocalDay(localDayKey(date, timezone), timezone);
+    const dayEnd = startOfLocalDay(SnapshotService.nextDayKey(dayKey), timezone);
+    const after = { clientId, createdAt: { gte: dayEnd } };
+
+    const [stocks, afterByVariant, afterByVariantLocation, locations] = await Promise.all([
+      prisma.inventoryStock.findMany({
+        where: { clientId },
+        select: {
+          variantId: true, locationId: true, quantity: true,
+          variant: { select: { averageCost: true } }
+        }
+      }),
+      prisma.inventoryTransaction.groupBy({
+        by: ['variantId'], where: after, _sum: { quantity: true }
+      }),
+      prisma.inventoryTransaction.groupBy({
+        by: ['variantId', 'locationId'], where: after, _sum: { quantity: true }
+      }),
+      prisma.stockLocation.findMany({ where: { clientId }, select: { id: true } })
+    ]);
+
+    const costOf = new Map<string, number>();
+    const liveByVariant = new Map<string, number>();
+    const liveByVariantLocation = new Map<string, number>();
+    for (const row of stocks) {
+      costOf.set(row.variantId, Number(row.variant?.averageCost || 0));
+      liveByVariant.set(row.variantId, (liveByVariant.get(row.variantId) || 0) + row.quantity);
+      const k = `${row.variantId}|${row.locationId}`;
+      liveByVariantLocation.set(k, (liveByVariantLocation.get(k) || 0) + row.quantity);
+    }
+
+    // Company-wide: undo, per variant, everything that moved after the day ended.
+    let units = 0, value = 0;
+    const variantIds = new Set<string>([
+      ...liveByVariant.keys(),
+      ...afterByVariant.map(g => g.variantId)
+    ]);
+    for (const variantId of variantIds) {
+      const movedAfter = afterByVariant.find(g => g.variantId === variantId);
+      const qty = (liveByVariant.get(variantId) || 0) - Number(movedAfter?._sum.quantity || 0);
+      units += qty;
+      value += qty * (costOf.get(variantId) || 0);
+    }
+
+    // Per location, the same subtraction against that location's own movements. A location
+    // that has since emptied still gets a row, or its previous snapshot stands as its most
+    // recent reading and it reads as still full.
+    const byLocation = new Map<string, { units: number; value: number }>();
+    for (const loc of locations) byLocation.set(loc.id, { units: 0, value: 0 });
+
+    const pairs = new Set<string>([
+      ...liveByVariantLocation.keys(),
+      ...afterByVariantLocation.filter(g => g.locationId).map(g => `${g.variantId}|${g.locationId}`)
+    ]);
+    for (const key of pairs) {
+      const [variantId, locationId] = key.split('|');
+      const movedAfter = afterByVariantLocation.find(
+        g => g.variantId === variantId && g.locationId === locationId
+      );
+      const qty = (liveByVariantLocation.get(key) || 0) - Number(movedAfter?._sum.quantity || 0);
+      const acc = byLocation.get(locationId) || { units: 0, value: 0 };
+      acc.units += qty;
+      acc.value += qty * (costOf.get(variantId) || 0);
+      byLocation.set(locationId, acc);
+    }
+
+    return { units, value, byLocation };
+  }
+
+  /**
+   * Writes the closing snapshot for a day that has FINISHED.
+   *
+   * A snapshot dated D means "this is how day D ended". Writing one for the day in progress
+   * would file a half-finished number under a label that reads as final -- and the day book
+   * takes the previous day's snapshot as today's opening balance, so a partial figure there
+   * becomes a wrong opening tomorrow and the books stop balancing.
+   *
+   * Today therefore has no row, deliberately. The day book shows live figures for it and
+   * says the day is still running.
+   */
+  async snapshotDay(clientId: string, dayKey: string) {
+    const timezone = await this.getTimezone(clientId);
+    if (dayKey >= todayKey(timezone)) {
+      throw new Error(`${dayKey} has not finished in ${timezone}; a snapshot would be a partial day`);
+    }
+
+    const snapshotDate = startOfLocalDay(dayKey, timezone);
+
+    // Product status, purchase-order status and reorder levels are not versioned, so for any
+    // day older than the one just gone there is no honest way to state them. They are left at
+    // zero -- visibly missing -- rather than filled with today's value, which would be
+    // indistinguishable from a real measurement. For the day that just closed, today's values
+    // are still the truth, so they are recorded.
+    const justClosed = dayKey === previousDayKey(todayKey(timezone));
+
+    // None of these depend on each other, and a round trip here costs over a second.
+    const [closing, variantCount, live] = await Promise.all([
+      this.closingForDay(clientId, dayKey),
+      prisma.productVariant.count({ where: { clientId } }),
+      justClosed ? this.reportService.getDashboardSummary(clientId) : Promise.resolve(null)
+    ]);
 
     const values = {
-      totalValue: summary.inventoryValue,
-      totalUnits: valuation.totalUnits,
-      totalVariants: valuation.totalVariants,
-      activeProducts: summary.activeProducts,
-      lowStockCount: summary.lowStockCount,
-      deadStockValue: summary.deadStockValue,
-      openPoValue: summary.openPoValue
+      totalValue: closing.value,
+      totalUnits: closing.units,
+      totalVariants: variantCount,
+      activeProducts: live?.activeProducts ?? 0,
+      lowStockCount: live?.lowStockCount ?? 0,
+      deadStockValue: live?.deadStockValue ?? 0,
+      openPoValue: live?.openPoValue ?? 0
     };
 
     const snapshot = await prisma.dailyInventorySnapshot.upsert({
@@ -94,67 +201,78 @@ export class SnapshotService {
       create: { clientId, snapshotDate, ...values }
     });
 
-    await this.takeLocationSnapshots(clientId, snapshotDate);
+    // Together rather than one at a time: they are independent rows, and each round trip to
+    // the database costs over a second from the app's region, so a shop with five locations
+    // was paying five seconds a day for writes that could all be in flight at once.
+    await Promise.all([...closing.byLocation].map(([locationId, totals]) =>
+      prisma.dailyLocationSnapshot.upsert({
+        where: { uq_location_snapshot_day: { locationId, snapshotDate } },
+        update: { totalUnits: totals.units, totalValue: totals.value },
+        create: { clientId, locationId, snapshotDate, totalUnits: totals.units, totalValue: totals.value }
+      })
+    ));
+
     return snapshot;
   }
 
   /**
-   * The same measurement, per location.
+   * Fills in every finished day this tenant has no snapshot for.
    *
-   * Kept alongside the company-wide row because a transfer is invisible in the company total
-   * -- moving 40 units from the warehouse to the shop changes nothing overall, and without a
-   * per-location record there is no way to see it happened at all.
+   * This is what lets the engine survive a host that sleeps. Nothing has to happen at
+   * midnight: each day's closing is derived from the ledger, so a run at any later hour
+   * writes exactly the same rows. A machine that was off for three days catches all three up
+   * the next time it wakes.
    *
-   * Value uses the variant's average cost, which is a single figure across every location:
-   * the same item is not valued differently depending on which shelf it sits on. That matches
-   * how inventoryValue is calculated everywhere else.
+   * @param maxDays how far back one pass reaches, so a tenant with a long untouched history
+   *                cannot make a single tick run for minutes.
    */
-  async takeLocationSnapshots(clientId: string, snapshotDate: Date) {
-    const stocks = await prisma.inventoryStock.findMany({
+  async catchUpTenant(clientId: string, maxDays = 14) {
+    const timezone = await this.getTimezone(clientId);
+    const yesterday = previousDayKey(todayKey(timezone));
+
+    const latest = await prisma.dailyInventorySnapshot.findFirst({
       where: { clientId },
-      select: { locationId: true, quantity: true, variant: { select: { averageCost: true } } }
+      orderBy: { snapshotDate: 'desc' },
+      select: { snapshotDate: true }
     });
 
-    const byLocation = new Map<string, { units: number; value: number }>();
-    for (const row of stocks) {
-      const acc = byLocation.get(row.locationId) || { units: 0, value: 0 };
-      acc.units += row.quantity;
-      acc.value += row.quantity * Number(row.variant?.averageCost || 0);
-      byLocation.set(row.locationId, acc);
-    }
-
-    // Locations holding nothing still get a row. A location that emptied out today would
-    // otherwise keep yesterday's figure as its most recent snapshot and read as still full.
-    const locations = await prisma.stockLocation.findMany({
-      where: { clientId }, select: { id: true }
-    });
-    for (const loc of locations) {
-      if (!byLocation.has(loc.id)) byLocation.set(loc.id, { units: 0, value: 0 });
-    }
-
-    for (const [locationId, totals] of byLocation) {
-      await prisma.dailyLocationSnapshot.upsert({
-        where: { uq_location_snapshot_day: { locationId, snapshotDate } },
-        update: { totalUnits: totals.units, totalValue: totals.value },
-        create: { clientId, locationId, snapshotDate, totalUnits: totals.units, totalValue: totals.value }
+    // Resume the morning after the last snapshot. With none, start at the first movement, so
+    // a tenant's recorded history begins where its trading did.
+    let cursor: string;
+    if (latest) {
+      cursor = SnapshotService.nextDayKey(localDayKey(latest.snapshotDate, timezone));
+    } else {
+      const first = await prisma.inventoryTransaction.findFirst({
+        where: { clientId }, orderBy: { createdAt: 'asc' }, select: { createdAt: true }
       });
+      if (!first) return { clientId, written: [] as string[] };
+      cursor = localDayKey(first.createdAt, timezone);
     }
 
-    return byLocation.size;
+    const written: string[] = [];
+    while (cursor <= yesterday && written.length < maxDays) {
+      await this.snapshotDay(clientId, cursor);
+      written.push(cursor);
+      cursor = SnapshotService.nextDayKey(cursor);
+    }
+    return { clientId, written };
   }
 
-  /** Runs today's snapshot for every tenant. One failure must not stop the rest. */
-  async runDailyBatch() {
+  /**
+   * Catches every tenant up. One tenant failing must not stop the others: they are unrelated
+   * businesses, and a bad row in one is no reason to leave the rest unrecorded.
+   */
+  async catchUpAll() {
     const clients = await this.getActiveTenants();
     const results = [];
 
     for (const clientId of clients) {
       try {
-        const snapshot = await this.takeSnapshot(clientId);
-        results.push({ clientId, success: true, id: snapshot.id });
+        const r = await this.catchUpTenant(clientId);
+        results.push({ clientId, success: true, written: r.written });
       } catch (error) {
-        console.error(`[SnapshotService] Failed for ${clientId}:`, error);
-        results.push({ clientId, success: false, error: (error as Error).message });
+        console.error(`[SnapshotService] Catch-up failed for ${clientId}:`, error);
+        results.push({ clientId, success: false, error: (error as Error).message, written: [] as string[] });
       }
     }
     return results;
