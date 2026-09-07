@@ -60,15 +60,35 @@ export interface StorefrontProduct {
 
 /**
  * A product is visible to a storefront when the merchant has published it and it is not
- * archived or in the bin. Stock is deliberately NOT part of this: something out of stock is
- * still a real product, and whether to show it is the storefront's decision, made from the
- * `sellable` flag rather than by us hiding it.
+ * archived or in the bin.
+ *
+ * ACTIVE is what "published" means here. The wizard maps its publish switch straight to the
+ * status (`isPublished ? 'ACTIVE' : 'DRAFT'`), and nothing in the application has ever written
+ * `publishedAt` -- all 13 ACTIVE products carry null. Requiring that column would have shown
+ * every storefront an empty catalogue forever, with nothing to indicate why. It is now set
+ * going forward, for storefronts that want to sort by newest, but it is not what decides
+ * visibility.
+ *
+ * Stock is deliberately not part of this: something out of stock is still a real product, and
+ * whether to show it is the storefront's decision, made from `sellable` rather than by us
+ * hiding the product and leaving a dead link behind.
  */
 const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = {
   status: 'ACTIVE',
-  publishedAt: { not: null },
   trashedAt: null
 };
+
+/**
+ * The same rule, applied to a product already in hand rather than as a query.
+ *
+ * Kept immediately beside ELIGIBLE_PRODUCT because the two must agree: when they were written
+ * separately they drifted within the hour, and the symptom was a product visible in the read
+ * API while every event about it was silently discarded -- a storefront that could see it but
+ * would never be told when it changed.
+ */
+function isEligible(product: { status: string; trashedAt: Date | null }): boolean {
+  return product.status === 'ACTIVE' && product.trashedAt === null;
+}
 
 /** Locations in scope, resolved once. An empty scope means all of the tenant's locations. */
 async function resolveLocationIds(scope: CatalogueScope): Promise<string[]> {
@@ -301,7 +321,7 @@ export class StorefrontCatalogueService {
       where: { id: variantId, clientId: scope.clientId },
       select: {
         sku: true,
-        product: { select: { productCode: true, status: true, publishedAt: true, trashedAt: true } },
+        product: { select: { productCode: true, status: true, trashedAt: true } },
         stocks: { select: { locationId: true, quantity: true, reservedQty: true } },
         locationProfiles: { select: { locationId: true, isAvailable: true, priceOverride: true } }
       }
@@ -311,10 +331,15 @@ export class StorefrontCatalogueService {
     return {
       sku: variant.sku,
       productCode: variant.product.productCode,
-      /** Whether the storefront should be told about this at all. */
-      eligible: variant.product.status === 'ACTIVE'
-        && variant.product.publishedAt !== null
-        && variant.product.trashedAt === null,
+      /**
+       * Whether the storefront should be told about this at all.
+       *
+       * Must stay the same rule as ELIGIBLE_PRODUCT above. Having written it twice, it
+       * immediately drifted -- this copy still demanded publishedAt after the query stopped
+       * doing so, which made the read API show a product while events about it were silently
+       * dropped. Expressed against the same fields so the two are checkable side by side.
+       */
+      eligible: isEligible(variant.product),
       stock: resolveStock(variant.stocks, variant.locationProfiles, scoped)
     };
   }

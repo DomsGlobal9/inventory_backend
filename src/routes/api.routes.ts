@@ -26,6 +26,8 @@ import inventoryAlertRoutes from './inventory-alert.routes';
 import internalRoutes from './internal.routes';
 import { platformAdminAuthRoutes, platformAdminConsoleRoutes } from './platform-admin.routes';
 import leadRoutes from './lead.routes';
+import storefrontPublicRoutes from './storefront-public.routes';
+import storefrontConnectionRoutes from './storefront-connection.routes';
 import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
 import dayBookRoutes from './daybook.routes';
@@ -57,6 +59,13 @@ router.use('/client-errors', clientErrorRoutes);
 // is that a prospect has no account yet. It only records an enquiry -- it creates no client,
 // workspace, login or role -- so there is nothing here for an anonymous caller to provision.
 router.use('/leads', leadRoutes);
+
+// The API a merchant's website calls. Mounted ahead of the global gate below because the
+// caller is a storefront holding a connection credential, not a person with a session cookie.
+// It authenticates itself (authenticateStorefront), and that credential identifies a
+// connection, which supplies the tenant and the location scope -- so nothing here trusts a
+// clientId the caller sent.
+router.use('/storefront/v1', storefrontPublicRoutes);
 
 // Global Authentication Enforcement for all business APIs
 router.use(authenticate);
@@ -92,6 +101,8 @@ router.use('/sales-orders', salesOrderRoutes);
 router.use('/dispatches', dispatchRoutes);
 router.use('/returns', returnsRoutes);
 router.use('/locations', locationRoutes);
+// Managing storefront connections: the merchant's side, behind the normal session.
+router.use('/storefront-connections', storefrontConnectionRoutes);
 router.use('/inventory-transfers', inventoryTransferRoutes);
 router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);

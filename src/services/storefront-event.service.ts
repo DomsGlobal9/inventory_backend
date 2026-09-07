@@ -122,6 +122,52 @@ export class StorefrontEventService {
   }
 
   /**
+   * Proves a connection works, before any real stock depends on it.
+   *
+   * Deliberately a real event through the real pipeline, not a special-cased ping: what it
+   * proves is then what will actually happen in production -- the URL resolves and is not
+   * private, the signature verifies at the far end, and the receiver answers 2xx. A bespoke
+   * test path can pass while the real one fails, which is worse than no test at all.
+   *
+   * It is sent immediately rather than waiting for the next cycle, because the merchant is
+   * watching the screen.
+   */
+  async sendTestEvent(clientId: string, connectionId: string) {
+    const event = await prisma.storefrontEvent.create({
+      data: {
+        clientId,
+        eventType: StorefrontEventType.PRODUCT_UPDATED,
+        eventVersion: 1,
+        payload: {
+          test: true,
+          message: 'Test event from Scaleezy Inventory. If you can read this, the connection works.',
+          sentAt: new Date().toISOString()
+        },
+        deliveries: {
+          create: { connectionId, clientId, status: 'PENDING', nextAttemptAt: new Date() }
+        }
+      },
+      select: { id: true, deliveries: { select: { id: true } } }
+    });
+
+    const { StorefrontDispatcherService } = await import('./storefront-dispatcher.service');
+    await StorefrontDispatcherService.runOnce();
+
+    const delivery = await prisma.storefrontDelivery.findFirst({
+      where: { eventId: event.id },
+      select: { status: true, lastResponseStatus: true, lastError: true, lastDurationMs: true }
+    });
+
+    return {
+      delivered: delivery?.status === 'DELIVERED',
+      status: delivery?.status ?? 'PENDING',
+      responseStatus: delivery?.lastResponseStatus ?? null,
+      error: delivery?.lastError ?? null,
+      durationMs: delivery?.lastDurationMs ?? null
+    };
+  }
+
+  /**
    * Builds one event per connection and queues a delivery for each.
    *
    * Per connection rather than one shared event, because the body genuinely differs: scope

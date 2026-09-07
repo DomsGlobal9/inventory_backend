@@ -33,7 +33,10 @@ export class ProductService {
       craft: data.craft,
       brand: data.brand,
       basePrice: data.basePrice,
-      status: data.status
+      status: data.status,
+      // Published straight from the wizard rather than saved as a draft first, which is the
+      // common path. See updateProduct for why this column needs setting at all.
+      publishedAt: data.status === 'ACTIVE' ? new Date() : null
     };
 
     return productRepository.create(productData);
@@ -57,6 +60,16 @@ export class ProductService {
       const existing = await this.getProductById(id, clientId);
       updateData.slug = `${this.generateSlug(data.title)}-${existing.productCode.toLowerCase()}`;
     }
+
+    // Stamp the moment a product first goes live. The column has existed since the beginning
+    // and nothing has ever written it -- every ACTIVE product in the database carries null --
+    // so anything asking "what was published, and when" got no answer. Set only on the
+    // transition, so re-saving a live product does not keep moving its publication date.
+    if (data.status === 'ACTIVE') {
+      const existing = await this.getProductById(id, clientId);
+      if (!existing.publishedAt) updateData.publishedAt = new Date();
+    }
+
     return productRepository.updateSafe(id, clientId, updateData);
   }
 

@@ -6,8 +6,8 @@ import { errorHandler } from './middleware/error.middleware';
 
 import { prisma } from './lib/prisma';
 import { tenantRateLimiter } from './middleware/rate-limiter.middleware';
-import { WebhookDispatcherService } from './services/webhook-dispatcher.service';
 import { SnapshotScheduler } from './jobs/snapshot.scheduler';
+import { StorefrontDispatcherService } from './services/storefront-dispatcher.service';
 
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
@@ -86,8 +86,12 @@ const PORT = env.PORT;
 
 app.listen(PORT, () => {
   console.log(`🚀 Inventory Microservice running on port ${PORT}`);
-  WebhookDispatcherService.startPolling();
+  // The old single-destination webhook poller is not started. It read one global
+  // STOREFRONT_WEBHOOK_URL for every tenant, carried no clientId, and claimed rows before
+  // checking it had somewhere to send them -- which is why all 747 of its events are stranded.
+  // StorefrontDispatcherService replaces it; inventory_events stops growing from here.
   // The daily snapshot job existed but nothing ever called it, so the trend chart was fed
   // only by the old fabricating backfill.
   SnapshotScheduler.start();
+  StorefrontDispatcherService.start();
 });

@@ -1,7 +1,21 @@
 import { prisma } from '../lib/prisma';
 import { TransactionType, InventoryReason, Prisma } from '@prisma/client';
 import { InventoryAlertService } from './inventory-alert.service';
-import { InventoryEventService } from './inventory-event.service';
+import { storefrontEventService } from './storefront-event.service';
+
+/**
+ * Fire-and-forget, on purpose.
+ *
+ * The caller's transaction has committed by the time this runs, so nothing here can roll the
+ * movement back, and nothing here is allowed to reject into it. Failures are logged inside
+ * storefrontEventService and recovered by the storefront's own incremental sync.
+ */
+function queueStorefrontNotification(clientId: string, variantId: string, previousQuantity: number) {
+  setImmediate(() => {
+    void storefrontEventService.stockUpdated(clientId, variantId, previousQuantity)
+      .catch(err => console.error('[StorefrontEvents] stockUpdated failed', err));
+  });
+}
 
 interface MovementInput {
   clientId: string;
@@ -169,15 +183,21 @@ export class InventoryMutationService {
         variant.reorderLevel
       );
 
-      // 6. Dispatch Outbox Event for external systems
-      await InventoryEventService.createStockUpdatedEvent(
-        tx,
-        clientId,
-        variantId,
-        locationId,
-        oldLocationQty,
-        newLocationQty
-      );
+      // 6. Tell any connected storefront.
+      //
+      // Raised AFTER the transaction commits, not inside it, and deliberately not awaited by
+      // the movement's own success. Two reasons:
+      //
+      //   - it reads each connection's scoped view of the variant, which is several queries;
+      //     holding the stock transaction open for them risks the same "Transaction already
+      //     closed" that broke the CSV import, since a round trip here costs over a second.
+      //   - a notification must never be able to fail the movement. The movement is the real
+      //     work and the ledger is the truth; a storefront that misses one recovers through
+      //     incremental sync rather than a shopkeeper being unable to receive stock.
+      //
+      // storefrontEventService does nothing at all when the tenant has no connection, which is
+      // most of them, so this costs one indexed lookup in the common case.
+      queueStorefrontNotification(clientId, variantId, oldLocationQty);
 
       return {
         quantity: newLocationQty,
