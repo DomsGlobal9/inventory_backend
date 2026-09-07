@@ -54,6 +54,13 @@ async function main() {
   }))._sum.quantity || 0;
   const baselineClosing = (await snapshots.closingForDay(clientId, yesterday)).units;
 
+  // Today's figures BEFORE the probe, so the assertions below can measure what the probe
+  // added rather than assert a total. Asserting "today's stock in is 5" only held while the
+  // tenant was idle; the moment anything else moved stock today -- which is the normal state
+  // of a shop -- the test failed for a reason that had nothing to do with day boundaries.
+  const dayBefore = await daybook.getDay(clientId, today);
+  const stockInBefore = dayBefore.stockIn.totalUnits;
+
   // A throwaway product and variant, so nothing here touches real catalogue rows.
   const stamp = Date.now();
   const product = await prisma.product.create({
@@ -120,10 +127,12 @@ async function main() {
     check('yesterday\'s 12 units arrive as today\'s opening balance',
       day.opening.units === baselineClosing + 12,
       `opening ${day.opening.units} vs ${baselineClosing} + 12`);
-    check('they are not also counted as arriving today',
-      day.stockIn.totalUnits === 5, `today's stock in is ${day.stockIn.totalUnits}, expected 5`);
-    check('the midnight movement is counted as today\'s',
-      day.stockIn.totalUnits === 5);
+    // The 12 from last night must NOT appear in today's arrivals, and the 5 from midnight
+    // must. Both are one statement about the same number, so it is asserted once: today's
+    // stock in grew by exactly the 5 that landed after midnight.
+    check('yesterday\'s units are not also counted as arriving today, and midnight\'s are',
+      day.stockIn.totalUnits === stockInBefore + 5,
+      `today's stock in went ${stockInBefore} -> ${day.stockIn.totalUnits}, expected +5`);
     check('opening + in - out still equals closing',
       day.closing !== null &&
         day.opening.units + day.stockIn.totalUnits - day.stockOut.totalUnits === day.closing.units,

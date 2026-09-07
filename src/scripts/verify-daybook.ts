@@ -9,7 +9,8 @@
  *   npx ts-node src/scripts/verify-daybook.ts
  */
 import { prisma } from '../lib/prisma';
-import { localDayRange, previousDayKey, todayKey } from '../utils/businessDay';
+import { localDayRange, previousDayKey, todayKey, localDayKey } from '../utils/businessDay';
+import { SnapshotService } from '../services/snapshot.service';
 
 const BASE = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
 const TENANT_EMAIL = 'e2e1788452461634@example.com';
@@ -215,18 +216,40 @@ async function main() {
   const locSnapCount = await prisma.dailyLocationSnapshot.count({ where: { clientId } });
   check('per-location snapshots are actually recorded', locSnapCount > 0, `${locSnapCount} rows`);
 
-  const perLocLive = await prisma.inventoryStock.groupBy({
-    by: ['locationId'], where: { clientId }, _sum: { quantity: true }
+  // This used to compare the latest snapshot against LIVE stock, which held only while a row
+  // was written for today carrying whatever was on the shelves at the time. A snapshot is now
+  // the closing of a FINISHED day, so the most recent one is yesterday's and differs from live
+  // stock by everything that has moved since -- which is the normal state of a trading day,
+  // not a fault. The property worth checking is that each stored row still matches what the
+  // ledger says that location closed its own day at.
+  const snapshots = new SnapshotService();
+  const shopTimezone = await snapshots.getTimezone(clientId);
+  const perLocLatest = await prisma.dailyLocationSnapshot.findMany({
+    where: { clientId },
+    orderBy: { snapshotDate: 'desc' },
+    select: { locationId: true, snapshotDate: true, totalUnits: true }
   });
-  let locMatches = true;
-  for (const live of perLocLive) {
-    const latest = await prisma.dailyLocationSnapshot.findFirst({
-      where: { clientId, locationId: live.locationId },
-      orderBy: { snapshotDate: 'desc' }, select: { totalUnits: true }
-    });
-    if (latest && latest.totalUnits !== (live._sum.quantity || 0)) locMatches = false;
+
+  const seen = new Set<string>();
+  const closingByDay = new Map<string, Map<string, { units: number }>>();
+  const mismatches: string[] = [];
+
+  for (const row of perLocLatest) {
+    if (seen.has(row.locationId)) continue; // findMany is newest-first, so this is the latest
+    seen.add(row.locationId);
+
+    const dayKey = localDayKey(row.snapshotDate, shopTimezone);
+    if (!closingByDay.has(dayKey)) {
+      closingByDay.set(dayKey, (await snapshots.closingForDay(clientId, dayKey)).byLocation);
+    }
+    const derived = closingByDay.get(dayKey)!.get(row.locationId);
+    if (!derived || derived.units !== row.totalUnits) {
+      mismatches.push(`${row.locationId.slice(0, 8)} on ${dayKey}: stored ${row.totalUnits} vs ledger ${derived?.units}`);
+    }
   }
-  check("each location's latest snapshot equals its live stock", locMatches);
+
+  check("each location's latest snapshot matches what the ledger says that day closed at",
+    mismatches.length === 0, mismatches.join('; '));
 
   // ─── SALES ──────────────────────────────────────────────────────────────────
   console.log('\nSALES');
