@@ -22,6 +22,9 @@ export class ReportService {
     //                       unit cost -- and that field is optional in the Stock In form.
     //   last_purchase_cost  what the most recent purchase order paid.
     //   cost_price          what the shopkeeper typed on the product itself.
+    //   selling_price       the variant's own price.
+    //   base_price          the product's price, which the Add Product wizard always asks for
+    //                       and so is the one figure that is effectively never missing.
     //
     // Only average_cost used to count, so a shop that received stock without filling in the
     // optional cost box saw INVENTORY VALUE ₹0 on the dashboard while holding real, costed
@@ -30,21 +33,29 @@ export class ReportService {
     // is what makes the fallback work: average_cost defaults to 0 rather than NULL, so a
     // plain COALESCE would stop at the zero and never reach the figures below it.
     //
-    // Selling price is deliberately NOT in the chain. Valuing stock at what you hope to sell
-    // it for is not what the stock is worth, and quietly inflating the number is worse than
-    // showing a zero.
-    const unitCost = Prisma.sql`COALESCE(NULLIF(v.average_cost, 0), v.last_purchase_cost, v.cost_price, 0)`;
+    // The last two entries are PRICES, not costs, so a shop that has never recorded a cost is
+    // valued at what it sells for rather than at nothing. That overstates the figure by the
+    // margin, which is why unitsValuedAtPrice is reported alongside and the tile says so --
+    // an unexplained number is the thing to avoid, in either direction.
+    const unitCost = Prisma.sql`
+      COALESCE(NULLIF(v.average_cost, 0), v.last_purchase_cost, v.cost_price, v.selling_price, p.base_price, 0)`;
+    // True when nothing better than a selling price was available for that row.
+    const pricedNotCosted = Prisma.sql`
+      COALESCE(NULLIF(v.average_cost, 0), v.last_purchase_cost, v.cost_price) IS NULL
+      AND COALESCE(v.selling_price, p.base_price, 0) > 0`;
 
     const valueQuery = locationId
       ? prisma.$queryRaw<any[]>`
           SELECT SUM(s.quantity * ${unitCost}) as value
           FROM "inventory_stocks" s
           JOIN "inventory_product_variants" v ON v.id = s.variant_id
+          JOIN "inventory_products" p ON p.id = v.product_id
           WHERE s.client_id = ${clientId} AND s.location_id = ${locationId};
         `.then(rows => Number(rows[0]?.value || 0))
       : prisma.$queryRaw<any[]>`
           SELECT SUM(COALESCE(s.qty, 0) * ${unitCost}) as value
           FROM "inventory_product_variants" v
+          JOIN "inventory_products" p ON p.id = v.product_id
           LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
           WHERE v.client_id = ${clientId};
         `.then(rows => Number(rows[0]?.value || 0));
@@ -70,29 +81,35 @@ export class ReportService {
       prisma.$queryRaw<any[]>`
         SELECT SUM(COALESCE(s.qty, 0) * ${unitCost}) as value
         FROM "inventory_product_variants" v
+        JOIN "inventory_products" p ON p.id = v.product_id
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId}
         AND COALESCE(s.qty, 0) > 0
         AND v.last_movement_at IS NOT NULL
         AND v.last_movement_at < NOW() - INTERVAL '90 days';
       `,
-      // Units held that we have no cost for at all. Without this the headline is silently
-      // incomplete: stock is on the shelf, it counts as ₹0, and nothing on the screen says
-      // why. Reported so the tile can tell the shopkeeper what to do about it instead of
-      // leaving them to conclude the figure is broken.
+      // Two ways the headline can mislead, counted so the tile can say which applies:
+      //   units       -- nothing at all was known, so they count as ₹0 and the total is low.
+      //   pricedUnits -- only a selling price was known, so they are valued at what they sell
+      //                  for and the total is high by the margin.
+      // Either way the shopkeeper is told, rather than left to work out why the number does
+      // not match what is on the shelf.
       prisma.$queryRaw<any[]>`
-        SELECT COALESCE(SUM(COALESCE(s.qty, 0)), 0)::int as units
+        SELECT
+          COALESCE(SUM(CASE WHEN ${unitCost} = 0 THEN COALESCE(s.qty, 0) ELSE 0 END), 0)::int as units,
+          COALESCE(SUM(CASE WHEN ${pricedNotCosted} THEN COALESCE(s.qty, 0) ELSE 0 END), 0)::int as "pricedUnits"
         FROM "inventory_product_variants" v
+        JOIN "inventory_products" p ON p.id = v.product_id
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId}
-        AND COALESCE(s.qty, 0) > 0
-        AND ${unitCost} = 0;
+        AND COALESCE(s.qty, 0) > 0;
       `
     ]);
 
     return {
       inventoryValue,
       unitsWithoutCost: Number(uncostedRes[0]?.units || 0),
+      unitsValuedAtPrice: Number(uncostedRes[0]?.pricedUnits || 0),
       openPoValue: Number(openPos._sum.totalAmount || 0),
       lowStockCount: Number(lowStockCountRes[0].count),
       deadStockValue: Number(deadStockValueRes[0].value || 0),
