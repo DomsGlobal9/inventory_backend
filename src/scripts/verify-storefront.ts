@@ -24,7 +24,7 @@ import { storefrontConnectionService } from '../services/storefront-connection.s
 import { storefrontEventService } from '../services/storefront-event.service';
 import { StorefrontDispatcherService } from '../services/storefront-dispatcher.service';
 import { storefrontCatalogueService } from '../services/storefront-catalogue.service';
-import { generateCredential, credentialMatches, hashCredential } from '../utils/storefrontCredential';
+import { generateCredential, credentialMatches, hashCredential, prefixOf } from '../utils/storefrontCredential';
 import { sign, verify, TIMESTAMP_TOLERANCE_SECONDS } from '../utils/storefrontSignature';
 import { checkUrlShape, checkUrlDestination } from '../utils/storefrontUrl';
 
@@ -94,6 +94,23 @@ async function main() {
   check('two credentials never collide', generateCredential().plaintext !== generateCredential().plaintext);
   check('the prefix is not enough to authenticate',
     !credentialMatches(cred.prefix, cred.hash));
+
+  // Authentication finds the connection by prefix BEFORE it verifies the hash, so a credential
+  // whose prefix cannot be read back is refused however correct it is -- and it reads to the
+  // merchant as "your key is wrong". Nothing checked that round trip, and it was broken: the
+  // separator is an underscore and the secret is base64url, whose alphabet contains one.
+  check('a credential parses back to the prefix it was issued with',
+    prefixOf(cred.plaintext) === cred.prefix, `${prefixOf(cred.plaintext)} vs ${cred.prefix}`);
+  let unparseable = 0;
+  for (let i = 0; i < 500; i++) {
+    const sample = generateCredential();
+    if (prefixOf(sample.plaintext) !== sample.prefix) unparseable++;
+  }
+  check('every credential in a large sample parses', unparseable === 0, `${unparseable} of 500 did not`);
+  check('a secret containing the separator does not confuse the prefix',
+    prefixOf('sk_abc123_aa_bb_cc') === 'abc123', String(prefixOf('sk_abc123_aa_bb_cc')));
+  check('a malformed credential has no prefix',
+    prefixOf('not-a-key') === null && prefixOf('sk_only') === null && prefixOf('sk__x') === null);
 
   // ─── SIGNATURES ───────────────────────────────────────────────────────────
   console.log('\nSIGNATURES');

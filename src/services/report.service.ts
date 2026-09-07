@@ -14,18 +14,43 @@ export class ReportService {
 
     // Catalog-level and pre-receipt PO figures aren't meaningful per-location, so they stay
     // tenant-wide even when a location is selected.
+    //
+    // What a unit is worth, in order of how well we know it:
+    //
+    //   average_cost        the weighted average of what was actually paid, kept by
+    //                       inventory-mutation.service. Only written when a stock-in carried a
+    //                       unit cost -- and that field is optional in the Stock In form.
+    //   last_purchase_cost  what the most recent purchase order paid.
+    //   cost_price          what the shopkeeper typed on the product itself.
+    //
+    // Only average_cost used to count, so a shop that received stock without filling in the
+    // optional cost box saw INVENTORY VALUE ₹0 on the dashboard while holding real, costed
+    // stock -- one live tenant had ₹45,000 cost recorded on the product and a ₹0 headline.
+    // That reads as a broken app, and it is the first number a shopkeeper looks at. NULLIF
+    // is what makes the fallback work: average_cost defaults to 0 rather than NULL, so a
+    // plain COALESCE would stop at the zero and never reach the figures below it.
+    //
+    // Selling price is deliberately NOT in the chain. Valuing stock at what you hope to sell
+    // it for is not what the stock is worth, and quietly inflating the number is worse than
+    // showing a zero.
+    const unitCost = Prisma.sql`COALESCE(NULLIF(v.average_cost, 0), v.last_purchase_cost, v.cost_price, 0)`;
+
     const valueQuery = locationId
       ? prisma.$queryRaw<any[]>`
-          SELECT SUM(s.quantity * v.average_cost) as value
+          SELECT SUM(s.quantity * ${unitCost}) as value
           FROM "inventory_stocks" s
           JOIN "inventory_product_variants" v ON v.id = s.variant_id
           WHERE s.client_id = ${clientId} AND s.location_id = ${locationId};
         `.then(rows => Number(rows[0]?.value || 0))
-      : prisma.productVariant.aggregate({
-          where: { clientId }, _sum: { inventoryValue: true }
-        }).then(agg => Number(agg._sum.inventoryValue || 0));
+      : prisma.$queryRaw<any[]>`
+          SELECT SUM(COALESCE(s.qty, 0) * ${unitCost}) as value
+          FROM "inventory_product_variants" v
+          LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
+          WHERE v.client_id = ${clientId};
+        `.then(rows => Number(rows[0]?.value || 0));
 
-    const [products, openPos, inventoryValue, lowStockCountRes, deadStockValueRes] = await Promise.all([
+    const [products, openPos, inventoryValue, lowStockCountRes, deadStockValueRes, uncostedRes] =
+      await Promise.all([
       prisma.product.count({ where: { clientId, status: 'ACTIVE' } }),
       prisma.purchaseOrder.aggregate({
         where: { clientId, status: { in: ['SENT', 'PARTIALLY_RECEIVED'] } },
@@ -40,19 +65,34 @@ export class ReportService {
         AND COALESCE(s.qty, 0) <= v.reorder_level
         AND v.reorder_level > 0;
       `,
+      // Same valuation basis as the headline figure above -- two different answers to "what is
+      // this stock worth" on the same screen is worse than either answer alone.
       prisma.$queryRaw<any[]>`
-        SELECT SUM(COALESCE(s.qty, 0) * v.average_cost) as value
+        SELECT SUM(COALESCE(s.qty, 0) * ${unitCost}) as value
         FROM "inventory_product_variants" v
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId}
         AND COALESCE(s.qty, 0) > 0
         AND v.last_movement_at IS NOT NULL
         AND v.last_movement_at < NOW() - INTERVAL '90 days';
+      `,
+      // Units held that we have no cost for at all. Without this the headline is silently
+      // incomplete: stock is on the shelf, it counts as ₹0, and nothing on the screen says
+      // why. Reported so the tile can tell the shopkeeper what to do about it instead of
+      // leaving them to conclude the figure is broken.
+      prisma.$queryRaw<any[]>`
+        SELECT COALESCE(SUM(COALESCE(s.qty, 0)), 0)::int as units
+        FROM "inventory_product_variants" v
+        LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
+        WHERE v.client_id = ${clientId}
+        AND COALESCE(s.qty, 0) > 0
+        AND ${unitCost} = 0;
       `
     ]);
 
     return {
       inventoryValue,
+      unitsWithoutCost: Number(uncostedRes[0]?.units || 0),
       openPoValue: Number(openPos._sum.totalAmount || 0),
       lowStockCount: Number(lowStockCountRes[0].count),
       deadStockValue: Number(deadStockValueRes[0].value || 0),

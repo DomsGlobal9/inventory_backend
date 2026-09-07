@@ -32,7 +32,11 @@ function randomToken(bytes: number): string {
 }
 
 export function generateCredential(): GeneratedCredential {
-  const prefix = randomToken(PREFIX_BYTES);
+  // Hex, not base64url: the underscore is the field separator, and base64url's alphabet
+  // contains one. A prefix that happened to include an underscore split into two fields and
+  // the credential could never be looked up again -- for the prefix that is one credential in
+  // eight, silently unusable from the moment it was issued.
+  const prefix = crypto.randomBytes(PREFIX_BYTES).toString('hex');
   const secret = randomToken(SECRET_BYTES);
   const plaintext = `sk_${prefix}_${secret}`;
   return { plaintext, hash: hashCredential(plaintext), prefix };
@@ -50,11 +54,24 @@ export function hashCredential(plaintext: string): string {
   return crypto.createHash('sha256').update(plaintext, 'utf8').digest('hex');
 }
 
-/** The prefix of a presented credential, so the right connection can be found before verifying. */
+/**
+ * The prefix of a presented credential, so the right connection can be found before verifying.
+ *
+ * Read positionally -- `sk_`, then up to the next underscore -- rather than by splitting on
+ * every underscore. The secret is base64url, whose alphabet includes the underscore, so a
+ * secret containing one produced four fields instead of three and this returned null. The
+ * connection was then never looked up and the credential was rejected as invalid, no matter
+ * how correct it was. About half of all issued keys were affected: the hash matched perfectly
+ * and the request was still refused, which reads as "the key is wrong" rather than "we cannot
+ * parse it". The secret's own content is never parsed -- the hash covers the whole string.
+ */
 export function prefixOf(plaintext: string): string | null {
-  const parts = plaintext.split('_');
-  if (parts.length !== 3 || parts[0] !== 'sk') return null;
-  return parts[1] || null;
+  if (!plaintext.startsWith('sk_')) return null;
+  const rest = plaintext.slice(3);
+  const separator = rest.indexOf('_');
+  // Nothing before the separator is no prefix; nothing after it is no secret.
+  if (separator <= 0 || separator === rest.length - 1) return null;
+  return rest.slice(0, separator);
 }
 
 /**
