@@ -1241,6 +1241,16 @@ model InventoryAlertRead {
   @@map("inventory_alert_reads")
 }
 
+/// DEPRECATED -- superseded by StorefrontEvent below, and no longer written to.
+///
+/// It was a delivery queue with a single `status` column, which can only ever describe one
+/// destination. That is why every row in it ended up stranded in 'PROCESSING': the dispatcher
+/// claimed a batch, found no destination configured, and returned with the rows still claimed.
+///
+/// Left in place rather than reshaped because the deployed backend writes to it inside the
+/// same transaction as every stock movement. Dropping or retyping its columns before that code
+/// is replaced would fail every stock-in, stock-out and sale for every tenant until the deploy
+/// completed. It stops growing once the new code ships and can be dropped in a later migration.
 model InventoryEvent {
   id       String @id @default(uuid())
   clientId String @map("client_id")
@@ -1437,4 +1447,186 @@ model DailyLocationSnapshot {
   @@unique([locationId, snapshotDate], name: "uq_location_snapshot_day")
   @@index([clientId, snapshotDate])
   @@map("inventory_daily_location_snapshots")
+}
+
+// ─── STOREFRONT INTEGRATION ───
+//
+// Three concerns, deliberately three tables, because collapsing any two of them is what broke
+// the previous attempt:
+//
+//   InventoryTransaction  what happened to stock -- the audit record, and the source of truth
+//   StorefrontEvent       what a storefront needs to be told -- immutable, ordered
+//   StorefrontDelivery    whether one particular storefront has been told -- per connection
+//
+// Inventory is authoritative and a storefront is a projection of it. Nothing here ever accepts
+// a storefront's opinion about stock, price or publication state.
+
+enum StorefrontEventType {
+  STOCK_UPDATED
+  PRODUCT_PUBLISHED
+  PRODUCT_UPDATED
+  PRODUCT_UNPUBLISHED
+  PRICE_CHANGED
+  AVAILABILITY_CHANGED
+}
+
+/// What a storefront needs to be told, stated once and never edited.
+///
+/// Carries ABSOLUTE state, never a delta. "available = 6" is a statement of truth that any
+/// number of retries or reorderings cannot corrupt; "decrease by 1" compounds every time it is
+/// redelivered. This is what makes duplicate delivery a no-op rather than a corruption, and it
+/// is why the delivery guarantees below can stay simple.
+///
+/// It holds no delivery state at all -- see StorefrontDelivery.
+model StorefrontEvent {
+  id String @id @default(uuid())
+
+  /// Monotonic per tenant. A receiver applies last-writer-wins on this and discards anything
+  /// older than it has already applied for that entity, so out-of-order arrival is
+  /// self-correcting. Timestamps cannot do this: two events in the same millisecond are
+  /// unordered, and clocks move.
+  sequence BigInt @default(autoincrement())
+
+  clientId String @map("client_id")
+
+  eventType StorefrontEventType @map("event_type")
+  /// Part of the public contract. Old integrations must not break when `payload` grows.
+  eventVersion Int @default(1) @map("event_version")
+
+  /// What the event is about, by PUBLIC identity. SKU and product code are stable, unique per
+  /// tenant and meaningful to a merchant; internal uuids would couple every storefront's
+  /// database to our primary keys.
+  productCode String? @map("product_code")
+  sku         String?
+
+  variantId  String? @map("variant_id")
+  locationId String? @map("location_id")
+
+  /// The event body as it will be sent, minus the envelope. Rendered at write time from the
+  /// same catalogue rules the read API uses, so a storefront cannot receive a shape the API
+  /// would not have given it.
+  payload Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  deliveries StorefrontDelivery[]
+
+  @@index([clientId, sequence])
+  @@index([clientId, createdAt])
+  @@index([eventType])
+  @@map("storefront_events")
+}
+
+enum StorefrontConnectionType {
+  GENERIC
+  SHOPIFY
+  WOOCOMMERCE
+}
+
+enum StorefrontConnectionStatus {
+  /// Created but has not completed its first catalogue sync. Events are queued rather than
+  /// sent: telling a storefront that a price changed is meaningless before it has the product.
+  PENDING_SYNC
+  ACTIVE
+  DISABLED
+  /// Terminal. The credential can never be used again; the row survives for its history.
+  REVOKED
+}
+
+/// One storefront a shop has connected.
+///
+/// A shop may have several -- a website, a marketplace, a staging site -- each with its own
+/// credential, its own location scope and its own delivery history, so one can fail, be paused
+/// or be revoked without touching the others.
+model StorefrontConnection {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  name    String
+  type    StorefrontConnectionType   @default(GENERIC)
+  status  StorefrontConnectionStatus @default(PENDING_SYNC)
+  baseUrl String                     @map("base_url")
+
+  /// The secret is shown once at creation and never stored. Only its hash is kept, so a leak
+  /// of this table does not hand anyone the ability to impersonate us to a merchant.
+  credentialHash String @map("credential_hash")
+  /// A short, non-secret prefix so a credential can be named in the UI and in logs without
+  /// printing anything usable.
+  credentialPrefix String @map("credential_prefix")
+
+  /// Which locations this storefront sells from. Empty means all of them.
+  ///
+  /// Not optional in this product: VariantLocationProfile carries isAvailable AND priceOverride
+  /// per location, so stock and price are both properties of a variant AT a location. A
+  /// merchant with a back-office warehouse and a shop has no single answer to "what does the
+  /// website show" -- without this the integration guesses, and publishes warehouse stock or a
+  /// shop-floor price override to the public web.
+  locationIds String[] @map("location_ids")
+
+  /// Where the initial catalogue sync has reached, so an interruption resumes instead of
+  /// restarting -- a merchant with 8,000 variants cannot be asked to start again at 7,900.
+  syncCursor     String?   @map("sync_cursor")
+  syncedAt       DateTime? @map("synced_at")
+  lastDeliveryAt DateTime? @map("last_delivery_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  deliveries StorefrontDelivery[]
+
+  @@index([clientId])
+  @@index([clientId, status])
+  @@index([credentialPrefix])
+  @@map("storefront_connections")
+}
+
+enum DeliveryStatus {
+  PENDING
+  PROCESSING
+  DELIVERED
+  RETRYING
+  /// Given up on after the retry budget. Kept, and re-queueable by hand from the log.
+  DEAD_LETTER
+  /// The connection was disabled or revoked while this was waiting. Neither side failed, and
+  /// it must never be retried.
+  CANCELLED
+}
+
+/// Whether one particular storefront has been told about one particular event.
+///
+/// Holds references and delivery state, never a copy of the payload: the body is rendered from
+/// the event at send time, so a rotated secret or a changed URL applies to work already queued.
+model StorefrontDelivery {
+  id           String @id @default(uuid())
+  eventId      String @map("event_id")
+  connectionId String @map("connection_id")
+  /// Denormalised so the queue can be made fair per tenant without a join.
+  clientId String @map("client_id")
+
+  status   DeliveryStatus @default(PENDING)
+  attempts Int            @default(0)
+
+  nextAttemptAt DateTime? @map("next_attempt_at")
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  /// When a worker claimed this row. A claim older than the lease means the process died
+  /// mid-send; it is reclaimed rather than stranded, which is the failure that left every row
+  /// of the previous outbox stuck forever.
+  lockedAt DateTime? @map("locked_at")
+
+  lastResponseStatus Int?      @map("last_response_status")
+  lastError          String?   @map("last_error")
+  lastDurationMs     Int?      @map("last_duration_ms")
+  deliveredAt        DateTime? @map("delivered_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  event      StorefrontEvent      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  connection StorefrontConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  /// One delivery per event per connection, enforced rather than assumed.
+  @@unique([eventId, connectionId], name: "uq_delivery_event_connection")
+  @@index([status, nextAttemptAt])
+  @@index([clientId, status])
+  @@index([connectionId, createdAt])
+  @@map("storefront_deliveries")
 }
