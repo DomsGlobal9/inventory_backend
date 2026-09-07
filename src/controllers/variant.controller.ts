@@ -50,7 +50,10 @@ export class VariantController {
       const clientId = (req as any).clientId as string;
       const validatedData = bulkUpdateVariantSchema.parse(req.body);
       
-      const result = await variantService.bulkUpdateVariants(clientId, validatedData.updates);
+      // A CSV row gives one quantity, so it has to land somewhere. The location the user is
+      // working in is the right answer when there is one; the service falls back from there.
+      const locationId = (req as any).locationId as string | undefined;
+      const result = await variantService.bulkUpdateVariants(clientId, validatedData.updates, locationId);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);

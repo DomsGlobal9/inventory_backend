@@ -20,6 +20,45 @@ export class VariantService {
     return defaultLoc ? [defaultLoc.id] : [];
   }
 
+  /**
+   * Where a CSV row's quantity should land.
+   *
+   * The location the user is working in first, then a location coded MAIN-STORE, then the
+   * tenant's first active location. Only that last fallback is new: the previous code looked
+   * for MAIN-STORE alone and dereferenced the result without checking, so a tenant whose
+   * locations are named anything else could not import quantities at all.
+   *
+   * If a tenant genuinely has nowhere to put stock, that is said plainly rather than thrown
+   * as a null dereference the user has to interpret.
+   */
+  private async resolveUpdateLocationId(
+    clientId: string,
+    preferredLocationId: string | undefined,
+    tx: Prisma.TransactionClient | typeof prisma
+  ): Promise<string> {
+    if (preferredLocationId) {
+      const chosen = await tx.stockLocation.findFirst({
+        where: { id: preferredLocationId, clientId }, select: { id: true }
+      });
+      if (chosen) return chosen.id;
+    }
+
+    const main = await tx.stockLocation.findFirst({
+      where: { clientId, code: 'MAIN-STORE' }, select: { id: true }
+    });
+    if (main) return main.id;
+
+    const first = await tx.stockLocation.findFirst({
+      where: { clientId, active: true }, orderBy: { createdAt: 'asc' }, select: { id: true }
+    });
+    if (first) return first.id;
+
+    throw new Error(
+      'No stock location exists to apply this quantity to. ' +
+      'Create one under Settings -> Stock Locations, then import again.'
+    );
+  }
+
   private async applyInitialStock(clientId: string, variantId: string, quantity: number, locationIds: string[], createdBy: string) {
     if (quantity <= 0) return;
 
@@ -185,7 +224,17 @@ export class VariantService {
     return { created, skipped, errors, adjusted, stockNotApplied };
   }
 
-  async bulkUpdateVariants(clientId: string, updates: any[]) {
+  async bulkUpdateVariants(clientId: string, updates: any[], locationId?: string) {
+    // Resolved once, outside the per-row transactions. It is the same answer for every row,
+    // and each round trip to this database costs over a second -- doing the lookup inside the
+    // transaction pushed it past Prisma's 5s limit and every row failed with "Transaction
+    // already closed", which is a confusing way to say "your import did nothing".
+    // A tenant with nowhere to put stock fails here, once, with a sentence that says so.
+    let targetLocationId: string | null = null;
+    if (updates.some(u => u.quantity !== undefined)) {
+      targetLocationId = await this.resolveUpdateLocationId(clientId, locationId, prisma);
+    }
+
     const results = await Promise.allSettled(
       updates.map(async (update) => {
         const { sku, quantity, priceOverride, sellingPrice, costPrice, reorderLevel } = update;
@@ -205,19 +254,20 @@ export class VariantService {
           if (reorderLevel !== undefined) dataToUpdate.reorderLevel = reorderLevel;
 
           if (quantity !== undefined) {
-            // Find default location
-            const defaultLoc = await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
-            
+            // Resolved above precisely because at least one row carries a quantity, so this
+            // cannot be null here -- but say so rather than asserting past the type.
+            if (!targetLocationId) throw new Error('No stock location resolved for this import');
+
             // Get current stock
-            const stock = await tx.inventoryStock.findFirst({ 
-              where: { variantId: variant.id, locationId: defaultLoc!.id }
+            const stock = await tx.inventoryStock.findFirst({
+              where: { variantId: variant.id, locationId: targetLocationId }
             });
             const currentQty = stock?.quantity || 0;
 
             if (quantity !== currentQty) {
               await inventoryMutationService.applyMovement({
                 clientId,
-                locationId: defaultLoc!.id,
+                locationId: targetLocationId,
                 variantId: variant.id,
                 movementType: 'ADJUSTMENT',
                 reason: 'MANUAL_CORRECTION',
@@ -237,6 +287,14 @@ export class VariantService {
           }
 
           return sku;
+        }, {
+          // Prisma's defaults are 2s to acquire and 5s to run. A stock movement is several
+          // round trips and each one costs over a second against this database, so every row
+          // that changed a quantity died with "Transaction already closed" -- reported as
+          // "skipped", which is why the CSV import appeared to do nothing. The work inside is
+          // bounded (one variant, one location), so a longer ceiling is safe.
+          maxWait: 15000,
+          timeout: 30000
         });
       })
     );
