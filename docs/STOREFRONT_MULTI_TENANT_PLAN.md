@@ -12,6 +12,24 @@ no further merchant action. No exports, no CSVs, no "press sync". That promise i
 forces most of the decisions below — particularly initial sync and reconciliation, because
 webhooks alone cannot keep it.
 
+## Two constraints that bound everything below
+
+**Inventory is authoritative. The storefront is a projection of it, never a second source of
+truth.** Stock, price, availability and publication state are decided here and replicated
+outward; the website's copy is a cache that must converge on ours. This is what justifies
+absolute-state events — a message saying `available = 6` is a statement of truth that any
+number of retries and reorderings cannot corrupt, whereas `decrease by 1` compounds every
+time it is redelivered. It also forecloses a tempting future request: syncing an edited title
+or price *back* from a storefront would make two systems authoritative over one field, and
+there is no correct resolution when they disagree. If that is ever wanted, it needs its own
+design and its own conflict rules, not a quiet addition here.
+
+**Billing and payments stay outside this integration.** They are a separate module of the
+platform. This integration carries catalogue, stock and orders. An order arriving from a
+storefront records what was sold and reserves the stock; what was charged, by whom, and
+whether it settled belongs elsewhere. Pulling payment state in here would couple two modules
+that currently have no reason to know about each other.
+
 ---
 
 ## Part I — What exists today
