@@ -1,6 +1,24 @@
 import { prisma } from '../lib/prisma';
 import { ReservationStatus } from '@prisma/client';
 import { inventoryMutationService } from './inventory-mutation.service';
+import { storefrontEventService } from './storefront-event.service';
+
+/**
+ * Reserving or releasing changes what is AVAILABLE without changing what is physically held,
+ * so it never produced a stock movement and therefore never produced an event. The result was
+ * that a website order taking the last unit left every storefront still advertising it.
+ *
+ * Fire-and-forget, and after the transaction: the reservation is the real work, and a
+ * notification must not be able to fail it or hold its transaction open.
+ */
+function notifyStorefrontsOfAvailability(clientId: string, variantIds: string[]) {
+  setImmediate(() => {
+    for (const variantId of [...new Set(variantIds)]) {
+      void storefrontEventService.stockUpdated(clientId, variantId)
+        .catch(err => console.error('[StorefrontEvents] reservation change failed', err));
+    }
+  });
+}
 
 export class ReservationService {
   /**
@@ -57,14 +75,22 @@ export class ReservationService {
       return reservations;
     };
 
-    return txClient ? execute(txClient) : prisma.$transaction(execute);
+    const reservations = txClient ? await execute(txClient) : await prisma.$transaction(execute);
+
+    // Reserving changes what is available to sell without changing what is physically held,
+    // and nothing here ever said so. A shopper taking the last unit on the website left every
+    // other storefront still advertising it, until some unrelated stock movement happened to
+    // send an update -- which is precisely how an oversell happens.
+    notifyStorefrontsOfAvailability(clientId, items.map(i => i.variantId));
+
+    return reservations;
   }
 
   /**
    * Releases an active reservation. Used when an order is cancelled.
    */
   async releaseReservation(clientId: string, salesOrderItemId: string) {
-    return prisma.$transaction(async (tx) => {
+    const released = await prisma.$transaction(async (tx) => {
       // PARTIALLY_FULFILLED counts too: cancelling an order that was partly dispatched
       // must still release the un-shipped remainder. Matching only 'ACTIVE' meant that
       // remainder stayed reserved forever -- invisible stock that no future order could
@@ -94,6 +120,13 @@ export class ReservationService {
 
       return updatedReservation;
     });
+
+    // Cancelling puts the units back on sale. Without this the storefront keeps showing them
+    // as unavailable until something else moves that variant. Null when there was no active
+    // reservation to release, in which case nothing changed and there is nothing to announce.
+    if (released) notifyStorefrontsOfAvailability(clientId, [released.variantId]);
+
+    return released;
   }
 
   /**

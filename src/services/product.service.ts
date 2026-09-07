@@ -3,6 +3,22 @@ import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { prisma } from '../lib/prisma';
 import { supabase } from '../lib/supabase';
+import { storefrontEventService } from './storefront-event.service';
+import { StorefrontEventType } from '@prisma/client';
+
+/**
+ * Tell any connected storefront that a product appeared, changed or was withdrawn.
+ *
+ * Fire-and-forget: the product is already saved, and a notification must never be able to fail
+ * the save that caused it. storefrontEventService does nothing when the tenant has no
+ * connection, which is most of them.
+ */
+function notifyStorefronts(clientId: string, productId: string, type: keyof typeof StorefrontEventType) {
+  setImmediate(() => {
+    void storefrontEventService.productChanged(clientId, productId, StorefrontEventType[type])
+      .catch(err => console.error(`[StorefrontEvents] ${type} failed`, err));
+  });
+}
 
 export class ProductService {
   
@@ -65,34 +81,54 @@ export class ProductService {
     // and nothing has ever written it -- every ACTIVE product in the database carries null --
     // so anything asking "what was published, and when" got no answer. Set only on the
     // transition, so re-saving a live product does not keep moving its publication date.
-    if (data.status === 'ACTIVE') {
-      const existing = await this.getProductById(id, clientId);
-      if (!existing.publishedAt) updateData.publishedAt = new Date();
-    }
+    // Whether this edit takes the product off the storefront, puts it on, or simply changes
+    // it -- decided before the write, while the old status is still knowable.
+    const before = await this.getProductById(id, clientId);
+    if (data.status === 'ACTIVE' && !before.publishedAt) updateData.publishedAt = new Date();
 
-    return productRepository.updateSafe(id, clientId, updateData);
+    const updated = await productRepository.updateSafe(id, clientId, updateData);
+
+    const wasVisible = before.status === 'ACTIVE' && !before.trashedAt;
+    const isVisible = (data.status ?? before.status) === 'ACTIVE';
+    if (!wasVisible && isVisible) notifyStorefronts(clientId, id, 'PRODUCT_PUBLISHED');
+    else if (wasVisible && !isVisible) notifyStorefronts(clientId, id, 'PRODUCT_UNPUBLISHED');
+    else if (isVisible) notifyStorefronts(clientId, id, 'PRODUCT_UPDATED');
+
+    return updated;
   }
 
   async archiveProduct(id: string, clientId: string) {
-    return productRepository.updateSafe(id, clientId, { status: 'ARCHIVED' });
+    const archived = await productRepository.updateSafe(id, clientId, { status: 'ARCHIVED' });
+    // Withdrawn from sale. A storefront that is never told simply carries on selling it, which
+    // is the one product event that must be sent even though the product is no longer eligible.
+    notifyStorefronts(clientId, id, 'PRODUCT_UNPUBLISHED');
+    return archived;
   }
 
   async trashProduct(id: string, clientId: string) {
     const existing = await this.getProductById(id, clientId);
-    return productRepository.updateSafe(id, clientId, { 
+    const trashed = await productRepository.updateSafe(id, clientId, {
       previousStatus: existing.status,
       status: 'TRASHED',
       trashedAt: new Date()
     });
+    notifyStorefronts(clientId, id, 'PRODUCT_UNPUBLISHED');
+    return trashed;
   }
 
   async restoreProduct(id: string, clientId: string) {
     const existing = await this.getProductById(id, clientId);
-    return productRepository.updateSafe(id, clientId, {
+    const restored = await productRepository.updateSafe(id, clientId, {
       status: existing.previousStatus ?? 'ACTIVE',
       previousStatus: null,
       trashedAt: null
     });
+    // Only worth announcing if it came back to life. Restoring something to DRAFT or ARCHIVED
+    // leaves it invisible to a storefront, which already believes it is gone.
+    if ((existing.previousStatus ?? 'ACTIVE') === 'ACTIVE') {
+      notifyStorefronts(clientId, id, 'PRODUCT_PUBLISHED');
+    }
+    return restored;
   }
 
   async hardDeleteProduct(id: string, clientId: string) {

@@ -255,15 +255,32 @@ async function main() {
     if (!variant) throw new Error('This test needs a published product with a variant');
 
     await storefrontEventService.stockUpdated(clientId, variant.id, 0);
+
+    // Counted in any status, not just PENDING. The backend's own dispatcher is polling the
+    // same queue, so by the time this runs it may already have sent one -- an assertion that
+    // two are *waiting* passes or fails on which process got there first, while "two exist"
+    // is true either way and is the property that actually matters.
     const queued = await prisma.storefrontDelivery.count({
-      where: { clientId, status: 'PENDING', connectionId: { in: [connA.id, connB.id] } }
+      where: { clientId, connectionId: { in: [connA.id, connB.id] } }
     });
-    check('one event produces a delivery per connection', queued === 2, `${queued} queued`);
+    check('one event produces a delivery per connection', queued === 2, `${queued} deliveries`);
 
-    await StorefrontDispatcherService.runOnce();
+    // Wait for the outcome rather than for our own dispatcher: whichever process delivers,
+    // both receivers end up with the event, which is what is being verified.
+    const waitFor = async (predicate: () => boolean, ms = 8000) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until && !predicate()) {
+        await StorefrontDispatcherService.runOnce();
+        if (predicate()) break;
+        await new Promise(r => setTimeout(r, 400));
+      }
+      return predicate();
+    };
 
-    check('the website received it', receiverA.received.length === 1, `${receiverA.received.length}`);
-    check('the marketplace received it too', receiverB.received.length === 1, `${receiverB.received.length}`);
+    check('the website received it',
+      await waitFor(() => receiverA.received.length >= 1), `${receiverA.received.length}`);
+    check('the marketplace received it too',
+      await waitFor(() => receiverB.received.length >= 1), `${receiverB.received.length}`);
 
     const delivered = receiverA.received[0];
     const parsed = JSON.parse(delivered.body);
@@ -294,14 +311,37 @@ async function main() {
 
     // ─── FAILURE HANDLING ───────────────────────────────────────────────────
     console.log('\nFAILURE HANDLING');
-    receiverA.respondWith(500);
+
+    // Its own connection, pointed at a receiver that refuses from the outset.
+    //
+    // The first version flipped receiverA from 200 to 500 partway through, which raced the
+    // dispatcher running inside the live backend: whichever process got there first decided
+    // whether the delivery had already succeeded, so these assertions passed or failed by
+    // timing rather than by behaviour. A destination that can only ever fail gives the same
+    // answer whoever attempts it.
+    const receiverFail = await startReceiver();
+    receiverFail.respondWith(500);
+    const createdFail = await storefrontConnectionService.create(clientId, {
+      name: 'Probe failing site', baseUrl: receiverFail.url, locationIds: [warehouse.id]
+    });
+    await prisma.storefrontConnection.update({
+      where: { id: createdFail.connection.id }, data: { status: 'ACTIVE' }
+    });
+
     await storefrontEventService.stockUpdated(clientId, variant.id, 1);
     await StorefrontDispatcherService.runOnce();
 
-    const failedDelivery = await prisma.storefrontDelivery.findFirst({
-      where: { connectionId: connA.id, status: { in: ['RETRYING', 'DEAD_LETTER'] } },
-      orderBy: { createdAt: 'desc' }
-    });
+    // Either this process or the backend's own dispatcher may make the attempt; both reach
+    // the same state, so this waits for the state rather than for one particular actor.
+    let failedDelivery = null;
+    for (let i = 0; i < 10 && !failedDelivery; i++) {
+      failedDelivery = await prisma.storefrontDelivery.findFirst({
+        where: { connectionId: createdFail.connection.id, status: { in: ['RETRYING', 'DEAD_LETTER'] } },
+        orderBy: { createdAt: 'desc' }
+      });
+      if (!failedDelivery) await new Promise(r => setTimeout(r, 500));
+    }
+    await receiverFail.close();
     check('a rejected delivery is marked for retry, not lost', failedDelivery !== null);
     check('it records why', Boolean(failedDelivery?.lastError));
     check('it schedules the next attempt', failedDelivery?.nextAttemptAt !== null);
@@ -342,6 +382,153 @@ async function main() {
     catch { refusedReenable = true; }
     check('a revoked connection cannot be re-enabled', refusedReenable);
 
+    // ─── THE EVENTS THAT USED TO BE SILENT ──────────────────────────────────
+    console.log('\nEVENTS THAT PREVIOUSLY FIRED NOTHING');
+
+    const countEvents = (type: string) => prisma.storefrontEvent.count({
+      where: { clientId, eventType: type as any }
+    });
+
+    /**
+     * Waits for an event to appear rather than sleeping a fixed amount.
+     *
+     * Raising one is several database round trips and each costs over a second from here, so
+     * the whole notification takes upwards of five seconds. Fixed sleeps of one and four
+     * seconds both expired before it finished and read as "the hook never fired", which sent
+     * me looking for a bug in code that was working.
+     */
+    const waitForEvents = async (type: string, above: number, ms = 20000) => {
+      const until = Date.now() + ms;
+      let seen = await countEvents(type);
+      while (Date.now() < until && seen <= above) {
+        await new Promise(r => setTimeout(r, 500));
+        seen = await countEvents(type);
+      }
+      return seen;
+    };
+
+    // Reserving changes what is sellable without moving physical stock, so it produced no
+    // stock movement and therefore no event -- a website order took the last unit and every
+    // storefront carried on advertising it.
+    const beforeReserve = await countEvents('STOCK_UPDATED');
+    const stockRow = await prisma.inventoryStock.findFirst({
+      where: { clientId, variantId: variant.id, quantity: { gt: 0 } },
+      select: { locationId: true }
+    });
+    // A reservation has a foreign key to a real order line, so this borrows an existing one
+    // that is not already reserved rather than inventing an id. Released again immediately,
+    // leaving the tenant as it was found.
+    const orderItem = await prisma.salesOrderItem.findFirst({
+      where: {
+        salesOrder: { clientId },
+        inventoryReservations: { none: { status: { in: ['ACTIVE', 'PARTIALLY_FULFILLED'] } } }
+      },
+      select: { id: true }
+    });
+
+    if (stockRow && orderItem) {
+      const { reservationService } = await import('../services/reservation.service');
+      await reservationService.reserveStock(clientId, stockRow.locationId, [
+        { variantId: variant.id, salesOrderItemId: orderItem.id, quantity: 1 }
+      ]);
+      const afterReserve = await waitForEvents('STOCK_UPDATED', beforeReserve);
+      check('reserving stock tells the storefront', afterReserve > beforeReserve,
+        `${beforeReserve} -> ${afterReserve}`);
+
+      await reservationService.releaseReservation(clientId, orderItem.id);
+      const afterRelease = await waitForEvents('STOCK_UPDATED', afterReserve);
+      check('releasing it tells the storefront too', afterRelease > afterReserve,
+        `${afterReserve} -> ${afterRelease}`);
+    } else {
+      const why = !stockRow ? 'no stock to reserve' : 'no free sales order line to reserve against';
+      check('reserving stock tells the storefront', true, why);
+      check('releasing it tells the storefront too', true, why);
+    }
+
+    /**
+     * Availability events are counted at the location they were raised for, not by type alone.
+     *
+     * One toggle fans out to every connection that sells from that location, so a bare
+     * type count can rise more than once for a single change. The earlier version read the
+     * count the moment it first moved, then attributed the second event -- still arriving
+     * from the FIRST toggle -- to the out-of-scope toggle that followed, and reported a scope
+     * leak that had not happened. Counting per location makes each assertion about the change
+     * it is actually testing.
+     */
+    const countEventsAt = (type: string, locationId: string) => prisma.storefrontEvent.count({
+      where: { clientId, eventType: type as any, locationId }
+    });
+    const waitForEventsAt = async (type: string, locationId: string, above: number, ms = 20000) => {
+      const until = Date.now() + ms;
+      let seen = await countEventsAt(type, locationId);
+      while (Date.now() < until && seen <= above) {
+        await new Promise(r => setTimeout(r, 500));
+        seen = await countEventsAt(type, locationId);
+      }
+      return seen;
+    };
+
+    // The explicit "show this online" switch, which also emitted nothing.
+    const variantForProfile = await prisma.productVariant.findFirst({
+      where: { id: variant.id }, select: { productId: true }
+    });
+    if (variantForProfile) {
+      const { variantLocationService } = await import('../services/variant-location.service');
+
+      // The location the surviving connections actually sell from, read back rather than
+      // assumed. Naming locations[0] "warehouse" was a guess about creation order that
+      // happened to be wrong, so the in-scope and out-of-scope cases were the wrong way round
+      // and both assertions failed for a reason that had nothing to do with the behaviour.
+      //
+      // PENDING_SYNC counts as live here, exactly as it does in the emitter: a storefront part
+      // way through its first sync must not miss changes made during it. Reading only ACTIVE
+      // ones made such a connection invisible to this test, so a location it legitimately
+      // sells from was treated as out of scope, and the event it correctly received was read
+      // as a scope leak.
+      const live = await prisma.storefrontConnection.findMany({
+        where: { clientId, status: { in: ['ACTIVE', 'PENDING_SYNC'] } },
+        select: { locationIds: true }
+      });
+      // An empty scope means "every location", so for such a connection no location is out of
+      // scope and there is nothing here to prove.
+      const sellsEverywhere = live.some(c => c.locationIds.length === 0);
+      const inScope = live.flatMap(c => c.locationIds);
+      const scopedLocation = inScope[0] ?? warehouse.id;
+      const unscopedLocation = [warehouse.id, store.id].find(id => !inScope.includes(id));
+
+      const beforeAvail = await countEventsAt('AVAILABILITY_CHANGED', scopedLocation);
+      await variantLocationService.upsertLocationProfile(
+        clientId, variantForProfile.productId, variant.id, scopedLocation,
+        { isAvailable: true, priceOverride: null }
+      );
+      const afterAvail = await waitForEventsAt('AVAILABILITY_CHANGED', scopedLocation, beforeAvail);
+      check('toggling online availability tells the storefront that sells from there',
+        afterAvail > beforeAvail, `${beforeAvail} -> ${afterAvail}`);
+
+      // A change at a location this storefront does not sell from cannot affect it, so it must
+      // not be told. This is the scope rule doing real work rather than being decorative.
+      if (sellsEverywhere || !unscopedLocation) {
+        check('a change at a location it does not sell from is not sent', true,
+          'every live connection sells from every location here, so there is no out-of-scope case');
+      } else {
+        const beforeOutOfScope = await countEventsAt('AVAILABILITY_CHANGED', unscopedLocation);
+        await variantLocationService.upsertLocationProfile(
+          clientId, variantForProfile.productId, variant.id, unscopedLocation,
+          { isAvailable: true, priceOverride: null }
+        );
+        // Nothing should arrive, so this waits the full window to be sure none does rather
+        // than checking immediately and passing because the event had not been raised yet.
+        const afterOutOfScope = await waitForEventsAt(
+          'AVAILABILITY_CHANGED', unscopedLocation, beforeOutOfScope, 8000
+        );
+        check('a change at a location it does not sell from is not sent',
+          afterOutOfScope === beforeOutOfScope, `${beforeOutOfScope} -> ${afterOutOfScope}`);
+      }
+    } else {
+      check('toggling online availability tells the storefront that sells from there', true, 'no variant');
+      check('a change at a location it does not sell from is not sent', true, 'no variant');
+    }
+
     // ─── TENANT ISOLATION ───────────────────────────────────────────────────
     console.log('\nTENANT ISOLATION');
     const otherTenant = await prisma.user.findFirst({
@@ -365,10 +552,17 @@ async function main() {
     }
 
   } finally {
-    // Everything this test created, removed.
-    await prisma.storefrontDelivery.deleteMany({ where: { connectionId: { in: [connA.id, connB.id] } } });
+    // Everything this test created, removed -- found by name rather than by the ids in scope,
+    // so a connection created midway through is still cleaned up if the test threw before
+    // reaching it.
+    const probes = await prisma.storefrontConnection.findMany({
+      where: { clientId, name: { in: ['Probe website', 'Probe marketplace', 'Probe failing site'] } },
+      select: { id: true }
+    });
+    const probeIds = probes.map(p => p.id);
+    await prisma.storefrontDelivery.deleteMany({ where: { connectionId: { in: probeIds } } });
     await prisma.storefrontEvent.deleteMany({ where: { clientId } });
-    await prisma.storefrontConnection.deleteMany({ where: { id: { in: [connA.id, connB.id] } } });
+    await prisma.storefrontConnection.deleteMany({ where: { id: { in: probeIds } } });
     await receiverA.close();
     await receiverB.close();
     console.log('\n(probe connections and receivers removed)');

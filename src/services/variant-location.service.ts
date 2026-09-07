@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { storefrontEventService } from './storefront-event.service';
 
 export class VariantLocationService {
   async upsertLocationProfile(clientId: string, productId: string, variantId: string, locationId: string, data: { isAvailable: boolean, priceOverride: number | null }) {
@@ -13,7 +14,7 @@ export class VariantLocationService {
     if (!variant) throw new Error('Variant not found or access denied');
 
     // 3. Upsert the profile
-    return prisma.variantLocationProfile.upsert({
+    const profile = await prisma.variantLocationProfile.upsert({
       where: {
         variantId_locationId: {
           variantId,
@@ -31,6 +32,16 @@ export class VariantLocationService {
         priceOverride: data.priceOverride
       }
     });
+
+    // isAvailable is the explicit "show this online" switch and priceOverride is what a
+    // storefront charges, yet flipping either used to emit nothing at all -- the website
+    // found out only when some unrelated stock movement happened to send an update, or never.
+    // Not awaited: the profile is saved either way, and a notification must not be able to
+    // fail the save that caused it.
+    void storefrontEventService.availabilityChanged(clientId, variantId, locationId)
+      .catch(err => console.error('[StorefrontEvents] availabilityChanged failed', err));
+
+    return profile;
   }
 }
 

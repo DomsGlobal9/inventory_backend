@@ -78,6 +78,15 @@ const envSchema = z.object({
   INTERNAL_SERVICE_KEY: optionalStr(z.string().min(16, "INTERNAL_SERVICE_KEY should be at least 16 characters")),
   ADMIN_SECRET: optionalStr(z.string().min(16, "ADMIN_SECRET should be at least 16 characters")),
 
+  // Signs outbound storefront webhooks. Deliberately NOT INTERNAL_SERVICE_KEY: that secret
+  // also authenticates inbound internal calls, and the previous implementation sent it to
+  // every merchant as a header -- handing each of them the key that guards internal traffic.
+  //
+  // Optional, and fails safe when unset: deliveries are requeued with a delay and the reason
+  // is written to the delivery log the merchant can see, rather than being sent unsigned or
+  // silently dropped. The feature simply does not deliver until it is configured.
+  STOREFRONT_SIGNING_SECRET: optionalStr(z.string().min(32, "STOREFRONT_SIGNING_SECRET should be at least 32 characters")),
+
   // Submissions allowed per address per hour on the PUBLIC signup form. Deliberately low:
   // that endpoint is unauthenticated and each row costs a human's attention rather than
   // CPU. Configurable because a low ceiling is right for production but makes the endpoint
