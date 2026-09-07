@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import {
   localDayRange, previousDayKey, isDayInProgress, todayKey, DEFAULT_TIMEZONE
 } from '../utils/businessDay';
+import { SnapshotService } from './snapshot.service';
 
 /**
  * The day book: what happened on one business day, and whether the books balance.
@@ -48,6 +49,10 @@ export interface DayBookLine {
 }
 
 export class DayBookService {
+  // Shares the snapshot engine's arithmetic for "what did a day close at", so the two cannot
+  // give different answers for the same day.
+  private snapshots = new SnapshotService();
+
   /**
    * The shop's own settings. Timezone defaults to India so no tenant needs setting up before
    * the day book works; the business name is optional and only used for printed output, which
@@ -69,74 +74,44 @@ export class DayBookService {
   }
 
   /**
-   * Opening stock for a day.
+   * Opening stock for a day: the previous day's closing, derived from the ledger.
    *
-   * Read from the previous day's snapshot where one exists -- that is the whole reason the
-   * snapshot engine exists. Where it does not (a tenant older than the snapshots, or a gap),
-   * it is derived instead: current stock minus every movement since the day began. Both are
-   * real; the second is just slower.
+   * This used to read the stored snapshot for the previous day, which is faster but goes
+   * stale. A movement recorded INTO a day that has already been snapshotted -- yesterday's
+   * delivery entered this morning, a correction to last week, an import carrying its own
+   * dates -- leaves that row describing a day that no longer happened, and nothing ever
+   * recomputed it. Today's opening was then wrong, permanently, and since closing is
+   * opening + in - out, so was every figure built on it.
+   *
+   * Deriving it from the ledger cannot drift: the ledger is what actually happened, and a
+   * backdated entry is included the moment it is written. It costs no extra round trip in
+   * practice -- the snapshot read was one query, this is one batch of parallel ones -- and it
+   * is the same arithmetic closingForDay uses, so the day book and the snapshot table cannot
+   * disagree about what a day closed at.
+   *
+   * The snapshots remain the durable record for trends and history, and the hourly job keeps
+   * them true; they are simply no longer what the balance line leans on.
    */
   private async getOpening(clientId: string, dayKey: string, dayStart: Date, locationId?: string) {
-    // A filtered view reads the per-location series, so picking one shop still gives a real
-    // opening balance rather than dropping the balance line entirely.
+    const previous = previousDayKey(dayKey);
+    const closing = await this.snapshots.closingForDay(clientId, previous);
+
     if (locationId) {
-      const locSnap = await prisma.dailyLocationSnapshot.findFirst({
-        where: { clientId, locationId, snapshotDate: { lt: dayStart } },
-        orderBy: { snapshotDate: 'desc' },
-        select: { snapshotDate: true, totalUnits: true, totalValue: true }
-      });
-      if (locSnap) {
-        return {
-          units: locSnap.totalUnits,
-          value: Number(locSnap.totalValue),
-          source: 'snapshot' as const,
-          asOf: locSnap.snapshotDate
-        };
-      }
-      // Before this location has any history, it held nothing.
-      return { units: 0, value: 0, source: 'derived' as const, asOf: dayStart };
-    }
-
-    const snapshot = await prisma.dailyInventorySnapshot.findFirst({
-      where: { clientId, snapshotDate: { lt: dayStart } },
-      orderBy: { snapshotDate: 'desc' },
-      select: { snapshotDate: true, totalUnits: true, totalValue: true }
-    });
-
-    if (snapshot) {
+      const forLocation = closing.byLocation.get(locationId);
+      // A location with no entry held nothing that day -- it did not exist yet, or was empty.
       return {
-        units: snapshot.totalUnits,
-        value: Number(snapshot.totalValue),
-        source: 'snapshot' as const,
-        asOf: snapshot.snapshotDate
+        units: forLocation?.units ?? 0,
+        value: Number((forLocation?.value ?? 0).toFixed(2)),
+        source: 'derived' as const,
+        asOf: dayStart
       };
     }
 
-    // No snapshot to lean on: work backwards from live stock by undoing everything that has
-    // happened since. Exact for units. Value is approximated because a variant's average cost
-    // today is not what it was then, and that history is not stored -- flagged, not hidden.
-    const [variants, movementsSince] = await Promise.all([
-      prisma.productVariant.findMany({
-        where: { clientId },
-        select: { averageCost: true, stocks: { select: { quantity: true } } }
-      }),
-      prisma.inventoryTransaction.aggregate({
-        where: { clientId, createdAt: { gte: dayStart } },
-        _sum: { quantity: true }
-      })
-    ]);
-
-    const liveUnits = variants.reduce((s, v) => s + v.stocks.reduce((a, x) => a + x.quantity, 0), 0);
-    const liveValue = variants.reduce(
-      (s, v) => s + v.stocks.reduce((a, x) => a + x.quantity, 0) * Number(v.averageCost), 0
-    );
-    const since = movementsSince._sum.quantity || 0;
-    const openingUnits = liveUnits - since;
-
     return {
-      units: openingUnits,
-      // Scaled from live value in proportion to units. An estimate, and labelled as one.
-      value: liveUnits > 0 ? Number(((liveValue / liveUnits) * openingUnits).toFixed(2)) : 0,
+      units: closing.units,
+      // Exact in units. Value uses each variant's average cost as it stands today, because
+      // cost history is not stored -- an approximation, and labelled as one.
+      value: Number(closing.value.toFixed(2)),
       source: 'derived' as const,
       asOf: dayStart
     };

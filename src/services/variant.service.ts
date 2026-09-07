@@ -90,8 +90,37 @@ export class VariantService {
 
     const locationIds = await this.resolveInitialStockLocationIds(clientId, locationId, applyToAllLocations);
 
+    // SKUs are derived client-side as productCode-FIRST3OFCOLOUR-size, so two genuinely
+    // different colours whose names begin with the same three letters -- "Purple" and
+    // "Purple Blue", or "Light Blue" and "Light Green", which both reduce to LIG -- produce
+    // the same SKU. [clientId, sku] is unique, so the second insert failed, was counted as
+    // "skipped", and the variant the user asked for simply did not exist. It cost a real
+    // customer a variant on the first product they ever created.
+    //
+    // The user's intent is not ambiguous in that case -- two distinct colour/size pairs --
+    // only the derived label collided, so the label is disambiguated rather than the variant
+    // dropped. Resolved up front, against both the batch and what the tenant already has,
+    // because the creates below run concurrently and cannot see each other's SKUs.
+    const existing = await prisma.productVariant.findMany({
+      where: { clientId }, select: { sku: true }
+    });
+    const taken = new Set(existing.map(v => v.sku));
+    const adjusted: { requested: string; used: string }[] = [];
+
+    const prepared = variants.map((v) => {
+      let sku = v.sku;
+      if (taken.has(sku)) {
+        let n = 2;
+        while (taken.has(`${sku}-${n}`)) n++;
+        sku = `${sku}-${n}`;
+        adjusted.push({ requested: v.sku, used: sku });
+      }
+      taken.add(sku);
+      return { ...v, sku };
+    });
+
     const results = await Promise.allSettled(
-      variants.map(async (v) => {
+      prepared.map(async (v) => {
         try {
           const variantCode = await generateSequentialCode(clientId, 'VAR', 'VARIANT');
           const barcode = await generateUniqueCode('SVM', 8, async (code) => variantRepository.barcodeExists(code));
@@ -126,7 +155,10 @@ export class VariantService {
       .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
       .map((r) => r.reason);
 
-    return { created, skipped, errors };
+    // `adjusted` is returned so the caller can say which SKU it actually used. A variant that
+    // silently carries a different code than the one the user watched it be given is the same
+    // class of problem as losing it -- smaller, but the same kind.
+    return { created, skipped, errors, adjusted };
   }
 
   async bulkUpdateVariants(clientId: string, updates: any[]) {

@@ -150,11 +150,14 @@ async function main() {
   const day = await daybook.getDay(clientId, today);
 
   check('today is reported as still running', day.inProgress === true);
-  check('today\'s opening is yesterday\'s stored closing',
+  check('today\'s opening agrees with yesterday\'s stored closing',
     day.opening.units === storedYesterday?.totalUnits,
     `opening ${day.opening.units} vs stored ${storedYesterday?.totalUnits}`);
-  check('today\'s opening came from a snapshot, not a fallback derivation',
-    day.opening.source === 'snapshot', String(day.opening.source));
+  // Agreeing with the stored row is required, but the opening is not READ from it. It is
+  // derived from the ledger, so that a movement backdated into an already-snapshotted day is
+  // reflected immediately instead of leaving the opening wrong until something recomputes it.
+  check('the opening is derived from the ledger rather than read from the stored row',
+    day.opening.source === 'derived', String(day.opening.source));
   const dayClosing = day.closing;
   check('the day book states a closing figure for today at all', dayClosing !== null);
   check('opening + in - out still equals closing',
