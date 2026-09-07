@@ -139,10 +139,27 @@ export class VariantService {
           });
 
           if (v.quantity > 0) {
-            await this.applyInitialStock(clientId, created.id, v.quantity, locationIds, clientId);
+            try {
+              await this.applyInitialStock(clientId, created.id, v.quantity, locationIds, clientId);
+            } catch (stockError: any) {
+              // The variant row is already committed at this point -- the create and the
+              // movement are not one transaction -- so this is NOT the same failure as "the
+              // variant could not be made". Reporting it as one told the user to add the
+              // variant again, which re-submits a SKU that now exists and gets renamed to
+              // SKU-2, leaving them with a duplicate. It is flagged separately so the advice
+              // can be the true one: the variant is there, its opening quantity is not.
+              return {
+                variant: created,
+                stockFailed: {
+                  sku: created.sku,
+                  quantity: v.quantity,
+                  reason: stockError.message || 'opening stock could not be added'
+                }
+              };
+            }
           }
 
-          return created;
+          return { variant: created, stockFailed: null };
         } catch (error: any) {
           throw { sku: v.sku, reason: error.message || 'Variant already exists or invalid data' };
         }
@@ -155,10 +172,17 @@ export class VariantService {
       .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
       .map((r) => r.reason);
 
+    // Variants that exist but did not get the quantity that was asked for. Kept apart from
+    // `errors` because the remedy is different: set the quantity, do not create it again.
+    const stockNotApplied = results
+      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
+      .map(r => r.value?.stockFailed)
+      .filter(Boolean);
+
     // `adjusted` is returned so the caller can say which SKU it actually used. A variant that
     // silently carries a different code than the one the user watched it be given is the same
     // class of problem as losing it -- smaller, but the same kind.
-    return { created, skipped, errors, adjusted };
+    return { created, skipped, errors, adjusted, stockNotApplied };
   }
 
   async bulkUpdateVariants(clientId: string, updates: any[]) {
@@ -219,9 +243,18 @@ export class VariantService {
 
     const updated = results.filter((r) => r.status === 'fulfilled').length;
     const skipped = results.filter((r) => r.status === 'rejected').length;
+
+    // Paired with its original index BEFORE filtering. Mapping over the filtered array and
+    // indexing `updates` with its position named the wrong row: with row 0 succeeding and row
+    // 1 failing, the error was reported against row 0's SKU -- the one that worked -- sending
+    // anyone correcting their spreadsheet to the wrong line.
     const errors = results
-      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-      .map((r, i) => ({ sku: updates[i]?.sku, reason: r.reason.message || r.reason }));
+      .map((r, i) => ({ result: r, index: i }))
+      .filter((x): x is { result: PromiseRejectedResult; index: number } => x.result.status === 'rejected')
+      .map(({ result, index }) => ({
+        sku: updates[index]?.sku,
+        reason: result.reason?.message || String(result.reason)
+      }));
 
     return { updated, skipped, errors };
   }
