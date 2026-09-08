@@ -5,6 +5,16 @@ import { prisma } from '../lib/prisma';
 import { generateUniqueCode, generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 
+/**
+ * How many rows of a bulk import are worked on at once.
+ *
+ * Each row is several database round trips inside its own transaction, and this database is
+ * about a second away, so the limit that matters is connections rather than CPU. Eight keeps a
+ * large import moving without occupying the whole pool -- which is shared with every other
+ * tenant on the instance, and is the reason this is bounded at all.
+ */
+const BULK_UPDATE_CONCURRENCY = 8;
+
 export class VariantService {
   
   // Resolves the location(s) that should receive a variant's initial stock quantity.
@@ -241,8 +251,22 @@ export class VariantService {
       targetLocationId = await this.resolveUpdateLocationId(clientId, locationId, prisma);
     }
 
-    const results = await Promise.allSettled(
-      updates.map(async (update) => {
+    // ONE BATCH AT A TIME, not the whole file at once.
+    //
+    // This was Promise.allSettled over every row, so a 1,000-row import opened a thousand
+    // transactions simultaneously -- about five database operations each -- against a
+    // connection pool in single digits, on a database roughly a second away. That pool is
+    // shared by the whole instance, so one merchant's large import did not merely run slowly:
+    // it starved every other tenant's requests until it finished or timed out.
+    //
+    // Bounded concurrency keeps the pool usable and makes a large import simply take longer,
+    // which is the right failure mode for a bulk job on a shared service. The width is small
+    // on purpose: each row is several round trips, not one.
+    const results: PromiseSettledResult<any>[] = [];
+    for (let start = 0; start < updates.length; start += BULK_UPDATE_CONCURRENCY) {
+      const batch = updates.slice(start, start + BULK_UPDATE_CONCURRENCY);
+      const settled = await Promise.allSettled(
+      batch.map(async (update) => {
         const { sku, quantity, priceOverride, sellingPrice, costPrice, reorderLevel } = update;
 
         const variant = await prisma.productVariant.findFirst({
@@ -303,7 +327,9 @@ export class VariantService {
           timeout: 30000
         });
       })
-    );
+      );
+      results.push(...settled);
+    }
 
     const updated = results.filter((r) => r.status === 'fulfilled').length;
     const skipped = results.filter((r) => r.status === 'rejected').length;

@@ -35,7 +35,14 @@ export const bulkUpdateVariantSchema = z.object({
     sellingPrice: z.number().positive().optional(),
     costPrice: z.number().positive().optional(),
     reorderLevel: z.number().int().min(0).optional(),
-  })).min(1, "At least one update is required"),
+  }))
+    .min(1, "At least one update is required")
+    // A ceiling, because this endpoint is a loop over rows and each row is several database
+    // round trips. Without one, a single request could queue unbounded work on a pool shared
+    // with every other tenant -- so one merchant's oversized file becomes everyone's outage.
+    // Two thousand covers any real catalogue file; larger ones should be split, and the
+    // message says so rather than failing at some opaque timeout later.
+    .max(2000, "Too many rows in one request. Split the file into batches of 2000 or fewer."),
   // Where a `quantity` applies. A quantity is a level at one place, and a business with a
   // warehouse and a shop has no single obvious answer, so the caller states it. Ownership is
   // checked against the tenant before it is used. Optional: a file that only sets prices or
