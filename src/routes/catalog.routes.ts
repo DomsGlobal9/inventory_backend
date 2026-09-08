@@ -1,32 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 
-async function getUsageCount(clientId: string, type: string, value: string): Promise<number> {
-  try {
-    switch (type) {
-      case 'CATEGORY':
-        return await prisma.product.count({ where: { clientId, category: value as any } });
-      case 'PRODUCT_TYPE':
-        return await prisma.product.count({ where: { clientId, productType: value as any } });
-      case 'DRESS_TYPE':
-        return await prisma.product.count({ where: { clientId, dressType: value } });
-      case 'MATERIAL':
-        return await prisma.product.count({ where: { clientId, fabric: value } });
-      case 'DESIGN_TYPE':
-        return await prisma.product.count({ where: { clientId, craft: value } });
-      case 'SIZE':
-        return await prisma.productVariant.count({ where: { clientId, size: value } });
-      case 'COLOR':
-        return await prisma.productVariant.count({ where: { clientId, colorName: value } });
-      default:
-        return 0;
-    }
-  } catch (e) {
-    // Catch Prisma enum validation errors or other issues
-    return 0;
-  }
-}
-
+import { usageCountsForClient, usageCountFor } from '../services/catalog-usage.service';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 
@@ -79,9 +54,13 @@ router.get('/items', requirePermission('product:view'), async (req: Request, res
       orderBy: [{ type: 'asc' }, { sortOrder: 'asc' }],
     });
 
-    const itemsWithUsage = await Promise.all(items.map(async (item) => {
-      const usageCount = await getUsageCount(clientId, item.type, item.value);
-      return { ...item, usageCount };
+    // Seven grouped queries for the whole catalogue, rather than one count per entry. See
+    // catalog-usage.service.ts -- a typical tenant has 72 entries, and this screen used to
+    // open 72 simultaneous counts against a pool of about 17.
+    const usage = await usageCountsForClient(clientId);
+    const itemsWithUsage = items.map(item => ({
+      ...item,
+      usageCount: usage.get(`${item.type}:${item.value}`) ?? 0
     }));
 
     res.json({ success: true, data: itemsWithUsage });
@@ -168,7 +147,9 @@ router.delete('/items/:id', requirePermission('admin:catalog'), async (req: Requ
       return res.status(404).json({ success: false, message: 'Item not found' });
     }
 
-    const usageCount = await getUsageCount(clientId, existing.type, existing.value);
+    // Read fresh rather than trusted from the browser: the count the screen was showing may
+    // be minutes old, and someone else may have used this colour since.
+    const usageCount = await usageCountFor(clientId, existing.type, existing.value);
     
     if (usageCount > 0) {
       return res.status(400).json({ 
