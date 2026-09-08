@@ -1,6 +1,6 @@
 # Per-client keys and usage metering for Try-On
 
-Status: proposed, nothing built.
+Status: proposed, nothing built. Current shared key stays working throughout.
 
 ## The gap, precisely
 
@@ -13,16 +13,28 @@ merchant → inventory backend → gateway → catalog-tryon service
                         CATALOG_TRYON_API_KEY
 ```
 
-`catalog-tryon.service.ts` sends `env.CATALOG_TRYON_API_KEY` for every request, from every
+`catalog-tryon.service.ts` sends `env.CATALOG_TRYON_API_KEY` for every request from every
 merchant. Its own comment says the gateway "resolves our tenant from CATALOG_TRYON_API_KEY" --
-and it does, to **one** tenant. So every generation from every shop on the platform is
-attributed to a single customer.
+and it does, to **one** tenant. Every generation from all 37 shops is attributed to a single
+customer. Nothing is broken. Nothing is measurable either.
 
-Nothing is broken. Nothing is measurable either.
+## The operating model, as decided
 
-## Most of this already exists — do not rebuild it
+```
+1. A client is onboarded
+2. A platform admin generates that client's key IN THE GATEWAY
+3. The admin pastes it into that client's page in the Platform Console
+4. Inventory stores it encrypted, against that clientId
+5. Every try-on call for that client sends THAT client's key
+6. The merchant sees, under Settings -> APIs & Services, that Try-On is active
+   and a masked fingerprint of the key -- never the key itself
+```
 
-The gateway already has the machinery:
+The gateway keeps ownership of identity, quota and metering; inventory holds a copy of the key
+purely so it can present it on the client's behalf. That division is the point: there is one
+place a key is issued and one place it is revoked.
+
+## Most of this already exists in the gateway — do not rebuild it
 
 | Already there | What it gives us |
 |---|---|
@@ -31,130 +43,187 @@ The gateway already has the machinery:
 | `ClientAccess` | per-client, per-microservice enable/disable and `rateLimit` (per day) |
 | `RequestLog` | every call: clientId, apiKeyId, endpoint, status, latency, sizes |
 
-So this is not "build an API key system". It is "stop sending the same key for everyone, and
-start counting the thing we would bill for".
+This is not "build an API key system". It is "stop sending the same key for everyone, and start
+counting the thing we would bill for". Building a second key system inside the inventory module
+would mean two places to revoke a key, and eventually a key revoked in only one of them.
 
-What is genuinely missing is one thing: **an aggregated usage record**. `RequestLog` is a raw
-log — right for debugging, wrong for "how many generations did this shop use in September".
-Answering that by scanning raw logs gets slower every month, and raw logs get pruned.
+What is genuinely missing is an **aggregated usage record**. `RequestLog` is a raw log -- right
+for debugging, wrong for "how many generations did this shop use in September". That question
+gets slower every month and raw logs get pruned.
 
-## Decision 1 — where the per-client key lives
+## Should the key be appended to the login credentials? No.
 
-Three ways to give each merchant their own key. They are not equally good.
+It is a fair question, because both arrive at onboarding and both are secrets. They are not the
+same kind of thing, and joining them creates problems that are hard to undo:
 
-**A. Inventory stores one key per client, encrypted, and sends the right one.**
-Uses the gateway exactly as designed; `RequestLog` and `ApiKey.requestCount` become correct
-with no gateway change. Cost: the inventory service now holds N replayable secrets, and needs
-issuing, rotation and revocation to stay in step with the gateway.
+| | Login credentials | API key |
+|---|---|---|
+| Held by | a person | a machine |
+| Shown to | that person, deliberately | nobody -- explicitly not the merchant |
+| Rotated when | someone leaves, or suspicion | quota abuse, a leak, a schedule |
+| Blast radius if leaked | one workspace, behind a login screen | metered spend on GPU work |
 
-**B. Inventory authenticates as a service and names the client it is acting for.**
-It already has `INVENTORY_PRIVATE_KEY_PATH`, and the gateway already understands a signed
-service assertion plus `x-active-client-id`. No secrets stored per tenant at all. Cost:
-attribution is by clientId rather than by ApiKey, so `ApiKey.requestCount` stays meaningless
-and metering must key on clientId.
+Bundling them means rotating one forces rotating the other -- so a staff member leaving would
+either break try-on or leave a key that should have been rotated. And the credential email is
+the one message in this product that deliberately puts a secret in an inbox; adding a machine
+credential to it doubles what a compromised mailbox is worth.
 
-**C. The merchant's own website calls try-on directly with their own key.**
-Necessary eventually if try-on is sold as an API in its own right. Not needed for the
-in-product flow, and it is a different product decision.
+They share only a moment in time. That is not a reason to share a lifecycle.
 
-**Recommendation: B now, A when a merchant needs a key of their own.**
+## How real gateways do this, and what is worth copying
 
-The reason is that today the merchant never sees this key — try-on is reached by pressing a
-button inside the inventory app. A per-client key that no client ever holds is a secret we have
-taken on the duty of protecting, rotating and revoking, in exchange for an attribution we can
-get from a clientId we already have. Option A's real value appears the day a merchant wants to
-call try-on from their own site, and it can be added then without changing the metering.
+Kong, Apigee and AWS API Gateway converge on the same shape, and three parts of it are worth
+taking:
 
-If the intent is specifically to *sell try-on as an API*, that reverses the recommendation and
-A should be first.
+**The key is opaque and stored hashed.** It identifies a consumer; it carries no meaning and
+cannot be reversed. The gateway's `ApiKey.keyHash` already does this. Note `rawKey` also exists
+there "for display purposes" -- that is a deliberate weakening, and if per-client keys are going
+to be a real product it is worth deciding whether that column should keep being written.
 
-## Decision 2 — meter generations, not requests
+**Quota and rate attach to the key, not to the code.** `ClientAccess.rateLimit` is already that.
+The application should not be enforcing per-client limits itself; if it does, the limit lives in
+two places and they will disagree.
 
-A generation produces four views. The billable unit is the **generation**, and it must be
-counted on completion, not on request. Otherwise:
+**Rotation overlaps.** A consumer can hold two valid keys briefly, so a key can be replaced
+without a gap. With one key per client, rotation is: paste the new one, and every request
+between the gateway issuing it and the console saving it fails. Supporting a short overlap turns
+a small outage into a non-event, and it is much easier to design in now than to retrofit.
 
-- a job that fails halfway is billed as if it worked
-- a cancelled job (`/cancel-job` already exists) is billed
-- a client retrying after a timeout is billed twice for one garment
+## Where the key lives on our side
 
-The try-on service is the only party that knows a generation actually finished and how many
-views came out. It should report that, and the meter should record it.
+A table rather than a column, because try-on will not be the only service:
 
-Recording `viewsGenerated` rather than assuming four also handles a partial result honestly --
-three views out of four is a real outcome and should be visible rather than rounded up.
+```
+ClientServiceCredential
+  clientId          which shop
+  service           'CATALOG_TRYON' for now
+  keyEncrypted      AES-256-GCM, the same facility as Shopify tokens
+  keyPrefix         first few characters, for display and for logs
+  status            ACTIVE | REVOKED
+  addedByAdmin      who pasted it, for the audit trail
+  addedAt, lastUsedAt
+  @@unique([clientId, service, status]) -- one active key per service per client
+```
 
-## Decision 3 — what happens at the limit
+Encrypted rather than hashed, for the same reason as the Shopify token: it has to be replayed on
+every call. That does mean the inventory database now holds N replayable secrets, which raises
+what it is worth stealing. Mitigated by: encrypted at rest, never returned by any merchant-facing
+endpoint, masked in every log line, and revocable from the gateway independently of us.
 
-`ClientAccess.rateLimit` exists and is per-day. Before it is enforced, decide what "over the
-limit" means, because the wrong answer here is a merchant unable to work:
+## Two behaviours that decide whether this is pleasant or painful
 
-| Policy | Fits |
-|---|---|
-| Block, tell them, offer more | A hard plan allowance |
-| Allow and record the overage | Pay-as-you-go billing |
-| Allow, warn at 80%, block at 200% | A soft allowance with a safety net |
+**Validate the key when it is pasted, not when a merchant first uses it.**
 
-Whichever is chosen, **the merchant must be able to see their own usage before they hit it.**
-Being blocked by a number you were never shown is the worst version of this feature.
+A pasted key with a missing character saves fine and fails later -- and it fails in front of a
+merchant pressing Generate, as a 401 they cannot interpret, hours after the admin who pasted it
+has moved on. The console should call the gateway once with the key before saving it and refuse
+to save one that does not work.
 
-Try-on is GPU work, so the cost of an unmetered client is real money, not just load. That
-argues for a default limit on every client rather than unlimited-until-someone-notices.
+**Fall back to the shared key while there is one.**
+
+A client with no key of their own keeps using `CATALOG_TRYON_API_KEY` exactly as today. That is
+what makes this shippable in pieces: nothing breaks on the day it deploys, keys are pasted in as
+clients are onboarded, and the fallback is removed only once every client has their own. Without
+it, the day this ships is the day try-on stops for everyone who has not been migrated yet.
+
+## What the two screens show
+
+**Platform Console -> a client's page -> Services**
+
+```
+Virtual Try-On                                    [ Not connected ]
+  Generate a key in the gateway, then paste it here.
+  [ paste key ......................... ]  [ Connect ]
+
+Virtual Try-On                                    [ Active ]
+  Key ..... sk_live_a41f••••         added by platform-admin@scaleezy.com, 8 Sep
+  Used ..... 214 generations this month
+  [ Replace key ]  [ Disconnect ]
+```
+
+**Inventory Settings -> APIs & Services** (what the merchant sees)
+
+```
+Virtual Try-On                                    Active
+  Four-view garment generation.
+  Key ..... sk_live_a41f••••    (managed by Scaleezy)
+  Used ..... 214 of 500 generations this month
+```
+
+The merchant sees enough to recognise the key in a support conversation, and to know where they
+stand against their allowance. They cannot retrieve it. That has to be enforced at the API, not
+by leaving it out of the markup: the endpoint serving this screen must return the prefix only
+and must never decrypt.
+
+## Meter generations, not requests
+
+A generation produces four views. The billable unit is the **generation**, counted on
+completion. Counting requests instead would bill:
+
+- a job that failed halfway
+- a job the merchant cancelled (`/cancel-job` already exists)
+- a timeout retry -- twice, for one garment
+
+Record `viewsGenerated` rather than assuming four, so three-of-four is visible rather than
+rounded up. The try-on service is the only party that knows a generation finished and how many
+views came out, so it has to report that.
 
 ## What to build
 
-### Phase 1 — attribution (no behaviour change)
-1. Inventory sends a service assertion plus the acting `clientId` instead of the shared key.
-2. Gateway records the real `clientId` in `RequestLog` for try-on calls.
-3. A `TryOnUsage` record: `clientId`, `date`, `generations`, `viewsGenerated`, `failures`,
-   `cancellations`. One row per client per day -- small, exact, and answers "this month" with
-   a single aggregate rather than a log scan.
+### Phase 1 — the key, end to end
+1. `ClientServiceCredential`, encrypted, with the masked prefix.
+2. Console: paste, validate against the gateway, save, replace, disconnect.
+3. `catalog-tryon.service.ts` sends the client's key, falling back to the shared one.
+4. Merchant-facing Settings -> APIs & Services, prefix only.
 
-**Done when:** the console can show generations per client per day, and the numbers match what
+**Done when:** a client with a pasted key is attributed correctly in the gateway's own
+`RequestLog`, and a client without one still works.
+
+### Phase 2 — counting
+5. `TryOnUsage`: one row per client per day -- `generations`, `viewsGenerated`, `failures`,
+   `cancellations`. Small, exact, and answers "this month" with one aggregate.
+6. Usage on both screens.
+
+**Done when:** the console can show generations per client per day, and the figures match what
 the try-on service actually produced.
 
-### Phase 2 — visibility
-4. Merchant-facing usage on their own Settings screen: used this month, allowance, what is left.
-5. Platform console: usage by client, so a heavy user is noticed before the bill is.
-
-**Done when:** a merchant can answer "how much have I used" without asking anyone.
-
 ### Phase 3 — limits
-6. Enforce `ClientAccess.rateLimit` with the policy chosen in Decision 3.
-7. Warn approaching it, in the app, before it bites.
+7. Enforce `ClientAccess.rateLimit` at the gateway, with the policy below.
+8. Warn the merchant approaching it, in the app, before it bites.
 
-**Done when:** a client at their limit gets a clear message naming the limit and what to do,
-not a generic failure.
+### Phase 4 — keys merchants hold themselves
+Only if try-on is sold as an API a merchant calls from their own site. Different product
+decision; the metering above does not change.
 
-### Phase 4 — keys of their own (only if try-on is sold as an API)
-8. Issue per-client keys through the console, using the gateway's existing `ApiKey`.
-9. Show, rotate and revoke them, exactly as the storefront connection screen does.
+## Decisions still open
 
-## Scenarios worth deciding now
+**What happens at the limit.** Block and offer more, allow and record the overage, or warn at
+80% and block at 200%. Try-on is GPU work, so an unmetered client is real money -- which argues
+for a default limit on every client rather than unlimited until someone notices. Whichever is
+chosen, the merchant must be able to see their usage *before* they hit it. Being blocked by a
+number you were never shown is the worst version of this feature.
 
-These are the ones that turn into arguments with a customer later:
+**Concurrency.** One shop generating a thousand garments should not starve everyone else. A
+per-client concurrent-job cap is a separate control from a daily count, and GPU work needs both.
 
-- **A failed generation** -- not billed, but recorded, or a broken run looks like no usage.
-- **A cancelled job** -- the cancel endpoint exists; cancelling after the GPU work is done is
-  different from cancelling before it starts.
-- **A retry after a timeout** -- the same garment must not count twice. Needs an idempotency
-  key from the caller, decided now rather than after someone is double-charged.
-- **Partial results** -- three views of four. Recorded as three.
-- **The 37 existing tenants** -- all currently sharing one key. Their historical usage cannot
-  be split apart afterwards; metering starts from the day this ships and the console should say
-  so rather than implying the earlier months were zero.
-- **Concurrency** -- one shop generating a thousand garments should not starve everyone else.
-  A per-client concurrent-job cap is a separate control from a daily count, and GPU work needs
-  both.
-- **Suspended and deleted clients** -- a suspended client should stop generating. A deleted one
-  takes its usage rows with it, which conflicts with keeping billing history; decide whether
-  usage is billing data that outlives the tenant.
+**Retries.** The same garment must not count twice after a timeout. Needs an idempotency key
+from the caller, agreed now rather than after someone is double-charged.
+
+**Deleting a client.** Erasing a tenant here removes its `ClientServiceCredential` row -- but
+does **not** revoke the key in the gateway. That key stays valid, for a shop that no longer
+exists. Either deletion calls the gateway to revoke, or the runbook says to revoke by hand, but
+it cannot be left unstated.
+
+**The 37 existing tenants.** All sharing one key today, so their history cannot be split apart
+afterwards. Metering starts the day this ships, and the console should say so rather than
+implying earlier months were zero.
 
 ## Honest assessment
 
-Phase 1 is small, because the gateway already has the identity and logging. The real work is
-the decisions above, not the code -- particularly what a generation costs and what happens at
-the limit, because those are commercial choices that the implementation has to encode.
+Phase 1 is a small amount of code, because the gateway already owns identity and logging. The
+real work is the decisions above -- what a generation costs and what happens at the limit are
+commercial choices the implementation only encodes.
 
-The one thing I would not do is build a second API-key system inside the inventory module. The
-gateway owns tenancy and keys for this platform; duplicating that here means two places to
-revoke a key and, eventually, a key revoked in one of them.
+The two things worth insisting on: validate the key when it is pasted rather than when a
+merchant meets a 401, and keep the shared-key fallback until every client has their own, so
+this can ship in pieces instead of as one switchover.
