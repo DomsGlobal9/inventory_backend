@@ -1853,3 +1853,58 @@ model ShopifyOAuthState {
   @@index([expiresAt])
   @@map("shopify_oauth_states")
 }
+
+/// Which platform service a stored key is for.
+///
+/// An enum rather than a free string so that adding a service is a deliberate change with a
+/// migration behind it, and a typo cannot quietly create a second, parallel "catalog_tryon".
+enum ClientService {
+  CATALOG_TRYON
+}
+
+/// A client's key for a platform service, issued by the gateway and pasted in by an admin.
+///
+/// The gateway owns identity, quota and metering. This is a copy held so the inventory module
+/// can present the key on that client's behalf -- one place a key is issued, one place it is
+/// revoked, and this is neither.
+///
+/// ENCRYPTED, NOT HASHED, for the same reason as the Shopify token: it is replayed on every
+/// call, so it has to come back out. That does mean this table holds replayable secrets and is
+/// worth more to an attacker than most. It is mitigated by never returning the value from any
+/// merchant-facing endpoint -- only keyPrefix leaves the building -- and by the gateway being
+/// able to revoke a key without us.
+model ClientServiceCredential {
+  id       String        @id @default(uuid())
+  clientId String        @map("client_id")
+  service  ClientService
+
+  /// AES-256-GCM via lib/credentialEncryption.
+  keyEncrypted String @map("key_encrypted")
+  /// The first few characters, kept in clear. Enough for a merchant to recognise their key in
+  /// a support conversation and for a log line to be useful, and useless on its own.
+  keyPrefix    String @map("key_prefix")
+
+  status ClientServiceCredentialStatus @default(ACTIVE)
+
+  /// Who pasted it, and when. This is a platform admin acting on a client's account, so it
+  /// belongs in an audit trail rather than only in a log file.
+  addedByAdmin String   @map("added_by_admin")
+  addedAt      DateTime @default(now()) @map("added_at")
+
+  /// Set on every successful use, so a key nobody is using is visible as such.
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// One key per service per client. Replacing one updates this row rather than accumulating
+  /// rows nobody can tell apart.
+  @@unique([clientId, service], name: "uq_client_service_key")
+  @@index([clientId])
+  @@map("client_service_credentials")
+}
+
+enum ClientServiceCredentialStatus {
+  ACTIVE
+  REVOKED
+}

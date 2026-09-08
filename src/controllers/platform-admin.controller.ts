@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { platformAdminService } from '../services/platform-admin.service';
+import { serviceCredentialService } from '../services/service-credential.service';
 import { authCookieOptions, platformAdminCookieOptions, clearCookieOptions } from '../lib/cookies';
 
 const cookieOptions = platformAdminCookieOptions;
@@ -363,5 +364,62 @@ export const deleteClient = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[DeleteClient] failed and rolled back:', error?.message);
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to delete the client' });
+  }
+};
+
+// ─── A CLIENT'S SERVICE KEYS ──────────────────────────────────────────────────
+// Generated in the gateway, pasted here. The gateway owns identity, quota and metering; this
+// is a copy held so the inventory module can present it on the client's behalf.
+
+export const getClientServiceKeys = async (req: Request, res: Response) => {
+  try {
+    const clientId = req.params.clientId as string;
+    res.json({
+      success: true,
+      data: [await serviceCredentialService.describe(clientId, 'CATALOG_TRYON')]
+    });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to read the keys' });
+  }
+};
+
+/**
+ * Saves a client's key for a service.
+ *
+ * Validated against the gateway before it is stored -- see setKey. A key that does not work is
+ * refused here rather than accepted and discovered later by a merchant meeting a 401.
+ */
+export const setClientServiceKey = async (req: Request, res: Response) => {
+  try {
+    const admin = (req as any).platformAdmin;
+    const { key, service } = req.body ?? {};
+
+    if (typeof key !== 'string' || !key.trim()) {
+      return res.status(400).json({ success: false, message: 'Paste the key generated in the gateway' });
+    }
+
+    const result = await serviceCredentialService.setKey({
+      clientId: req.params.clientId as string,
+      service: service === 'CATALOG_TRYON' || !service ? 'CATALOG_TRYON' : service,
+      key,
+      addedByAdmin: admin?.email ?? 'unknown admin'
+    });
+
+    // The key itself is never in this response. `result` is a summary built from the stored
+    // row, and the only key-derived field on it is the prefix.
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to save that key' });
+  }
+};
+
+export const revokeClientServiceKey = async (req: Request, res: Response) => {
+  try {
+    const service = (req.query.service as string) === 'CATALOG_TRYON' || !req.query.service
+      ? 'CATALOG_TRYON' : (req.query.service as any);
+    const result = await serviceCredentialService.revoke(req.params.clientId as string, service);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to disconnect that key' });
   }
 };

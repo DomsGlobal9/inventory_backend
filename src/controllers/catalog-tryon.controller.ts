@@ -15,7 +15,10 @@ export class CatalogTryOnController {
     try {
       const upstream = await catalogTryOnService.streamGenerateCatalog(
         { ...req.body, clientId },
-        abortController.signal
+        abortController.signal,
+        // Passed separately from the payload as well, because it now decides which key we
+        // present -- not just what we tell the far end we are doing.
+        clientId
       );
 
       if (!upstream.ok || !upstream.body) {

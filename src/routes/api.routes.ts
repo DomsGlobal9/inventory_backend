@@ -29,6 +29,7 @@ import leadRoutes from './lead.routes';
 import storefrontPublicRoutes from './storefront-public.routes';
 import shopifyPublicRoutes from './shopify-public.routes';
 import shopifyMerchantRoutes from './shopify-merchant.routes';
+import serviceCatalogueRoutes from './service-catalogue.routes';
 import storefrontConnectionRoutes from './storefront-connection.routes';
 import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
@@ -113,6 +114,9 @@ router.use('/locations', locationRoutes);
 router.use('/storefront-connections', storefrontConnectionRoutes);
 // Connecting and claiming a Shopify store. Behind the session, unlike /shopify above.
 router.use('/shopify-connect', shopifyMerchantRoutes);
+// What a merchant may see about the platform services their workspace uses. Read only, and
+// structurally unable to return a key -- see the route file.
+router.use('/services', serviceCatalogueRoutes);
 router.use('/inventory-transfers', inventoryTransferRoutes);
 router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);

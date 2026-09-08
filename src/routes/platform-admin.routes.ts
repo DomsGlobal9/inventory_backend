@@ -24,7 +24,10 @@ import {
   resetPlatformAdminPassword,
   setClientSuspended,
   previewClientDeletion,
-  deleteClient
+  deleteClient,
+  getClientServiceKeys,
+  setClientServiceKey,
+  revokeClientServiceKey
 } from '../controllers/platform-admin.controller';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 
@@ -45,6 +48,10 @@ consoleRouter.post('/clients/:clientId/assume', assumeClient);
 consoleRouter.patch('/clients/:clientId/suspend', setClientSuspended);
 consoleRouter.get('/clients/:clientId/deletion-preview', previewClientDeletion);
 consoleRouter.delete('/clients/:clientId', deleteClient);
+// A client's keys for platform services. Generated in the gateway, pasted here.
+consoleRouter.get('/clients/:clientId/service-keys', getClientServiceKeys);
+consoleRouter.post('/clients/:clientId/service-keys', setClientServiceKey);
+consoleRouter.delete('/clients/:clientId/service-keys', revokeClientServiceKey);
 consoleRouter.post('/sessions/:sessionId/end', endAssumedSession);
 // Managing who can reach this console at all.
 consoleRouter.get('/platform-admins', listPlatformAdmins);
