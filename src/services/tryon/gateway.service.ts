@@ -1,5 +1,5 @@
-import { env } from '../config/env';
-import { serviceCredentialService } from './service-credential.service';
+import { env } from '../../config/env';
+import { serviceCredentialService } from './credential.service';
 
 const GENERATE_PATH = '/api/v1/draping/generate-catalog';
 const CANCEL_PATH = '/api/v1/draping/cancel-job';

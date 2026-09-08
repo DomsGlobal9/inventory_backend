@@ -10,7 +10,7 @@
  */
 import { prisma } from '../lib/prisma';
 import { env } from '../config/env';
-import { serviceCredentialService } from '../services/service-credential.service';
+import { serviceCredentialService } from '../services/tryon';
 import { encryptCredential } from '../lib/credentialEncryption';
 
 let passed = 0, failed = 0;

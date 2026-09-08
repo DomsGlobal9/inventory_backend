@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
-import { serviceCredentialService } from '../services/service-credential.service';
+import { serviceCredentialService, tryOnUsageService } from '../services/tryon';
 
 /**
  * What a merchant may see about the platform services their workspace uses.
@@ -42,6 +42,22 @@ router.get('/', async (req, res, next) => {
         }
       ]
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * This workspace's own try-on usage.
+ *
+ * A merchant seeing their own consumption is the thing that makes an allowance fair: being
+ * stopped by a number nobody showed you is the worst version of this feature. It carries no
+ * key material at all -- only counts and a ceiling.
+ */
+router.get('/tryon-usage', async (req, res, next) => {
+  try {
+    const clientId = (req as any).clientId as string;
+    res.json({ success: true, data: await tryOnUsageService.summary(clientId) });
   } catch (error) {
     next(error);
   }

@@ -27,7 +27,9 @@ import {
   deleteClient,
   getClientServiceKeys,
   setClientServiceKey,
-  revokeClientServiceKey
+  revokeClientServiceKey,
+  getClientTryOnUsage,
+  setClientTryOnLimit
 } from '../controllers/platform-admin.controller';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 
@@ -52,6 +54,9 @@ consoleRouter.delete('/clients/:clientId', deleteClient);
 consoleRouter.get('/clients/:clientId/service-keys', getClientServiceKeys);
 consoleRouter.post('/clients/:clientId/service-keys', setClientServiceKey);
 consoleRouter.delete('/clients/:clientId/service-keys', revokeClientServiceKey);
+// Usage against allowance, and setting that allowance.
+consoleRouter.get('/clients/:clientId/tryon-usage', getClientTryOnUsage);
+consoleRouter.patch('/clients/:clientId/tryon-limit', setClientTryOnLimit);
 consoleRouter.post('/sessions/:sessionId/end', endAssumedSession);
 // Managing who can reach this console at all.
 consoleRouter.get('/platform-admins', listPlatformAdmins);

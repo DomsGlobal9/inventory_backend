@@ -1,6 +1,6 @@
-import { prisma } from '../lib/prisma';
-import { env } from '../config/env';
-import { encryptCredential, decryptCredential } from '../lib/credentialEncryption';
+import { prisma } from '../../lib/prisma';
+import { env } from '../../config/env';
+import { encryptCredential, decryptCredential } from '../../lib/credentialEncryption';
 import { ClientService } from '@prisma/client';
 
 /**

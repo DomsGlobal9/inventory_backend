@@ -1908,3 +1908,70 @@ enum ClientServiceCredentialStatus {
   ACTIVE
   REVOKED
 }
+
+/// One row per client per day of try-on usage.
+///
+/// An aggregate, not a log. The gateway's RequestLog already records every call and is the
+/// right thing for debugging one; it is the wrong thing for "how many generations did this
+/// shop use in September", which gets slower every month and stops working entirely once logs
+/// are pruned. This table answers that in one read and stays the same size per client per day.
+///
+/// Outcomes are counted separately rather than as one total, because they are not the same
+/// commercially. A generation that failed halfway used GPU time but produced nothing a
+/// merchant can sell from; one they cancelled may have used none. Billing on "requests" would
+/// charge for all three identically, and charge twice for a timeout retry.
+model TryOnUsage {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  /// The shop's own business day, "YYYY-MM-DD", not UTC -- so a day's usage matches the day
+  /// the merchant experienced, the same rule the day book uses.
+  day String
+
+  /// Attempts that reached the gateway.
+  started   Int @default(0)
+  /// Streams that ran to completion.
+  completed Int @default(0)
+  /// Started and then failed -- the gateway refused, or the stream broke.
+  failed    Int @default(0)
+  /// The merchant navigated away or pressed stop.
+  cancelled Int @default(0)
+
+  /// Views actually produced, when the stream says so. NOT four times `completed`: a run that
+  /// yields three of four views is a real outcome and is recorded as three rather than rounded
+  /// up to a full generation's worth.
+  viewsGenerated Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, day], name: "uq_tryon_usage_day")
+  @@index([clientId, day])
+  @@map("tryon_usage")
+}
+
+/// A client's monthly allowance for a service.
+///
+/// Separate from ClientServiceCredential because a limit has to be settable for a client who
+/// has no key of their own -- which is every client today, since they all share the platform
+/// key. Tying the allowance to the key would mean the clients most likely to run away with
+/// usage are exactly the ones that cannot be capped.
+///
+/// Try-on is GPU work, so an unmetered client is real money rather than just load. The absence
+/// of a row means no limit, which is the right default for a platform that already has
+/// customers -- but the console should make an unlimited client visible rather than quiet.
+model ClientServiceLimit {
+  id       String        @id @default(uuid())
+  clientId String        @map("client_id")
+  service  ClientService
+
+  /// Generations per calendar month. Null is unlimited.
+  monthlyLimit Int? @map("monthly_limit")
+
+  updatedByAdmin String   @map("updated_by_admin")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([clientId, service], name: "uq_client_service_limit")
+  @@map("client_service_limits")
+}

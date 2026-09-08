@@ -2,7 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { platformAdminService } from '../services/platform-admin.service';
-import { serviceCredentialService } from '../services/service-credential.service';
+import { serviceCredentialService } from '../services/tryon';
+import { tryOnUsageService } from '../services/tryon';
 import { authCookieOptions, platformAdminCookieOptions, clearCookieOptions } from '../lib/cookies';
 
 const cookieOptions = platformAdminCookieOptions;
@@ -421,5 +422,36 @@ export const revokeClientServiceKey = async (req: Request, res: Response) => {
     res.json({ success: true, data: result });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to disconnect that key' });
+  }
+};
+
+// ─── TRY-ON USAGE AND ALLOWANCE ───────────────────────────────────────────────
+
+export const getClientTryOnUsage = async (req: Request, res: Response) => {
+  try {
+    const clientId = req.params.clientId as string;
+    const [summary, daily] = await Promise.all([
+      tryOnUsageService.summary(clientId),
+      tryOnUsageService.daily(clientId, 30)
+    ]);
+    res.json({ success: true, data: { summary, daily } });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to read usage' });
+  }
+};
+
+/** Sets a client's monthly allowance. An empty or null value means unlimited. */
+export const setClientTryOnLimit = async (req: Request, res: Response) => {
+  try {
+    const admin = (req as any).platformAdmin;
+    const raw = req.body?.monthlyLimit;
+    const monthlyLimit = raw === null || raw === undefined || raw === '' ? null : Number(raw);
+
+    const result = await tryOnUsageService.setMonthlyLimit(
+      req.params.clientId as string, monthlyLimit, admin?.email ?? 'unknown admin'
+    );
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to set the limit' });
   }
 };
