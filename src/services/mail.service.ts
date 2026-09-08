@@ -86,8 +86,17 @@ export class MailService {
     email: string;
     password: string;
     roleLabel?: string;
+    /** A platform admin signs in somewhere else entirely. */
+    audience?: 'shop' | 'platform';
   }): Promise<SendResult> {
-    const loginUrl = `${env.FRONTEND_URL.replace(/\/$/, '')}/login`;
+    // Two different applications behind one hostname, with separate logins and separate
+    // sessions. A platform admin sent to /login meets the shop sign-in page, types correct
+    // credentials, and is told they are wrong -- because that form checks a different table.
+    // The link has to match who the message is for.
+    const base = env.FRONTEND_URL.replace(/\/$/, '');
+    const loginUrl = input.audience === 'platform'
+      ? `${base}/platformconsole/login`
+      : `${base}/login`;
     const body = { ...input, loginUrl };
 
     return sendMail({

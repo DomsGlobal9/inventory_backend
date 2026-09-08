@@ -47,7 +47,22 @@ export class ProductRepository {
         skip,
         take: limit,
         orderBy: { [sortBy]: order },
-        include: { variants: { include: { stocks: true } } }
+        // Only the three fields the summary below actually reads.
+        //
+        // This was `include: { variants: { include: { stocks: true } } }`, which fetched every
+        // column of every variant and every stock row -- for a page of 20 products with ten
+        // variants across three locations, six hundred full stock rows and two hundred full
+        // variant rows -- to produce three integers per product. Everything else was dropped
+        // on the next line. Over a link where the database is on another continent, that
+        // payload is most of what the page waits for.
+        include: {
+          variants: {
+            select: {
+              reorderLevel: true,
+              stocks: { select: { quantity: true } }
+            }
+          }
+        }
       }),
       prisma.product.count({ where })
     ]);

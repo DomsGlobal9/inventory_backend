@@ -1,3 +1,4 @@
+import { getShopSettings } from '../lib/clientSettings';
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
 
@@ -186,12 +187,15 @@ function toStorefrontVariant(
 }
 
 export class StorefrontCatalogueService {
-  /** The shop's currency, stated on every price so a receiver never has to assume. */
+  /**
+   * The shop's currency, stated on every price so a receiver never has to assume.
+   *
+   * Cached, because this sat on the path of a merchant's own website loading its products:
+   * a full round trip to another continent, roughly a second, to fetch the string "INR" --
+   * paid by a shopper waiting for the page.
+   */
   async getCurrency(clientId: string): Promise<string> {
-    const settings = await prisma.clientSettings.findUnique({
-      where: { clientId }, select: { currency: true }
-    });
-    return settings?.currency || 'INR';
+    return (await getShopSettings(clientId)).currency;
   }
 
   /**
@@ -206,9 +210,14 @@ export class StorefrontCatalogueService {
    */
   async listProducts(scope: CatalogueScope, opts: { cursor?: string; limit?: number; since?: Date } = {}) {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
-    const locationIds = await resolveLocationIds(scope);
+    // Together, not one after the other. Neither needs the other's answer, and waiting for the
+    // locations before even asking for the currency spent a whole round trip -- about a second
+    // from here -- on nothing. That second is paid by a shopper waiting for the page.
+    const [locationIds, currency] = await Promise.all([
+      resolveLocationIds(scope),
+      this.getCurrency(scope.clientId)
+    ]);
     const scoped = new Set(locationIds);
-    const currency = await this.getCurrency(scope.clientId);
 
     const decoded = opts.cursor ? decodeCursor(opts.cursor) : null;
 
@@ -273,9 +282,14 @@ export class StorefrontCatalogueService {
 
   /** One product by its public code, for a storefront filling a gap it noticed. */
   async getProduct(scope: CatalogueScope, productCode: string): Promise<StorefrontProduct | null> {
-    const locationIds = await resolveLocationIds(scope);
+    // Together, not one after the other. Neither needs the other's answer, and waiting for the
+    // locations before even asking for the currency spent a whole round trip -- about a second
+    // from here -- on nothing. That second is paid by a shopper waiting for the page.
+    const [locationIds, currency] = await Promise.all([
+      resolveLocationIds(scope),
+      this.getCurrency(scope.clientId)
+    ]);
     const scoped = new Set(locationIds);
-    const currency = await this.getCurrency(scope.clientId);
 
     const p = await prisma.product.findFirst({
       where: { clientId: scope.clientId, productCode, ...ELIGIBLE_PRODUCT },

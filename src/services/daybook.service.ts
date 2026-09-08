@@ -1,3 +1,4 @@
+import { getShopSettings } from '../lib/clientSettings';
 import { InventoryReason, SalesOrderStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import {
@@ -58,14 +59,21 @@ export class DayBookService {
    * the day book works; the business name is optional and only used for printed output, which
    * falls back to the account name when it is not set.
    */
+  /**
+   * The shop's timezone and name, cached briefly.
+   *
+   * Read on almost every report, every day-boundary calculation and every snapshot, and it is
+   * the same two values every time -- a shop's timezone changes approximately never. Against a
+   * database on another continent each of those reads costs about a second, so the day book
+   * alone was paying two seconds to look up a string it had already looked up.
+   *
+   * A minute of staleness, and no invalidation to keep in step with anything: the worst case
+   * is that a timezone change takes up to a minute to apply, which nobody will notice, and the
+   * alternative -- hooks in every place settings can be written -- is a bug waiting to happen.
+   */
   async getShop(clientId: string): Promise<{ timezone: string; businessName: string | null }> {
-    const settings = await prisma.clientSettings.findUnique({
-      where: { clientId }, select: { timezone: true, businessName: true }
-    });
-    return {
-      timezone: settings?.timezone || DEFAULT_TIMEZONE,
-      businessName: settings?.businessName || null
-    };
+    const { timezone, businessName } = await getShopSettings(clientId);
+    return { timezone, businessName };
   }
 
   /** Kept for the callers that only need the timezone. */

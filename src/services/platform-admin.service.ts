@@ -441,44 +441,84 @@ export class PlatformAdminService {
       `DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE client_id = $1)`,
       `DELETE FROM roles WHERE client_id = $1`,
       `DELETE FROM client_settings WHERE client_id = $1`,
+      // The one the first real deletion attempt found, because the check below refused to let
+      // it finish. The sweep after these statements would now catch it anyway; it is listed
+      // explicitly so the order stays readable rather than relying on the safety net.
+      `DELETE FROM client_catalog_items WHERE client_id = $1`,
       `DELETE FROM inventory_client_sequences WHERE client_id = $1`
     ];
 
+    // Sent to the database as ONE statement, and this is the whole reason for the DO block.
+    //
+    // Run as separate queries, these forty-eight deletes were forty-eight network round trips.
+    // Against a database on another continent that is roughly a second each: a minute of
+    // waiting for an operation that takes the database itself milliseconds. Inside a DO block
+    // they run server-side, sequentially, in one trip.
+    //
+    // A DO block cannot take bound parameters, so the id is inlined -- which is why it is
+    // validated to a strict character set first and quoted by format(%L) inside. Anything
+    // outside that set is refused rather than escaped.
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(clientId)) {
+      throw Object.assign(
+        new Error('That client id contains characters this operation will not accept'),
+        { statusCode: 400 }
+      );
+    }
+
+    const ordered = statements
+      .map(s => s.replace(/\$1/g, `'${clientId}'`))
+      .join(';\n  ');
+
     await prisma.$transaction(async tx => {
-      for (const statement of statements) {
-        // Every table name here is a literal written above; the only value that comes from
-        // outside is clientId, and it is a bound parameter rather than interpolated.
-        await tx.$executeRawUnsafe(statement, clientId);
-      }
+      await tx.$executeRawUnsafe(`
+        DO $$
+        DECLARE t text;
+        BEGIN
+          ${ordered};
 
-      // The self-check. Asks the database what exists rather than trusting the list above, so
-      // a table added later that nobody remembers cannot leave a quiet residue.
-      const tables = await tx.$queryRaw<{ table_name: string }[]>`
-        SELECT table_name FROM information_schema.columns
-        WHERE table_schema = 'public' AND column_name = 'client_id'
-      `;
+          -- Then sweep whatever the list above did not know about.
+          --
+          -- This is what stops the operation rotting. A table added to the schema next year is
+          -- caught here rather than surviving as an orphaned row -- which is exactly what
+          -- happened with client_catalog_items, discovered only because the check below
+          -- refused to let the delete finish.
+          --
+          -- It runs AFTER the ordered statements, so by now the parents are gone and what is
+          -- left is independent. If something still has a foreign key holding it, this fails
+          -- and the whole transaction rolls back, which is the correct outcome.
+          FOR t IN
+            SELECT table_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND column_name = 'client_id'
+          LOOP
+            EXECUTE format('DELETE FROM %I WHERE client_id = %L', t, '${clientId}');
+          END LOOP;
+        END $$;
+      `);
 
-      const leftovers: string[] = [];
-      for (const { table_name } of tables) {
-        const rows = await tx.$queryRawUnsafe<{ count: bigint }[]>(
-          `SELECT COUNT(*)::bigint AS count FROM "${table_name}" WHERE client_id = $1`, clientId
-        );
-        const remaining = Number(rows[0]?.count ?? 0);
-        if (remaining > 0) leftovers.push(`${table_name} (${remaining})`);
-      }
+      // The self-check, also one statement rather than one per table. Asks the database what
+      // exists rather than trusting any list in this file.
+      const leftovers = await tx.$queryRawUnsafe<{ table_name: string; remaining: bigint }[]>(`
+        SELECT table_name, remaining FROM (
+          SELECT c.table_name,
+                 (xpath('/row/c/text()',
+                   query_to_xml(format('SELECT COUNT(*) AS c FROM %I WHERE client_id = %L',
+                                       c.table_name, '${clientId}'), false, true, '')
+                 ))[1]::text::bigint AS remaining
+          FROM information_schema.columns c
+          WHERE c.table_schema = 'public' AND c.column_name = 'client_id'
+        ) counted
+        WHERE remaining > 0
+      `);
 
       if (leftovers.length > 0) {
-        // Rolls the whole thing back. A partial delete is the one outcome worth failing to
-        // avoid, and this is the only place that can still catch it.
+        // Rolls everything back. A partial delete is the one outcome worth failing to avoid,
+        // and this is the last place that can still catch it.
+        const detail = leftovers.map(l => `${l.table_name} (${Number(l.remaining)})`).join(', ');
         throw new Error(
-          `Deletion is incomplete -- rolled back. Rows remain in: ${leftovers.join(', ')}. ` +
-          `A table was probably added to the schema without being added to the delete order.`
+          `Deletion is incomplete -- rolled back, nothing was removed. Rows remain in: ${detail}.`
         );
       }
     }, {
-      // Dozens of statements against a database in another region. The default 5s expires part
-      // way through, and while a timeout still rolls back, it is slow enough to look like a
-      // hang and invites someone to click again.
       maxWait: 20_000,
       timeout: 120_000
     });
@@ -545,7 +585,8 @@ export class PlatformAdminService {
     });
 
     const delivery = await mailService.sendCredentials({
-      recipientName: admin.name, email: admin.email, password, roleLabel: 'Platform Admin'
+      recipientName: admin.name, email: admin.email, password,
+      roleLabel: 'Platform Admin', audience: 'platform'
     });
 
     // Returned once. There is no second chance to read it -- see the note above.
@@ -607,7 +648,8 @@ export class PlatformAdminService {
     });
 
     const delivery = await mailService.sendCredentials({
-      recipientName: target.name, email: target.email, password, roleLabel: 'Platform Admin'
+      recipientName: target.name, email: target.email, password,
+      roleLabel: 'Platform Admin', audience: 'platform'
     });
 
     return {

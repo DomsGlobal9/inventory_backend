@@ -1,3 +1,4 @@
+import { getShopSettings } from '../lib/clientSettings';
 import { prisma } from '../lib/prisma';
 import { ReportService } from './report.service';
 import { ValuationService } from './valuation.service';
@@ -54,10 +55,9 @@ export class SnapshotService {
    * for exactly that reason.
    */
   async getTimezone(clientId: string): Promise<string> {
-    const settings = await prisma.clientSettings.findUnique({
-      where: { clientId }, select: { timezone: true }
-    });
-    return settings?.timezone || DEFAULT_TIMEZONE;
+    // Shared cache. The nightly job asks for this once per tenant per run, and every report
+    // that reasons about a business day asks again -- the same unchanging string each time.
+    return (await getShopSettings(clientId)).timezone;
   }
 
   /** Next calendar day, as a "YYYY-MM-DD" key. */

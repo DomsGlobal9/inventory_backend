@@ -21,6 +21,7 @@ import { prisma } from '../lib/prisma';
 import { platformAdminService } from '../services/platform-admin.service';
 import { AuthService } from '../services/auth.service';
 import { seedRolesForClient } from '../services/rbac-seed.service';
+import { seedCatalogDefaultsForClient } from '../services/catalog-seed.service';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -50,6 +51,11 @@ async function footprint(clientId: string) {
 /** Builds a tenant with something in as many tables as possible. */
 async function buildTenant(clientId: string) {
   await seedRolesForClient(clientId);
+  // The suite passed without this, and a real deletion then failed on client_catalog_items --
+  // because the test tenant had no catalog rows for the delete to miss. A tenant built by the
+  // test has to look like a tenant built by onboarding, or the test only proves the delete
+  // handles the tables the test happened to fill.
+  await seedCatalogDefaultsForClient(clientId);
   const role = await prisma.role.findFirst({ where: { clientId, name: 'SUPER_ADMIN' } });
 
   const user = await prisma.user.create({
