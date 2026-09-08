@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthService } from '../services/auth.service';
-import { prisma } from '../lib/prisma';
+import { loadIdentity } from '../lib/identityCache';
 
 export interface UserWithRoles {
   id: string;
@@ -38,38 +38,24 @@ export const verifyLocalAssertion = async (req: Request, res: Response, next: Ne
     const decoded = AuthService.verifyToken(token);
     
     // 3. Dynamic Identity Verification & RBAC Loading
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.sub },
-      include: {
-        roles: {
-          include: {
-            role: {
-              include: { permissions: { include: { permission: true } } }
-            }
-          }
-        }
-      }
-    });
+    //
+    // Still verified against stored state on every request rather than trusted from the token
+    // -- a deactivated user with a valid token is still refused here. What changed is that the
+    // answer is not fetched from the database every time: see identityCache.ts, where the
+    // seven round trips this used to cost are explained, along with what invalidates it.
+    const user = await loadIdentity(decoded.sub);
 
     if (!user || user.status !== 'ACTIVE' || user.clientId !== decoded.clientId) {
       return res.status(401).json({ success: false, message: 'Unauthorized: Invalid identity or inactive user' });
     }
 
-    // Extract dynamic roles and permissions
-    const roles = user.roles.map((ur: any) => ur.role.name);
-    const permissions = Array.from(
-      new Set(
-        user.roles.flatMap((ur: any) =>
-          ur.role.permissions.map((rp: any) => rp.permission.key)
-        )
-      )
-    );
+    const { roles, permissions } = user;
 
     // 4. Strict Normalized Identity Contract
     const normalizedUser: UserWithRoles = {
       id: user.id,
       clientId: user.clientId,
-      name: user.name,
+      name: user.name ?? undefined,
       email: user.email,
       roles: roles,
       permissions: permissions

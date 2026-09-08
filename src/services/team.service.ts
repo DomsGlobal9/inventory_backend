@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import { AuthService } from './auth.service';
+import { forgetIdentity } from '../lib/identityCache';
 import { encryptCredential, decryptCredential } from '../lib/credentialEncryption';
 import { buildUnifiedAuditFeed } from './audit-feed.service';
 import { mailService } from './mail.service';
@@ -135,6 +136,9 @@ export class TeamService {
       prisma.userRole.deleteMany({ where: { userId: params.userId } }),
       prisma.userRole.create({ data: { userId: params.userId, roleId: role.id } })
     ]);
+    // Their permissions just changed, and the middleware holds the old set briefly unless
+    // told. A demotion that takes effect half a minute later is a real hole.
+    forgetIdentity(params.userId);
 
     return { id: target.id, role: role.name };
   }
@@ -159,7 +163,11 @@ export class TeamService {
       }
     }
 
-    return prisma.user.update({ where: { id: params.userId }, data: { status: params.status } });
+    const updated = await prisma.user.update({ where: { id: params.userId }, data: { status: params.status } });
+    // Deactivating someone has to take effect on their very next request, not when a cache
+    // entry happens to expire.
+    forgetIdentity(params.userId);
+    return updated;
   }
 
   // Decrypts and returns the team member's CURRENT password, so an admin can re-share it on
