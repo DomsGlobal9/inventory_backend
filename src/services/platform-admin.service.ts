@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
-import { inventoryValueFor, inventoryValueByClient } from '../lib/inventoryValuation';
+import { inventoryValueFor, inventoryValueByClient, valuationCaveatFor } from '../lib/inventoryValuation';
 import { forgetClientIdentities } from '../lib/identityCache';
 import { AuthService } from './auth.service';
 import { seedRolesForClient } from './rbac-seed.service';
@@ -102,7 +102,7 @@ export class PlatformAdminService {
   }
 
   async getClientSummary(clientId: string) {
-    const [userCount, activeUserCount, activityAgg, productCount, activeProductCount, alertCount, inventoryValue, adminUser] = await Promise.all([
+    const [userCount, activeUserCount, activityAgg, productCount, activeProductCount, alertCount, inventoryValue, valuationCaveat, adminUser] = await Promise.all([
       prisma.user.count({ where: { clientId } }),
       // Suspension is not a stored flag -- it is "every account is deactivated". Counting the
       // active ones is what lets the console show a suspended client as suspended rather than
@@ -114,6 +114,11 @@ export class PlatformAdminService {
       prisma.inventoryAlert.count({ where: { clientId, isResolved: false } }),
       // The merchant's own dashboard figure, not a second opinion on it.
       inventoryValueFor(clientId),
+      // And how much of it rests on a selling price rather than a cost. The merchant's
+      // dashboard has always disclosed this; the console showed the same inflated number in
+      // silence, which is worse here -- a merchant knows they never entered costs, while
+      // Scaleezy is looking at forty shops and cannot tell which figures are real.
+      valuationCaveatFor(clientId),
       prisma.user.findFirst({
         where: { clientId, roles: { some: { role: { name: 'SUPER_ADMIN' } } } },
         select: { name: true, email: true },
@@ -139,6 +144,7 @@ export class PlatformAdminService {
       activeProductCount,
       activeAlertCount: alertCount,
       inventoryValue,
+      valuationCaveat,
       onboardingStatus,
       adminName: adminUser?.name || null,
       adminEmail: adminUser?.email || null

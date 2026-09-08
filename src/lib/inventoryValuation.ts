@@ -107,3 +107,54 @@ export async function inventoryValueByClient(): Promise<Map<string, number>> {
   `;
   return new Map(rows.map(r => [r.client_id, Number(r.totalValue ?? 0)]));
 }
+
+/**
+ * How much of that figure is a guess.
+ *
+ * The chain above falls through to PRICES when no cost was ever recorded, so a shop that
+ * never fills in the optional cost box is valued at what it sells for -- overstated by its
+ * entire margin. That is the right trade (a shop holding real stock seeing zero reads as a
+ * broken app) but only while it is disclosed.
+ *
+ * The merchant's dashboard has always said so. The platform console showed the same inflated
+ * number with no explanation, which is worse for Scaleezy than for the merchant: the merchant
+ * knows they never entered costs, and Scaleezy is looking at forty shops and cannot tell which
+ * figures are real.
+ *
+ * So the caveat lives beside the value, and is computed the same way for both.
+ */
+const PRICED_NOT_COSTED = Prisma.sql`
+  COALESCE(NULLIF(v.average_cost, 0), NULLIF(v.last_purchase_cost, 0), NULLIF(v.cost_price, 0)) IS NULL
+  AND COALESCE(NULLIF(v.selling_price, 0), NULLIF(v.compare_at_price, 0), NULLIF(p.base_price, 0), 0) > 0`;
+
+export type ValuationCaveat = {
+  /** Units counted at a selling price because nothing better was known. */
+  unitsValuedAtPrice: number;
+  /** Units held with no usable figure at all -- they contribute nothing to the total. */
+  unitsWithoutAnyFigure: number;
+};
+
+/** Which part of a client's inventory value rests on a price rather than a cost. */
+export async function valuationCaveatFor(clientId: string, locationId?: string): Promise<ValuationCaveat> {
+  const atLocation = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
+
+  const rows = await prisma.$queryRaw<{ priced: number | null; unknown: number | null }[]>`
+    SELECT
+      COALESCE(SUM(CASE WHEN ${PRICED_NOT_COSTED} THEN COALESCE(s.qty, 0) ELSE 0 END), 0)::int AS "priced",
+      COALESCE(SUM(CASE WHEN ${UNIT_COST} = 0 THEN COALESCE(s.qty, 0) ELSE 0 END), 0)::int AS "unknown"
+    FROM inventory_product_variants v
+    JOIN inventory_products p ON v.product_id = p.id
+    LEFT JOIN (
+      SELECT variant_id, SUM(quantity) AS qty
+      FROM inventory_stocks
+      WHERE client_id = ${clientId} ${atLocation}
+      GROUP BY variant_id
+    ) s ON s.variant_id = v.id
+    WHERE v.client_id = ${clientId} AND p.status != 'TRASHED' AND COALESCE(s.qty, 0) > 0
+  `;
+
+  return {
+    unitsValuedAtPrice: Number(rows?.[0]?.priced ?? 0),
+    unitsWithoutAnyFigure: Number(rows?.[0]?.unknown ?? 0)
+  };
+}

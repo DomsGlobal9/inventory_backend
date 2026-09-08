@@ -13,7 +13,7 @@
  *   npx ts-node src/scripts/verify-one-inventory-value.ts
  */
 import { prisma } from '../lib/prisma';
-import { inventoryValueFor } from '../lib/inventoryValuation';
+import { inventoryValueFor, valuationCaveatFor } from '../lib/inventoryValuation';
 import { reportService } from '../services/report.service';
 
 let passed = 0, failed = 0;
@@ -49,6 +49,26 @@ async function main() {
     mismatched.slice(0, 4).join(' | '));
   // Without this the check above passes on a database where nobody holds stock.
   check('and there were tenants holding stock to check', checkedWithStock > 0, `${checkedWithStock} with stock`);
+
+  console.log('\nTHE CAVEAT TRAVELS WITH THE NUMBER');
+  // A figure leaning on selling prices is overstated by the margin. The merchant's screen has
+  // always said so; the console showed the same inflated total in silence, which is worse
+  // there -- a merchant knows they never entered costs, while someone comparing forty shops
+  // cannot tell which totals are real.
+  const caveatMismatch: string[] = [];
+  let unitsOnAPrice = 0;
+  for (const clientId of clients) {
+    const fromLib = await valuationCaveatFor(clientId);
+    const fromDash: any = await reportService.getDashboardSummary(clientId);
+    unitsOnAPrice += fromLib.unitsValuedAtPrice;
+    if (fromLib.unitsValuedAtPrice !== Number(fromDash?.unitsValuedAtPrice ?? 0)) {
+      caveatMismatch.push(`${clientId}: console=${fromLib.unitsValuedAtPrice} dashboard=${fromDash?.unitsValuedAtPrice}`);
+    }
+  }
+  check('both screens agree how many units rest on a price', caveatMismatch.length === 0,
+    caveatMismatch.slice(0, 3).join(' | '));
+  check('and some tenant actually has such units, so this proved something',
+    unitsOnAPrice > 0, `${unitsOnAPrice} units`);
 
   console.log('\nTHE DEFINITION LIVES IN ONE PLACE');
   const report = require('fs').readFileSync('src/services/report.service.ts', 'utf8');
