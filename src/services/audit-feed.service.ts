@@ -1,22 +1,40 @@
 import { prisma } from '../lib/prisma';
 
-// Shared by the Platform Console (all clients) and a client's own Team & Users page
-// (their own clientId only) -- both need the same merge of PlatformAdminSession
-// (impersonation) + AuditLog (real mutations) into one standardized, sorted feed. A client
-// seeing "a Scaleezy admin accessed your account" here is intentional transparency, not a
-// leak -- it's scoped to sessions for THEIR clientId only.
-export async function buildUnifiedAuditFeed(params: { clientId?: string; limit?: number }) {
+// Shared by the Platform Console (all clients) and a client's own Team & Users page (their own
+// clientId only) -- both need the same merge of AuditLog (real mutations by real users) into
+// one standardized, sorted feed.
+//
+// The one difference is PlatformAdminSession, the record of Scaleezy staff entering a client's
+// workspace. The console sees those; a client's own Team & Users page does not.
+//
+// This used to be shown to clients as deliberate transparency, and that is a genuine argument.
+// It is now off by product decision, so what changes is only who can SEE the row -- every
+// session is still recorded, still visible in the platform console, and still auditable. This
+// hides it from one screen; it does not stop it being written.
+export async function buildUnifiedAuditFeed(params: {
+  clientId?: string;
+  limit?: number;
+  /** Scaleezy staff entering a workspace. Console only -- never a client's own feed. */
+  includeAdminSessions?: boolean;
+}) {
   const limit = params.limit ?? 100;
   const sessionWhere = params.clientId ? { clientId: params.clientId } : {};
   const activityWhere = params.clientId ? { clientId: params.clientId } : {};
 
+  // Defaults to true so the console, which passes nothing, keeps its full picture. A client
+  // feed has to ask for the narrower view explicitly, which is the safer direction for a flag
+  // to fail in: forgetting it shows too much to an operator, not the reverse.
+  const includeAdminSessions = params.includeAdminSessions !== false;
+
   const [sessions, activity] = await Promise.all([
-    prisma.platformAdminSession.findMany({
-      where: sessionWhere,
-      take: limit,
-      orderBy: { startedAt: 'desc' },
-      include: { platformAdmin: { select: { name: true, email: true } } }
-    }),
+    includeAdminSessions
+      ? prisma.platformAdminSession.findMany({
+          where: sessionWhere,
+          take: limit,
+          orderBy: { startedAt: 'desc' },
+          include: { platformAdmin: { select: { name: true, email: true } } }
+        })
+      : Promise.resolve([]),
     prisma.auditLog.findMany({ where: activityWhere, take: limit, orderBy: { createdAt: 'desc' } })
   ]);
 

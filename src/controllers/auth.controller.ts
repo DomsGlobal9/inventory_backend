@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { authCookieOptions, clearCookieOptions } from '../lib/cookies';
+import { encryptCredential } from '../lib/credentialEncryption';
 
 const userWithRolesInclude = {
   roles: {
@@ -173,5 +174,69 @@ export const session = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     res.status(500).json({ success: false, authenticated: false });
+  }
+};
+
+/**
+ * Lets a Super Admin change their OWN password.
+ *
+ * The only self-service password change in the product, and deliberately so. Everyone else's
+ * password is set for them by a Super Admin or Admin and stays permanent -- a shop assistant
+ * who changes their own leaves nobody able to help them back in. The owner is different: they
+ * have no one above them to reset it.
+ *
+ * The current password is required. A session left open on a shop-floor machine is otherwise
+ * enough to lock the owner out of their own workspace.
+ *
+ * BOTH stored copies are updated together, in one write. The bcrypt hash is what login checks;
+ * the encrypted copy is what the platform console and the Team screen show when someone asks
+ * to see it. Updating one without the other leaves the console confidently displaying a
+ * password that no longer works -- worse than showing nothing, because the person reading it
+ * has no reason to doubt it.
+ */
+export const changeMyPassword = async (req: Request, res: Response) => {
+  try {
+    const authUser = (req as any).user;
+    const { currentPassword, newPassword } = req.body ?? {};
+
+    const roles: string[] = authUser?.roles ?? [];
+    if (!roles.includes('SUPER_ADMIN')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only a Super Admin can change their own password. Ask an admin to set yours.'
+      });
+    }
+
+    if (typeof newPassword !== 'string' || newPassword.length < 8) {
+      return res.status(400).json({ success: false, message: 'The new password must be at least 8 characters' });
+    }
+    if (typeof currentPassword !== 'string' || !currentPassword) {
+      return res.status(400).json({ success: false, message: 'Enter your current password' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: authUser.id } });
+    if (!user) return res.status(404).json({ success: false, message: 'Account not found' });
+
+    const matches = await AuthService.comparePassword(currentPassword, user.password);
+    if (!matches) {
+      return res.status(401).json({ success: false, message: 'That is not your current password' });
+    }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ success: false, message: 'The new password is the same as the current one' });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: await AuthService.hashPassword(newPassword),
+        passwordEncrypted: encryptCredential(newPassword)
+      }
+    });
+
+    // Not emailed. The person who changed it is the person holding it, and mailing a password
+    // to someone who just typed it adds a copy in an inbox for no benefit.
+    res.json({ success: true, data: { changed: true } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to change the password', error: error.message });
   }
 };

@@ -28,7 +28,10 @@ export class TeamService {
   // Same merged feed the Platform Console sees, scoped to just this client -- so their own
   // admin doesn't need Scaleezy staff to look something up on their behalf.
   async listActivity(clientId: string) {
-    return buildUnifiedAuditFeed({ clientId, limit: 30 });
+    // Without the flag this feed also carried "<name> (Scaleezy Support) accessed this
+    // account". Those rows are still written and still visible in the platform console --
+    // they are simply not shown on the shop's own screen.
+    return buildUnifiedAuditFeed({ clientId, limit: 30, includeAdminSessions: false });
   }
 
   private async countActiveSuperAdmins(clientId: string, excludeUserId?: string) {
