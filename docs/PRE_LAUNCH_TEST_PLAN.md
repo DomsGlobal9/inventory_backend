@@ -236,3 +236,99 @@ Written down rather than left to be rediscovered.
 | Styling tools disabled on the scan page | shoppers cannot change background or sleeves | Deliberate — they bypass metering |
 | `master` is the GitHub default branch, 68 commits behind | a clone or a mis-targeted deploy gets nothing | Open — needs a settings change |
 | No load testing | behaviour under real concurrency is unknown | Open |
+
+---
+
+## 12. The existing product, button by button
+
+The new work is the smallest part of this system. Everything below predates it and is what a
+merchant actually uses every day — so a regression here matters more than a gap in try-on.
+
+The rule for every row: **the button must do what it says, tell you it is working, and leave
+the screen showing the truth afterwards.** A button that succeeds silently and a button that
+fails silently are the same bug from the user's chair.
+
+### 12.1 Products and variants
+
+| # | Scenario | Expected | Verdict |
+|---|---|---|---|
+| 12.1.1 | Create a product | appears in the list, gets a product code | — |
+| 12.1.2 | Create with a duplicate title | slug stays unique, no collision error | — |
+| 12.1.3 | Publish a draft | status changes, `publishedAt` stamped once | — |
+| 12.1.4 | Re-save a live product | `publishedAt` does not move | — |
+| 12.1.5 | Add a variant | SKU generated, unique within the tenant | — |
+| 12.1.6 | Add a second variant, same colour and size | refused, or made unique — never silently duplicated | — |
+| 12.1.7 | Edit a variant's price | saved, list reflects it immediately | — |
+| 12.1.8 | Bulk price change | every selected row updates | — |
+| 12.1.9 | Archive a product | leaves the active list, storefront told | — |
+| 12.1.10 | Trash and restore | returns to its previous status, not always ACTIVE | — |
+| 12.1.11 | Hard delete | blocked unless trashed first; images cleaned up | — |
+| 12.1.12 | Delete a variant carrying stock | refused with a reason | — |
+
+### 12.2 Inventory
+
+| # | Scenario | Expected | Verdict |
+|---|---|---|---|
+| 12.2.1 | Stock in | quantity rises, movement recorded with a reason | — |
+| 12.2.2 | Stock out | quantity falls; cannot go below zero | — |
+| 12.2.3 | Adjustment | difference recorded, not the absolute number | — |
+| 12.2.4 | Stock in with a unit cost | average cost and inventory value both update | — |
+| 12.2.5 | Stock in with no cost | dashboard says so rather than valuing at zero | PASS |
+| 12.2.6 | Two receipts at once on one variant | arithmetic exact, no lost update | PASS |
+| 12.2.7 | Transfer between locations | both sides move, in one transaction | — |
+| 12.2.8 | Reserve stock for an order | available falls, on-hand does not | — |
+| 12.2.9 | Low stock alert | fires at the reorder level, not before | — |
+| 12.2.10 | Movement history | every change above appears, correctly attributed | — |
+
+### 12.3 Suppliers and purchase orders
+
+| # | Scenario | Expected | Verdict |
+|---|---|---|---|
+| 12.3.1 | Create a supplier | saved, appears in lists | — |
+| 12.3.2 | Link a supplier to a variant with their SKU | shown from both sides | — |
+| 12.3.3 | Create a PO | draft, with lines and totals | — |
+| 12.3.4 | Send a PO | status SENT | — |
+| 12.3.5 | **Email the PO to the supplier** | delivered, readable, correct lines | — |
+| 12.3.6 | Receive in full | stock rises, status RECEIVED, cost updated | — |
+| 12.3.7 | Receive partially | status PARTIALLY_RECEIVED, only received lines move | — |
+| 12.3.8 | Receive more than ordered | refused, or recorded deliberately — never silently | — |
+| 12.3.9 | Cancel a PO | no stock moves | — |
+| 12.3.10 | Reorder suggestions | based on reorder level and supplier links | — |
+
+### 12.4 The snapshot engine and day book
+
+| # | Scenario | Expected | Verdict |
+|---|---|---|---|
+| 12.4.1 | Snapshot runs | one row per client per business day | — |
+| 12.4.2 | Snapshot is idempotent | running twice does not double anything | — |
+| 12.4.3 | Business day respects the shop's timezone | not UTC | PASS |
+| 12.4.4 | Day boundary | a sale at 23:59 lands on the right day | PASS |
+| 12.4.5 | Day book opening = previous closing | continuous across days | — |
+| 12.4.6 | Day book movements agree with transactions | no drift | — |
+| 12.4.7 | Dashboard agrees with the console for the same client | identical figures | PASS |
+| 12.4.8 | Reports agree with the dashboard | same numbers, same period | — |
+
+### 12.5 Every button, in every state
+
+Not one screen — the pattern that must hold everywhere.
+
+| # | Property | Expected | Verdict |
+|---|---|---|---|
+| 12.5.1 | A button that starts work shows it | spinner or label change, not a dead press | — |
+| 12.5.2 | A destructive button confirms first | and names what it will destroy | — |
+| 12.5.3 | A disabled button says why | never a greyed control with no reason | — |
+| 12.5.4 | A failed action says what failed | not a silent return to the previous screen | — |
+| 12.5.5 | A succeeded action updates the screen | no stale list needing a refresh | — |
+| 12.5.6 | Double-clicking does not double-submit | one order, one adjustment, one email | — |
+| 12.5.7 | A button the role cannot use is not offered | not offered then refused with a 403 | PASS |
+
+### 12.6 Mail, live
+
+| # | Scenario | Expected | Verdict |
+|---|---|---|---|
+| 12.6.1 | SMTP reachable from production | connection verified | — |
+| 12.6.2 | Staff invite from the UI | delivered; the credentials work | — |
+| 12.6.3 | Password reset from the UI | delivered; the new password works | — |
+| 12.6.4 | Platform admin invite | delivered; lands on the console | — |
+| 12.6.5 | PO email | delivered to the supplier | — |
+| 12.6.6 | Mail failure does not fail the action | the staff member still exists | — |

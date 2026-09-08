@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { UNIT_COST } from '../lib/inventoryValuation';
 import { TransactionType, Prisma } from '@prisma/client';
 
 export class ReportService {
@@ -37,8 +38,10 @@ export class ReportService {
     // valued at what it sells for rather than at nothing. That overstates the figure by the
     // margin, which is why unitsValuedAtPrice is reported alongside and the tile says so --
     // an unexplained number is the thing to avoid, in either direction.
-    const unitCost = Prisma.sql`
-      COALESCE(NULLIF(v.average_cost, 0), v.last_purchase_cost, v.cost_price, v.selling_price, p.base_price, 0)`;
+    // The ONE definition, imported rather than repeated. A copy here is what let this chain
+    // and the console's drift apart until five tenants saw two different inventory values
+    // depending on which screen they opened. See lib/inventoryValuation.ts.
+    const unitCost = UNIT_COST;
     // True when nothing better than a selling price was available for that row.
     const pricedNotCosted = Prisma.sql`
       COALESCE(NULLIF(v.average_cost, 0), v.last_purchase_cost, v.cost_price) IS NULL

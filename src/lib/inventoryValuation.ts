@@ -25,11 +25,44 @@ import { prisma } from './prisma';
  * unset -- a plain COALESCE stops at the first zero and returns it, which is how a shop with a
  * perfectly good cost price still valued at nothing.
  */
-const UNIT_COST = Prisma.sql`COALESCE(
+/**
+ * THIRD TIME. Two definitions became three.
+ *
+ * The chain below and the one in report.service.ts drifted apart: this one stopped at
+ * compare_at_price, that one continued to selling_price and base_price. So the console and the
+ * merchant's own dashboard valued the same stock differently, which is precisely the bug this
+ * file was created to end. Measured again across every tenant holding stock, FIVE of twenty-nine
+ * still disagreed -- demo-client by ten lakh, sphl by twenty-one.
+ *
+ * report.service.ts now imports this constant rather than keeping its own copy, so there is one
+ * chain and no way for them to drift again.
+ *
+ * The order is how well the figure is known, costs before prices:
+ *
+ *   average_cost        the weighted average actually paid, when a stock-in carried a cost
+ *   last_purchase_cost  what the most recent purchase order paid
+ *   cost_price          what the shopkeeper typed on the product
+ *   selling_price       the variant's own price -- a PRICE, so it overstates by the margin
+ *   compare_at_price    the "was" price, better than nothing
+ *   base_price          the product's price, which the Add Product wizard always asks for and
+ *                       so is the one figure effectively never missing
+ *
+ * The last three are prices rather than costs, which overstates the figure. That is deliberate
+ * and disclosed: a shop holding real stock seeing zero reads as a broken app, and the dashboard
+ * tile says how many units were valued that way. An unexplained number is the thing to avoid,
+ * in either direction.
+ *
+ * NULLIF at every step because these columns hold 0 rather than NULL when unset -- a plain
+ * COALESCE stops at the first zero and returns it, which is how a shop with a perfectly good
+ * cost price still valued at nothing.
+ */
+export const UNIT_COST = Prisma.sql`COALESCE(
   NULLIF(v.average_cost, 0),
   NULLIF(v.last_purchase_cost, 0),
   NULLIF(v.cost_price, 0),
+  NULLIF(v.selling_price, 0),
   NULLIF(v.compare_at_price, 0),
+  NULLIF(p.base_price, 0),
   0
 )`;
 
