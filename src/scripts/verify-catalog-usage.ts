@@ -1,10 +1,15 @@
 /**
  * Deleting "Pink" must be refused when a product is wearing it.
  *
- * The counts behind that guard were rewritten from one COUNT per catalogue entry into seven
- * grouped queries, so this checks the new figures against the old method entry by entry --
- * a rewrite that is merely faster and quietly wrong would let someone delete a colour that
- * is in use.
+ * The first version of this suite compared the new grouped counts against the old
+ * one-at-a-time counts and passed -- because both were wrong in the same way. A catalogue
+ * entry has a label ("Pink") and a value ("pink"), the counts were matched on the value, and
+ * the product form stores the LABEL on the variant. So every colour read as unused and the
+ * delete guard never fired for anybody.
+ *
+ * That is the lesson this file exists to remember: a rewrite checked only against the thing it
+ * replaced inherits its bugs. So the checks below start from the products that actually exist
+ * and work back to the catalogue, rather than trusting either implementation.
  *
  *   npx ts-node src/scripts/verify-catalog-usage.ts
  */
@@ -19,49 +24,90 @@ const check = (name: string, ok: boolean, detail?: string) => {
 };
 
 async function main() {
-  // The tenant with the most catalogue entries, because that is where a per-entry query
-  // storm hurts most and where a mismatch is most likely to show up.
-  const busiest = (await prisma.clientCatalogItem.groupBy({
-    by: ['clientId'], _count: { _all: true }
-  })).sort((a, b) => b._count._all - a._count._all)[0];
+  console.log('A COLOUR A PRODUCT IS WEARING COUNTS AS USED, ACROSS EVERY TENANT');
 
-  if (!busiest) { console.log('No catalogue entries anywhere to check.'); return; }
-  const clientId = busiest.clientId;
-  const items = await prisma.clientCatalogItem.findMany({ where: { clientId } });
-  console.log(`${clientId}: ${items.length} catalogue entries\n`);
-
-  console.log('THE GROUPED COUNTS MATCH THE ONE-AT-A-TIME COUNTS');
-  const groupedStart = Date.now();
-  const grouped = await usageCountsForClient(clientId);
-  const groupedMs = Date.now() - groupedStart;
-
-  const oneByOneStart = Date.now();
-  const oneByOne = new Map<string, number>();
-  for (const item of items) {
-    oneByOne.set(`${item.type}:${item.value}`, await usageCountFor(clientId, item.type, item.value));
-  }
-  const oneByOneMs = Date.now() - oneByOneStart;
-
-  const mismatched = items.filter(i => {
-    const key = `${i.type}:${i.value}`;
-    return (grouped.get(key) ?? 0) !== (oneByOne.get(key) ?? 0);
+  // Start from the variants. Every colour actually on a variant, for every client, must be
+  // reported as in use by whichever catalogue entry names it -- whether the entry's label or
+  // its value is what got stored, and in whatever case.
+  const variants = await prisma.productVariant.findMany({
+    where: { colorName: { not: null } },
+    select: { clientId: true, colorName: true },
+    distinct: ['clientId', 'colorName']
   });
-  check('every entry gets the same count either way', mismatched.length === 0,
-    mismatched.slice(0, 3).map(i => `${i.type}:${i.value}`).join(', '));
 
-  const inUse = items.filter(i => (grouped.get(`${i.type}:${i.value}`) ?? 0) > 0);
-  // A run where nothing is in use would pass the comparison above trivially, by agreeing on
-  // zero everywhere -- so say out loud whether the check had anything to bite on.
-  check('and at least one entry is genuinely in use, so this proved something',
-    inUse.length > 0, `${inUse.length} in use`);
-  console.log(`         (grouped ${groupedMs}ms for all ${items.length}, one-at-a-time ${oneByOneMs}ms)`);
+  const byClient = new Map<string, Set<string>>();
+  for (const v of variants) {
+    if (!byClient.has(v.clientId)) byClient.set(v.clientId, new Set());
+    byClient.get(v.clientId)!.add(v.colorName as string);
+  }
 
-  console.log('\nAN ENTRY NOTHING USES READS AS ZERO, NOT AS UNKNOWN');
-  const unused = items.find(i => (grouped.get(`${i.type}:${i.value}`) ?? 0) === 0);
-  check('a value with no products returns 0 rather than undefined',
-    unused ? (grouped.get(`${unused.type}:${unused.value}`) ?? 0) === 0 : true);
-  check('a type that does not map to any column is 0, not a crash',
-    (await usageCountFor(clientId, 'NOT_A_REAL_TYPE', 'whatever')) === 0);
+  let checkedPairs = 0;
+  const missed: string[] = [];
+
+  for (const [clientId, colours] of byClient) {
+    const entries = await prisma.clientCatalogItem.findMany({ where: { clientId, type: 'COLOR' } });
+    if (entries.length === 0) continue;
+    const usage = await usageCountsForClient(clientId);
+
+    for (const colour of colours) {
+      // The catalogue entry a person would say this variant is using.
+      const entry = entries.find(e =>
+        e.label.toLowerCase() === colour.toLowerCase() ||
+        e.value.toLowerCase() === colour.toLowerCase()
+      );
+      // A free-typed colour with no catalogue entry ("Pink Shade") is not a miss -- there is
+      // no entry for anyone to delete.
+      if (!entry) continue;
+
+      checkedPairs++;
+      if (usage.countFor(entry) === 0) {
+        missed.push(`${clientId}: a variant is "${colour}" but ${entry.label}/${entry.value} reads as unused`);
+      }
+    }
+  }
+
+  check('every catalogue colour worn by a product reads as in use', missed.length === 0,
+    missed.slice(0, 3).join(' | '));
+  // Without this the check above passes trivially on a database where no product has a colour.
+  check('and there were real product/catalogue pairs to check', checkedPairs > 0, `${checkedPairs} pairs`);
+
+  console.log('\nTHE FRESH SINGLE READ AGREES WITH THE SCREEN');
+  // Delete re-reads its own count, so the two must not disagree -- a screen that offers Delete
+  // and a server that refuses it is the worst of both.
+  const sample = await prisma.clientCatalogItem.findMany({ take: 25, orderBy: { createdAt: 'desc' } });
+  const usageByClient = new Map<string, Awaited<ReturnType<typeof usageCountsForClient>>>();
+  const disagreements: string[] = [];
+  for (const item of sample) {
+    if (!usageByClient.has(item.clientId)) {
+      usageByClient.set(item.clientId, await usageCountsForClient(item.clientId));
+    }
+    const fromScreen = usageByClient.get(item.clientId)!.countFor(item);
+    const fromDelete = await usageCountFor(item.clientId, item);
+    if (fromScreen !== fromDelete) {
+      disagreements.push(`${item.clientId} ${item.type}:${item.label} screen=${fromScreen} delete=${fromDelete}`);
+    }
+  }
+  check('the grouped count and the fresh count give the same answer', disagreements.length === 0,
+    disagreements.slice(0, 3).join(' | '));
+
+  console.log('\nCASE AND LABEL/VALUE DIFFERENCES DO NOT HIDE USAGE');
+  const purple = await prisma.clientCatalogItem.findFirst({
+    where: { type: 'COLOR', OR: [{ label: 'Purple' }, { value: 'purple' }] }
+  });
+  if (purple) {
+    const stored = await prisma.productVariant.count({
+      where: { clientId: purple.clientId, colorName: { equals: 'Purple', mode: 'insensitive' } }
+    });
+    const reported = (await usageCountsForClient(purple.clientId)).countFor(purple);
+    check(`a variant stored as "Purple" is found by the entry valued "purple"`,
+      stored === 0 || reported >= stored, `${stored} variants -> reported ${reported}`);
+  } else {
+    check('a Purple entry exists somewhere to check this against', false, 'none found');
+  }
+
+  console.log('\nNOTHING BREAKS ON THINGS THAT DO NOT MAP');
+  check('an unknown catalogue type is 0, not a crash',
+    (await usageCountFor('demo-client', { type: 'NOT_A_REAL_TYPE', value: 'x', label: 'X' })) === 0);
 
   console.log(`\n================ RESULT: ${passed} passed | ${failed} failed ================`);
   if (failures.length) { console.log('\nFailed:'); for (const f of failures) console.log(`  - ${f}`); }

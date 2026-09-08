@@ -58,10 +58,7 @@ router.get('/items', requirePermission('product:view'), async (req: Request, res
     // catalog-usage.service.ts -- a typical tenant has 72 entries, and this screen used to
     // open 72 simultaneous counts against a pool of about 17.
     const usage = await usageCountsForClient(clientId);
-    const itemsWithUsage = items.map(item => ({
-      ...item,
-      usageCount: usage.get(`${item.type}:${item.value}`) ?? 0
-    }));
+    const itemsWithUsage = items.map(item => ({ ...item, usageCount: usage.countFor(item) }));
 
     res.json({ success: true, data: itemsWithUsage });
   } catch (error) {
@@ -149,7 +146,7 @@ router.delete('/items/:id', requirePermission('admin:catalog'), async (req: Requ
 
     // Read fresh rather than trusted from the browser: the count the screen was showing may
     // be minutes old, and someone else may have used this colour since.
-    const usageCount = await usageCountFor(clientId, existing.type, existing.value);
+    const usageCount = await usageCountFor(clientId, existing);
     
     if (usageCount > 0) {
       return res.status(400).json({ 
