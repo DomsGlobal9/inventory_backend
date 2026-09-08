@@ -28,7 +28,8 @@ if (env.NODE_ENV === 'production') {
 
 // Global Middleware
 app.use(helmet()); // HTTP Security Headers
-app.use(cors({
+// The app's own origin, and only it, may send cookies.
+const appCors = cors({
   origin: (origin, callback) => {
     if (env.NODE_ENV === 'development' && (!origin || origin.startsWith('http://localhost:'))) {
       callback(null, true);
@@ -37,7 +38,31 @@ app.use(cors({
     }
   },
   credentials: true,
-}));
+});
+
+/**
+ * Try-On, scanned from a garment tag, is the one surface a DIFFERENT origin calls from a
+ * customer's browser -- the try-on app, and in time a merchant's own storefront.
+ *
+ * It gets its own policy rather than being added to the one above, and the difference that
+ * matters is `credentials: false`. Widening the shared policy to another origin WITH
+ * credentials would let a script on that origin call every authenticated route carrying the
+ * signed-in merchant's cookie. These routes read no cookie and return nothing private, so any
+ * origin may call them and none may bring a session.
+ *
+ * CORS is not what protects this surface in any case -- a browser policy stops nothing that
+ * curl can do. The rate limit and the shop's monthly allowance are the protection.
+ */
+const PUBLIC_TRYON_PATH = '/api/v1/public/tryon';
+app.use(PUBLIC_TRYON_PATH, cors({ origin: true, credentials: false }));
+
+// Everything else keeps the strict single-origin policy. Skipped for the path above rather
+// than layered after it, because the later handler would otherwise overwrite the
+// Access-Control-Allow-Origin the scoped one just set.
+app.use((req, res, next) => {
+  if (req.path.startsWith(PUBLIC_TRYON_PATH)) return next();
+  return appCors(req, res, next);
+});
 app.use(cookieParser());
 // Base64-encoded garment photos (up to 3-4 per generate-catalog call) comfortably
 // exceed the default 100kb JSON limit -- raise it only for this path, ahead of the
