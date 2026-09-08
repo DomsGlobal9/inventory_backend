@@ -15,7 +15,18 @@ export class CatalogTryOnController {
     // If the browser disconnects (user navigates away / hits Stop without waiting
     // for cancel-job to round-trip), stop the upstream fetch immediately instead of
     // leaving it running against our Gateway quota.
-    req.on('close', () => { clientDisconnected = true; abortController.abort(); });
+    //
+    // Watched on the RESPONSE, not the request. `req` emits 'close' as soon as its body has
+    // been read -- which express.json() does before this handler even runs -- so listening
+    // there aborted every single generation before the call to the gateway was made, and
+    // returned an empty 200 that looked like a success. `res` closes either because we
+    // finished writing it or because the socket went away, and writableFinished is what
+    // tells those two apart.
+    res.on('close', () => {
+      if (res.writableFinished) return;
+      clientDisconnected = true;
+      abortController.abort();
+    });
 
     try {
       // Checked before anything is started, so a client out of allowance is told rather than
