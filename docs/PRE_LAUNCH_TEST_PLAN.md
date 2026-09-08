@@ -278,14 +278,52 @@ Until they are set, treat every "we have emailed them" expectation in the produc
 
 27 suites, run one at a time because they share a tenant.
 
+Every suite, run one at a time because they share a tenant.
+
 | Suite | Result |
 |---|---|
-| verify-audit-fixes | 16 / 16 |
-| verify-auth-signup-leads | 16 / 36 — rate limit + missing local admin credentials, not a product failure |
-| verify-business-day | 25 / 25 |
-| verify-catalog-usage | 5 / 5 |
-| verify-bulk-import-scale | 7 / 7 |
-| *(remaining 23)* | running |
+| verify-audit-fixes | **16 / 16** |
+| verify-bulk-import-scale | **7 / 7** |
+| verify-business-day | **25 / 25** |
+| verify-catalog-usage | **5 / 5** |
+| verify-client-deletion | **15 / 15** |
+| verify-console-matches-dashboard | **all 40 clients agree** |
+| verify-dashboard-all-tenants | **40 tenants, 0 failing panels** |
+| verify-day-boundary | **10 / 10** |
+| verify-daybook | **53 / 53** |
+| verify-dummy-key-fallback | **17 / 17** |
+| verify-identity-cache | **10 / 10** |
+| verify-image-upload-tenancy | **7 / 7** |
+| verify-location-flows | **18 / 18** |
+| verify-mail | **2 / 2** |
+| verify-new-client-e2e | **67 / 67** |
+| verify-one-inventory-value | **4 / 4** |
+| verify-pool-tuning | **8 / 8** |
+| verify-procurement-e2e | **24 / 24** |
+| verify-reorder | **23 / 23** |
+| verify-reports | **58 / 58** |
+| verify-service-keys | **20 / 20** |
+| verify-shopify | **46 / 46** |
+| verify-shopify-e2e | **24 / 24** |
+| verify-shopper-tryon-e2e | **41 / 41** |
+| verify-shopper-tryon-live | **14 / 14** (real gateway, spends a generation) |
+| verify-snapshot | **20 / 20** |
+| verify-storefront | **64 / 64** |
+| verify-supplier-products | **25 / 25** |
+| verify-tryon-e2e | **27 / 27** |
+| verify-tryon-usage | **18 / 18** |
+| verify-variant-sku | **11 / 11** |
+| verify-auth-signup-leads | 16 / 52 — every failure is a 429 rate limit or a 401 from platform-admin credentials this machine does not hold. Not a product failure; needs a fresh rate-limit window. |
+
+**Two things learned about running them**, both worth writing down:
+
+  - **One at a time, genuinely.** verify-supplier-products failed once on "a link can be
+    removed" and passed 25/25 immediately afterwards. The background runner was executing the
+    same suite against the shared tenant at that moment. A suite that fails while another is
+    running has proved nothing.
+  - **They are slow because the database is far away**, not because they are heavy.
+    verify-dashboard-all-tenants takes 35 minutes for 40 tenants x 7 panels; the work is
+    trivial and the waiting is a second per query. See §7.
 
 ---
 
