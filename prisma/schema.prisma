@@ -1150,6 +1150,18 @@ model SupportTicket {
   id       String @id @default(uuid())
   clientId String @map("client_id")
 
+  /// A reference a person can say out loud, e.g. TCK-000007.
+  ///
+  /// Tickets used to be identified only by their UUID, so a customer writing back had nothing
+  /// to quote but 36 characters of hex. Scoped per client like every other code here: two
+  /// shops each having a TCK-000001 is correct, and a global counter would tell anyone who
+  /// raised a ticket how many the whole platform has.
+  ///
+  /// Optional in the model because the column was added to a table that already had rows;
+  /// every existing row was backfilled by the migration and every new one is given a number
+  /// on creation.
+  ticketNumber String? @map("ticket_number")
+
   createdByUserId String @map("created_by_user_id")
   createdByName   String @map("created_by_name")
   createdByEmail  String @map("created_by_email")
@@ -1170,6 +1182,7 @@ model SupportTicket {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@unique([clientId, ticketNumber], name: "uq_support_ticket_number")
   @@index([clientId])
   @@index([status])
   @@map("support_tickets")

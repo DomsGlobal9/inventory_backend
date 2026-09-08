@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { generateSequentialCode } from '../utils/codeGenerator';
 
 // Shared by both the client-facing controller (a tenant user managing their own client's
 // tickets) and the platform-admin controller (cross-tenant) -- the two callers differ only
@@ -15,8 +16,14 @@ export class SupportTicketService {
     priority?: string;
     linkedErrorId?: string;
   }) {
+    // A reference the customer can quote back. Uses the same race-safe sequence table as
+    // product and variant codes, so two people raising a ticket at the same moment cannot be
+    // given the same number.
+    const ticketNumber = await generateSequentialCode(params.clientId, 'TCK', 'SUPPORT_TICKET');
+
     return prisma.supportTicket.create({
       data: {
+        ticketNumber,
         clientId: params.clientId,
         createdByUserId: params.userId,
         createdByName: params.userName,
