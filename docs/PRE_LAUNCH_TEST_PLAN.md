@@ -239,13 +239,38 @@ ceiling. The ceiling is where the database is and how many connections reach it.
 
 | # | Scenario | Expected | Verdict |
 |---|---|---|---|
-| 9.1 | SMTP configured in production | env present, connection succeeds | — |
-| 9.2 | Staff invite email | delivered with working credentials | — |
+| 9.1 | SMTP configured in production | env present, connection succeeds | **FAIL** |
+| 9.2 | Staff invite email | delivered with working credentials | **BLOCKED by 9.1** |
 | 9.3 | Password reset email | delivered; the new password works | — |
 | 9.4 | Platform admin invite | delivered; link lands on the console, not the app | — |
 | 9.5 | Purchase order email | supplier receives the order | — |
 | 9.6 | A failed send does not fail the action | the staff member is still created | — |
 | 9.7 | No open relay | no endpoint sends arbitrary mail to an arbitrary address | — |
+
+### 9.8 Measured live, through the production UI
+
+Created a staff member on `inventory.scaleezy.com` as Akshaya. The account was created (201)
+and the response carried `"emailed": false`.
+
+**Production has no SMTP configuration.** The local `.env` has `smtp.gmail.com` with
+`inventory.scaleezy@gmail.com`; Render does not. So every message this product sends —
+staff credentials, password resets, platform admin invites, purchase orders — silently
+goes nowhere in production.
+
+The application's own behaviour is correct, and worth saying so plainly:
+
+  - the staff account was still created; a mail outage does not fail the action (9.6 PASS)
+  - the screen said exactly what happened and why: *"Not emailed: Email is not set up on this
+    deployment. EMAIL_HOST, EMAIL_HOST_USER and EMAIL_HOST_PASSWORD must be set before
+    messages can be sent."*
+  - it offered the password with Send-by-email, WhatsApp and Copy, so the admin can still
+    onboard the person
+
+So this is a **configuration gap, not a defect**. Five variables in Render close it:
+
+    EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, EMAIL_FROM_ADDRESS
+
+Until they are set, treat every "we have emailed them" expectation in the product as false.
 
 ---
 
