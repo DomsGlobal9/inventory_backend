@@ -175,6 +175,54 @@ export class TeamService {
     return { id: target.id, name: target.name, email: target.email, password: decryptCredential(target.passwordEncrypted) };
   }
 
+  /**
+   * Emails a team member their existing login again.
+   *
+   * The everyday case this exists for: the first message went to spam, or was deleted, or the
+   * person says they never got it. Without this the admin's only options are to read the
+   * password off the screen and paste it somewhere by hand, or to CHANGE the password -- which
+   * breaks the login for anyone already using it, to solve a delivery problem.
+   *
+   * Same guard as viewing a password, because it is the same disclosure: an Admin cannot do
+   * this to a Super Admin's account.
+   */
+  async resendCredentials(params: { clientId: string; userId: string; requesterIsSuperAdmin: boolean }) {
+    await this.assertCanManageTarget(params.clientId, params.userId, params.requesterIsSuperAdmin);
+
+    const target = await prisma.user.findFirst({
+      where: { id: params.userId, clientId: params.clientId },
+      include: { roles: { include: { role: true } } }
+    });
+    if (!target) throw Object.assign(new Error('Team member not found'), { statusCode: 404 });
+    if (!target.passwordEncrypted) {
+      throw Object.assign(
+        new Error('No password on file to resend for this account -- set a new one instead'),
+        { statusCode: 404 }
+      );
+    }
+    if (!mailService.isConfigured()) {
+      // A specific 503 rather than a generic failure: the admin can see this is a setup
+      // problem on the deployment, not something wrong with the account in front of them.
+      throw Object.assign(
+        new Error('Email is not set up on this deployment, so nothing can be resent. Use the WhatsApp or copy options.'),
+        { statusCode: 503 }
+      );
+    }
+
+    const delivery = await mailService.sendCredentials({
+      recipientName: target.name,
+      email: target.email,
+      password: decryptCredential(target.passwordEncrypted),
+      roleLabel: target.roles[0]?.role.name
+    });
+
+    if (!delivery.sent) {
+      throw Object.assign(new Error(delivery.reason ?? 'The message could not be sent.'), { statusCode: 502 });
+    }
+
+    return { id: target.id, email: target.email, sent: true };
+  }
+
   // Sets a permanent password (auto-generated or admin-chosen) -- replaces the old
   // "temporary password that forces a reset" model entirely, per product decision: staff
   // never change their own password, so there's nothing to invalidate it early.

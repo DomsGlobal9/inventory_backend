@@ -108,3 +108,22 @@ export const setMemberPassword = async (req: Request, res: Response) => {
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to set password' });
   }
 };
+
+/**
+ * Sends a team member their existing login again.
+ *
+ * POST rather than GET for the same reason as viewing a password: it discloses a credential
+ * and causes a side effect, so it belongs in the audit log rather than in a link someone can
+ * prefetch.
+ */
+export const resendMemberCredentials = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const result = await teamService.resendCredentials({
+      clientId: user.clientId, userId: req.params.id as string, requesterIsSuperAdmin: isSuperAdmin(req)
+    });
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to resend the login' });
+  }
+};
