@@ -64,5 +64,11 @@ const check = (n: string, ok: boolean, d?: string) => {
   await prisma.clientServiceLimit.deleteMany({ where: { clientId: c } });
   console.log('\n(test usage removed)');
   console.log(`\n================ RESULT: ${pass} passed | ${fail} failed ================`);
+  if (fail) process.exitCode = 1;
   await prisma.$disconnect();
-})();
+})().catch(error => {
+  // A check that cannot finish has not passed. Without this the whole run could die on a
+  // dropped connection and still leave a zero exit code behind it.
+  console.error('\nSuite did not finish:', error?.message ?? error);
+  process.exitCode = 1;
+});

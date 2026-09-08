@@ -299,6 +299,9 @@ async function main() {
     if (failures.length) {
       console.log('\nFailed:');
       for (const name of failures) console.log(`  - ${name}`);
+      // Said in the exit code as well as on the screen, so a failing run cannot pass for a
+      // green one when this is run by anything that is not a person reading the output.
+      process.exitCode = 1;
     }
   } finally {
     await cleanup();

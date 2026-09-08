@@ -40,5 +40,14 @@ const PANELS: Panel[] = [
     else console.log(`ok   ${clientId} (${scopes.length} scopes x ${PANELS.length} panels)`);
   }
   console.log(`\n${clients.length} tenants | ${failures.length} with a failing panel`);
+  // Said out loud, so this can be run from anything that reads an exit code rather than a
+  // human reading the last line.
+  if (failures.length) process.exitCode = 1;
   await prisma.$disconnect();
-})();
+})().catch(error => {
+  // Without this the sweep could die partway -- a dropped connection is enough -- and the
+  // rejection would be all that was left of it. A check that cannot finish has not passed,
+  // and must not be able to look like it did.
+  console.error('\nSweep did not finish:', error?.message ?? error);
+  process.exitCode = 1;
+});
