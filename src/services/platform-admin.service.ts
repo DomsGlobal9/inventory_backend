@@ -7,6 +7,7 @@ import { supportTicketService } from './support-ticket.service';
 import { buildUnifiedAuditFeed } from './audit-feed.service';
 import { encryptCredential, decryptCredential } from '../lib/credentialEncryption';
 import { mailService } from './mail.service';
+import { supabase } from '../lib/supabase';
 
 function generateTempPassword() {
   return crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe -- same scheme as team.service.ts
@@ -99,8 +100,12 @@ export class PlatformAdminService {
   }
 
   async getClientSummary(clientId: string) {
-    const [userCount, activityAgg, productCount, activeProductCount, alertCount, inventoryValueAgg, adminUser] = await Promise.all([
+    const [userCount, activeUserCount, activityAgg, productCount, activeProductCount, alertCount, inventoryValueAgg, adminUser] = await Promise.all([
       prisma.user.count({ where: { clientId } }),
+      // Suspension is not a stored flag -- it is "every account is deactivated". Counting the
+      // active ones is what lets the console show a suspended client as suspended rather than
+      // as one that merely happens to have nobody signed in.
+      prisma.user.count({ where: { clientId, status: 'ACTIVE' } }),
       prisma.user.aggregate({ where: { clientId }, _max: { lastLoginAt: true, lastActiveAt: true } }),
       prisma.product.count({ where: { clientId, status: { notIn: ['TRASHED'] } } }),
       prisma.product.count({ where: { clientId, status: 'ACTIVE' } }),
@@ -121,6 +126,7 @@ export class PlatformAdminService {
     return {
       clientId,
       userCount,
+      activeUserCount,
       lastLoginAt: activityAgg._max.lastLoginAt,
       // What actually happened most recently in this client's inventory, not just when
       // someone last typed a password -- backed by lastActiveAt (bumped on every
@@ -271,6 +277,222 @@ export class PlatformAdminService {
     });
 
     return { clientId, adminName, adminEmail, tempPassword, emailed: delivery.sent, emailReason: delivery.reason };
+  }
+
+  // ─── SUSPENDING AND DELETING A CLIENT ───────────────────────────────────────
+
+  /**
+   * Suspends a client: nobody in it can sign in, and nothing of theirs is touched.
+   *
+   * Reversible by design, and the reason it exists separately from deletion. Almost every real
+   * reason to cut off access -- unpaid invoice, a dispute, suspected misuse -- is temporary,
+   * and reaching for deletion in those cases destroys a shop's records to solve a billing
+   * problem.
+   *
+   * Storefront connections are paused too. Leaving them running would mean a suspended shop's
+   * website carrying on being updated with live stock, which is the opposite of suspended.
+   */
+  async setClientSuspended(clientId: string, suspended: boolean) {
+    const status = suspended ? 'INACTIVE' : 'ACTIVE';
+
+    const [users, connections] = await prisma.$transaction([
+      prisma.user.updateMany({ where: { clientId }, data: { status } }),
+      suspended
+        ? prisma.storefrontConnection.updateMany({
+            where: { clientId, status: 'ACTIVE' }, data: { status: 'DISABLED' }
+          })
+        // Reinstating deliberately does NOT switch storefronts back on. A connection may have
+        // been paused by the merchant themselves before any of this, and turning it on for
+        // them would publish stock they had chosen to stop publishing.
+        : prisma.storefrontConnection.updateMany({ where: { id: '__none__' }, data: {} })
+    ]);
+
+    return { clientId, suspended, usersAffected: users.count, connectionsPaused: connections.count };
+  }
+
+  /** Whether every user in a client is currently deactivated. */
+  async isClientSuspended(clientId: string) {
+    const [total, active] = await Promise.all([
+      prisma.user.count({ where: { clientId } }),
+      prisma.user.count({ where: { clientId, status: 'ACTIVE' } })
+    ]);
+    return total > 0 && active === 0;
+  }
+
+  /**
+   * What a deletion would destroy, counted before anyone confirms it.
+   *
+   * Shown on the confirmation screen. "Delete this client" is an abstraction; "1,204 products,
+   * 87 orders and 3 staff accounts" is the actual consequence, and it is the last chance
+   * anyone has to notice they are looking at the wrong tenant.
+   */
+  async previewClientDeletion(clientId: string) {
+    const [users, products, variants, orders, purchaseOrders, locations, suppliers, transactions] =
+      await Promise.all([
+        prisma.user.count({ where: { clientId } }),
+        prisma.product.count({ where: { clientId } }),
+        prisma.productVariant.count({ where: { clientId } }),
+        prisma.salesOrder.count({ where: { clientId } }),
+        prisma.purchaseOrder.count({ where: { clientId } }),
+        prisma.stockLocation.count({ where: { clientId } }),
+        prisma.supplier.count({ where: { clientId } }),
+        prisma.inventoryTransaction.count({ where: { variant: { clientId } } })
+      ]);
+
+    return { clientId, users, products, variants, orders, purchaseOrders, locations, suppliers, transactions };
+  }
+
+  /**
+   * Erases a client completely.
+   *
+   * There is no undo, no soft delete and no tombstone: the row-level records are gone when this
+   * returns. Two things make that survivable to implement.
+   *
+   * ONE TRANSACTION. Every statement commits together or none of them do. A half-deleted tenant
+   * -- products gone, orders referencing them still present -- is worse than either outcome,
+   * and would be unrecoverable without a backup.
+   *
+   * IT CHECKS ITSELF. Afterwards, and still inside the transaction, it asks the DATABASE which
+   * tables have a client_id column and counts what is left for this client. Anything remaining
+   * aborts the whole thing. That is what makes the operation survive schema growth: a table
+   * added next year that nobody remembers to list here does not silently leave a residue, it
+   * fails the delete loudly and someone fixes the order.
+   *
+   * The delete order is children before parents. Getting it wrong produces a foreign-key error
+   * and a rollback, which is the correct failure -- noisy and harmless, never partial.
+   */
+  async deleteClientCompletely(clientId: string, confirmation: string) {
+    // Belt and braces with the route's own check. This function erases a tenant; it should be
+    // impossible to call it by accident from anywhere, including a future caller of our own.
+    if (confirmation !== clientId) {
+      throw Object.assign(
+        new Error('The confirmation text does not match the client id'),
+        { statusCode: 400 }
+      );
+    }
+
+    const exists = await prisma.user.count({ where: { clientId } });
+    if (exists === 0) {
+      const anything = await prisma.product.count({ where: { clientId } });
+      if (anything === 0) {
+        throw Object.assign(new Error('No such client, or it has already been deleted'), { statusCode: 404 });
+      }
+    }
+
+    // Read before deleting: once the rows are gone so are the storage paths, and the images
+    // would sit in Supabase forever with nothing pointing at them.
+    const images = await prisma.productImage.findMany({
+      where: { product: { clientId } },
+      select: { storagePath: true }
+    });
+    const storagePaths = images.map(i => i.storagePath).filter((p): p is string => !!p);
+
+    // Children first. Where a relation cascades this is redundant, and harmless; where it does
+    // not, it is the difference between a clean delete and a foreign-key error.
+    const statements: string[] = [
+      // Storefront: deliveries reference both events and connections.
+      `DELETE FROM storefront_deliveries WHERE client_id = $1`,
+      `DELETE FROM storefront_events WHERE client_id = $1`,
+      `DELETE FROM storefront_connections WHERE client_id = $1`,
+      // Shopify: the children hang off the installation.
+      `DELETE FROM shopify_inventory_echoes WHERE installation_id IN (SELECT id FROM shopify_installations WHERE client_id = $1)`,
+      `DELETE FROM shopify_id_maps WHERE client_id = $1`,
+      `DELETE FROM shopify_location_maps WHERE client_id = $1`,
+      `DELETE FROM shopify_oauth_states WHERE client_id = $1`,
+      `DELETE FROM shopify_installations WHERE client_id = $1`,
+      // Reservations point at sales order items, so they go before the order chain.
+      `DELETE FROM inventory_reservations WHERE client_id = $1`,
+      `DELETE FROM dispatch_items WHERE dispatch_id IN (SELECT d.id FROM dispatches d JOIN sales_orders so ON so.id = d.sales_order_id WHERE so.client_id = $1)`,
+      `DELETE FROM dispatches WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
+      `DELETE FROM sales_return_items WHERE sales_return_id IN (SELECT id FROM sales_returns WHERE client_id = $1)`,
+      `DELETE FROM sales_returns WHERE client_id = $1`,
+      `DELETE FROM sales_order_items WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
+      `DELETE FROM sales_orders WHERE client_id = $1`,
+      `DELETE FROM sales_ledger WHERE client_id = $1`,
+      `DELETE FROM purchase_order_items WHERE po_id IN (SELECT id FROM purchase_orders WHERE client_id = $1)`,
+      `DELETE FROM purchase_orders WHERE client_id = $1`,
+      `DELETE FROM supplier_products WHERE client_id = $1`,
+      `DELETE FROM suppliers WHERE client_id = $1`,
+      `DELETE FROM inventory_stock_count_items WHERE stock_count_id IN (SELECT id FROM inventory_stock_counts WHERE client_id = $1)`,
+      `DELETE FROM inventory_stock_counts WHERE client_id = $1`,
+      `DELETE FROM inventory_transfers WHERE client_id = $1`,
+      `DELETE FROM inventory_transactions WHERE client_id = $1`,
+      `DELETE FROM inventory_events WHERE client_id = $1`,
+      `DELETE FROM inventory_stocks WHERE client_id = $1`,
+      `DELETE FROM variant_location_profiles WHERE variant_id IN (SELECT id FROM inventory_product_variants WHERE client_id = $1)`,
+      `DELETE FROM inventory_alert_reads WHERE alert_id IN (SELECT id FROM inventory_alerts WHERE client_id = $1)`,
+      `DELETE FROM inventory_alerts WHERE client_id = $1`,
+      `DELETE FROM inventory_daily_location_snapshots WHERE client_id = $1`,
+      `DELETE FROM inventory_daily_snapshots WHERE client_id = $1`,
+      `DELETE FROM inventory_product_images WHERE product_id IN (SELECT id FROM inventory_products WHERE client_id = $1)`,
+      `DELETE FROM inventory_product_variants WHERE client_id = $1`,
+      `DELETE FROM inventory_products WHERE client_id = $1`,
+      `DELETE FROM inventory_locations WHERE client_id = $1`,
+      `DELETE FROM catalog_template_items WHERE template_id IN (SELECT id FROM inventory_label_templates WHERE client_id = $1)`,
+      `DELETE FROM inventory_label_templates WHERE client_id = $1`,
+      `DELETE FROM customers WHERE client_id = $1`,
+      `DELETE FROM support_ticket_messages WHERE ticket_id IN (SELECT id FROM support_tickets WHERE client_id = $1)`,
+      `DELETE FROM support_tickets WHERE client_id = $1`,
+      `DELETE FROM client_error_logs WHERE client_id = $1`,
+      `DELETE FROM audit_logs WHERE client_id = $1`,
+      `DELETE FROM platform_admin_sessions WHERE client_id = $1`,
+      `DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE client_id = $1)`,
+      `DELETE FROM users WHERE client_id = $1`,
+      `DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE client_id = $1)`,
+      `DELETE FROM roles WHERE client_id = $1`,
+      `DELETE FROM client_settings WHERE client_id = $1`,
+      `DELETE FROM inventory_client_sequences WHERE client_id = $1`
+    ];
+
+    await prisma.$transaction(async tx => {
+      for (const statement of statements) {
+        // Every table name here is a literal written above; the only value that comes from
+        // outside is clientId, and it is a bound parameter rather than interpolated.
+        await tx.$executeRawUnsafe(statement, clientId);
+      }
+
+      // The self-check. Asks the database what exists rather than trusting the list above, so
+      // a table added later that nobody remembers cannot leave a quiet residue.
+      const tables = await tx.$queryRaw<{ table_name: string }[]>`
+        SELECT table_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND column_name = 'client_id'
+      `;
+
+      const leftovers: string[] = [];
+      for (const { table_name } of tables) {
+        const rows = await tx.$queryRawUnsafe<{ count: bigint }[]>(
+          `SELECT COUNT(*)::bigint AS count FROM "${table_name}" WHERE client_id = $1`, clientId
+        );
+        const remaining = Number(rows[0]?.count ?? 0);
+        if (remaining > 0) leftovers.push(`${table_name} (${remaining})`);
+      }
+
+      if (leftovers.length > 0) {
+        // Rolls the whole thing back. A partial delete is the one outcome worth failing to
+        // avoid, and this is the only place that can still catch it.
+        throw new Error(
+          `Deletion is incomplete -- rolled back. Rows remain in: ${leftovers.join(', ')}. ` +
+          `A table was probably added to the schema without being added to the delete order.`
+        );
+      }
+    }, {
+      // Dozens of statements against a database in another region. The default 5s expires part
+      // way through, and while a timeout still rolls back, it is slow enough to look like a
+      // hang and invites someone to click again.
+      maxWait: 20_000,
+      timeout: 120_000
+    });
+
+    // Only once the rows are certainly gone. Doing this first would delete a shop's photographs
+    // and then fail the transaction, leaving records pointing at images that no longer exist.
+    let imagesRemoved = 0;
+    if (storagePaths.length > 0) {
+      const { error } = await supabase.storage.from('inventory-images').remove(storagePaths);
+      if (error) console.error(`[DeleteClient] ${storagePaths.length} images left in storage for ${clientId}:`, error);
+      else imagesRemoved = storagePaths.length;
+    }
+
+    return { clientId, deleted: true, tablesCleared: statements.length, imagesRemoved };
   }
 
   // ─── PLATFORM ADMINS ────────────────────────────────────────────────────────

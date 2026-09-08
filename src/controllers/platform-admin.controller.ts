@@ -303,3 +303,65 @@ export const resetPlatformAdminPassword = async (req: Request, res: Response) =>
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to reset the password' });
   }
 };
+
+// ─── SUSPEND AND DELETE A CLIENT ──────────────────────────────────────────────
+
+export const setClientSuspended = async (req: Request, res: Response) => {
+  try {
+    const { suspended } = req.body ?? {};
+    if (typeof suspended !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'suspended must be true or false' });
+    }
+    const result = await platformAdminService.setClientSuspended(req.params.clientId as string, suspended);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to update the client' });
+  }
+};
+
+/** What a deletion would destroy. Read before anyone is asked to confirm it. */
+export const previewClientDeletion = async (req: Request, res: Response) => {
+  try {
+    res.json({ success: true, data: await platformAdminService.previewClientDeletion(req.params.clientId as string) });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to read the client' });
+  }
+};
+
+/**
+ * Erases a client.
+ *
+ * The confirmation text must equal the client id exactly, and it is checked HERE as well as in
+ * the service. Two checks for one rule looks redundant until you consider what each protects
+ * against: this one stops a request that never went through the UI, and the service's stops a
+ * future caller of our own from skipping the ceremony.
+ *
+ * DELETE with a body rather than a query parameter, so the confirmation cannot end up in a
+ * server access log, a browser history entry, or a link someone can be tricked into following.
+ */
+export const deleteClient = async (req: Request, res: Response) => {
+  try {
+    const clientId = req.params.clientId as string;
+    const { confirmation } = req.body ?? {};
+
+    if (confirmation !== clientId) {
+      return res.status(400).json({
+        success: false,
+        message: `Type the client id exactly to confirm: ${clientId}`
+      });
+    }
+
+    const admin = (req as any).platformAdmin;
+    // Logged before the attempt, not after. If this goes wrong mid-way there must still be a
+    // record of who asked for it and when.
+    console.warn(`[DeleteClient] ${admin?.email ?? 'unknown admin'} is erasing client "${clientId}"`);
+
+    const result = await platformAdminService.deleteClientCompletely(clientId, confirmation);
+    console.warn(`[DeleteClient] "${clientId}" erased by ${admin?.email ?? 'unknown admin'}`);
+
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    console.error('[DeleteClient] failed and rolled back:', error?.message);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to delete the client' });
+  }
+};

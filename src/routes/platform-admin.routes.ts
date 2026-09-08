@@ -21,7 +21,10 @@ import {
   listPlatformAdmins,
   createPlatformAdmin,
   setPlatformAdminStatus,
-  resetPlatformAdminPassword
+  resetPlatformAdminPassword,
+  setClientSuspended,
+  previewClientDeletion,
+  deleteClient
 } from '../controllers/platform-admin.controller';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 
@@ -37,6 +40,11 @@ consoleRouter.post('/clients', onboardClient);
 consoleRouter.get('/users', listAllUsers);
 consoleRouter.get('/clients/:clientId', getClient);
 consoleRouter.post('/clients/:clientId/assume', assumeClient);
+// Cutting a client off, and erasing one. Kept next to each other deliberately: suspending is
+// the reversible answer to almost every reason someone reaches for deleting.
+consoleRouter.patch('/clients/:clientId/suspend', setClientSuspended);
+consoleRouter.get('/clients/:clientId/deletion-preview', previewClientDeletion);
+consoleRouter.delete('/clients/:clientId', deleteClient);
 consoleRouter.post('/sessions/:sessionId/end', endAssumedSession);
 // Managing who can reach this console at all.
 consoleRouter.get('/platform-admins', listPlatformAdmins);
