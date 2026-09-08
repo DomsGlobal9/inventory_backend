@@ -175,7 +175,48 @@ against and not for the next one.
 | 7.8 | Bulk import request size | was unbounded, now capped at 2000 | PASS |
 | 7.9 | Any remaining per-row query loops | audited; none outstanding | PASS |
 | 7.10 | Connection pool headroom | not set explicitly; Prisma default on a small instance | **GAP** |
-| 7.11 | Behaviour under concurrent tenants | not load tested | **GAP** |
+| 7.11 | Behaviour under concurrent tenants | **load tested — see below** | **FAIL** |
+
+### 7.12 Load test, measured against production
+
+A ramp against `/ready`, which runs one `SELECT 1`. It sits outside `/api` so it is not rate
+limited, which makes it a clean probe for the connection pool — the thing that gives way first
+at scale, long before CPU.
+
+| Concurrent | p50 | p95 | Failed |
+|---|---|---|---|
+| 1 | 1.4s | — | 0 |
+| 40 | 2.1s | 3.1s | 0 |
+| 60 | 3.1s | 4.4s | 0 |
+| 100 | 4.0s | 6.7s | 0 |
+| 150 | 5.2s | 9.6s | 0 |
+| **250** | **6.8s** | **11.7s** | **58 of 250 (23%)** |
+
+The same ramp against `/health`, which touches nothing, stays at ~330ms p50 all the way to 40
+concurrent with no errors. **So the Node process is not the bottleneck. The database is.**
+
+The failures are ours, not the platform's: the body is `{"status":"not_ready"}`, which `/ready`
+returns only when `prisma.$queryRaw` throws. At 250 concurrent, roughly a fifth of database
+queries fail outright rather than merely queueing.
+
+**What this means in plain terms.** One trivial query takes four seconds at a hundred
+simultaneous requests. A real page makes five to eight queries, so it would take twenty to
+forty. The service stops answering reliably somewhere between 150 and 250 concurrent requests —
+perhaps a few thousand active users, depending on how often each one clicks.
+
+**A million clients is not close.** Three things in order:
+
+1. **Move the app to the database's region.** ~1s per round trip is the multiplier under
+   everything else; nothing else matters until this is fixed.
+2. **Raise the connection limit.** `DATABASE_URL` sets no `connection_limit`, so Prisma uses a
+   default sized for the instance's CPU count — single digits. pgbouncer is already in front,
+   so this can go considerably higher.
+3. **Run more than one instance.** One Render service is a single point of both failure and
+   capacity.
+
+None of these is a code change. The code-level hazards found in this audit — the 72-query
+settings screen, the unbounded bulk import — are real and now fixed, but they were never the
+ceiling. The ceiling is where the database is and how many connections reach it.
 
 ---
 
