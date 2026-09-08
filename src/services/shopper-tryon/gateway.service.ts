@@ -48,12 +48,21 @@ export type ShopperTryOnResult = {
 
 export class ShopperTryOnGatewayService {
   private gatewayUrl() {
-    // Falls back to the catalog gateway because today both services live behind the same one.
-    // Separate in configuration so they can be moved apart without a code change.
-    const url = env.SHOPPER_TRYON_GATEWAY_URL || env.CATALOG_TRYON_GATEWAY_URL;
+    // NO FALLBACK TO THE CATALOG GATEWAY, deliberately.
+    //
+    // This originally fell back to CATALOG_TRYON_GATEWAY_URL on the assumption that both
+    // services sat behind one gateway. They do not: the gateway routes by slug, and the two
+    // are registered separately -- /api/gateway/cat for catalogue, /api/gateway/external for
+    // this one. Probing confirmed it, and the console's API list agrees.
+    //
+    // So the fallback would have quietly pointed shopper try-ons at the catalogue slug, where
+    // this path does not exist. The shopper would meet an unexplained failure, and the shop
+    // would be charged for it, because a 404 from the gateway is recorded as a failed
+    // generation. Missing configuration must announce itself instead.
+    const url = env.SHOPPER_TRYON_GATEWAY_URL;
     if (!url) {
       throw Object.assign(
-        new Error('Try-On is not configured (missing SHOPPER_TRYON_GATEWAY_URL).'),
+        new Error('Try-On is not configured for this deployment (SHOPPER_TRYON_GATEWAY_URL is not set).'),
         { statusCode: 503 }
       );
     }
