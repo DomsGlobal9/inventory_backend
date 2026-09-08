@@ -247,3 +247,59 @@ export const setUserPassword = async (req: Request, res: Response) => {
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to set password' });
   }
 };
+
+// ─── PLATFORM ADMINS ──────────────────────────────────────────────────────────
+// Every account here can read and act on every tenant, so these are deliberately few and
+// explicit: list, add, activate/deactivate, and issue a new password. There is no "view
+// password" -- none is stored in a recoverable form.
+
+export const listPlatformAdmins = async (_req: Request, res: Response) => {
+  try {
+    res.json({ success: true, data: await platformAdminService.listPlatformAdmins() });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to list platform admins' });
+  }
+};
+
+export const createPlatformAdmin = async (req: Request, res: Response) => {
+  try {
+    const { name, email, customPassword } = req.body ?? {};
+    if (!name?.trim() || !email?.trim()) {
+      return res.status(400).json({ success: false, message: 'Name and email are required' });
+    }
+    const result = await platformAdminService.createPlatformAdmin({ name, email, customPassword });
+    res.status(201).json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to add platform admin' });
+  }
+};
+
+export const setPlatformAdminStatus = async (req: Request, res: Response) => {
+  try {
+    const { status } = req.body ?? {};
+    if (status !== 'ACTIVE' && status !== 'INACTIVE') {
+      return res.status(400).json({ success: false, message: 'Status must be ACTIVE or INACTIVE' });
+    }
+    const result = await platformAdminService.setPlatformAdminStatus({
+      adminId: req.params.id as string,
+      status,
+      // Guards against locking yourself out, so it needs to know who is asking.
+      requesterId: (req as any).platformAdmin?.id
+    });
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to update platform admin' });
+  }
+};
+
+export const resetPlatformAdminPassword = async (req: Request, res: Response) => {
+  try {
+    const result = await platformAdminService.resetPlatformAdminPassword({
+      adminId: req.params.id as string,
+      customPassword: req.body?.customPassword
+    });
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to reset the password' });
+  }
+};

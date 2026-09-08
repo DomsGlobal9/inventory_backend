@@ -17,7 +17,11 @@ import {
   replyToSupportTicket,
   updateSupportTicketStatus,
   viewUserPassword,
-  setUserPassword
+  setUserPassword,
+  listPlatformAdmins,
+  createPlatformAdmin,
+  setPlatformAdminStatus,
+  resetPlatformAdminPassword
 } from '../controllers/platform-admin.controller';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 
@@ -34,6 +38,11 @@ consoleRouter.get('/users', listAllUsers);
 consoleRouter.get('/clients/:clientId', getClient);
 consoleRouter.post('/clients/:clientId/assume', assumeClient);
 consoleRouter.post('/sessions/:sessionId/end', endAssumedSession);
+// Managing who can reach this console at all.
+consoleRouter.get('/platform-admins', listPlatformAdmins);
+consoleRouter.post('/platform-admins', createPlatformAdmin);
+consoleRouter.patch('/platform-admins/:id/status', setPlatformAdminStatus);
+consoleRouter.post('/platform-admins/:id/password', resetPlatformAdminPassword);
 consoleRouter.get('/audit-log', listAuditLog);
 consoleRouter.get('/client-errors', listClientErrors);
 consoleRouter.get('/support-tickets', listSupportTickets);

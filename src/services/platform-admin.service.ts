@@ -6,6 +6,7 @@ import { seedCatalogDefaultsForClient } from './catalog-seed.service';
 import { supportTicketService } from './support-ticket.service';
 import { buildUnifiedAuditFeed } from './audit-feed.service';
 import { encryptCredential, decryptCredential } from '../lib/credentialEncryption';
+import { mailService } from './mail.service';
 
 function generateTempPassword() {
   return crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe -- same scheme as team.service.ts
@@ -262,7 +263,135 @@ export class PlatformAdminService {
       data: { userId: user.id, roleId: roleIds.SUPER_ADMIN }
     });
 
-    return { clientId, adminName, adminEmail, tempPassword };
+    // The shop owner's login is the last thing standing between onboarding and them actually
+    // using the product, and until now it left this building by being read off a console
+    // screen and typed into a message by hand.
+    const delivery = await mailService.sendCredentials({
+      recipientName: adminName, email: adminEmail, password: tempPassword, roleLabel: 'SUPER_ADMIN'
+    });
+
+    return { clientId, adminName, adminEmail, tempPassword, emailed: delivery.sent, emailReason: delivery.reason };
+  }
+
+  // ─── PLATFORM ADMINS ────────────────────────────────────────────────────────
+  //
+  // Whoever is in this table can read and act on EVERY tenant's data. There is no hierarchy
+  // among them -- any platform admin can add another -- so the guards here are about not
+  // locking everyone out, and about not leaving a permanent decryptable copy of a key that
+  // opens every shop.
+
+  async listPlatformAdmins() {
+    return prisma.platformAdmin.findMany({
+      // No password field, encrypted or otherwise. Nothing here should ever be able to return
+      // one, so it is excluded at the query rather than trusted to be dropped later.
+      select: { id: true, name: true, email: true, status: true, createdAt: true },
+      orderBy: { createdAt: 'asc' }
+    });
+  }
+
+  /**
+   * Adds a platform admin.
+   *
+   * The password is generated, shown once, and emailed. Unlike a shop user it is stored ONLY
+   * as a bcrypt hash -- there is deliberately no reversible copy, so this password cannot be
+   * viewed or re-sent later. A shop assistant's password protects one shop; this one opens
+   * every tenant on the platform, and a decryptable copy of it sitting in a table is a far
+   * larger prize. If the message is lost, issue a new password rather than recovering the old.
+   */
+  async createPlatformAdmin(params: { name: string; email: string; customPassword?: string }) {
+    const email = params.email.trim().toLowerCase();
+
+    if (params.customPassword && params.customPassword.length < 12) {
+      throw Object.assign(
+        new Error('A platform admin password must be at least 12 characters -- this account can see every tenant'),
+        { statusCode: 400 }
+      );
+    }
+
+    const existing = await prisma.platformAdmin.findUnique({ where: { email } });
+    if (existing) {
+      throw Object.assign(new Error('A platform admin with this email already exists'), { statusCode: 409 });
+    }
+
+    // Longer than the shop-staff default for the same reason as the check above.
+    const password = params.customPassword || crypto.randomBytes(15).toString('base64url');
+    const hashed = await AuthService.hashPassword(password);
+
+    const admin = await prisma.platformAdmin.create({
+      data: { name: params.name.trim(), email, password: hashed, status: 'ACTIVE' },
+      select: { id: true, name: true, email: true, status: true, createdAt: true }
+    });
+
+    const delivery = await mailService.sendCredentials({
+      recipientName: admin.name, email: admin.email, password, roleLabel: 'Platform Admin'
+    });
+
+    // Returned once. There is no second chance to read it -- see the note above.
+    return { ...admin, password, emailed: delivery.sent, emailReason: delivery.reason };
+  }
+
+  /**
+   * Activates or deactivates a platform admin.
+   *
+   * Refuses to deactivate the last active one. Without that check a single click locks
+   * everybody out of the console permanently, and the only way back in is a database edit.
+   */
+  async setPlatformAdminStatus(params: { adminId: string; status: 'ACTIVE' | 'INACTIVE'; requesterId: string }) {
+    if (params.adminId === params.requesterId && params.status !== 'ACTIVE') {
+      throw Object.assign(new Error('You cannot deactivate your own account'), { statusCode: 400 });
+    }
+
+    const target = await prisma.platformAdmin.findUnique({ where: { id: params.adminId } });
+    if (!target) throw Object.assign(new Error('Platform admin not found'), { statusCode: 404 });
+
+    if (params.status !== 'ACTIVE') {
+      const remaining = await prisma.platformAdmin.count({
+        where: { status: 'ACTIVE', id: { not: params.adminId } }
+      });
+      if (remaining === 0) {
+        throw Object.assign(
+          new Error('This is the only active platform admin -- add another before deactivating this one'),
+          { statusCode: 409 }
+        );
+      }
+    }
+
+    return prisma.platformAdmin.update({
+      where: { id: params.adminId },
+      data: { status: params.status },
+      select: { id: true, name: true, email: true, status: true }
+    });
+  }
+
+  /**
+   * Issues a new password for a platform admin and emails it.
+   *
+   * This is what replaces "resend" for these accounts. The old password cannot be recovered,
+   * so the honest operation is to replace it -- and the person is told, because their existing
+   * password stops working the moment this runs.
+   */
+  async resetPlatformAdminPassword(params: { adminId: string; customPassword?: string }) {
+    if (params.customPassword && params.customPassword.length < 12) {
+      throw Object.assign(new Error('A platform admin password must be at least 12 characters'), { statusCode: 400 });
+    }
+
+    const target = await prisma.platformAdmin.findUnique({ where: { id: params.adminId } });
+    if (!target) throw Object.assign(new Error('Platform admin not found'), { statusCode: 404 });
+
+    const password = params.customPassword || crypto.randomBytes(15).toString('base64url');
+    await prisma.platformAdmin.update({
+      where: { id: params.adminId },
+      data: { password: await AuthService.hashPassword(password) }
+    });
+
+    const delivery = await mailService.sendCredentials({
+      recipientName: target.name, email: target.email, password, roleLabel: 'Platform Admin'
+    });
+
+    return {
+      id: target.id, name: target.name, email: target.email, password,
+      emailed: delivery.sent, emailReason: delivery.reason
+    };
   }
 
   // Merges two independent event sources -- PlatformAdminSession (a super admin viewing a
