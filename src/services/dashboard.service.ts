@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
+import { inventoryValueFor } from '../lib/inventoryValuation';
 
 export class DashboardService {
 
@@ -72,19 +73,12 @@ export class DashboardService {
           receivedQty: true
         }
       }),
-      // Inventory Value
-      prisma.$queryRaw`
-        SELECT SUM(COALESCE(s.qty, 0) * COALESCE(v.last_purchase_cost, v.cost_price, v.compare_at_price, 0)) as "totalValue"
-        FROM inventory_product_variants v
-        JOIN inventory_products p ON v.product_id = p.id
-        LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
-        WHERE v.client_id = ${clientId} AND p.status != 'TRASHED'
-      `
+      // Inventory Value. Shared with the platform console rather than computed here, because
+      // the two used to be written separately and drifted apart -- see inventoryValuation.ts.
+      inventoryValueFor(clientId, locationId)
     ]);
 
-    const inventoryValue = inventoryValueResult && Array.isArray(inventoryValueResult) && inventoryValueResult[0]?.totalValue
-      ? Number(inventoryValueResult[0].totalValue)
-      : 0;
+    const inventoryValue = inventoryValueResult;
 
     const ordered = pendingReceiptsAgg?._sum?.orderedQty || 0;
     const received = pendingReceiptsAgg?._sum?.receivedQty || 0;

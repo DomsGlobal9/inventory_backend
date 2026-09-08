@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
+import { inventoryValueFor, inventoryValueByClient } from '../lib/inventoryValuation';
+import { forgetClientIdentities } from '../lib/identityCache';
 import { AuthService } from './auth.service';
 import { seedRolesForClient } from './rbac-seed.service';
 import { seedCatalogDefaultsForClient } from './catalog-seed.service';
@@ -50,10 +52,10 @@ export class PlatformAdminService {
           where: { isResolved: false },
           _count: { _all: true }
         }),
-        prisma.productVariant.groupBy({
-          by: ['clientId'],
-          _sum: { inventoryValue: true }
-        }),
+        // Valued the same way the merchant's own dashboard values it. Summing the stored
+        // inventory_value column here was the cause of the console and the dashboard showing
+        // different money for the same shop -- see inventoryValuation.ts. Still one query.
+        inventoryValueByClient(),
         // Earliest SUPER_ADMIN per client -- ordered ascending so the first row seen for a
         // clientId is the one getClientSummary would have picked.
         prisma.user.findMany({
@@ -70,7 +72,7 @@ export class PlatformAdminService {
     const products = byClient(productCounts);
     const activeProducts = byClient(activeProductCounts);
     const alerts = byClient(alertCounts);
-    const values = byClient(valueSums);
+    const values = valueSums; // already a Map<clientId, number>
 
     const admins = new Map<string, { name: string | null; email: string | null }>();
     for (const a of superAdmins) if (!admins.has(a.clientId)) admins.set(a.clientId, a);
@@ -88,7 +90,7 @@ export class PlatformAdminService {
         productCount,
         activeProductCount,
         activeAlertCount: alerts.get(clientId)?._count._all ?? 0,
-        inventoryValue: Number(values.get(clientId)?._sum.inventoryValue || 0),
+        inventoryValue: values.get(clientId) ?? 0,
         // Same heuristic as getClientSummary -- kept identical so the list and the
         // single-client overview can never disagree about a client's status.
         onboardingStatus:
@@ -100,7 +102,7 @@ export class PlatformAdminService {
   }
 
   async getClientSummary(clientId: string) {
-    const [userCount, activeUserCount, activityAgg, productCount, activeProductCount, alertCount, inventoryValueAgg, adminUser] = await Promise.all([
+    const [userCount, activeUserCount, activityAgg, productCount, activeProductCount, alertCount, inventoryValue, adminUser] = await Promise.all([
       prisma.user.count({ where: { clientId } }),
       // Suspension is not a stored flag -- it is "every account is deactivated". Counting the
       // active ones is what lets the console show a suspended client as suspended rather than
@@ -110,7 +112,8 @@ export class PlatformAdminService {
       prisma.product.count({ where: { clientId, status: { notIn: ['TRASHED'] } } }),
       prisma.product.count({ where: { clientId, status: 'ACTIVE' } }),
       prisma.inventoryAlert.count({ where: { clientId, isResolved: false } }),
-      prisma.productVariant.aggregate({ where: { clientId }, _sum: { inventoryValue: true } }),
+      // The merchant's own dashboard figure, not a second opinion on it.
+      inventoryValueFor(clientId),
       prisma.user.findFirst({
         where: { clientId, roles: { some: { role: { name: 'SUPER_ADMIN' } } } },
         select: { name: true, email: true },
@@ -135,7 +138,7 @@ export class PlatformAdminService {
       productCount,
       activeProductCount,
       activeAlertCount: alertCount,
-      inventoryValue: Number(inventoryValueAgg._sum.inventoryValue || 0),
+      inventoryValue,
       onboardingStatus,
       adminName: adminUser?.name || null,
       adminEmail: adminUser?.email || null
@@ -307,6 +310,10 @@ export class PlatformAdminService {
         : prisma.storefrontConnection.updateMany({ where: { id: '__none__' }, data: {} })
     ]);
 
+    // Suspension is the button someone presses when they want a shop out now, so the cached
+    // identities of everyone in it go immediately rather than at the end of their TTL.
+    forgetClientIdentities(clientId);
+
     return { clientId, suspended, usersAffected: users.count, connectionsPaused: connections.count };
   }
 
@@ -370,6 +377,10 @@ export class PlatformAdminService {
         { statusCode: 400 }
       );
     }
+
+    // Before the rows go, so nothing can be served from a cached identity belonging to a
+    // tenant that no longer exists.
+    forgetClientIdentities(clientId);
 
     const exists = await prisma.user.count({ where: { clientId } });
     if (exists === 0) {
