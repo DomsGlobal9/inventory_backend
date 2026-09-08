@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { AuthService } from './auth.service';
 import { encryptCredential, decryptCredential } from '../lib/credentialEncryption';
 import { buildUnifiedAuditFeed } from './audit-feed.service';
+import { mailService } from './mail.service';
 
 function generateTempPassword() {
   return crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe -- same scheme as onboarding
@@ -84,7 +85,20 @@ export class TeamService {
     });
     await prisma.userRole.create({ data: { userId: user.id, roleId: role.id } });
 
-    return { id: user.id, name: user.name, email: user.email, role: role.name, password: finalPassword };
+    // Awaited, unlike the storefront notifications elsewhere, and for the opposite reason: the
+    // admin is standing at this screen deciding whether they still need to send the password
+    // by hand. Telling them a second later that it was emailed is useful; telling them nothing
+    // and hoping means they either double-send or assume it worked when it did not.
+    //
+    // It cannot fail the creation -- sendCredentials never throws, it reports.
+    const delivery = await mailService.sendCredentials({
+      recipientName: user.name, email: user.email, password: finalPassword, roleLabel: role.name
+    });
+
+    return {
+      id: user.id, name: user.name, email: user.email, role: role.name, password: finalPassword,
+      emailed: delivery.sent, emailReason: delivery.reason
+    };
   }
 
   async updateMemberRole(params: { clientId: string; userId: string; roleId: string; requesterIsSuperAdmin: boolean }) {
@@ -180,7 +194,16 @@ export class TeamService {
     ]);
     await prisma.user.update({ where: { id: params.userId }, data: { password: hashed, passwordEncrypted } });
 
-    return { id: target.id, name: target.name, email: target.email, password: finalPassword };
+    // The password just changed, so the holder cannot sign in until they are told the new one.
+    // Same contract as above: reported, never fatal.
+    const delivery = await mailService.sendCredentials({
+      recipientName: target.name, email: target.email, password: finalPassword
+    });
+
+    return {
+      id: target.id, name: target.name, email: target.email, password: finalPassword,
+      emailed: delivery.sent, emailReason: delivery.reason
+    };
   }
 }
 

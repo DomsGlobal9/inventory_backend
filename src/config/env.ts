@@ -87,6 +87,31 @@ const envSchema = z.object({
   // silently dropped. The feature simply does not deliver until it is configured.
   STOREFRONT_SIGNING_SECRET: optionalStr(z.string().min(32, "STOREFRONT_SIGNING_SECRET should be at least 32 characters")),
 
+  // --- Email -------------------------------------------------------------------------
+  //
+  // Optional, and the app is fully usable without it: every send reports whether it went, and
+  // the credential screens keep their existing "share by WhatsApp / copy" fallback. Email is an
+  // improvement on that, not a dependency of it -- an SMTP outage must not stop a shop adding
+  // a staff member.
+  EMAIL_HOST: optionalStr(z.string().min(1)),
+  EMAIL_PORT: z.preprocess(
+    v => (v === undefined || v === '' ? 587 : parseInt(String(v), 10)),
+    z.number().int().min(1).max(65535).default(587)
+  ),
+  EMAIL_HOST_USER: optionalStr(z.string().min(1)),
+  EMAIL_HOST_PASSWORD: optionalStr(z.string().min(1)),
+  // Gmail and most providers on 587 use STARTTLS, which is `secure: false` plus an upgrade --
+  // NOT `secure: true`. Setting secure on 587 produces a connection that hangs until timeout,
+  // which reads like a firewall problem rather than a configuration one. Port 465 is the
+  // implicit-TLS one. This flag means "use TLS at all", and the port decides which kind.
+  EMAIL_USE_TLS: z.preprocess(
+    v => (v === undefined || v === '' ? true : String(v).toLowerCase() === 'true'),
+    z.boolean().default(true)
+  ),
+  // What recipients see in the From line. Falls back to EMAIL_HOST_USER.
+  EMAIL_FROM_NAME: z.string().default('Scaleezy Inventory'),
+  EMAIL_FROM_ADDRESS: optionalStr(z.string().email("EMAIL_FROM_ADDRESS must be a valid address")),
+
   // --- Shopify -----------------------------------------------------------------------
   //
   // All optional, and the integration fails SAFE without them: the OAuth routes refuse to
