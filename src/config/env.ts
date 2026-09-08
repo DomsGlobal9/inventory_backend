@@ -55,8 +55,28 @@ const envSchema = z.object({
     try { return JSON.parse(str); } catch (e) { return {}; }
   }),
 
+  // --- Try-On ------------------------------------------------------------------------
+  //
+  // Two services through the same gateway, each with its own key per client, pasted into the
+  // console. The keys below are only the SHARED fallback used by a client who has not been
+  // given one of their own -- see credential.service.ts.
+  //
+  // 4-View Catalog Try-On: the merchant's tool, one garment photo in, four catalogue views out.
   CATALOG_TRYON_GATEWAY_URL: z.string().url().optional(),
   CATALOG_TRYON_API_KEY: z.string().optional(),
+
+  // Try-On: the shopper's tool, reached by scanning the QR code on a product.
+  //
+  // The gateway URL falls back to the catalog one because today both services live behind the
+  // same gateway; it is separate so that they can be moved apart without a code change.
+  SHOPPER_TRYON_GATEWAY_URL: z.string().url().optional(),
+  SHOPPER_TRYON_API_KEY: z.string().optional(),
+
+  // Where a scanned QR code sends the shopper. The product code is appended to it.
+  //
+  // Env rather than hardcoded because the QR is PRINTED: a tag on a garment outlives any
+  // deploy, so the destination has to be changeable without reprinting every label.
+  SHOPPER_TRYON_APP_URL: z.string().url().optional(),
 
   // --- previously unvalidated, read directly via process.env elsewhere ---------------
 

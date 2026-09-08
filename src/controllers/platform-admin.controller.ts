@@ -372,12 +372,28 @@ export const deleteClient = async (req: Request, res: Response) => {
 // Generated in the gateway, pasted here. The gateway owns identity, quota and metering; this
 // is a copy held so the inventory module can present it on the client's behalf.
 
+/**
+ * Every service a client can be given a key for.
+ *
+ * Listed rather than inferred from the rows that exist, so a service a client has NOT been
+ * given still appears on the page with somewhere to paste a key. Deriving it from stored rows
+ * would show an admin only what is already set up -- which is the opposite of what this screen
+ * is for.
+ */
+const KEYED_SERVICES = ['CATALOG_TRYON', 'SHOPPER_TRYON'] as const;
+type KeyedService = (typeof KEYED_SERVICES)[number];
+
+const asKeyedService = (value: unknown): KeyedService =>
+  KEYED_SERVICES.includes(value as KeyedService) ? (value as KeyedService) : 'CATALOG_TRYON';
+
 export const getClientServiceKeys = async (req: Request, res: Response) => {
   try {
     const clientId = req.params.clientId as string;
     res.json({
       success: true,
-      data: [await serviceCredentialService.describe(clientId, 'CATALOG_TRYON')]
+      data: await Promise.all(
+        KEYED_SERVICES.map(service => serviceCredentialService.describe(clientId, service))
+      )
     });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to read the keys' });
@@ -401,7 +417,10 @@ export const setClientServiceKey = async (req: Request, res: Response) => {
 
     const result = await serviceCredentialService.setKey({
       clientId: req.params.clientId as string,
-      service: service === 'CATALOG_TRYON' || !service ? 'CATALOG_TRYON' : service,
+      // Anything unrecognised falls back to the catalog service rather than being rejected,
+      // which is how this behaved when it was the only one -- an old console build that sends
+      // no service still saves the key it means.
+      service: asKeyedService(service),
       key,
       addedByAdmin: admin?.email ?? 'unknown admin'
     });
@@ -416,9 +435,9 @@ export const setClientServiceKey = async (req: Request, res: Response) => {
 
 export const revokeClientServiceKey = async (req: Request, res: Response) => {
   try {
-    const service = (req.query.service as string) === 'CATALOG_TRYON' || !req.query.service
-      ? 'CATALOG_TRYON' : (req.query.service as any);
-    const result = await serviceCredentialService.revoke(req.params.clientId as string, service);
+    const result = await serviceCredentialService.revoke(
+      req.params.clientId as string, asKeyedService(req.query.service)
+    );
     res.json({ success: true, data: result });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to disconnect that key' });
@@ -430,9 +449,10 @@ export const revokeClientServiceKey = async (req: Request, res: Response) => {
 export const getClientTryOnUsage = async (req: Request, res: Response) => {
   try {
     const clientId = req.params.clientId as string;
+    const service = asKeyedService(req.query.service);
     const [summary, daily] = await Promise.all([
-      tryOnUsageService.summary(clientId),
-      tryOnUsageService.daily(clientId, 30)
+      tryOnUsageService.summary(clientId, undefined, service),
+      tryOnUsageService.daily(clientId, 30, service)
     ]);
     res.json({ success: true, data: { summary, daily } });
   } catch (error: any) {
@@ -448,7 +468,11 @@ export const setClientTryOnLimit = async (req: Request, res: Response) => {
     const monthlyLimit = raw === null || raw === undefined || raw === '' ? null : Number(raw);
 
     const result = await tryOnUsageService.setMonthlyLimit(
-      req.params.clientId as string, monthlyLimit, admin?.email ?? 'unknown admin'
+      req.params.clientId as string, monthlyLimit, admin?.email ?? 'unknown admin',
+      // The service comes from the body here rather than the query, because this is the only
+      // one of the four that is a write with a body -- and an allowance set against the wrong
+      // service is silently wrong rather than visibly broken.
+      asKeyedService(req.body?.service)
     );
     res.json({ success: true, data: result });
   } catch (error: any) {

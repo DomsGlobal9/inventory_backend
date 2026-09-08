@@ -1859,7 +1859,17 @@ model ShopifyOAuthState {
 /// An enum rather than a free string so that adding a service is a deliberate change with a
 /// migration behind it, and a typo cannot quietly create a second, parallel "catalog_tryon".
 enum ClientService {
+  /// 4-View Catalog Try-On. The merchant's own tool: one garment photograph in, four catalogue
+  /// views out. Used from inside the app, by staff, on products they are listing.
   CATALOG_TRYON
+
+  /// Try-On. The shopper's tool, reached by scanning the QR code on a product: they upload a
+  /// photograph of themselves and see themselves in the garment.
+  ///
+  /// A separate gateway service with its own key per client, not a second use of the catalog
+  /// key. The two are metered differently and priced differently, and a shop could reasonably
+  /// have one and not the other -- which is impossible if they share a credential.
+  SHOPPER_TRYON
 }
 
 /// A client's key for a platform service, issued by the gateway and pasted in by an admin.
@@ -1924,6 +1934,14 @@ model TryOnUsage {
   id       String @id @default(uuid())
   clientId String @map("client_id")
 
+  /// Which try-on. Defaulted to CATALOG_TRYON so every row written before shopper try-on
+  /// existed keeps meaning what it meant -- there was only one service to be.
+  ///
+  /// The uniqueness below had to widen with it. Without the service in the key, a shop's two
+  /// try-ons would collide on the same day row and increment each other's counters, which is
+  /// worse than losing the split: it would silently overbill one against the other.
+  service ClientService @default(CATALOG_TRYON)
+
   /// The shop's own business day, "YYYY-MM-DD", not UTC -- so a day's usage matches the day
   /// the merchant experienced, the same rule the day book uses.
   day String
@@ -1945,8 +1963,8 @@ model TryOnUsage {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@unique([clientId, day], name: "uq_tryon_usage_day")
-  @@index([clientId, day])
+  @@unique([clientId, service, day], name: "uq_tryon_usage_day")
+  @@index([clientId, service, day])
   @@map("tryon_usage")
 }
 

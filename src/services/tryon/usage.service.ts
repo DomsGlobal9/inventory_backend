@@ -23,8 +23,19 @@ import { todayKey } from '../../utils/businessDay';
  * generation would be inventing data, which this codebase has been burned by before.
  */
 
+/**
+ * Which try-on is being metered.
+ *
+ * Every method takes it last and defaults to CATALOG_TRYON, so the merchant-facing catalog
+ * flow reads exactly as it did before shopper try-on existed. That default is not laziness:
+ * it means the second service could be added without touching a single existing call site,
+ * and therefore without a chance of silently re-pointing the meter that is already running.
+ */
+export type TryOnService = 'CATALOG_TRYON' | 'SHOPPER_TRYON';
+
 export interface UsageSummary {
   clientId: string;
+  service: TryOnService;
   month: string;
   generations: number;
   completed: number;
@@ -49,6 +60,18 @@ export interface UsageSummary {
 const WARN_AT_FRACTION = 0.8;
 const WARN_WHEN_REMAINING = 5;
 
+/**
+ * What the refusal message calls the thing they have run out of.
+ *
+ * A shopper standing in a shop scanning a QR code is not "a workspace" and has not "used its
+ * generations" -- the two services are refused in front of completely different people, and
+ * the wording follows the person rather than the code path.
+ */
+const SERVICE_NOUN: Record<TryOnService, string> = {
+  CATALOG_TRYON: 'catalogue try-on generations',
+  SHOPPER_TRYON: 'shopper try-ons'
+};
+
 export class TryOnUsageService {
   /** The shop's own day, so a day's usage matches the day the merchant experienced. */
   private async dayKeyFor(clientId: string): Promise<string> {
@@ -69,7 +92,7 @@ export class TryOnUsageService {
     failed?: boolean;
     cancelled?: boolean;
     viewsGenerated?: number;
-  }) {
+  }, service: TryOnService = 'CATALOG_TRYON') {
     try {
       const day = await this.dayKeyFor(clientId);
       const inc = {
@@ -81,8 +104,8 @@ export class TryOnUsageService {
       };
 
       await prisma.tryOnUsage.upsert({
-        where: { uq_tryon_usage_day: { clientId, day } },
-        create: { clientId, day, ...inc },
+        where: { uq_tryon_usage_day: { clientId, service, day } },
+        create: { clientId, service, day, ...inc },
         update: {
           started: { increment: inc.started },
           completed: { increment: inc.completed },
@@ -104,17 +127,17 @@ export class TryOnUsageService {
    * Cancellations are not counted -- the merchant stopped it deliberately, usually within
    * seconds, and charging for that teaches them not to press stop.
    */
-  async summary(clientId: string, month?: string): Promise<UsageSummary> {
+  async summary(clientId: string, month?: string, service: TryOnService = 'CATALOG_TRYON'): Promise<UsageSummary> {
     const { timezone } = await getShopSettings(clientId);
     const currentMonth = month ?? todayKey(timezone).slice(0, 7);
 
     const [rows, limitRow] = await Promise.all([
       prisma.tryOnUsage.findMany({
-        where: { clientId, day: { startsWith: currentMonth } },
+        where: { clientId, service, day: { startsWith: currentMonth } },
         select: { completed: true, failed: true, cancelled: true, viewsGenerated: true }
       }),
       prisma.clientServiceLimit.findUnique({
-        where: { uq_client_service_limit: { clientId, service: 'CATALOG_TRYON' } },
+        where: { uq_client_service_limit: { clientId, service } },
         select: { monthlyLimit: true }
       })
     ]);
@@ -130,6 +153,7 @@ export class TryOnUsageService {
 
     return {
       clientId,
+      service,
       month: currentMonth,
       generations,
       completed,
@@ -158,12 +182,12 @@ export class TryOnUsageService {
    * No limit set means no limit. That is deliberate for a platform that already has customers:
    * this must not switch off try-on for 37 shops on the day it deploys.
    */
-  async assertWithinLimit(clientId: string) {
-    const usage = await this.summary(clientId);
+  async assertWithinLimit(clientId: string, service: TryOnService = 'CATALOG_TRYON') {
+    const usage = await this.summary(clientId, undefined, service);
     if (usage.overLimit) {
       throw Object.assign(
         new Error(
-          `This workspace has used its ${usage.monthlyLimit} try-on generations for ${usage.month}. ` +
+          `This workspace has used its ${usage.monthlyLimit} ${SERVICE_NOUN[service]} for ${usage.month}. ` +
           `Ask Scaleezy to raise the limit to carry on.`
         ),
         { statusCode: 429 }
@@ -173,9 +197,9 @@ export class TryOnUsageService {
   }
 
   /** Daily usage for a client, for the console's chart. */
-  async daily(clientId: string, days = 30) {
+  async daily(clientId: string, days = 30, service: TryOnService = 'CATALOG_TRYON') {
     return prisma.tryOnUsage.findMany({
-      where: { clientId },
+      where: { clientId, service },
       orderBy: { day: 'desc' },
       take: days,
       select: { day: true, started: true, completed: true, failed: true, cancelled: true, viewsGenerated: true }
@@ -183,18 +207,21 @@ export class TryOnUsageService {
   }
 
   /** Sets or clears a client's monthly allowance. Null clears it. */
-  async setMonthlyLimit(clientId: string, monthlyLimit: number | null, updatedByAdmin: string) {
+  async setMonthlyLimit(
+    clientId: string, monthlyLimit: number | null, updatedByAdmin: string,
+    service: TryOnService = 'CATALOG_TRYON'
+  ) {
     if (monthlyLimit !== null && (!Number.isInteger(monthlyLimit) || monthlyLimit < 0)) {
       throw Object.assign(new Error('A limit must be a whole number, or blank for unlimited'), { statusCode: 400 });
     }
 
     await prisma.clientServiceLimit.upsert({
-      where: { uq_client_service_limit: { clientId, service: 'CATALOG_TRYON' } },
-      create: { clientId, service: 'CATALOG_TRYON', monthlyLimit, updatedByAdmin },
+      where: { uq_client_service_limit: { clientId, service } },
+      create: { clientId, service, monthlyLimit, updatedByAdmin },
       update: { monthlyLimit, updatedByAdmin }
     });
 
-    return this.summary(clientId);
+    return this.summary(clientId, undefined, service);
   }
 }
 

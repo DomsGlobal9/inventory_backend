@@ -4,6 +4,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { prisma } from '../lib/prisma';
 import { supabase } from '../lib/supabase';
 import { storefrontEventService } from './storefront-event.service';
+import { shopperTryOnProductService } from './shopper-tryon';
 import { StorefrontEventType } from '@prisma/client';
 
 /**
@@ -65,7 +66,16 @@ export class ProductService {
   async getProductById(id: string, clientId: string) {
     const product = await productRepository.findById(id, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
-    return product;
+
+    // The address a shopper reaches by scanning this product's QR code.
+    //
+    // Built on the server rather than assembled in the browser because the QR gets PRINTED on
+    // a garment tag: a tag outlives every deploy, so where it points has to be one decision in
+    // one place, changeable in configuration without reprinting anything already in a shop.
+    //
+    // Null when shopper try-on is not configured for this deployment, so the screen can leave
+    // the QR off rather than print a code that leads nowhere.
+    return { ...product, tryOnScanUrl: shopperTryOnProductService.scanUrlFor(clientId, product.productCode) };
   }
 
   async updateProduct(id: string, clientId: string, data: any) {

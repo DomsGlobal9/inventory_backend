@@ -36,6 +36,18 @@ export interface CredentialSummary {
 /** How much of a key is safe to show. Long enough to identify, short enough to be useless. */
 const PREFIX_LENGTH = 12;
 
+/**
+ * The platform's own key for each service, used only by a client who has none of their own.
+ *
+ * Read through a function rather than captured at module load, so a test that sets the
+ * environment before importing gets the value it set -- env is validated and frozen at first
+ * import, and a plain object here would snapshot whatever was present at that moment.
+ */
+const SHARED_KEY_FOR: Record<ClientService, () => string | undefined> = {
+  CATALOG_TRYON: () => env.CATALOG_TRYON_API_KEY,
+  SHOPPER_TRYON: () => env.SHOPPER_TRYON_API_KEY
+};
+
 export class ServiceCredentialService {
   /**
    * The key to send for this client, or the shared one.
@@ -60,14 +72,19 @@ export class ServiceCredentialService {
       return { key: decryptCredential(row.keyEncrypted), shared: false };
     }
 
-    if (!env.CATALOG_TRYON_API_KEY) {
+    // The fallback is per service. Sending the catalog key for a shopper try-on would meter
+    // one service's usage against the other's account at the gateway -- the exact confusion
+    // this whole per-client-key design exists to remove, reintroduced one level down.
+    const sharedKey = SHARED_KEY_FOR[service]();
+
+    if (!sharedKey) {
       throw Object.assign(
         new Error('This workspace has no key for that service, and no shared key is configured.'),
         { statusCode: 503 }
       );
     }
 
-    return { key: env.CATALOG_TRYON_API_KEY, shared: true };
+    return { key: sharedKey, shared: true };
   }
 
   /**

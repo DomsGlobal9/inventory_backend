@@ -28,6 +28,7 @@ import { platformAdminAuthRoutes, platformAdminConsoleRoutes } from './platform-
 import leadRoutes from './lead.routes';
 import storefrontPublicRoutes from './storefront-public.routes';
 import shopifyPublicRoutes from './shopify-public.routes';
+import shopperTryOnPublicRoutes from './shopper-tryon-public.routes';
 import shopifyMerchantRoutes from './shopify-merchant.routes';
 import serviceCatalogueRoutes from './service-catalogue.routes';
 import storefrontConnectionRoutes from './storefront-connection.routes';
@@ -75,6 +76,12 @@ router.use('/storefront/v1', storefrontPublicRoutes);
 // neither can carry a session, an API key or a tenant header. Both prove themselves with
 // Shopify's HMAC instead, which is verified inside every handler before anything is read.
 router.use('/shopify', shopifyPublicRoutes);
+
+// Try-On, reached by a shopper scanning the QR code on a garment. Ahead of the gate because
+// the caller is a customer in a shop with no account and no reason to make one -- the weakest
+// caller on this service, so it is also the most tightly limited. It reads only what is
+// already printed on the tag, and the shop's gateway key never leaves the server.
+router.use('/public/tryon', shopperTryOnPublicRoutes);
 
 // Global Authentication Enforcement for all business APIs
 router.use(authenticate);

@@ -20,27 +20,50 @@ import { serviceCredentialService, tryOnUsageService } from '../services/tryon';
 const router = Router();
 router.use(tenantMiddleware);
 
+/**
+ * The two try-on services, named for what the merchant actually gets.
+ *
+ * "Virtual Try-On" was fine when there was one. With two it is the ambiguous half of both
+ * names, and the difference that matters is WHO uses it: staff listing a garment, or a
+ * customer holding a phone.
+ */
+const SERVICES = [
+  {
+    id: 'CATALOG_TRYON' as const,
+    name: '4-View Catalog Try-On',
+    description: 'Turns one garment photograph into four catalogue views, from inside the app.'
+  },
+  {
+    id: 'SHOPPER_TRYON' as const,
+    name: 'Try-On',
+    description: 'Customers scan the QR code on a garment and see themselves wearing it.'
+  }
+];
+
 router.get('/', async (req, res, next) => {
   try {
     const clientId = (req as any).clientId as string;
-    const tryOn = await serviceCredentialService.describe(clientId, 'CATALOG_TRYON');
+    const described = await Promise.all(
+      SERVICES.map(s => serviceCredentialService.describe(clientId, s.id))
+    );
 
     res.json({
       success: true,
-      data: [
-        {
-          id: 'CATALOG_TRYON',
-          name: 'Virtual Try-On',
-          description: 'Generates four views of a garment from a single photograph.',
+      data: SERVICES.map((service, i) => {
+        const cred = described[i];
+        return {
+          id: service.id,
+          name: service.name,
+          description: service.description,
           // Active either on this shop's own key or on the platform's shared one. The merchant
           // does not need to know which, and saying so would invite a question they cannot act
           // on -- but the distinction is kept for the console.
-          active: tryOn.configured || tryOn.usingSharedFallback,
-          keyPrefix: tryOn.keyPrefix,
+          active: cred.configured || cred.usingSharedFallback,
+          keyPrefix: cred.keyPrefix,
           managedBy: 'Scaleezy',
-          lastUsedAt: tryOn.lastUsedAt
-        }
-      ]
+          lastUsedAt: cred.lastUsedAt
+        };
+      })
     });
   } catch (error) {
     next(error);
@@ -57,7 +80,10 @@ router.get('/', async (req, res, next) => {
 router.get('/tryon-usage', async (req, res, next) => {
   try {
     const clientId = (req as any).clientId as string;
-    res.json({ success: true, data: await tryOnUsageService.summary(clientId) });
+    // Defaults to the catalog service so the existing screen keeps working untouched; the
+    // shopper figures are asked for by name.
+    const service = req.query.service === 'SHOPPER_TRYON' ? 'SHOPPER_TRYON' : 'CATALOG_TRYON';
+    res.json({ success: true, data: await tryOnUsageService.summary(clientId, undefined, service) });
   } catch (error) {
     next(error);
   }
