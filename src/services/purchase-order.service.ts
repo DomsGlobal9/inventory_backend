@@ -150,9 +150,13 @@ export class PurchaseOrderService {
 
       // Count the supplier once, when the order is actually placed -- not every time something
       // sets the status to SENT. Pressing "Mark as Sent" twice, or emailing a copy of an order
-      // the supplier mislaid, used to add another order to their lifetime total each time. That
-      // number is what the supplier list sorts and reports on, so a merchant checking who they
-      // buy from most was reading a count of button presses.
+      // the supplier mislaid, used to add another order to their lifetime total each time.
+      //
+      // No screen reads these two columns today: supplier.service computes totalOrders,
+      // totalSpend and lastOrderDate live from the orders themselves, which is why nobody ever
+      // noticed. That makes this stored pair a quiet trap rather than a visible bug -- it looks
+      // authoritative, it is wrong, and the first screen or report to trust it inherits the
+      // error. Kept correct for whoever reaches for it next.
       if (status === PurchaseOrderStatus.SENT && po.status === PurchaseOrderStatus.DRAFT) {
         await tx.supplier.update({
           where: { id: po.supplierId },
