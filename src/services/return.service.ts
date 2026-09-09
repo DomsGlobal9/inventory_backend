@@ -16,7 +16,7 @@ export class ReturnService {
       if (!order) throw new Error('Sales order not found');
 
       // Create return record
-      const returnNumber = await generateSequentialCode(clientId, 'RET', 'SALES_RETURN');
+      const returnNumber = await generateSequentialCode(clientId, 'RET', 'SALES_RETURN', tx as any);
 
       const salesReturn = await tx.salesReturn.create({
         data: {

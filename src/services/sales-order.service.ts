@@ -49,7 +49,7 @@ export class SalesOrderService {
         });
         
         if (!existingCustomer) {
-          const customerCode = await generateSequentialCode(clientId, 'CUS', 'CUSTOMER');
+          const customerCode = await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any);
           existingCustomer = await tx.customer.create({
             data: {
               clientId,
