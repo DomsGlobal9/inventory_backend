@@ -118,7 +118,24 @@ export class InventoryService {
       (locationId ? stocks.filter(s => s.locationId === locationId) : stocks)
         .reduce((acc, s) => acc + s.quantity, 0);
 
-    const lowStockThreshold = (reorderLevel: number | null) => Math.max(reorderLevel || 0, 10);
+    /**
+     * When a variant counts as low.
+     *
+     * Was Math.max(reorderLevel || 0, 10), which quietly overruled the merchant whenever they
+     * set a reorder level below ten. Measured on a real tenant: four variants with a reorder
+     * level of 5 holding 4, 5, 6 and 8 pieces were ALL badged Low Stock on this screen, while
+     * the product page and the dashboard -- which compare against the reorder level itself --
+     * said two of them were. One product, two answers, on screens a shopkeeper reads minutes
+     * apart.
+     *
+     * The floor was presumably meant for variants with nothing set. That is what it does now:
+     * a reorder level that has been chosen is honoured exactly, and ten is only a fallback for
+     * variants that have never been given one. Anything else makes the setting a suggestion,
+     * and a low-stock badge on well-stocked items is how people learn to ignore the badge.
+     */
+    const DEFAULT_LOW_STOCK_THRESHOLD = 10;
+    const lowStockThreshold = (reorderLevel: number | null) =>
+      (reorderLevel && reorderLevel > 0) ? reorderLevel : DEFAULT_LOW_STOCK_THRESHOLD;
 
     let variants: any[];
     let total: number;
@@ -215,6 +232,12 @@ export class InventoryService {
         inventoryValue,
         status: v.product.status,
         inventoryStatus,
+        // Sent so the screen can work out the badge for itself after it has moved a quantity
+        // optimistically. Without it, receiving six pieces against a reorder level of five
+        // showed "Low Stock 10" until the refetch landed -- a row contradicting itself, on the
+        // screen whose whole job is telling you what is running out.
+        reorderLevel: v.reorderLevel ?? null,
+        lowStockThreshold: lowStockThreshold(v.reorderLevel),
         updatedAt: v.updatedAt
       };
     });
