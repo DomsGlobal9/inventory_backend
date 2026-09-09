@@ -123,6 +123,13 @@ app.listen(PORT, () => {
   // StorefrontDispatcherService replaces it; inventory_events stops growing from here.
   // The daily snapshot job existed but nothing ever called it, so the trend chart was fed
   // only by the old fabricating backfill.
-  SnapshotScheduler.start();
-  StorefrontDispatcherService.start();
+  // A second instance pointed at the same database must serve requests without also running
+  // the clock -- two dispatchers claim the same events and two schedulers write the same
+  // closing snapshots. See DISABLE_BACKGROUND_JOBS in config/env.
+  if (env.DISABLE_BACKGROUND_JOBS) {
+    console.log('   background jobs disabled for this instance (DISABLE_BACKGROUND_JOBS)');
+  } else {
+    SnapshotScheduler.start();
+    StorefrontDispatcherService.start();
+  }
 });

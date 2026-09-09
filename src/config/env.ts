@@ -34,6 +34,22 @@ const envSchema = z.object({
   // Render (and most PaaS) inject PORT at runtime; the default is for local only.
   PORT: z.string().transform(Number).default('4006'),
 
+  /**
+   * Turns off the snapshot and storefront-dispatch schedulers for this process.
+   *
+   * Needed to run a second copy of this service against the same database -- for local UI
+   * work against real data, or a one-off debugging instance. Without it that second copy
+   * competes with the deployed one: two dispatchers claiming the same events, two schedulers
+   * writing the same closing snapshots. Serving requests is safe to duplicate; running the
+   * clock is not.
+   *
+   * Off by default, so a deployment that never sets it keeps both jobs.
+   */
+  DISABLE_BACKGROUND_JOBS: z.preprocess(
+    (v) => v === 'true' || v === true,
+    z.boolean().default(false)
+  ),
+
   DATABASE_URL: z.string().url("DATABASE_URL must be a valid URL"),
   // Declared by prisma/schema.prisma as `directUrl`. Only migrations use it, so it is not
   // required to boot -- but without it `prisma migrate deploy` fails on the deploy host,
@@ -77,6 +93,21 @@ const envSchema = z.object({
   // Env rather than hardcoded because the QR is PRINTED: a tag on a garment outlives any
   // deploy, so the destination has to be changeable without reprinting every label.
   SHOPPER_TRYON_APP_URL: z.string().url().optional(),
+
+  // Origins a scan link may carry a shopper back to, comma separated.
+  //
+  // The try-on page shows a Back control, and for someone who arrived from one of our pages
+  // that has to return them to OUR page rather than into the try-on vendor's own storefront.
+  // The way back travels in the link as ?returnUrl=.
+  //
+  // An allow-list rather than "whatever the caller passes", because these links get PRINTED
+  // and mailed. A returnUrl accepted unchecked would make every product QR a redirector to
+  // anywhere, with our domain on the front of it -- and unlike a bug in a page, a bad tag on
+  // a garment cannot be rolled back.
+  //
+  // Defaults to FRONTEND_URL's origin, which is the common case: the shopper came from our
+  // own front end. Set explicitly when a storefront lives somewhere else too.
+  SHOPPER_TRYON_RETURN_ORIGINS: z.string().optional(),
 
   // --- previously unvalidated, read directly via process.env elsewhere ---------------
 
