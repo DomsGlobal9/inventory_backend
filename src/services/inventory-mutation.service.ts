@@ -122,11 +122,45 @@ export class InventoryMutationService {
       // 3. Update financial metrics on ProductVariant if it's an IN movement with cost
       let newAverageCost = Number(variant.averageCost);
       if (quantityDelta > 0 && unitCost !== undefined && unitCost !== null) {
-        const currentGlobalValue = Number(variant.inventoryValue);
         const incomingValue = quantityDelta * unitCost;
         const newGlobalQty = globalQty + quantityDelta;
+
+        // The best figure we hold for what one unit already on the shelf cost.
+        //
+        // inventoryValue is the stored total, but it is only ever maintained by movements
+        // that carried a cost. A merchant who typed a cost into the variant by hand has told
+        // us what their stock cost and left inventoryValue at zero -- weighting against the
+        // stored total alone would throw that answer away.
+        const knownUnitCost =
+          Number(variant.averageCost) ||
+          Number(variant.lastPurchaseCost ?? 0) ||
+          Number(variant.costPrice ?? 0);
+
+        const currentGlobalValue = Number(variant.inventoryValue) > 0
+          ? Number(variant.inventoryValue)
+          : globalQty * knownUnitCost;
         
-        newAverageCost = (currentGlobalValue + incomingValue) / newGlobalQty;
+        // Stock we have never known the cost of is UNVALUED, not free.
+        //
+        // Weighted average is the right formula, and the arithmetic below is what every
+        // inventory system does. What none of them do is let stock exist with no cost in the
+        // first place -- Tally, Zoho, QuickBooks and ERPNext all refuse an opening quantity
+        // without an opening rate, precisely because averaging against an unknown destroys
+        // the average.
+        //
+        // This product does allow it: adding a product asks for quantity and never for cost,
+        // so opening stock lands here with no unitCost and averageCost stays 0. The first real
+        // purchase is then averaged against it. A shop holding 50 sarees at "no cost" that
+        // received one more at 4,999 came out at 4,999 / 51 = 98 rupees a saree -- a number
+        // with no meaning, which then feeds margins, reports, and the platform's valuation.
+        //
+        // So when nothing about the cost is known -- no average, no last purchase price, no
+        // cost typed by hand -- the first real cost applies to the whole quantity instead of
+        // being diluted by units whose cost was never zero, only unrecorded. Once any cost is
+        // known, ordinary weighted average resumes and this branch never runs again.
+        newAverageCost = knownUnitCost === 0
+          ? unitCost
+          : (currentGlobalValue + incomingValue) / newGlobalQty;
         
         await tx.productVariant.update({
           where: { id: variantId },

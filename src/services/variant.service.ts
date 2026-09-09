@@ -75,7 +75,16 @@ export class VariantService {
     );
   }
 
-  private async applyInitialStock(clientId: string, variantId: string, quantity: number, locationIds: string[], createdBy: string) {
+  /**
+   * Books the quantity a variant is created with.
+   *
+   * unitCost is what makes this opening stock VALUED rather than merely counted. Without it
+   * the units land with no cost at all, and the first real purchase gets averaged against
+   * them -- 50 sarees at "no cost" plus one at 4,999 used to come out at 98 rupees each.
+   * Every serious inventory system refuses an opening quantity without an opening rate for
+   * exactly this reason; this passes on whatever cost the merchant did give.
+   */
+  private async applyInitialStock(clientId: string, variantId: string, quantity: number, locationIds: string[], createdBy: string, unitCost?: number | null) {
     if (quantity <= 0) return;
 
     // An empty locationIds list used to mean this loop ran zero times: the caller asked to
@@ -101,6 +110,9 @@ export class VariantService {
         quantityDelta: quantity,
         reason: 'INITIAL_STOCK',
         referenceType: 'VARIANT_CREATION',
+        // Only when it is a real figure. Passing 0 would assert that the stock cost nothing,
+        // which is the very thing this is here to avoid saying.
+        unitCost: unitCost && unitCost > 0 ? Number(unitCost) : undefined,
         createdBy
       });
     }
@@ -133,7 +145,7 @@ export class VariantService {
 
     if (data.quantity > 0) {
       const locationIds = await this.resolveInitialStockLocationIds(clientId, locationId);
-      await this.applyInitialStock(clientId, created.id, data.quantity, locationIds, clientId);
+      await this.applyInitialStock(clientId, created.id, data.quantity, locationIds, clientId, data.costPrice);
     }
 
     return created;
@@ -190,12 +202,16 @@ export class VariantService {
             size: v.size,
             colorName: v.colorName,
             hexCode: v.hexCode,
-            reorderLevel: v.reorderLevel
+            reorderLevel: v.reorderLevel,
+            // Accepted by bulkCreateVariantSchema and then silently dropped here, so a
+            // catalogue imported with costs and prices arrived with neither.
+            sellingPrice: v.sellingPrice,
+            costPrice: v.costPrice
           });
 
           if (v.quantity > 0) {
             try {
-              await this.applyInitialStock(clientId, created.id, v.quantity, locationIds, clientId);
+              await this.applyInitialStock(clientId, created.id, v.quantity, locationIds, clientId, v.costPrice);
             } catch (stockError: any) {
               // The variant row is already committed at this point -- the create and the
               // movement are not one transaction -- so this is NOT the same failure as "the

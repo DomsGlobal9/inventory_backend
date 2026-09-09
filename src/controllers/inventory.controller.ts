@@ -145,6 +145,34 @@ export class InventoryController {
     }
   }
 
+  /**
+   * Sets what stock already on hand cost. Changes no quantities.
+   *
+   * Under inventory:adjust rather than a permission of its own: restating what stock is worth
+   * is the same authority as changing how much of it there is, and both are already the line
+   * between someone who can move stock and someone who can only look at it.
+   */
+  async setCostOfStockOnHand(req: Request, res: Response, next: NextFunction) {
+    try {
+      const clientId = (req as any).clientId as string;
+      const { variantId, unitCost, notes } = req.body ?? {};
+      if (!variantId) {
+        return res.status(400).json({ success: false, message: 'variantId is required' });
+      }
+      const result = await valuationService.setCostOfStockOnHand(clientId, variantId, Number(unitCost), {
+        performedBy: (req as any).user?.name,
+        notes
+      });
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: `${result.unitsRevalued} unit${result.unitsRevalued === 1 ? '' : 's'} now valued at ${result.averageCost} each.`
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async transfer(req: Request, res: Response, next: NextFunction) {
     // Scaffolded for future multi-location support
     res.status(501).json({

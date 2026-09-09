@@ -171,6 +171,106 @@ export class ValuationService {
       items
     };
   }
+  /**
+   * Sets what the stock already on hand cost.
+   *
+   * The repair every inventory system has and this one did not: Odoo calls it Inventory
+   * Revaluation, ERPNext calls it Stock Reconciliation, Zoho and QuickBooks call it a value
+   * adjustment. They all exist because an opening cost is often a guess, and a guess has to be
+   * correctable without inventing a fake purchase order.
+   *
+   * It is needed here for a specific reason. Adding a product asks for quantity and never for
+   * cost, so stock has been arriving unvalued -- across this platform, hundreds of units are
+   * held with no cost figure of any kind. Those units cannot be repaired by buying more: a
+   * purchase adds to the average, it does not restate what is already on the shelf.
+   *
+   * This does not move any stock. The quantity before and after are identical and the movement
+   * rows are written with a delta of zero -- what changes is only what those units are said to
+   * be worth. Recorded as movements anyway, because restating the value of stock is exactly
+   * the kind of thing someone needs to be able to find later.
+   */
+  async setCostOfStockOnHand(
+    clientId: string,
+    variantId: string,
+    unitCost: number,
+    options: { performedBy?: string; notes?: string } = {}
+  ) {
+    if (!Number.isFinite(unitCost) || unitCost <= 0) {
+      throw Object.assign(
+        new Error('Enter what one unit cost. It has to be more than zero -- if the stock really was free, leave the cost blank instead.'),
+        { statusCode: 400 }
+      );
+    }
+
+    return prisma.$transaction(async (tx) => {
+      // Same lock discipline as applyMovement: a revaluation rewrites averageCost and
+      // inventoryValue from a sum across every location, so it must not run beside a
+      // receipt doing the same.
+      await tx.$queryRaw`SELECT id FROM inventory_product_variants WHERE id = ${variantId} FOR UPDATE`;
+
+      const variant = await tx.productVariant.findUnique({
+        where: { id: variantId },
+        include: { stocks: true, product: { select: { title: true } } }
+      });
+      if (!variant || variant.clientId !== clientId) {
+        throw Object.assign(new Error('Variant not found.'), { statusCode: 404 });
+      }
+
+      const previousAverageCost = Number(variant.averageCost);
+      const totalQty = variant.stocks.reduce((sum, st) => sum + st.quantity, 0);
+
+      await tx.productVariant.update({
+        where: { id: variantId },
+        data: {
+          averageCost: unitCost,
+          inventoryValue: totalQty * unitCost,
+          // Kept in step on purpose. costPrice is the figure a merchant typed and the one the
+          // variant table falls back to; leaving it disagreeing with a cost they just
+          // corrected is how the two drift apart and nobody knows which is true.
+          costPrice: unitCost,
+          lastCostUpdatedAt: new Date()
+        }
+      });
+
+      // One row per location holding stock, so the ledger for each place shows the restatement
+      // rather than it appearing only on whichever location happened to be first.
+      for (const st of variant.stocks) {
+        if (st.quantity === 0) continue;
+        await tx.inventoryTransaction.create({
+          data: {
+            clientId,
+            variantId,
+            locationId: st.locationId,
+            type: 'ADJUSTMENT',
+            reason: 'MANUAL_CORRECTION',
+            sku: variant.sku,
+            variantCode: variant.variantCode,
+            productTitle: variant.product?.title ?? null,
+            // Zero: nothing physically moved.
+            quantity: 0,
+            balanceBefore: st.quantity,
+            balanceAfter: st.quantity,
+            unitCost,
+            totalCost: st.quantity * unitCost,
+            referenceType: 'REVALUATION',
+            notes: options.notes
+              ?? `Cost of stock on hand set to ${unitCost} (was ${previousAverageCost || 'not recorded'}).`,
+            createdBy: options.performedBy ?? null
+          }
+        });
+      }
+
+      return {
+        variantId,
+        sku: variant.sku,
+        unitsRevalued: totalQty,
+        previousAverageCost,
+        averageCost: unitCost,
+        inventoryValue: totalQty * unitCost
+      };
+    }, { timeout: 30000 });
+  }
+
 }
 
 export const valuationService = new ValuationService();
