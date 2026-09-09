@@ -232,10 +232,19 @@ export class DayBookService {
     const inbound = new Map<string, DayBookLine>();
     const outbound = new Map<string, DayBookLine>();
     let transferUnits = 0;
+    // Units sold whose movement carried no cost, because none was ever recorded for that
+    // stock. They contribute nothing to cost of goods, so the profit below counts their whole
+    // selling price as profit. That is not a wrong sum, it is an undisclosed assumption -- and
+    // "you made 5,000 profit on a 5,000 sale" is a sentence a merchant will believe.
+    let unitsSoldWithoutCost = 0;
 
     for (const m of movements) {
       const units = m.quantity;
       const value = Math.abs(units) * Number(m.unitCost || 0);
+
+      if (m.reason === InventoryReason.SALE && units < 0 && !(Number(m.unitCost || 0) > 0)) {
+        unitsSoldWithoutCost += Math.abs(units);
+      }
 
       // A transfer is the same stock in two places at once: it leaves one location and
       // arrives at another.
@@ -415,6 +424,9 @@ export class DayBookService {
         revenue,
         costOfGoods,
         grossProfit: round(revenue - costOfGoods),
+        // How much of that profit is a guess. Nonzero means some of what was sold had no cost
+        // recorded, so its full selling price is sitting in the profit figure above.
+        unitsSoldWithoutCost,
         orders: countable
           .filter(d => d.salesOrder)
           .map(d => ({
