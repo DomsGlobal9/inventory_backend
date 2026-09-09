@@ -32,6 +32,7 @@ import {
   setClientTryOnLimit
 } from '../controllers/platform-admin.controller';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
+import { platformAuditLogger } from '../middleware/platform-audit.middleware';
 
 const authRouter = Router();
 authRouter.post('/login', login);
@@ -40,6 +41,9 @@ authRouter.get('/session', verifyPlatformAdmin, session);
 
 const consoleRouter = Router();
 consoleRouter.use(verifyPlatformAdmin);
+// Immediately after the identity check and before any route, so every console mutation is
+// recorded -- including ones added later by someone who has not read this file.
+consoleRouter.use(platformAuditLogger);
 consoleRouter.get('/clients', listClients);
 consoleRouter.post('/clients', onboardClient);
 consoleRouter.get('/users', listAllUsers);

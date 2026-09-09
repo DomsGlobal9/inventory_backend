@@ -26,7 +26,7 @@ export async function buildUnifiedAuditFeed(params: {
   // to fail in: forgetting it shows too much to an operator, not the reverse.
   const includeAdminSessions = params.includeAdminSessions !== false;
 
-  const [sessions, activity] = await Promise.all([
+  const [sessions, activity, adminActions] = await Promise.all([
     includeAdminSessions
       ? prisma.platformAdminSession.findMany({
           where: sessionWhere,
@@ -35,7 +35,24 @@ export async function buildUnifiedAuditFeed(params: {
           include: { platformAdmin: { select: { name: true, email: true } } }
         })
       : Promise.resolve([]),
-    prisma.auditLog.findMany({ where: activityWhere, take: limit, orderBy: { createdAt: 'desc' } })
+    prisma.auditLog.findMany({ where: activityWhere, take: limit, orderBy: { createdAt: 'desc' } }),
+    // Everything a platform admin did that was not entering an account: reading a password,
+    // suspending a shop, issuing a service key. Gated on the same flag as sessions, because it
+    // is the same category of information -- what Scaleezy staff did -- and belongs on the
+    // console rather than in a client's own activity feed.
+    //
+    // Filtered by targetId when a client feed asks, since a client's id is what these rows
+    // carry as their target. A row about a USER is matched through targetLabel, which carries
+    // the client id in brackets.
+    includeAdminSessions
+      ? prisma.platformAdminAction.findMany({
+          where: params.clientId
+            ? { OR: [{ targetId: params.clientId }, { targetLabel: { contains: params.clientId } }] }
+            : {},
+          take: limit,
+          orderBy: { createdAt: 'desc' }
+        })
+      : Promise.resolve([])
   ]);
 
   const userIds = [...new Set(activity.map(a => a.userId).filter((id): id is string => !!id))];
@@ -78,7 +95,18 @@ export async function buildUnifiedAuditFeed(params: {
     };
   });
 
-  return [...sessionEvents, ...activityEvents]
+  const adminActionEvents = adminActions.map(a => ({
+    id: `admin-action-${a.id}`,
+    type: 'ADMIN_ACTION' as const,
+    title: `${a.adminName} (Scaleezy) ${ADMIN_ACTION_LABELS[a.action] ?? a.action.replace(/_/g, ' ').toLowerCase()}${a.targetLabel ? ` -- ${a.targetLabel}` : ''}`,
+    clientId: a.targetType === 'CLIENT' ? a.targetId ?? '' : '',
+    actorName: a.adminName,
+    timestamp: a.createdAt,
+    action: a.action,
+    entityType: a.targetType
+  }));
+
+  return [...sessionEvents, ...activityEvents, ...adminActionEvents]
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
     .slice(0, limit);
 }
@@ -94,4 +122,31 @@ const ACTION_LABELS: Record<string, string> = {
   'TEAM:PASSWORD': "set a team member's password",
   'TEAM:VIEW': "viewed a team member's password",
   'USER:CHANGED_PASSWORD': 'changed their password',
+};
+
+/**
+ * What each console action reads as in the log.
+ *
+ * Written as plain statements of what happened, not softened. Someone scanning this list is
+ * usually scanning it because they are worried, and "viewed a shop owner's password in plain
+ * text" is the sentence that answers them -- "VIEW_PASSWORD" is not.
+ */
+const ADMIN_ACTION_LABELS: Record<string, string> = {
+  VIEW_PASSWORD: "viewed a user's password in plain text",
+  RESET_USER_PASSWORD: "set a new password for a user",
+  ONBOARD_CLIENT: 'created a new client',
+  SUSPEND_CLIENT: "changed a client's suspension",
+  DELETE_CLIENT: 'permanently deleted a client',
+  SET_SERVICE_KEY: 'issued a service key',
+  REVOKE_SERVICE_KEY: 'revoked a service key',
+  SET_TRYON_LIMIT: 'changed a try-on limit',
+  ASSUME_CLIENT: "entered a client's account",
+  END_ASSUMED_SESSION: 'left an assumed account',
+  CREATE_PLATFORM_ADMIN: 'created another platform admin',
+  SET_PLATFORM_ADMIN_STATUS: "changed a platform admin's status",
+  RESET_PLATFORM_ADMIN_PASSWORD: "reset a platform admin's password",
+  REPLY_SUPPORT_TICKET: 'replied to a support ticket',
+  UPDATE_SUPPORT_TICKET: 'changed a support ticket',
+  UPDATE_LEAD: 'updated a lead',
+  CONVERT_LEAD: 'converted a lead into a client'
 };

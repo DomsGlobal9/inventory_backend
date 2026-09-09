@@ -1014,6 +1014,45 @@ model PlatformAdminSession {
   @@map("platform_admin_sessions")
 }
 
+// Everything else a platform admin does, which until now left no trace at all.
+//
+// PlatformAdminSession above records entering a client's account. It was the only console
+// action that recorded anything: reading a shop owner's password in plain text, resetting it,
+// suspending a shop, deleting one outright, issuing or revoking a service key, changing a
+// billing limit and creating another platform admin all happened invisibly.
+//
+// The plaintext-password path is a deliberate feature -- a client whose only Super Admin
+// forgets their password has no other way back in. What makes a capability like that
+// acceptable is not that it is rare, it is that using it is recorded.
+//
+// Deliberately NOT the auditLog table, for two reasons. That one is keyed on clientId and
+// pruned to the last 30 rows per client, which is right for "what has my team been doing
+// lately" and wrong for a security trail. And it would vanish exactly when it is most needed:
+// deleting a client removes their rows, so the record of who deleted them would go with them.
+model PlatformAdminAction {
+  id String @id @default(uuid())
+
+  platformAdminId String @map("platform_admin_id")
+  // Copied, not joined. The trail has to still name who did it after that admin's own account
+  // is removed -- which is itself one of the actions recorded here.
+  adminEmail      String @map("admin_email")
+  adminName       String @map("admin_name")
+
+  action      String // VIEW_PASSWORD, SUSPEND, DELETE_CLIENT, SET_SERVICE_KEY, ...
+  // What it was done to, in words rather than ids where possible, for the same reason.
+  targetType  String  @map("target_type") // CLIENT, USER, PLATFORM_ADMIN, LEAD, SUPPORT_TICKET
+  targetId    String? @map("target_id")
+  targetLabel String? @map("target_label")
+
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([platformAdminId, createdAt])
+  @@index([action, createdAt])
+  @@index([createdAt])
+  @@map("platform_admin_actions")
+}
+
 model Role {
   id       String @id @default(uuid())
   clientId String @map("client_id")
