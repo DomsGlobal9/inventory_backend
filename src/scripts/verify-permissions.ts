@@ -15,7 +15,7 @@
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import {
   PERMISSIONS, ALL_PERMISSION_KEYS, expandPermissions, grants, getPermission, catalogueByGroup,
-  WILDCARD_PERMISSION
+  WILDCARD_PERMISSION, holdsEverything
 } from '../config/permissions';
 import { RBAC_DATA } from '../services/rbac-seed.service';
 
@@ -198,6 +198,32 @@ async function main() {
   }
   check('no seeded role grants a key that is not in the catalogue', bad.length === 0, bad.join(', '));
 
+  console.log('\nTHE OWNER WORKS WHETHER OR NOT THE DATABASE HAS MIGRATED');
+  // The failure this section exists for: the code was changed to require the '*' grant in the
+  // same breath as the migration that creates it, so a server pointed at a database that had
+  // not migrated yet refused every account owner -- an owner opening her own dashboard was
+  // told she did not have permission to see it. Code and data can never be required to change
+  // in the same instant, so both signals are accepted until the grant exists everywhere.
+
+  // After the migration.
+  check('an owner holding the grant passes, whatever their role is called',
+    holdsEverything(['*'], ['Owner']) && holdsEverything(['*'], []));
+
+  // Before it -- Akshaya today: a role named SUPER_ADMIN whose stored permissions are stale
+  // and do not even include dashboard:view.
+  const staleOwner = ['customer:view', 'inventory:view', 'sales_order:view'];
+  check('an owner who predates the grant still passes on the role name',
+    holdsEverything(staleOwner, ['SUPER_ADMIN']));
+  check('and can therefore still open the dashboard',
+    holdsEverything(staleOwner, ['SUPER_ADMIN']) || grants(staleOwner, 'dashboard:view'));
+
+  // The compatibility must not widen to anyone else.
+  check('a role with no grant and another name does not pass',
+    !holdsEverything(staleOwner, ['MANAGER']) && !holdsEverything(staleOwner, []));
+  check('an empty identity does not pass', !holdsEverything([], []) && !holdsEverything());
+  check('and staff are unaffected by any of it',
+    !holdsEverything([...RBAC_DATA.roles.SALES.permissions], ['SALES']));
+
   console.log('\nNOTHING ANYWHERE DECIDES AUTHORITY FROM A ROLE NAME');
   // Repo-wide, not just the middleware. This pattern was in four places at once: two in the
   // permission middleware, one deciding who may read a colleague's password, one deciding who
@@ -215,6 +241,12 @@ async function main() {
     }
   }
   check('no role-name check decides what an identity may do', offenders.length === 0, offenders.join(', '));
+
+  // The one legitimate home for the legacy name, and it must be marked as temporary so it is
+  // removed rather than becoming permanent by neglect.
+  const cat = readFileSync('src/config/permissions.ts', 'utf8');
+  check('the legacy owner name lives only in the catalogue, marked transitional',
+    cat.includes('LEGACY_OWNER_ROLE_NAMES') && cat.includes('TRANSITIONAL'));
 
   console.log('\nREADING A COLLEAGUE\'S PASSWORD LEAVES A TRAIL');
   check('the credential audit is its own service',

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { teamService } from '../services/team.service';
 import { recordCredentialDisclosure } from '../services/credential-audit';
-import { WILDCARD_PERMISSION } from '../config/permissions';
+import { holdsEverything } from '../config/permissions';
 
 /**
  * Whether this identity is the account owner.
@@ -12,8 +12,8 @@ import { WILDCARD_PERMISSION } from '../config/permissions';
  * and so that authority lives in one place: a row somebody granted.
  */
 function isSuperAdmin(req: Request) {
-  const permissions: string[] = (req as any).user?.permissions ?? [];
-  return permissions.includes(WILDCARD_PERMISSION);
+  const user = (req as any).user;
+  return holdsEverything(user?.permissions, user?.roles);
 }
 
 export const listMembers = async (req: Request, res: Response) => {

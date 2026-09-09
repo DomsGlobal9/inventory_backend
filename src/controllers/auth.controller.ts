@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { authCookieOptions, clearCookieOptions } from '../lib/cookies';
 import { encryptCredential } from '../lib/credentialEncryption';
-import { WILDCARD_PERMISSION, expandPermissions } from '../config/permissions';
+import { WILDCARD_PERMISSION, expandPermissions, holdsEverything } from '../config/permissions';
 
 const userWithRolesInclude = {
   roles: {
@@ -94,7 +94,14 @@ export const login = async (req: Request, res: Response) => {
         )
       )
     ) as string[];
-    const permissions = Array.from(expandPermissions(granted));
+    // If this owner predates the '*' grant, say so in the payload rather than leaving the
+    // browser to work it out from the role name. The server is going to treat them as the
+    // owner either way, so telling the client anything else would be a lie it then has to
+    // guess around -- and once the migration has run this line is simply never true.
+    const effective = holdsEverything(granted, roles) && !granted.includes(WILDCARD_PERMISSION)
+      ? [...granted, WILDCARD_PERMISSION]
+      : granted;
+    const permissions = Array.from(expandPermissions(effective));
 
     const token = AuthService.generateToken({
       userId: user.id,
@@ -175,8 +182,13 @@ export const session = async (req: Request, res: Response) => {
         email: user.email,
         roles: user.roles, // from normalized req.user (UserWithRoles.roles is the array field — there is no singular `role`)
         // Expanded, for the same reason as at login: the browser has no implication logic, so
-        // it must be told what the grants actually confer, not only what was ticked.
-        permissions: Array.from(expandPermissions(user.permissions || [])) // Inventory RBAC, not module entitlements
+        // it must be told what the grants actually confer, not only what was ticked -- plus the
+        // owner's '*' where it is still carried by role name rather than by a grant.
+        permissions: Array.from(expandPermissions(
+          holdsEverything(user.permissions, user.roles) && !(user.permissions || []).includes(WILDCARD_PERMISSION)
+            ? [...(user.permissions || []), WILDCARD_PERMISSION]
+            : (user.permissions || [])
+        )) // Inventory RBAC, not module entitlements
       },
       client: {
         id: user.clientId
@@ -213,8 +225,7 @@ export const changeMyPassword = async (req: Request, res: Response) => {
     // The account owner, identified by the '*' grant rather than by the role NAME this used to
     // compare against. Same people, but the authority is now a row that can be seen and moved,
     // and a shop that renames its owner role keeps working.
-    const permissions: string[] = authUser?.permissions ?? [];
-    if (!permissions.includes(WILDCARD_PERMISSION)) {
+    if (!holdsEverything(authUser?.permissions, authUser?.roles)) {
       return res.status(403).json({
         success: false,
         message: 'Only a Super Admin can change their own password. Ask an admin to set yours.'

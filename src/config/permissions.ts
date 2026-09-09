@@ -163,6 +163,51 @@ export const PERMISSIONS: readonly PermissionDef[] = [
 export const WILDCARD_PERMISSION = '*';
 export const WILDCARD_LABEL = 'Everything (account owner)';
 
+/**
+ * Role names that were the account owner's authority before the '*' grant existed.
+ *
+ * TRANSITIONAL. Delete this, and holdsEverything's second half, once every database has run
+ * 20260909210000_split_money_permissions -- after which every owner holds '*' as a row.
+ *
+ * It exists because the alternative is a deployment that only works if the data changed first.
+ * Removing the name check and adding the grant in one step meant a server pointed at a database
+ * that had not migrated yet refused every account owner on the platform, which is exactly what
+ * happened: an owner opening the dashboard was told she did not have permission to see it.
+ * Code and data cannot be required to change in the same instant -- a rollback, a failed
+ * migration or a developer's local server will always put them out of step.
+ *
+ * So: accept both signals, migrate, then remove this. During the window the exposure is
+ * identical to what shipped for months, and it ends when the migration runs.
+ */
+export const LEGACY_OWNER_ROLE_NAMES: readonly string[] = ['SUPER_ADMIN'];
+
+let warnedAboutLegacyOwner = false;
+
+/**
+ * Whether this identity is the account owner, and may do anything.
+ *
+ * The answer is the '*' grant. The role name is accepted only until the migration that issues
+ * that grant has run everywhere -- and says so, loudly, once per process, so the window is
+ * visible rather than permanent.
+ */
+export function holdsEverything(
+  permissions: readonly string[] = [],
+  roleNames: readonly string[] = []
+): boolean {
+  if (permissions.includes(WILDCARD_PERMISSION)) return true;
+
+  const legacy = roleNames.some(name => LEGACY_OWNER_ROLE_NAMES.includes(name));
+  if (legacy && !warnedAboutLegacyOwner) {
+    warnedAboutLegacyOwner = true;
+    console.warn(
+      '[permissions] An account owner was authorised by ROLE NAME because their role does not ' +
+      "hold the '*' grant. This database has not run 20260909210000_split_money_permissions. " +
+      'Apply it: npx prisma migrate deploy'
+    );
+  }
+  return legacy;
+}
+
 /** Fast lookup, built once. */
 const BY_KEY = new Map(PERMISSIONS.map(p => [p.key, p]));
 

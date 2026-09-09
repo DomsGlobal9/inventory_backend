@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction, RequestHandler } from 'express';
-import { grants, getPermission } from '../config/permissions';
+import { grants, getPermission, holdsEverything } from '../config/permissions';
 
 export const requirePermission = (requiredPermission: string): RequestHandler => {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -10,13 +10,16 @@ export const requirePermission = (requiredPermission: string): RequestHandler =>
         return res.status(401).json({ success: false, message: 'Unauthorized: User context missing' });
       }
 
-      // There is deliberately no bypass by role name here.
+      // The account owner passes everything.
       //
-      // This used to read `user.roles.includes('SUPER_ADMIN')` and return next(). Authority for
-      // most of the users on the platform was therefore a string, their stored permissions were
-      // never consulted, and any role that came to be named SUPER_ADMIN held everything. Total
-      // access is now the '*' grant, which the check below honours like any other -- so it can
-      // be seen in the database, audited, and taken away.
+      // This used to be `user.roles.includes('SUPER_ADMIN')` written out here, and that was the
+      // whole of authorisation for most of the platform's users -- their stored permissions were
+      // never read at all. It is now the '*' grant, asked through one helper that also honours
+      // the old role name until every database has issued that grant. When that is done, the
+      // second half of holdsEverything goes and this line keeps working unchanged.
+      if (holdsEverything(user.permissions, user.roles)) {
+        return next();
+      }
 
       // Asked of the catalogue, not of the raw list, so implication happens in one place.
       //
