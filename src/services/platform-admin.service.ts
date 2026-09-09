@@ -29,13 +29,25 @@ export class PlatformAdminService {
   // 500s. It degraded linearly with every client onboarded -- i.e. it got worse precisely
   // as the product succeeded. Now it is 6 grouped queries regardless of tenant count.
   async listClients() {
-    const [tenants, userStats, productCounts, activeProductCounts, alertCounts, valueSums, superAdmins] =
+    const [tenants, userStats, activeUserStats, productCounts, activeProductCounts, alertCounts, valueSums, superAdmins] =
       await Promise.all([
         prisma.user.findMany({ distinct: ['clientId'], select: { clientId: true } }),
         prisma.user.groupBy({
           by: ['clientId'],
           _count: { _all: true },
           _max: { lastLoginAt: true, lastActiveAt: true }
+        }),
+        // Suspension is not a stored flag on this platform -- it is "every account in the
+        // workspace is deactivated" -- so the only way to see it is to count the live ones.
+        // getClientSummary already does this for the single-client page. The LIST did not,
+        // which meant a suspended tenant was indistinguishable from a working one on the very
+        // screen whose job is monitoring every tenant at a glance: same card, same "In
+        // Progress" badge (which is onboarding, not account status), same user count.
+        // Verified by suspending a tenant and finding the word "suspend" nowhere on the page.
+        prisma.user.groupBy({
+          by: ['clientId'],
+          where: { status: 'ACTIVE' as any },
+          _count: { _all: true }
         }),
         prisma.product.groupBy({
           by: ['clientId'],
@@ -69,6 +81,7 @@ export class PlatformAdminService {
       new Map(rows.map(r => [r.clientId, r]));
 
     const users = byClient(userStats);
+    const activeUsers = byClient(activeUserStats);
     const products = byClient(productCounts);
     const activeProducts = byClient(activeProductCounts);
     const alerts = byClient(alertCounts);
@@ -82,9 +95,17 @@ export class PlatformAdminService {
       const activeProductCount = activeProducts.get(clientId)?._count._all ?? 0;
       const admin = admins.get(clientId);
 
+      const userCount = users.get(clientId)?._count._all ?? 0;
+      const activeUserCount = activeUsers.get(clientId)?._count._all ?? 0;
+
       return {
         clientId,
-        userCount: users.get(clientId)?._count._all ?? 0,
+        userCount,
+        activeUserCount,
+        // A workspace with people in it and none of them able to sign in is a suspended one.
+        // Guarded on userCount so a brand-new tenant with no accounts yet is not labelled
+        // suspended before anybody has been invited to it.
+        suspended: userCount > 0 && activeUserCount === 0,
         lastLoginAt: users.get(clientId)?._max.lastLoginAt ?? null,
         lastActiveAt: users.get(clientId)?._max.lastActiveAt ?? null,
         productCount,
