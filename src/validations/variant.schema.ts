@@ -24,7 +24,12 @@ export const updateVariantSchema = createVariantSchema.partial();
 export const bulkCreateVariantSchema = z.object({
   variants: z.array(createVariantSchema).min(1, "At least one variant is required"),
   locationId: z.string().optional(),
-  applyToAllLocations: z.boolean().optional().default(false)
+  applyToAllLocations: z.boolean().optional().default(false),
+  // Who these are bought from. Optional -- plenty of stock is made in-house or has no
+  // supplier worth recording -- but until now there was no way to say it at all: the link
+  // was only ever created as a side effect of raising a purchase order, so every supplier's
+  // item list stayed empty until after you had already ordered from them.
+  supplierId: z.string().optional()
 });
 
 export const bulkUpdateVariantSchema = z.object({

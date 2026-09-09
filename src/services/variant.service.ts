@@ -152,7 +152,7 @@ export class VariantService {
     return created;
   }
 
-  async bulkCreateVariants(productId: string, clientId: string, variants: any[], locationId?: string, applyToAllLocations?: boolean) {
+  async bulkCreateVariants(productId: string, clientId: string, variants: any[], locationId?: string, applyToAllLocations?: boolean, supplierId?: string) {
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
 
@@ -254,6 +254,43 @@ export class VariantService {
     // `adjusted` is returned so the caller can say which SKU it actually used. A variant that
     // silently carries a different code than the one the user watched it be given is the same
     // class of problem as losing it -- smaller, but the same kind.
+    // Record who supplies these, if the merchant said.
+    //
+    // The same link createPO makes when an order is raised, made at the point the merchant
+    // actually knows the answer instead of waiting until they order. skipDuplicates for the
+    // same reason it uses it: an existing link carries negotiated terms -- agreed price, lead
+    // time, the supplier's own SKU -- and must not be overwritten by whatever a later screen
+    // happened to know.
+    //
+    // Deliberately non-fatal. Failing to record a relationship must never lose the variants
+    // the merchant just created.
+    const madeVariants = results
+      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
+      .map(r => r.value?.variant)
+      .filter(Boolean);
+
+    if (supplierId && madeVariants.length > 0) {
+      try {
+        // Checked, not trusted: a supplierId from another tenant would otherwise write rows
+        // linking this shop's variants to a supplier it cannot see.
+        const supplier = await prisma.supplier.findFirst({ where: { id: supplierId, clientId } });
+        if (supplier) {
+          await prisma.supplierProduct.createMany({
+            data: madeVariants.map((v: any) => ({
+              clientId,
+              supplierId,
+              variantId: v.id,
+              costPrice: v.costPrice ?? null,
+              notes: 'Linked when the product was added.'
+            })),
+            skipDuplicates: true
+          });
+        }
+      } catch (error) {
+        console.error('[bulkCreateVariants] could not link the new variants to their supplier', error);
+      }
+    }
+
     return { created, skipped, errors, adjusted, stockNotApplied };
   }
 
@@ -462,6 +499,16 @@ export class VariantService {
         // Needed by the Purchase Order screen to warn when an entered PO cost would
         // shrink the margin against what this variant actually sells for.
         sellingPrice: variant.sellingPrice ? Number(variant.sellingPrice) : null,
+        // What it ACTUALLY sells for, which is the variant's own price when it has one and
+        // otherwise the product's. Adding a product asks for a single Base Price and never
+        // for a per-variant price, so 282 of the 344 variants on this platform have no
+        // sellingPrice of their own -- and every margin warning that read sellingPrice alone
+        // stayed silent for them. That included a saree costing 45,000 being bought against a
+        // 45,666 price, which is the exact case the warning exists for.
+        effectiveSellingPrice:
+          variant.sellingPrice ? Number(variant.sellingPrice)
+          : variant.product?.basePrice ? Number(variant.product.basePrice)
+          : null,
         averageCost: Number(variant.averageCost || 0),
         isLowStock: stock <= reorderLevel
       };

@@ -37,7 +37,8 @@ export class VariantController {
       const locationId = validatedData.locationId || (req as any).locationId;
 
       const result = await variantService.bulkCreateVariants(
-        productId, clientId, validatedData.variants, locationId, validatedData.applyToAllLocations
+        productId, clientId, validatedData.variants, locationId,
+        validatedData.applyToAllLocations, validatedData.supplierId
       );
       res.status(201).json({ success: true, data: result });
     } catch (error) {

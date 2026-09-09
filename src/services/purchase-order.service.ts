@@ -122,7 +122,10 @@ export class PurchaseOrderService {
               select: {
                 stocks: { select: { quantity: true } },
                 product: {
-                  select: { title: true }
+                  // basePrice as well as title: a reopened Draft's margin warning compares the
+                  // PO cost against what the item sells for, and most variants carry no
+                  // sellingPrice of their own -- the product's price is the real one.
+                  select: { title: true, basePrice: true }
                 },
                 // Needed so a reopened Draft PO can still show the margin warning --
                 // previously omitted, which silently disabled it for anything but a
