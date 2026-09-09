@@ -276,9 +276,7 @@ Until they are set, treat every "we have emailed them" expectation in the produc
 
 ## 10. Regression — the automated suites
 
-27 suites, run one at a time because they share a tenant.
-
-Every suite, run one at a time because they share a tenant.
+40 suites, run one at a time because they share a tenant.
 
 | Suite | Result |
 |---|---|
@@ -297,7 +295,7 @@ Every suite, run one at a time because they share a tenant.
 | verify-location-flows | **18 / 18** |
 | verify-mail | **2 / 2** |
 | verify-new-client-e2e | **67 / 67** |
-| verify-one-inventory-value | **4 / 4** |
+| verify-one-inventory-value | **6 / 6** |
 | verify-pool-tuning | **8 / 8** |
 | verify-procurement-e2e | **24 / 24** |
 | verify-reorder | **23 / 23** |
@@ -313,6 +311,12 @@ Every suite, run one at a time because they share a tenant.
 | verify-tryon-e2e | **27 / 27** |
 | verify-tryon-usage | **18 / 18** |
 | verify-variant-sku | **11 / 11** |
+| verify-alert-engine | **18 / 18** |
+| verify-console-screens | **15 / 15** — every console screen, all 42 client overviews |
+| verify-platform-audit | **19 / 19** — through the real route and middleware |
+| verify-po-email | **18 / 18** — sends two real emails |
+| verify-sell-and-return | **26 / 26** |
+| verify-support-and-errors | **11 / 11** |
 | verify-auth-signup-leads | 16 / 52 — every failure is a 429 rate limit or a 401 from platform-admin credentials this machine does not hold. Not a product failure; needs a fresh rate-limit window. |
 
 **Two things learned about running them**, both worth writing down:
@@ -324,6 +328,34 @@ Every suite, run one at a time because they share a tenant.
   - **They are slow because the database is far away**, not because they are heavy.
     verify-dashboard-all-tenants takes 35 minutes for 40 tenants x 7 panels; the work is
     trivial and the waiting is a second per query. See §7.
+
+---
+
+## 10a. What this pass found
+
+Everything below was found by writing the test, not by suspecting the bug.
+
+| Found | Why it mattered | State |
+|---|---|---|
+| A purchase order could not be emailed at all | the only ways out were WhatsApp, which needs the merchant to press send, and "Mark as Sent", which delivers nothing. A supplier with an email and no WhatsApp could not be sent an order from the app | Fixed |
+| `supplier.totalOrders` counted button presses | every call that set SENT incremented it, so pressing "Mark as Sent" twice counted two orders. That number is what the supplier list sorts and reports on | Fixed |
+| Confirming an action showed nothing was happening | ConfirmModal called `onConfirm()` without awaiting and closed immediately. On a backend a second away, the modal vanished and the person watched an unchanged screen for one to three seconds. The usual reaction is to press it again | Fixed |
+| A failed confirmed action looked like a successful one | not awaiting meant the rejection arrived after the modal had already closed | Fixed |
+| Sixteen console actions left no trace | including reading a shop owner's password in plain text, resetting it, suspending a shop, deleting one, and issuing or revoking a service key. The audit-logger middleware keys every row on `req.user.clientId`, and a platform admin has none — every console mutation fell through it | Fixed |
+| Selling and returning stock had no test | the longest path in the product and the one a shop is judged on | 26 checks added |
+| Six console screens had never been exercised | Users, Leads, Onboarding, Inventory Health, Errors, Support | 15 checks added |
+
+### The speed question, answered with numbers
+
+Measured against production, six samples: `/health` (no database) averages **0.30s**;
+`/ready` (one query) averages **1.30s**. **One database round trip costs the app ~1.0s.**
+
+Profiling the Clients screen from a laptop, every query behind it took the same ~2130ms —
+including `SELECT 1`. Warm, `listClients` costs **exactly one round trip**. Its seven queries
+already run in a single `Promise.all`; there is no N+1 left to find.
+
+So a console screen is not slow because of the code. It is slow because every query crosses
+the Pacific, and the only fix is the one already in §11.
 
 ---
 
