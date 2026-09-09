@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { generateUniqueCode, generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
+import { valuationService } from './valuation.service';
 
 /**
  * How many rows of a bulk import are worked on at once.
@@ -396,8 +397,40 @@ export class VariantService {
     });
   }
 
+  /**
+   * Updates a variant, and treats a cost typed onto unvalued stock as what it plainly means.
+   *
+   * A merchant with fifty sarees on the shelf who types 3,000 into the cost box is saying
+   * "these cost me three thousand each". Storing that in costPrice alone left the stock itself
+   * still carrying no value, so the shop's inventory was worth nothing until the next purchase
+   * -- and the next purchase then had nothing to average against.
+   *
+   * Only when no cost is known yet. A variant with a real averageCost has been costed by
+   * actual receipts, and a typed figure must not quietly overwrite what was really paid;
+   * correcting that is a deliberate revaluation (valuationService.setCostOfStockOnHand),
+   * not a side effect of editing a field.
+   */
   async updateVariant(id: string, clientId: string, data: any) {
-    return variantRepository.updateSafe(id, clientId, data);
+    const updated = await variantRepository.updateSafe(id, clientId, data);
+
+    const typedCost = Number(data?.costPrice ?? 0);
+    if (typedCost > 0) {
+      const current = await prisma.productVariant.findFirst({
+        where: { id, clientId },
+        select: { averageCost: true, lastPurchaseCost: true, stocks: { select: { quantity: true } } }
+      });
+      const neverCosted =
+        Number(current?.averageCost ?? 0) === 0 && Number(current?.lastPurchaseCost ?? 0) === 0;
+      const qty = (current?.stocks ?? []).reduce((sum, st) => sum + st.quantity, 0);
+
+      if (neverCosted && qty > 0) {
+        await valuationService.setCostOfStockOnHand(clientId, id, typedCost, {
+          notes: `Cost of stock on hand set from the variant's cost price.`
+        });
+      }
+    }
+
+    return updated;
   }
 
   async deleteVariant(id: string, clientId: string) {

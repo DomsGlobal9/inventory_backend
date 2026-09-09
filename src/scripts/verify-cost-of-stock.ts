@@ -141,6 +141,26 @@ async function main() {
     check('which is nowhere near the diluted figure', typedAfter.averageCost > 3000,
       `${typedAfter.averageCost} (dilution would have given ${(4999 / 51).toFixed(2)})`);
 
+    console.log('\nTYPING A COST ONTO UNVALUED STOCK VALUES THAT STOCK');
+    // What a merchant plainly means. Someone with fifty sarees who types 3,000 into the cost
+    // box is saying these cost me three thousand each -- not merely filling in a label.
+    const viaField: any = await variantService.createVariant(product.id, CLIENT, {
+      sku: `COST-E-${Date.now()}`, size: 'Free', colorName: 'Gold', quantity: 20, reorderLevel: 5
+    }, location.id);
+    await variantService.updateVariant(viaField.id, CLIENT, { costPrice: 3500 });
+    const field = await costOf(viaField.id);
+    check('the stock is now valued at what they typed', field.averageCost === 3500, String(field.averageCost));
+    check('and the shop is worth 20 x 3500', field.inventoryValue === 70000, String(field.inventoryValue));
+
+    console.log('\nBUT IT DOES NOT OVERWRITE A COST REALLY PAID');
+    // A variant costed by actual receipts must not have that quietly replaced by a typed
+    // figure. Correcting a real cost is a deliberate revaluation, not a side effect of
+    // editing a field.
+    await variantService.updateVariant(costed.id, CLIENT, { costPrice: 99 });
+    const stillReal = await costOf(costed.id);
+    check('the receipted average survives a typed cost',
+      Math.abs(stillReal.averageCost - 190000 / 60) < 0.01, String(stillReal.averageCost));
+
     // --- REPAIRING WHAT IS ALREADY WRONG ------------------------------------
     console.log('\nSTOCK ALREADY HELD WITH NO COST CAN BE PUT RIGHT');
     // No purchase order can fix this: buying more adds to the average, it does not restate
