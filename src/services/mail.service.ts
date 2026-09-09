@@ -172,6 +172,104 @@ export class MailService {
       kind: 'low-stock-digest'
     });
   }
+  /**
+   * Sends a purchase order to the supplier who has to fill it.
+   *
+   * Until now the only way to get an order out of this app was "Send on WhatsApp", which opens
+   * WhatsApp with the order pre-filled and relies on the merchant pressing send, and then on
+   * them remembering to come back and press "Mark as Sent". A supplier with an email address
+   * and no WhatsApp number could not be sent an order from here at all -- the merchant retyped
+   * it into their own mail client, which is where transcription mistakes come from.
+   *
+   * The whole order goes in the body rather than as an attachment. A supplier reading this on a
+   * phone should not have to open a PDF to find out how many pieces to pack, and a plain body
+   * is also what they can reply to and quote back.
+   */
+  async sendPurchaseOrder(input: {
+    to: string;
+    supplierName: string;
+    poNumber: string;
+    shopName: string;
+    orderedByName?: string;
+    expectedDeliveryDate?: Date | null;
+    notes?: string | null;
+    items: { title: string; sku: string; variantLabel?: string; quantity: number; unitPrice: number }[];
+    total: number;
+  }): Promise<SendResult> {
+    if (input.items.length === 0) return { sent: false, reason: 'This order has no items.' };
+
+    const money = (n: number) =>
+      `Rs ${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const deliverBy = input.expectedDeliveryDate
+      ? new Date(input.expectedDeliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+      : null;
+
+    const text = [
+      `Hello ${input.supplierName},`,
+      '',
+      `Please supply the following against purchase order ${input.poNumber}.`,
+      '',
+      ...input.items.map(i =>
+        `  ${i.quantity} x ${i.title}${i.variantLabel ? ` (${i.variantLabel})` : ''} [${i.sku}] @ ${money(i.unitPrice)} = ${money(i.quantity * i.unitPrice)}`
+      ),
+      '',
+      `Order total: ${money(input.total)}`,
+      ...(deliverBy ? ['', `Required by: ${deliverBy}`] : []),
+      ...(input.notes ? ['', `Notes: ${input.notes}`] : []),
+      '',
+      `Ordered by ${input.orderedByName ? `${input.orderedByName}, ` : ''}${input.shopName}.`,
+      `Please reply to this email quoting ${input.poNumber} to confirm.`
+    ].join('\n');
+
+    const rows = input.items.map(i => `
+    <tr>
+      <td style="padding:8px 10px;border-bottom:1px solid #eeeeea">
+        ${escapeHtml(i.title)}${i.variantLabel ? `<div style="color:#6b6b66;font-size:13px">${escapeHtml(i.variantLabel)}</div>` : ''}
+        <div style="color:#9a9a94;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(i.sku)}</div>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eeeeea;text-align:right;white-space:nowrap">${i.quantity}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eeeeea;text-align:right;white-space:nowrap">${escapeHtml(money(i.unitPrice))}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eeeeea;text-align:right;white-space:nowrap">${escapeHtml(money(i.quantity * i.unitPrice))}</td>
+    </tr>`).join('');
+
+    const html = `
+<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;color:#1a1a1a;line-height:1.6">
+  <p>Hello ${escapeHtml(input.supplierName)},</p>
+  <p>Please supply the following against purchase order <strong>${escapeHtml(input.poNumber)}</strong>.</p>
+  <table style="border-collapse:collapse;width:100%;margin:16px 0;font-size:14px">
+    <thead>
+      <tr style="background:#f6f6f4">
+        <th style="padding:8px 10px;text-align:left;border-bottom:1px solid #e5e5e0">Item</th>
+        <th style="padding:8px 10px;text-align:right;border-bottom:1px solid #e5e5e0">Qty</th>
+        <th style="padding:8px 10px;text-align:right;border-bottom:1px solid #e5e5e0">Rate</th>
+        <th style="padding:8px 10px;text-align:right;border-bottom:1px solid #e5e5e0">Amount</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+    <tfoot>
+      <tr>
+        <td colspan="3" style="padding:10px;text-align:right;font-weight:600">Order total</td>
+        <td style="padding:10px;text-align:right;font-weight:600;white-space:nowrap">${escapeHtml(money(input.total))}</td>
+      </tr>
+    </tfoot>
+  </table>
+  ${deliverBy ? `<p><strong>Required by:</strong> ${escapeHtml(deliverBy)}</p>` : ''}
+  ${input.notes ? `<p><strong>Notes:</strong> ${escapeHtml(input.notes)}</p>` : ''}
+  <p style="color:#6b6b66;font-size:13px">
+    Ordered by ${input.orderedByName ? `${escapeHtml(input.orderedByName)}, ` : ''}${escapeHtml(input.shopName)}.<br>
+    Please reply to this email quoting ${escapeHtml(input.poNumber)} to confirm.
+  </p>
+</div>`.trim();
+
+    return sendMail({
+      to: input.to,
+      subject: `Purchase order ${input.poNumber} from ${input.shopName}`,
+      text,
+      html,
+      kind: 'purchase-order'
+    });
+  }
+
 }
 
 export const mailService = new MailService();

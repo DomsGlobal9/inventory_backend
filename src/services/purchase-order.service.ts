@@ -2,6 +2,8 @@ import { PurchaseOrderStatus, InventoryReason, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
+import { mailService } from './mail.service';
+import { getShopSettings } from '../lib/clientSettings';
 
 /**
  * Every rejection below carries an explicit statusCode. Thrown bare they inherited
@@ -140,11 +142,15 @@ export class PurchaseOrderService {
       // Scope the lookup by clientId too — otherwise a caller could pass another
       // tenant's PO id and corrupt that tenant's supplier counters below even
       // though the final update (correctly scoped) would go on to 404.
-      const po = await tx.purchaseOrder.findFirst({ where: { id, clientId }, select: { supplierId: true } });
+      const po = await tx.purchaseOrder.findFirst({ where: { id, clientId }, select: { supplierId: true, status: true } });
       if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
 
-      // If sent, we might want to update the supplier's last order date & total orders
-      if (status === PurchaseOrderStatus.SENT) {
+      // Count the supplier once, when the order is actually placed -- not every time something
+      // sets the status to SENT. Pressing "Mark as Sent" twice, or emailing a copy of an order
+      // the supplier mislaid, used to add another order to their lifetime total each time. That
+      // number is what the supplier list sorts and reports on, so a merchant checking who they
+      // buy from most was reading a count of button presses.
+      if (status === PurchaseOrderStatus.SENT && po.status === PurchaseOrderStatus.DRAFT) {
         await tx.supplier.update({
           where: { id: po.supplierId },
           data: {
@@ -271,6 +277,77 @@ export class PurchaseOrderService {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });
   }
+  /**
+   * Emails the order to the supplier, and only then records it as sent.
+   *
+   * The order of those two matters. "Mark as Sent" already existed and is honest about what it
+   * does -- it records that YOU sent it somewhere else. This one does the sending, so the
+   * status only moves if the message actually left. A status that says SENT when the email
+   * bounced is worse than no email feature at all: the merchant stops chasing it.
+   */
+  async emailToSupplier(clientId: string, id: string, orderedByName?: string) {
+    const po = await prisma.purchaseOrder.findFirst({
+      where: { id, clientId },
+      include: { supplier: true, items: true }
+    });
+    if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
+
+    // Said plainly, and early, because the fix is on a different screen. "Failed to send" would
+    // leave the merchant retrying a button that can never work.
+    const to = po.supplier?.email?.trim();
+    if (!to) {
+      throw Object.assign(
+        new Error(`${po.supplier?.name || 'This supplier'} has no email address. Add one on the supplier, then send again.`),
+        { statusCode: 400 }
+      );
+    }
+    if (po.items.length === 0) {
+      throw Object.assign(new Error('This order has no items to send.'), { statusCode: 400 });
+    }
+    if (!mailService.isConfigured()) {
+      throw Object.assign(
+        new Error('Email is not set up on this server yet. Use "Send on WhatsApp" instead.'),
+        { statusCode: 503 }
+      );
+    }
+
+    const { businessName } = await getShopSettings(clientId);
+
+    const result = await mailService.sendPurchaseOrder({
+      to,
+      supplierName: po.supplier.name,
+      poNumber: po.poNumber,
+      shopName: businessName || 'Your customer',
+      orderedByName,
+      expectedDeliveryDate: po.expectedDeliveryDate,
+      notes: po.notes,
+      items: po.items.map(i => ({
+        title: i.productTitle,
+        sku: i.sku,
+        variantLabel: [i.color, i.size].filter(Boolean).join(' / ') || undefined,
+        quantity: i.orderedQty,
+        unitPrice: Number(i.unitPrice)
+      })),
+      total: po.items.reduce((sum, i) => sum + i.orderedQty * Number(i.unitPrice), 0)
+    });
+
+    if (!result.sent) {
+      throw Object.assign(
+        new Error(result.reason || 'The email could not be sent. The order has not been marked as sent.'),
+        { statusCode: 502 }
+      );
+    }
+
+    // Only a Draft advances. Re-sending a copy of an order already in flight is a normal thing
+    // to do -- the supplier lost it, or asked for it again -- and it must not roll a
+    // part-received order back to SENT or count the supplier a second time.
+    if (po.status === PurchaseOrderStatus.DRAFT) {
+      await this.updatePOStatus(clientId, id, PurchaseOrderStatus.SENT);
+    }
+
+    return { sent: true, to, poNumber: po.poNumber, statusChanged: po.status === PurchaseOrderStatus.DRAFT };
+  }
+
 }
 
 export const purchaseOrderService = new PurchaseOrderService();

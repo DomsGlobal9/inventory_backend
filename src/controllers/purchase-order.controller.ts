@@ -83,3 +83,19 @@ export const receiveGoods = async (req: Request, res: Response, next: NextFuncti
     next(error);
   }
 };
+
+export const emailPOToSupplier = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clientId = getClientId(req, res);
+    if (!clientId) return;
+    const id = req.params.id as string;
+    // Who pressed it, so the supplier knows which person at the shop to reply to. Read from
+    // the verified session, never from the body -- otherwise anyone could sign an order with
+    // a colleague's name.
+    const orderedByName = (req as any).user?.name as string | undefined;
+    const data = await purchaseOrderService.emailToSupplier(clientId, id, orderedByName);
+    res.json({ success: true, data, message: `Order emailed to ${data.to}` });
+  } catch (error) {
+    next(error);
+  }
+};
