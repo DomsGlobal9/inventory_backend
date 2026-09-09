@@ -20,4 +20,4 @@
 export { shopperTryOnGatewayService, categoryFor } from './gateway.service';
 export type { TryOnCategory, ShopperTryOnResult } from './gateway.service';
 export { shopperTryOnProductService } from './product.service';
-export type { ScannedGarment } from './product.service';
+export type { ScannedGarment, ScanUrlOptions } from './product.service';

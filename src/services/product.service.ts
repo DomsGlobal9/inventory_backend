@@ -4,7 +4,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { prisma } from '../lib/prisma';
 import { supabase } from '../lib/supabase';
 import { storefrontEventService } from './storefront-event.service';
-import { shopperTryOnProductService } from './shopper-tryon';
+import { shopperTryOnProductService, type ScanUrlOptions } from './shopper-tryon';
 import { StorefrontEventType } from '@prisma/client';
 
 /**
@@ -63,7 +63,7 @@ export class ProductService {
     return productRepository.findManyWithFilters(clientId, queryParams);
   }
 
-  async getProductById(id: string, clientId: string) {
+  async getProductById(id: string, clientId: string, scanOptions: ScanUrlOptions = {}) {
     const product = await productRepository.findById(id, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
 
@@ -75,7 +75,14 @@ export class ProductService {
     //
     // Null when shopper try-on is not configured for this deployment, so the screen can leave
     // the QR off rather than print a code that leads nowhere.
-    return { ...product, tryOnScanUrl: shopperTryOnProductService.scanUrlFor(clientId, product.productCode) };
+    //
+    // scanOptions carries where the shopper should be returned to. It is passed through rather
+    // than assembled here because only the caller knows which page it is putting the link on,
+    // and it is validated inside scanUrlFor rather than trusted.
+    return {
+      ...product,
+      tryOnScanUrl: shopperTryOnProductService.scanUrlFor(clientId, product.productCode, scanOptions)
+    };
   }
 
   async updateProduct(id: string, clientId: string, data: any) {

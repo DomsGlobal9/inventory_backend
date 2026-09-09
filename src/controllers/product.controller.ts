@@ -30,7 +30,16 @@ export class ProductController {
   async getOne(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const product = await productService.getProductById(req.params.id as string, clientId);
+
+      // Where the try-on page should send the shopper when they press Back, and which screen
+      // asked for this link. Both optional; both validated against an allow-list inside
+      // scanUrlFor, so passing them straight through here is safe and a bad value simply
+      // does not appear in the URL.
+      const product = await productService.getProductById(req.params.id as string, clientId, {
+        returnUrl: typeof req.query.returnUrl === 'string' ? req.query.returnUrl : null,
+        source: typeof req.query.source === 'string' ? req.query.source : null
+      });
+
       res.status(200).json({ success: true, data: product });
     } catch (error) {
       next(error);
