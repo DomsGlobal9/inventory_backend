@@ -88,16 +88,27 @@ export const deleteLocation = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Location not found' });
     }
 
-    // Prevent deletion if there's stock
-    const stockCount = await prisma.inventoryStock.count({
-      where: { locationId: id, quantity: { gt: 0 } }
+    // Refuse while stock is still sitting there, and say how much and what to do about it.
+    //
+    // "Cannot delete location with active stock." is true but leaves the person nowhere: they
+    // cannot tell whether it is one forgotten piece or the whole shop, and nothing suggests
+    // the way out. Both facts are one query away.
+    const stockRows = await prisma.inventoryStock.aggregate({
+      where: { locationId: id, quantity: { gt: 0 } },
+      _sum: { quantity: true },
+      _count: { _all: true }
     });
-    
-    if (stockCount > 0) {
-      return res.status(400).json({ error: 'Cannot delete location with active stock.' });
-    }
-    
-    await prisma.stockLocation.delete({
+
+    const units = stockRows._sum.quantity ?? 0;
+    if (units > 0) {
+      const lines = stockRows._count._all;
+      return res.status(400).json({
+        error:
+          `"${location.name}" still holds ${units} ${units === 1 ? 'piece' : 'pieces'} ` +
+          `across ${lines} ${lines === 1 ? 'item' : 'items'}. Move that stock to another ` +
+          `location first, or count it out, and then this can be deleted.`
+      });
+    }    await prisma.stockLocation.delete({
       where: { id }
     });
     
