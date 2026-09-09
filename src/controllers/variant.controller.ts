@@ -7,6 +7,7 @@ import {
   bulkUpdateVariantSchema
 } from '../validations/variant.schema';
 import { z } from 'zod';
+import { grants } from '../config/permissions';
 
 const searchQuerySchema = z.object({
   q: z.string().optional().default(''),
@@ -50,6 +51,38 @@ export class VariantController {
     try {
       const clientId = (req as any).clientId as string;
       const validatedData = bulkUpdateVariantSchema.parse(req.body);
+
+      // The route is gated on inventory:adjust, which is authority over QUANTITIES. This
+      // endpoint also accepts prices and costs, and those are somebody else's authority:
+      // /inventory/set-cost refuses cost:manage to exactly the role that could get here.
+      //
+      // Proven, not theorised: a user holding inventory:adjust and nothing else was refused
+      // 403 by set-cost and then rewrote the same variant's cost and selling price through
+      // this endpoint, 200, updated 1. A CSV import was a way round the permission.
+      //
+      // Refused whole rather than filtered quietly. An import that silently drops half the
+      // columns leaves the merchant believing a file was applied that was not.
+      const held: string[] = (req as any).user?.permissions || [];
+      const rows = validatedData.updates;
+
+      const touchesPrice = rows.some(u => u.sellingPrice !== undefined || u.priceOverride !== undefined);
+      const touchesCost = rows.some(u => u.costPrice !== undefined);
+
+      if (touchesPrice && !grants(held, 'product:update')) {
+        return res.status(403).json({
+          success: false,
+          message: 'This file changes selling prices. You do not have permission to change product details and selling prices. Ask whoever manages your team.',
+          requiredPermission: 'product:update'
+        });
+      }
+
+      if (touchesCost && !grants(held, 'cost:manage')) {
+        return res.status(403).json({
+          success: false,
+          message: 'This file changes what stock cost. You do not have permission to set and restate what stock cost. Ask whoever manages your team.',
+          requiredPermission: 'cost:manage'
+        });
+      }
       
       // A CSV row gives one quantity, so it has to land somewhere. What the caller chose in
       // the import dialog wins; the header's location is the fallback for API clients that
