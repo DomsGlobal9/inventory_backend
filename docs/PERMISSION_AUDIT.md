@@ -199,6 +199,65 @@ genuinely useful without the money in it.
 
 ---
 
+### 8. Authority was a role name, not a permission — **critical**
+
+`requirePermission` returned early when a user's role *names* contained `SUPER_ADMIN`:
+
+```ts
+// SUPER_ADMIN bypasses all checks
+if (user.roles && user.roles.includes('SUPER_ADMIN')) {
+  return next();
+}
+```
+
+43 of the platform's 71 users hold that role, so for most of the people using this product,
+authorisation was a string comparison and their stored permissions were never consulted.
+
+Three consequences, all measured rather than supposed:
+
+1. **The stored permissions had drifted, invisibly.** Production `SUPER_ADMIN` holds 26 keys,
+   seven of which (`dispatch:cancel`, `dispatch:execute`, `dispatch:view`, `user:view`,
+   `user:create`, `user:update`, `user:disable`) guard no route at all, and it does **not** hold
+   `dashboard:view`. Had the bypass ever been removed, every account owner would have lost the
+   dashboard. Nothing surfaced this, because nothing read it.
+2. **The name was the credential.** Any role that came to be called `SUPER_ADMIN`, by any path
+   — a seed, a support script, a merchant naming their own role — held everything.
+3. **It was in four places.** Twice in `permission.middleware.ts` (including a `requireRole`
+   that nothing imported), once deciding who may read a colleague's password, once deciding who
+   may change their own — plus four more copies in the browser. Each looked local.
+
+Fixed: total access is the `'*'` grant. It is deliberately **not** in the catalogue, so it is
+not a box a merchant can tick — a shop wanting a second full administrator composes one, which
+leaves a record of what was granted. `verify-permissions.ts` fails if any role-name check
+reappears anywhere under `src/middleware`, `src/controllers`, `src/services` or `src/routes`.
+
+### 9. The browser had no implication closure — **medium**
+
+Introduced by the fix to finding 1, and worth recording as a general rule. `report:financial`
+confers `report:view` without storing it, so `permissions.includes('report:view')` is `false` in
+the browser while the API serves the request behind it. Any UI gated on an implied key would
+have been hidden from the very people meant to see it.
+
+Fixed at the edge rather than duplicated: `/auth/login` and `/auth/session` now send the
+*expanded* set. The definition of what a permission means stays in one file.
+
+**The general rule:** anywhere permissions are consumed outside `config/permissions.ts` — the
+browser today, POS and Accounts tomorrow — must receive the expansion, never the raw grants. A
+second copy of the implication table is a second thing to forget to update.
+
+## Live impact, measured before the migration ran
+
+`npx ts-node src/scripts/permission-impact.ts`, against production:
+
+| | |
+|---|---|
+| Users | 71 total, 68 active, all holding at least one role |
+| Lose the ability to read costs, profit and supplier spend | **24** (23 WAREHOUSE, 1 SALES) |
+| Keep it | 2 ADMIN, plus every account owner via `'*'` |
+| Role names the migration's mapping did not know | `GUEST` (1 person), `STAFF` (1) — neither held `dashboard:view`, so neither loses anything |
+
+The 24 is the point of the exercise, not a side effect. Those shops should be told.
+
 ## What a service identity would need
 
 Designing the boundary once, before any module depends on it.
@@ -227,7 +286,7 @@ Two things this shows:
    implying it.
 4. **Add `tryon:generate`** and take it out of `product:create`.
 5. **Split `team:view_password`** out of `admin:users`, and record its use.
-6. **Remove or wire `dispatch:view`**; drop the duplicate transfer route.
+6. ~~**Remove or wire `dispatch:view`**; drop the duplicate transfer route.~~ Done: `dispatch:view` is removed (there is no dispatch read endpoint to gate), and `POST /inventory/transfer` is gone -- it was a 501 stub answering "not yet enabled" while `POST /inventory-transfers`, which the app actually calls, did the work.
 7. Then the naming table, the API, and the screen.
 
 Steps 1 to 6 change what existing roles hold, so each needs a migration that maps the old grant
