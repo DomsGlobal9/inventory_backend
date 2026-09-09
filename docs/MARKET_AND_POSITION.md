@@ -42,10 +42,26 @@ A report that says "You Keep" is a report the CA asks the shop to stop sending.
 Most Indian SMB software is bought to produce a GST invoice. Inventory is a by-product of a
 compliance purchase. Vyapar, Marg, Busy and Tally all lead with billing and GST.
 
-**Scaleezy has no invoicing and no GST.** I checked — there is `SalesOrder`, `Dispatch` and
-`SalesReturn`, but nothing that produces a tax invoice. For an Indian saree shop that is not a
-missing feature, it is a missing *reason to buy*. Whatever else happens, that gap decides
-whether the front door is open.
+**I had this wrong, and the correction changes the conclusion.** I looked only inside this
+repository, found no tax invoice, and called it a missing reason to buy. GST and sales are
+**separate Scaleezy modules**. This one is Inventory, and it does not do them because it is not
+supposed to.
+
+That is a materially stronger position than I gave it credit for. The compliance wedge and the
+shop-floor tool come from the same vendor, which is something none of the incumbents offer —
+Tally is the accountant's, Vyapar is the shopkeeper's, and neither is both.
+
+**But it introduces the question that decides whether the suite is real:**
+
+> When a sale is invoiced in the GST module, does the stock go down in this one?
+
+If it does, Scaleezy sells one truth to a shop that currently keeps two. If it does not, the
+shop maintains its stock twice — which is the exact problem this product exists to remove, now
+reproduced inside the product. I have not looked at the other modules and cannot say which it
+is. It is the first thing I would check, ahead of anything in the feature backlog.
+
+The same question applies in the other direction: a purchase received here should be available
+to the accounts module as a purchase, not retyped.
 
 ### The price anchor is very low
 
@@ -100,12 +116,14 @@ as an afterthought.
 
 ## 4. What blocks selling, in order
 
-| | Why it blocks | Difficulty |
+| | Why it blocks | State |
 |---|---|---|
-| **No GST invoice** | It is the reason Indian retail buys software | Large, but it is the front door |
-| **The second-per-query latency** | See below | One afternoon |
-| **No billing** | Cannot take money without a person raising an invoice | Medium |
-| **No offline tolerance** | Indian retail connectivity is not the assumption this app makes | Large |
+| **Modules sharing one set of numbers** | If they do not, the shop keeps stock twice | **Unknown — check first** |
+| **The second-per-query latency** | See below | **Being moved** |
+| **No billing** | Cannot take money without a person raising an invoice | Open |
+| **No offline tolerance** | Indian retail connectivity is not the assumption this app makes | Open |
+
+GST is not on this list any more. It is another module's job.
 
 ### The latency is a market problem, not an engineering one
 
@@ -116,8 +134,10 @@ A shopkeeper in Chirala on 4G, waiting five seconds for a product to open, stops
 product. They will not file a bug — they will go back to the notebook, and the churn will be
 recorded as "did not adopt".
 
-**Moving the app next to the database is the highest-value work available**, and it is an
-afternoon. Nothing in the feature backlog returns as much.
+**This is being moved.** Once Supabase and Render sit in the same region as each other and
+near the customers, most of what feels slow in this product stops being slow — including the
+console screens, which are already down to a single round trip each and cannot get faster any
+other way.
 
 ---
 
@@ -153,9 +173,9 @@ button, a margin column switched off for 82% of the catalogue, a purchase order 
 never fired, and sixteen console actions that left no audit trail. Those are not sloppiness —
 they are the arithmetic of a surface larger than the attention available for it.
 
-**I would ship nothing new until GST invoicing and the region move are done.** Not because the
-other ideas are bad, but because a shop cannot buy what it cannot legally use, and cannot use
-what takes five seconds a page.
+**I would ship nothing new until the region move lands and the module seam is verified.** Not
+because the other ideas are bad, but because a shop that has to enter its stock twice will stop
+entering it once, and no feature recovers from that.
 
 ### Distribution: three routes, in order of leverage
 
@@ -176,11 +196,11 @@ attempted first.
 **What is genuinely good:** the try-on, the multi-shop model, and a rigour about numbers that
 is rare in this category and that the product can defend because it is real.
 
-**What is genuinely missing:** GST invoicing, billing, and being in the same part of the world
-as your own database.
+**What is genuinely missing:** billing, and proof that the modules share one set of numbers.
+The region move is in hand and GST belongs to another module.
 
-**The strategic risk:** building more before either of those, on a feature surface already
-wider than the current customer base can justify.
+**The strategic risk:** breadth. A feature surface already wider than 42 thin tenants justify,
+and a suite whose modules must agree about stock or the whole argument for buying it collapses.
 
 **The position I would take to market:**
 
