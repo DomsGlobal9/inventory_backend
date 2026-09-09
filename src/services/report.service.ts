@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { UNIT_COST } from '../lib/inventoryValuation';
+import { UNIT_COST, inventoryValueFor } from '../lib/inventoryValuation';
 import { TransactionType, Prisma } from '@prisma/client';
 
 export class ReportService {
@@ -109,8 +109,28 @@ export class ReportService {
       `
     ]);
 
+    // What the WHOLE business holds, when a location is selected and there is more than one.
+    //
+    // The headline above is scoped to the chosen location, which is right for a shopkeeper
+    // standing in that shop. But there is no "all locations" to choose, so a merchant with two
+    // shops could never see their own total -- while the platform console, which is not scoped
+    // to a location, showed it. sphl's dashboard read 20,73,986 and the console 41,47,972, and
+    // both were correct. That is the worst kind of disagreement: nothing is broken, so there is
+    // nothing to find, and the merchant is left believing one of their screens is lying.
+    //
+    // Null when it would only repeat the headline, so the extra line appears solely for shops
+    // it tells something new.
+    let companyWideValue: number | null = null;
+    if (locationId) {
+      const locationCount = await prisma.stockLocation.count({ where: { clientId } });
+      if (locationCount > 1) {
+        companyWideValue = await inventoryValueFor(clientId);
+      }
+    }
+
     return {
       inventoryValue,
+      companyWideValue,
       unitsWithoutCost: Number(uncostedRes[0]?.units || 0),
       unitsValuedAtPrice: Number(uncostedRes[0]?.pricedUnits || 0),
       openPoValue: Number(openPos._sum.totalAmount || 0),
