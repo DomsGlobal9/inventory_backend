@@ -17,9 +17,37 @@ import { z } from 'zod';
  * `dispatchItemId`, which appears nowhere in that message.
  */
 
+/**
+ * The reasons a sale can come back, as stored. Kept in step with the ReturnReason enum in
+ * the Prisma schema -- if a value is added there it belongs here too, or callers will be
+ * refused a reason the database would have accepted.
+ */
+export const RETURN_REASONS = [
+  'DAMAGED_IN_TRANSIT',
+  'WRONG_ITEM',
+  'SIZE_ISSUE',
+  'CUSTOMER_REJECTED',
+  'DEFECTIVE',
+  'OTHER'
+] as const;
+
 /** A returned line refers to what was DISPATCHED, not to what was ordered. */
 export const createReturnSchema = z.object({
   salesOrderId: z.string({ required_error: 'Which order is this coming back from?' }).min(1, 'Which order is this coming back from?'),
+  // Why it came back. Absent from this schema until now, which meant Zod stripped it from
+  // every request before anything could read it -- and the service hardcoded OTHER anyway.
+  // Between the two, every return ever recorded on this platform says OTHER, whatever the
+  // customer actually said, and "why are things coming back?" has no answer.
+  //
+  // Named values rather than free text, because a returns report can only group what is
+  // spelled the same way twice, and rejected rather than quietly coerced: a POS sending
+  // DAMAGED instead of DAMAGED_IN_TRANSIT should be told once at integration time, not file
+  // a year of returns under OTHER and find out from an empty report.
+  reason: z.enum(RETURN_REASONS, {
+    errorMap: () => ({
+      message: 'Say why it came back, using one of: ' + RETURN_REASONS.join(', ') + '.'
+    })
+  }).optional(),
   items: z.array(z.object({
     // The commonest mistake, and the one the raw error above was hiding: callers reach for
     // salesOrderItemId because that is what they have. You can only return what actually left.

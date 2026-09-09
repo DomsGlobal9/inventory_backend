@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { Prisma } from '@prisma/client';
+import { Prisma, ReturnReason } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 
@@ -7,7 +7,13 @@ export class ReturnService {
   /**
    * Initializes a return request.
    */
-  async createReturn(clientId: string, salesOrderId: string, items: { dispatchItemId: string; quantity: number }[], notes?: string) {
+  async createReturn(
+    clientId: string,
+    salesOrderId: string,
+    items: { dispatchItemId: string; quantity: number }[],
+    notes?: string,
+    reason?: ReturnReason
+  ) {
     return prisma.$transaction(async (tx) => {
       // Validate sales order
       const order = await tx.salesOrder.findFirst({
@@ -24,7 +30,11 @@ export class ReturnService {
           salesOrderId,
           returnNumber,
           status: 'REQUESTED',
-          reason: 'OTHER', // Default or could be passed in
+          // Was hardcoded to 'OTHER' with a note saying it "could be passed in". It never
+          // was, and the parameter did not exist to pass -- so every return on every tenant
+          // recorded the same reason regardless of what the caller sent. OTHER stays as the
+          // fallback for a caller that genuinely has nothing to say.
+          reason: reason ?? 'OTHER',
           notes,
           items: {
             create: items.map(item => ({

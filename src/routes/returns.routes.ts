@@ -69,8 +69,10 @@ returnsRoutes.get('/:id', requirePermission('return:view'), async (req, res) => 
 returnsRoutes.post('/', requirePermission('return:create'), async (req, res) => {
   try {
     const clientId = (req as any).clientId as string;
-    const { salesOrderId, items, notes } = createReturnSchema.parse(req.body);
-    const newReturn = await returnService.createReturn(clientId, salesOrderId, items as any, notes ?? undefined);
+    const { salesOrderId, items, notes, reason } = createReturnSchema.parse(req.body);
+    const newReturn = await returnService.createReturn(
+      clientId, salesOrderId, items as any, notes ?? undefined, reason
+    );
     res.status(201).json({ data: newReturn });
   } catch (error: any) {
     return fail(res, error);
