@@ -139,28 +139,40 @@ export class DayBookService {
   private async getMeasuredClosing(
     clientId: string, dayKey: string, dayStart: Date, dayEnd: Date,
     inProgress: boolean, locationId?: string
-  ): Promise<number | null> {
+  ): Promise<{ units: number; value: number | null } | null> {
     if (inProgress) {
-      const stocks = await prisma.inventoryStock.aggregate({
-        where: { clientId, ...(locationId ? { locationId } : {}) },
-        _sum: { quantity: true }
+      // Today has no snapshot, so the shelves themselves are the independent record. Value is
+      // summed per variant because it is quantity x that variant's average cost, which no
+      // single aggregate can express.
+      const variants = await prisma.productVariant.findMany({
+        where: { product: { clientId } },
+        select: { averageCost: true, stocks: { select: { locationId: true, quantity: true } } }
       });
-      return stocks._sum.quantity ?? 0;
+      let units = 0;
+      let value = 0;
+      for (const v of variants) {
+        for (const st of v.stocks) {
+          if (locationId && st.locationId !== locationId) continue;
+          units += st.quantity;
+          value += st.quantity * Number(v.averageCost);
+        }
+      }
+      return { units, value: Number(value.toFixed(2)) };
     }
 
     if (locationId) {
       const snap = await prisma.dailyLocationSnapshot.findFirst({
         where: { clientId, locationId, snapshotDate: { gte: dayStart, lt: dayEnd } },
-        select: { totalUnits: true }
+        select: { totalUnits: true, totalValue: true }
       });
-      return snap ? snap.totalUnits : null;
+      return snap ? { units: snap.totalUnits, value: Number(snap.totalValue) } : null;
     }
 
     const snap = await prisma.dailyInventorySnapshot.findFirst({
       where: { clientId, snapshotDate: { gte: dayStart, lt: dayEnd } },
-      select: { totalUnits: true }
+      select: { totalUnits: true, totalValue: true }
     });
-    return snap ? snap.totalUnits : null;
+    return snap ? { units: snap.totalUnits, value: Number(snap.totalValue) } : null;
   }
 
   /**
@@ -304,7 +316,27 @@ export class DayBookService {
     // For a finished day that source is the day's own snapshot, measured at the time. For
     // today, which has no closing snapshot yet, it is the stock physically on the shelves.
 
-    const balanced = closing && measured !== null ? closing.units === measured : null;
+    // Count and value are checked SEPARATELY, because they can disagree for entirely
+    // different reasons and only one of them means the books are broken.
+    //
+    // The count either matches or something is genuinely lost. The value can differ even when
+    // every movement is right: this shop values stock at a weighted average, so when goods
+    // arrive at a new price the units already on the shelf are re-valued too -- and that
+    // re-valuation is not a movement, so it appears nowhere in what came in or went out.
+    // Measured on a real day: 61 units on both sides, and a value 3,087.57 apart, entirely
+    // from re-valuation.
+    //
+    // The old check compared units alone and then printed "the books balance", full stop --
+    // which told the owner their closing VALUE had been verified when nothing had looked at
+    // it. A closing stock figure is what somebody writes down as what their stock is worth.
+    const balanced = closing && measured !== null ? closing.units === measured.units : null;
+
+    // Only meaningful when the count agrees; a units mismatch is the headline on its own.
+    const measuredValue = measured?.value ?? null;
+    const valueGap = (closing && measuredValue !== null)
+      ? round(measuredValue - closing.value)
+      : null;
+    const valueMatches = valueGap === null ? null : Math.abs(valueGap) < 0.01;
 
     // ─── SALES, MEASURED AT DISPATCH ──────────────────────────────────────────
     const soldLine = outLines.find(l => l.reason === InventoryReason.SALE);
@@ -412,6 +444,12 @@ export class DayBookService {
       // What the independent source says, so a mismatch can be shown rather than just flagged.
       measuredClosing: measured,
       balanced,
+      // Reported alongside, not folded into `balanced`, so the page can tell the owner which
+      // of the two agrees. A count that is out means stock is missing; a value that is out by
+      // the re-valuation amount means nothing is wrong at all.
+      valueMatches,
+      valueGap,
+      measuredClosingValue: measuredValue,
 
       stockIn: { lines: inLines, totalUnits: totalIn, totalValue: totalInValue },
       stockOut: { lines: outLines, totalUnits: totalOut, totalValue: totalOutValue },
