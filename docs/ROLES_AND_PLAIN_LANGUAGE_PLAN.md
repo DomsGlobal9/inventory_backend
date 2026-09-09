@@ -302,3 +302,61 @@ schema — not as a rename of the contract that already exists.
 4. The role screen, with templates and the live sentence
 5. The language pass across product and inventory screens
 6. Correct the landing page's roles claim to match what ships
+
+---
+
+# Appendix — the POS seam, and why roles come first
+
+Not in this release. Written down because it is close, and because it shares a design with the
+work above.
+
+## Most of it is already built
+
+Someone thought about this before. In the schema and the sales order service:
+
+| | |
+|---|---|
+| `SalesChannel` | `POS` is its first member |
+| `SalesOrder.externalOrderId`, `.sourceSystem` | the fields another module writes |
+| `@@unique([clientId, externalOrderId, sourceSystem])` | **duplicate sales impossible at the database**, not merely guarded in code |
+| `Customer.externalCustomerId` | customers sync rather than duplicate |
+| `createFullOrder(clientId, locationId, data, channel = 'POS')` | the entry point, defaulting to POS |
+| an idempotency check inside it | resend the same sale, get the same order back |
+| `POST /sales-orders/full` | the route |
+
+Idempotency and a database-level uniqueness constraint are the parts of an integration that are
+hard to get right and painful to retrofit. Both exist.
+
+## Three things are missing
+
+**1. There is no door.** `serviceAuthMiddleware` is written and mounted on nothing. Every route
+requires a *user* session and a permission from that user's role. A POS module has no user.
+
+**2. A POS sale reserves but does not remove.** `createFullOrder` reserves stock when the order
+arrives CONFIRMED; it never dispatches. Reserving is right for an online order that will be
+picked later — it is wrong for a counter sale, where the customer has already walked out with
+the saree. The stock must come off, not be spoken for.
+
+**3. One shared secret.** `INTERNAL_SERVICE_KEY` is a single value for all callers, so nothing
+records *which* module made a change, and rotating it breaks every module at once.
+
+## Why roles should come first
+
+**Service-to-service authorisation and RBAC are the same problem.** A POS module calling in
+needs to be allowed to create sales orders and not to, say, delete products. That is a set of
+permissions held by an identity — exactly what the role work builds.
+
+Do roles first and a service identity is a role with a scoped set, granted the same way and
+visible on the same screen. Do the POS seam first and it grows its own parallel permission
+system, which then has to be reconciled.
+
+The same is true of `cost:view`: whatever redaction is built for a salesperson is the redaction
+a limited service identity will want.
+
+## When it is built
+
+1. Mount `serviceAuthMiddleware`, per-module keys rather than one shared secret, each mapped to
+   an identity that holds permissions
+2. `createFullOrder` takes the sale all the way — reserve and dispatch — when the channel is
+   `POS`, because a counter sale is finished by the time it reaches us
+3. A test that sends the same sale twice and asserts stock moved once
