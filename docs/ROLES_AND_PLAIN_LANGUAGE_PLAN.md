@@ -342,21 +342,41 @@ records *which* module made a change, and rotating it breaks every module at onc
 
 ## Why roles should come first
 
-**Service-to-service authorisation and RBAC are the same problem.** A POS module calling in
-needs to be allowed to create sales orders and not to, say, delete products. That is a set of
-permissions held by an identity — exactly what the role work builds.
+**Service-to-service authorisation and RBAC are the same question**, asked of a different kind
+of caller:
 
-Do roles first and a service identity is a role with a scoped set, granted the same way and
-visible on the same screen. Do the POS seam first and it grows its own parallel permission
-system, which then has to be reconciled.
+> Does this identity have permission to do this, for this client?
+
+Do roles first and the answer is already built when POS arrives. Do the seam first and it grows
+a parallel permission system that then has to be reconciled.
+
+### But a module is not a merchant's role
+
+I had this wrong first time. A service identity should use the same *permission model*, not the
+same *object* — the lifecycles are nothing alike:
+
+| | Human | Service |
+|---|---|---|
+| Example | Manager, Stock Room | POS, Shopify, Accounts |
+| Created by | the merchant | the platform |
+| Signs in | yes, with a password | no, with a credential |
+| Appears in Team | yes | no |
+| Can be disabled | yes | yes |
+
+So the shape is **identity → permissions → tenant**, with two identity types, `USER` and
+`SERVICE` — rather than a machine wearing a role a shopkeeper typed a name for. That keeps one
+authorisation question while leaving the two lifecycles free to differ, and it stops a POS
+appearing in the team list as though someone could ring it up and ask it to come in on Sunday.
 
 The same is true of `cost:view`: whatever redaction is built for a salesperson is the redaction
 a limited service identity will want.
 
 ## When it is built
 
-1. Mount `serviceAuthMiddleware`, per-module keys rather than one shared secret, each mapped to
-   an identity that holds permissions
-2. `createFullOrder` takes the sale all the way — reserve and dispatch — when the channel is
+1. A `SERVICE` identity type holding permissions the same way a user's role does
+2. Mount `serviceAuthMiddleware` behind it, with per-module credentials rather than one shared
+   secret, so revoking POS for one shop leaves Shopify for that shop and POS for every other
+   shop alone
+3. `createFullOrder` takes the sale all the way — reserve and dispatch — when the channel is
    `POS`, because a counter sale is finished by the time it reaches us
-3. A test that sends the same sale twice and asserts stock moved once
+4. A test that sends the same sale twice and asserts stock moved once
