@@ -8,6 +8,6 @@ router.use(tenantMiddleware);
 
 // Read-only, and carries the same permission as the dashboard: it shows the same facts,
 // arranged by day rather than as a live total.
-router.get('/', requirePermission('dashboard:view'), getDayBook);
+router.get('/', requirePermission('report:financial'), getDayBook);
 
 export default router;

@@ -7,7 +7,10 @@ const router = Router();
 
 router.use(tenantMiddleware);
 
-router.post('/generate-catalog', requirePermission('product:create'), catalogTryOnController.generateCatalog.bind(catalogTryOnController));
-router.post('/cancel-job', requirePermission('product:create'), catalogTryOnController.cancelJob.bind(catalogTryOnController));
+// Metered and billed per use, so it is its own capability rather than a side effect of being
+// allowed to add a product. Whether the SHOP may spend it -- allowance left, service switched
+// on -- is a separate question answered in the try-on usage service, not here.
+router.post('/generate-catalog', requirePermission('tryon:generate'), catalogTryOnController.generateCatalog.bind(catalogTryOnController));
+router.post('/cancel-job', requirePermission('tryon:generate'), catalogTryOnController.cancelJob.bind(catalogTryOnController));
 
 export default router;

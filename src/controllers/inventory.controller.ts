@@ -173,13 +173,6 @@ export class InventoryController {
     }
   }
 
-  async transfer(req: Request, res: Response, next: NextFunction) {
-    // Scaffolded for future multi-location support
-    res.status(501).json({
-      success: false,
-      message: "Multi-location inventory transfers are not yet enabled."
-    });
-  }
 }
 
 export const inventoryController = new InventoryController();

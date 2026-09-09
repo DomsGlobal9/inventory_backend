@@ -13,11 +13,10 @@ router.post('/adjustment', requirePermission('inventory:adjust'), inventoryContr
 router.get('/transactions', requirePermission('inventory:view'), inventoryController.getTransactions);
 router.get('/variants', requirePermission('inventory:view'), inventoryController.getVariants);
 router.get('/metadata', requirePermission('inventory:view'), inventoryController.getMetadata);
-router.post('/reconcile-valuation', requirePermission('inventory:adjust'), inventoryController.reconcileValuation);
+router.post('/reconcile-valuation', requirePermission('cost:manage'), inventoryController.reconcileValuation);
 // Restates what stock on hand cost, without moving any of it. The repair for stock that
 // entered the system with no cost recorded, which no purchase order can fix -- buying more
 // adds to the average, it does not restate what is already on the shelf.
-router.post('/set-cost', requirePermission('inventory:adjust'), inventoryController.setCostOfStockOnHand);
-router.post('/transfer', requirePermission('inventory:transfer'), inventoryController.transfer);
+router.post('/set-cost', requirePermission('cost:manage'), inventoryController.setCostOfStockOnHand);
 
 export default router;

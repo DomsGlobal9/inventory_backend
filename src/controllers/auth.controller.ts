@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { authCookieOptions, clearCookieOptions } from '../lib/cookies';
 import { encryptCredential } from '../lib/credentialEncryption';
+import { WILDCARD_PERMISSION, expandPermissions } from '../config/permissions';
 
 const userWithRolesInclude = {
   roles: {
@@ -77,15 +78,23 @@ export const login = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Extract role names and the flattened, deduplicated set of permission keys they grant
+    // Role names, and everything those roles actually confer.
+    //
+    // Expanded here rather than sent raw. The browser gates nav items and buttons on this list
+    // and has no implication logic of its own, so a manager holding `report:financial` -- which
+    // confers `report:view` without storing it -- would see a report:view nav item hidden while
+    // the API served the request behind it perfectly well. Expanding at the edge keeps one
+    // definition of what a permission means, in config/permissions.ts, instead of a second copy
+    // in the frontend that drifts.
     const roles = user.roles.map((ur: any) => ur.role.name);
-    const permissions = Array.from(
+    const granted = Array.from(
       new Set(
         user.roles.flatMap((ur: any) =>
           ur.role.permissions.map((rp: any) => rp.permission.key)
         )
       )
-    );
+    ) as string[];
+    const permissions = Array.from(expandPermissions(granted));
 
     const token = AuthService.generateToken({
       userId: user.id,
@@ -165,7 +174,9 @@ export const session = async (req: Request, res: Response) => {
         name: user.name,
         email: user.email,
         roles: user.roles, // from normalized req.user (UserWithRoles.roles is the array field — there is no singular `role`)
-        permissions: user.permissions // Treated purely as Inventory RBAC, not module entitlements
+        // Expanded, for the same reason as at login: the browser has no implication logic, so
+        // it must be told what the grants actually confer, not only what was ticked.
+        permissions: Array.from(expandPermissions(user.permissions || [])) // Inventory RBAC, not module entitlements
       },
       client: {
         id: user.clientId
@@ -199,8 +210,11 @@ export const changeMyPassword = async (req: Request, res: Response) => {
     const authUser = (req as any).user;
     const { currentPassword, newPassword } = req.body ?? {};
 
-    const roles: string[] = authUser?.roles ?? [];
-    if (!roles.includes('SUPER_ADMIN')) {
+    // The account owner, identified by the '*' grant rather than by the role NAME this used to
+    // compare against. Same people, but the authority is now a row that can be seen and moved,
+    // and a shop that renames its owner role keeps working.
+    const permissions: string[] = authUser?.permissions ?? [];
+    if (!permissions.includes(WILDCARD_PERMISSION)) {
       return res.status(403).json({
         success: false,
         message: 'Only a Super Admin can change their own password. Ask an admin to set yours.'
