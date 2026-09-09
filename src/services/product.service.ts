@@ -115,7 +115,19 @@ export class ProductService {
   }
 
   async archiveProduct(id: string, clientId: string) {
-    const archived = await productRepository.updateSafe(id, clientId, { status: 'ARCHIVED' });
+    // Remember what it was, the same way trashProduct does.
+    //
+    // This did not, and restoreProduct falls back to ACTIVE when previousStatus is empty --
+    // so archiving a DRAFT and restoring it PUBLISHED it. Reproduced on a real tenant:
+    // PRD-000002 went DRAFT -> archive -> restore -> ACTIVE, and PRODUCT_PUBLISHED went out
+    // to the storefront for a product with no photographs that nobody had ever chosen to put
+    // on sale. Trashing and restoring the same product was correct throughout, which is what
+    // made it easy to miss.
+    const existing = await this.getProductById(id, clientId);
+    const archived = await productRepository.updateSafe(id, clientId, {
+      previousStatus: existing.status,
+      status: 'ARCHIVED'
+    });
     // Withdrawn from sale. A storefront that is never told simply carries on selling it, which
     // is the one product event that must be sent even though the product is no longer eligible.
     notifyStorefronts(clientId, id, 'PRODUCT_UNPUBLISHED');
@@ -135,14 +147,25 @@ export class ProductService {
 
   async restoreProduct(id: string, clientId: string) {
     const existing = await this.getProductById(id, clientId);
+
+    // When we genuinely do not know what it was, come back as a DRAFT rather than ACTIVE.
+    //
+    // Only products archived BEFORE archiveProduct started recording previousStatus land
+    // here. For those the honest answer is "unknown", and the two ways of being wrong are not
+    // equal: restoring to DRAFT when it should have been ACTIVE means somebody presses
+    // Publish, while restoring to ACTIVE when it should have been DRAFT puts an unfinished
+    // product in front of customers and tells the storefront to sell it. The recoverable
+    // mistake is the one to make.
+    const restoredStatus = existing.previousStatus ?? 'DRAFT';
+
     const restored = await productRepository.updateSafe(id, clientId, {
-      status: existing.previousStatus ?? 'ACTIVE',
+      status: restoredStatus,
       previousStatus: null,
       trashedAt: null
     });
     // Only worth announcing if it came back to life. Restoring something to DRAFT or ARCHIVED
     // leaves it invisible to a storefront, which already believes it is gone.
-    if ((existing.previousStatus ?? 'ACTIVE') === 'ACTIVE') {
+    if (restoredStatus === 'ACTIVE') {
       notifyStorefronts(clientId, id, 'PRODUCT_PUBLISHED');
     }
     return restored;
