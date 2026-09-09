@@ -18,6 +18,7 @@ import reportRoutes from './report.routes';
 import customerRoutes from './customer.routes';
 import salesOrderRoutes from './sales-order.routes';
 import dispatchRoutes from './dispatch.routes';
+import roleRoutes from './role.routes';
 import { returnsRoutes } from './returns.routes';
 import authRoutes from './auth.routes';
 import locationRoutes from './location.routes';
@@ -115,6 +116,8 @@ router.use('/reports', reportRoutes);
 router.use('/customers', customerRoutes);
 router.use('/sales-orders', salesOrderRoutes);
 router.use('/dispatches', dispatchRoutes);
+// Roles: what a job is allowed to do, composed by the shop from the platform's catalogue.
+router.use('/roles', roleRoutes);
 router.use('/returns', returnsRoutes);
 router.use('/locations', locationRoutes);
 // Managing storefront connections: the merchant's side, behind the normal session.
