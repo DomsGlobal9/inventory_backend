@@ -92,6 +92,13 @@ export const onboardClient = async (req: Request, res: Response) => {
     }
 
     const result = await platformAdminService.onboardClient(companyName, adminName, adminEmail);
+
+    // The workspace did not exist when the request arrived, so the audit middleware has no id
+    // to take from the URL. Hand it the one we just created, or the trail records that a
+    // client was made and not which.
+    (res as any).locals.auditTargetId = result.clientId;
+    (res as any).locals.auditTargetLabel = `${companyName} (${result.clientId})`;
+
     res.status(201).json({ success: true, data: result });
   } catch (error: any) {
     res.status(500).json({ success: false, message: 'Failed to onboard client', error: error.message });

@@ -107,8 +107,20 @@ export const platformAuditLogger = (req: Request, res: Response, next: NextFunct
       }
     }
 
+    // Some targets do not exist until the handler has run, so there is nothing in the URL to
+    // capture. Creating a client is the obvious one: POST /clients has no id in it, and the
+    // trail was recording "somebody created a client" with no way to tell which -- which is
+    // most of the point of having the line at all.
+    //
+    // A handler can name its own target by setting res.locals.auditTargetId (and optionally a
+    // label). Nothing is required to; where it is absent the URL capture still applies.
+    const named = (res as any).locals?.auditTargetId;
+    if (named) targetId = String(named);
+
     // Deliberately not awaited: the response has already gone, and making the admin wait on
     // the audit write would be a reason to want it removed.
+    const namedLabel = (res as any).locals?.auditTargetLabel;
+
     labelFor(targetType, targetId)
       .then(targetLabel => platformAuditService.record({
         platformAdminId: admin.id,
@@ -117,7 +129,7 @@ export const platformAuditLogger = (req: Request, res: Response, next: NextFunct
         action,
         targetType,
         targetId,
-        targetLabel,
+        targetLabel: namedLabel ?? targetLabel,
         ipAddress: req.ip
       }))
       .catch(err => console.error('[platform-audit] middleware failed', err));
