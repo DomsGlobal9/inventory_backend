@@ -47,14 +47,22 @@ export const generateUniqueCode = async (
 
 /**
  * Generates a sequential unique business code (e.g., PRD-000001) per client.
+ *
+ * Pass the transaction client when the number belongs to something that might not commit.
+ * Called on the base client, the increment lands immediately and survives a rollback, so a
+ * request that fails after taking a number leaves a permanent hole in the sequence -- a
+ * dispatch that never happened, sitting between DSP-000001 and DSP-000003 with nothing to
+ * explain it. Numbering that skips is a numbering nobody can reconcile against.
  */
 export const generateSequentialCode = async (
   clientId: string,
   prefix: string, // e.g. "PRD", "VAR"
-  entityType: string // e.g. "PRODUCT", "VARIANT"
+  entityType: string, // e.g. "PRODUCT", "VARIANT"
+  tx?: { clientSequence: { upsert: (args: any) => Promise<{ lastValue: number }> } }
 ): Promise<string> => {
+  const db = tx ?? prisma;
   // Use Prisma atomic increment to avoid race conditions
-  const sequence = await prisma.clientSequence.upsert({
+  const sequence = await db.clientSequence.upsert({
     where: {
       clientId_entityType: {
         clientId,

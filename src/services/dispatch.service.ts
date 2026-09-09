@@ -21,14 +21,19 @@ export class DispatchService {
       throw new Error(`Cannot dispatch order in ${order.status} state`);
     }
 
-    const dispatchCode = await generateSequentialCode(clientId, 'DSP', 'DISPATCH');
-
-    // Everything below — the Dispatch record, reservation consumption, physical
-    // stock movement, ledger entry, and the order status update — now runs as one
-    // transaction. Previously each step committed independently, so a failure
-    // partway through (e.g. an over-dispatch on item 2 of 3) left a Dispatch row
-    // and partial reservation/stock changes behind with no order status update.
+    // Everything below — the dispatch NUMBER, the Dispatch record, reservation consumption,
+    // physical stock movement, ledger entry, and the order status update — runs as one
+    // transaction. Previously each step committed independently, so a failure partway through
+    // (e.g. an over-dispatch on item 2 of 3) left a Dispatch row and partial reservation/stock
+    // changes behind with no order status update.
+    //
+    // The number was still being taken outside it, which is the same bug one level down: a
+    // dispatch rejected for a bad line had already consumed DSP-000001, so the first dispatch
+    // this shop ever completed was numbered DSP-000002 and nothing accounted for the one
+    // before it. Inside the transaction, a rejected dispatch gives its number back.
     return prisma.$transaction(async (tx) => {
+      const dispatchCode = await generateSequentialCode(clientId, 'DSP', 'DISPATCH', tx as any);
+
       const dispatch = await (tx as any).dispatch.create({
         data: {
           clientId,

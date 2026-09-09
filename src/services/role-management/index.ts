@@ -59,15 +59,18 @@ function grantableBy(actor: Actor): Set<string> {
  * frozen into the row, so an implication added later applies to roles that already exist.
  */
 function sanitise(requested: string[], actor: Actor): string[] {
-  const unknown = requested.filter(k => !ALL_PERMISSION_KEYS.includes(k));
-  if (unknown.length) {
-    throw fail(`These are not things this product can do: ${unknown.join(', ')}`, 400, 'UNKNOWN_PERMISSION');
-  }
   if (requested.includes(WILDCARD_PERMISSION)) {
     throw fail(
       'Total access cannot be granted from this screen. It belongs to the account owner.',
       403, 'WILDCARD_NOT_GRANTABLE'
     );
+  }
+
+  // Checked after the wildcard, so "*" gets the answer that explains itself rather than being
+  // lumped in with a typo.
+  const unknown = requested.filter(k => !ALL_PERMISSION_KEYS.includes(k));
+  if (unknown.length) {
+    throw fail(`These are not things this product can do: ${unknown.join(', ')}`, 400, 'UNKNOWN_PERMISSION');
   }
 
   const allowed = grantableBy(actor);
