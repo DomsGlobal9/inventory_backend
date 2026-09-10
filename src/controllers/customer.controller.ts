@@ -14,7 +14,15 @@ export const createCustomer = async (req: Request, res: Response) => {
     const customer = await customerService.createCustomer(clientId, parsed.data);
     res.status(201).json({ success: true, data: customer });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message });
+    // `message`, not `error` -- every other endpoint on this API answers with `message`, and the
+    // frontend's error handler reads that. A duplicate came back with the reason in a key nobody
+    // looked at, so the screen showed its generic "something went wrong" instead of the name of
+    // the customer already on file.
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+      ...(error.existingCustomerId ? { existingCustomerId: error.existingCustomerId } : {})
+    });
   }
 };
 
