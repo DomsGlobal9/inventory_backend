@@ -53,9 +53,9 @@ export const errorHandler = (
   res: Response,
   next: NextFunction
 ) => {
-  console.error(`[Error] ${req.method} ${req.path}`, err);
-
   if (err instanceof ZodError) {
+    // A rejected form is not a fault. One line, so it is still traceable, without the stack.
+    console.warn(`[400] ${req.method} ${req.path} -- ${err.errors[0]?.message ?? 'validation failed'}`);
     return res.status(400).json({
       success: false,
       message: 'Validation failed',
@@ -66,6 +66,22 @@ export const errorHandler = (
   const translated = translatePrismaError(err);
   const statusCode = translated?.statusCode ?? err.statusCode ?? 500;
   const message = translated?.message ?? err.message ?? 'Internal Server Error';
+
+  // Logged AFTER the status is known, and only a crash gets a stack.
+  //
+  // This used to be an unconditional console.error with the whole error object, printed before
+  // anything had decided what the status was. Every stale bookmark, every refused permission and
+  // every rejected form went to the server log as a multi-line [Error] with a full stack trace --
+  // the same mistake the Platform Console's Errors page had, one layer further out. Reading the
+  // production log meant scrolling past hundreds of working refusals to find one real fault.
+  //
+  // 4xx is the server saying no, on purpose, and one line records that. 5xx is the server
+  // failing, and that keeps the stack.
+  if (statusCode >= 500) {
+    console.error(`[Error] ${req.method} ${req.path}`, err);
+  } else {
+    console.warn(`[${statusCode}] ${req.method} ${req.path} -- ${message}`);
+  }
 
   // 5xx only -- a validation 400 or a permission 403 is expected traffic, not something
   // the Platform Console needs paged for. Fire-and-forget: persisting the error must never
