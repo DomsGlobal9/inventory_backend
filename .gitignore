@@ -43,3 +43,6 @@ yarn-error.log*
 
 # OS
 .DS_Store
+
+# Tenant snapshots taken before a purge. Real customer data -- never committed.
+backups/

@@ -409,12 +409,29 @@ export class PlatformAdminService {
     // tenant that no longer exists.
     forgetClientIdentities(clientId);
 
-    const exists = await prisma.user.count({ where: { clientId } });
-    if (exists === 0) {
-      const anything = await prisma.product.count({ where: { clientId } });
-      if (anything === 0) {
-        throw Object.assign(new Error('No such client, or it has already been deleted'), { statusCode: 404 });
-      }
+    /**
+     * "This client exists" means it has rows, not that it has a login.
+     *
+     * Users then products was still too narrow. A tenant whose users and products were removed
+     * first -- by hand, by an older script, or by a partly-completed clean-up -- keeps its
+     * locations, customers and suppliers and becomes undeletable: the console reports "no such
+     * client" while the rows are plainly still there and still counted in platform totals.
+     * Found on `default-client`, which had nothing left but a single stock location and refused
+     * to go.
+     *
+     * Asking the tables that actually carry client_id fixes it, and the delete below is
+     * self-verifying anyway -- if this were somehow wrong about a tenant existing, the deletion
+     * removes nothing and the count check passes.
+     */
+    const [users, products, locations, customers, suppliers] = await Promise.all([
+      prisma.user.count({ where: { clientId } }),
+      prisma.product.count({ where: { clientId } }),
+      prisma.stockLocation.count({ where: { clientId } }),
+      prisma.customer.count({ where: { clientId } }),
+      prisma.supplier.count({ where: { clientId } })
+    ]);
+    if (users + products + locations + customers + suppliers === 0) {
+      throw Object.assign(new Error('No such client, or it has already been deleted'), { statusCode: 404 });
     }
 
     // Read before deleting: once the rows are gone so are the storage paths, and the images
@@ -440,10 +457,21 @@ export class PlatformAdminService {
       `DELETE FROM shopify_installations WHERE client_id = $1`,
       // Reservations point at sales order items, so they go before the order chain.
       `DELETE FROM inventory_reservations WHERE client_id = $1`,
-      `DELETE FROM dispatch_items WHERE dispatch_id IN (SELECT d.id FROM dispatches d JOIN sales_orders so ON so.id = d.sales_order_id WHERE so.client_id = $1)`,
-      `DELETE FROM dispatches WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
+      // Returns before dispatches, because a return item points AT the dispatch item it came
+      // back from (sales_return_items.dispatch_item_id). Deleting dispatch_items first raised
+      //
+      //   23503: update or delete on table "dispatch_items" violates foreign key constraint
+      //          "sales_return_items_dispatch_item_id_fkey"
+      //
+      // and rolled the whole thing back -- which is the design working, but it meant deleting
+      // ANY shop that had ever taken a return through a dispatch was impossible from the
+      // Platform Console. Found while clearing test tenants: fifty went, and the one that had
+      // a return refused. So it would have failed on exactly the established shops, and worked
+      // on the empty ones nobody minds losing.
       `DELETE FROM sales_return_items WHERE sales_return_id IN (SELECT id FROM sales_returns WHERE client_id = $1)`,
       `DELETE FROM sales_returns WHERE client_id = $1`,
+      `DELETE FROM dispatch_items WHERE dispatch_id IN (SELECT d.id FROM dispatches d JOIN sales_orders so ON so.id = d.sales_order_id WHERE so.client_id = $1)`,
+      `DELETE FROM dispatches WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
       `DELETE FROM sales_order_items WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
       `DELETE FROM sales_orders WHERE client_id = $1`,
       `DELETE FROM sales_ledger WHERE client_id = $1`,
