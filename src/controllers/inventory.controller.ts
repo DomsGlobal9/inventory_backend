@@ -6,14 +6,51 @@ import { stockChangeSchema } from '../validations/inventory.schema';
 
 const VALID_REASONS: string[] = Object.values(InventoryReason);
 
+/**
+ * Run the movement payload through stockChangeSchema before anything touches stock.
+ *
+ * The schema was imported at the top of this file and never called. Every handler read
+ * req.body raw and hand-checked `quantity <= 0`, so:
+ *
+ *   - 2.7 pieces was accepted and silently became 2. Garments are not sold by the fraction,
+ *     and a stock figure that quietly loses 0.7 of what somebody typed is worse than one that
+ *     refuses it.
+ *   - a unit cost of -500 was accepted and dragged the weighted average of a live product from
+ *     47,045 down to 44,031 -- real money on a real valuation, with nothing refused.
+ *
+ * Both proven against a running tenant during an audit, and both reverted afterwards. There was
+ * even a comment further down claiming "stockChangeSchema enforces positive". It does now; it
+ * did not then, because nothing ran it.
+ *
+ * The sign stays the caller's business: stock-in wants positive, an adjustment may legitimately
+ * be negative. Everything else -- whole pieces, a finite number, a cost that is not negative --
+ * is the same wherever the movement comes from, so it belongs in one place.
+ */
+function parseMovement(body: unknown) {
+  return stockChangeSchema.safeParse(body);
+}
+
+/** Turns a Zod failure into the shape the rest of this API answers with. */
+function movementError(res: Response, parsed: any) {
+  const issues = parsed.error?.issues || [];
+  return res.status(400).json({
+    success: false,
+    message: issues[0]?.message || 'That stock movement is not valid.',
+    errors: issues.map((i: any) => ({ field: i.path.join('.'), message: i.message }))
+  });
+}
+
+
 export class InventoryController {
 
   async stockIn(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const { variantId, quantity, reason, referenceType, reference, unitCost, notes, locationId } = req.body;
+      const parsed = parseMovement(req.body);
+      if (!parsed.success) return movementError(res, parsed);
+      const { variantId, quantity, reason, referenceType, reference, unitCost, notes } = parsed.data;
+      const { locationId } = req.body;
 
-      if (!variantId) return res.status(400).json({ success: false, message: "variantId is required" });
       if (reason !== undefined && !VALID_REASONS.includes(reason)) {
         return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
       }
@@ -37,9 +74,11 @@ export class InventoryController {
   async stockOut(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const { variantId, quantity, reason, referenceType, reference, notes, locationId } = req.body;
+      const parsed = parseMovement(req.body);
+      if (!parsed.success) return movementError(res, parsed);
+      const { variantId, quantity, reason, referenceType, reference, notes } = parsed.data;
+      const { locationId } = req.body;
 
-      if (!variantId) return res.status(400).json({ success: false, message: "variantId is required" });
       if (reason !== undefined && !VALID_REASONS.includes(reason)) {
         return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
       }
@@ -63,14 +102,17 @@ export class InventoryController {
   async adjustment(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      // For adjustments, we allow negative quantity in the payload if needed, 
-      // but stockChangeSchema enforces positive for simplicity. 
-      // Let's parse manually or adjust schema if we wanted negative.
-      // For this MVP, we assume the payload dictates the exact change.
-      
-      const { variantId, quantity, reason, referenceType, reference, notes, locationId } = req.body;
-      if (!variantId || typeof quantity !== 'number') {
-        return res.status(400).json({ success: false, message: "variantId and quantity (number) required" });
+      // An adjustment is the one movement where a negative quantity is the point -- it is how a
+      // count correction goes down. The schema deliberately does not police the sign; it still
+      // checks the quantity is a whole, finite number, which an adjustment needs as much as any
+      // other movement does.
+      const parsed = parseMovement(req.body);
+      if (!parsed.success) return movementError(res, parsed);
+      const { variantId, quantity, reason, referenceType, reference, notes } = parsed.data;
+      const { locationId } = req.body;
+
+      if (quantity === 0) {
+        return res.status(400).json({ success: false, message: 'An adjustment of zero would change nothing.' });
       }
       if (reason !== undefined && !VALID_REASONS.includes(reason)) {
         return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
