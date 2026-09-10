@@ -404,6 +404,51 @@ async function awkwardInput(owner: string) {
   console.log('');
 }
 
+/**
+ * A name of only spaces, everywhere somebody can type one.
+ *
+ * The product title was the one that got noticed -- it saved happily and then sat in every
+ * list as a blank row, impossible to find by searching and awkward even to click. But
+ * `z.string().min(1)` counts the spaces, so every field written that way had the same hole:
+ * a supplier nobody can look up, a stock count with no name on the report, a variant whose
+ * SKU is whitespace, and a support ticket whose subject is blank to the person who has to
+ * answer it.
+ *
+ * Checked here rather than trusted to a grep, because the fix is one call in a schema and
+ * the next field somebody adds will be written the old way unless something says otherwise.
+ */
+async function blankNames(owner: string, ctx: { productId: string; locationId: string }) {
+  console.log('INPUT  a name of only spaces, wherever one can be typed');
+
+  const attempts: [string, string, string, any][] = [
+    ['a product', 'POST', '/products',
+      { title: '   ', category: 'WOMEN', productType: 'READY_TO_WEAR', basePrice: 100, status: 'DRAFT' }],
+    ['a customer', 'POST', '/customers', { name: '   ', phone: `9${STAMP}`.slice(0, 10) }],
+    ['a supplier', 'POST', '/suppliers', { name: '   ' }],
+    ['a stock count', 'POST', '/stock-counts', { name: '   ', locationId: ctx.locationId }],
+    ['a support ticket', 'POST', '/support-tickets', { subject: '   ', description: 'x' }],
+    ['a support ticket description', 'POST', '/support-tickets', { subject: 'x', description: '   ' }],
+    ['a variant SKU', 'POST', `/products/${ctx.productId}/variants`, { sku: '   ', size: 'M', color: 'Red' }],
+    ['a storefront connection', 'POST', '/storefront-connections',
+      { name: '   ', baseUrl: 'https://example.com' }]
+  ];
+
+  for (const [label, method, path, body] of attempts) {
+    const r = await call(owner, method, path, body);
+    check(`${label} named only spaces is refused`, r.status === 400, `got ${r.status} :: ${said(r)}`);
+  }
+
+  // And the everyday case still works, trimmed rather than rejected.
+  const padded = await call(owner, 'POST', '/suppliers', { name: `  QA Padded ${STAMP}  ` });
+  const supplierId = padded.body?.data?.id ?? padded.body?.id;
+  check('a name with spaces around it is accepted', padded.status < 400, `${padded.status} :: ${said(padded)}`);
+  if (supplierId) {
+    const stored = await prisma.supplier.findUnique({ where: { id: supplierId }, select: { name: true } });
+    check('and is stored without them', stored?.name === `QA Padded ${STAMP}`, JSON.stringify(stored?.name));
+  }
+  console.log('');
+}
+
 // ── STALE: the screen is out of date ─────────────────────────────────────────
 /**
  * Two tabs open, or one tab left open over lunch. Somebody deletes a thing in the first and then
@@ -635,6 +680,7 @@ async function main() {
   await doubleSubmit(owner.token, ctx);
   await atomicity(owner.token, ctx);
   await awkwardInput(owner.token);
+  await blankNames(owner.token, ctx);
   await staleData(owner.token, ctx);
   await binnedProduct(owner.token);
   await sequentialCodes(owner.token);

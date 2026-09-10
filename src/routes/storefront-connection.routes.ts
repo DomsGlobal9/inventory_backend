@@ -20,15 +20,15 @@ router.use(tenantMiddleware);
 const CONNECTION_PERMISSION = 'admin:locations';
 
 const createSchema = z.object({
-  name: z.string().min(1, 'Give the connection a name').max(80),
-  baseUrl: z.string().min(1, 'Enter the address updates should be sent to'),
+  name: z.string().trim().min(1, 'Give the connection a name').max(80),
+  baseUrl: z.string().trim().min(1, 'Enter the address updates should be sent to'),
   type: z.enum(['GENERIC', 'SHOPIFY', 'WOOCOMMERCE']).optional(),
   locationIds: z.array(z.string().uuid()).optional()
 });
 
 const updateSchema = z.object({
-  name: z.string().min(1).max(80).optional(),
-  baseUrl: z.string().min(1).optional(),
+  name: z.string().trim().min(1).max(80).optional(),
+  baseUrl: z.string().trim().min(1).optional(),
   locationIds: z.array(z.string().uuid()).optional()
 });
 

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const supplierSchema = z.object({
-  name: z.string().min(1, "Name is required"),
+  name: z.string().trim().min(1, "Give the supplier a name"),
   contactName: z.string().optional().nullable(),
   email: z.string().email("Invalid email").optional().nullable(),
   phone: z.string().optional().nullable(),

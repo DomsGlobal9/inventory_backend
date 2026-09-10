@@ -50,7 +50,7 @@ function fail(res: Response, error: any, next: NextFunction) {
  */
 router.post('/install', requirePermission(PERMISSION), async (req, res, next) => {
   try {
-    const body = z.object({ shop: z.string().min(1, 'Enter your Shopify store address') }).parse(req.body);
+    const body = z.object({ shop: z.string().trim().min(1, 'Enter your Shopify store address') }).parse(req.body);
     const { shopDomain, authorizeUrl } = await shopifyInstallationService.beginInstall({
       shop: body.shop,
       clientId: clientOf(req),
@@ -97,7 +97,7 @@ router.get('/pending', requirePermission(PERMISSION), async (_req, res, next) =>
  */
 router.post('/claim', requirePermission(PERMISSION), async (req, res, next) => {
   try {
-    const body = z.object({ shop: z.string().min(1) }).parse(req.body);
+    const body = z.object({ shop: z.string().trim().min(1) }).parse(req.body);
     const installation = await shopifyInstallationService.claim(body.shop, clientOf(req), userOf(req));
     res.json({ success: true, data: installation });
   } catch (error: any) {

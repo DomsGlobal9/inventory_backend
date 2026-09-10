@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const createVariantSchema = z.object({
-  sku: z.string().min(1, "SKU is required"),
+  sku: z.string().trim().min(1, "Give the variant an SKU"),
   size: z.string().optional(),
   colorName: z.string().optional(),
   hexCode: z.string().optional(),
@@ -34,7 +34,7 @@ export const bulkCreateVariantSchema = z.object({
 
 export const bulkUpdateVariantSchema = z.object({
   updates: z.array(z.object({
-    sku: z.string().min(1, "SKU is required"),
+    sku: z.string().trim().min(1, "Give the variant an SKU"),
     quantity: z.number().int().min(0).optional(),
     priceOverride: z.number().positive().optional(),
     sellingPrice: z.number().positive().optional(),

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const stockCountCreateSchema = z.object({
-  name: z.string().min(1, "Name is required"),
+  name: z.string().trim().min(1, "Give the count a name"),
   locationId: z.string().min(1, "Location ID is required"),
   categoryId: z.string().optional().nullable(),
   createdBy: z.string().optional().nullable()
