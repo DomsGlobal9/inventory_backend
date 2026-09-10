@@ -6,6 +6,8 @@ import { generateUniqueCode, generateSequentialCode } from '../utils/codeGenerat
 import { inventoryMutationService } from './inventory-mutation.service';
 import { valuationService } from './valuation.service';
 import { notFound } from '../utils/httpError';
+import { conflict } from '../utils/httpError';
+import { isLive, notLiveReason } from '../utils/product-state-machine';
 
 /**
  * How many rows of a bulk import are worked on at once.
@@ -28,12 +30,10 @@ const BULK_UPDATE_CONCURRENCY = 8;
  * delete. Neither would have been easy to explain afterwards.
  */
 function assertCanTakeVariants(product: { status?: string | null }) {
-  if (product.status === 'TRASHED') {
-    throw { statusCode: 400, message: "That product is in the bin. Restore it before adding sizes or colours." };
-  }
-  if (product.status === 'ARCHIVED') {
-    throw { statusCode: 400, message: "That product is archived. Restore it before adding sizes or colours." };
-  }
+  if (isLive(product.status)) return;
+  // Asked of the state machine rather than re-listed here, so "which states are on their way
+  // out" has one answer in the codebase instead of one per caller.
+  throw conflict(notLiveReason(product.status as string) + ' Then you can add sizes and colours.');
 }
 
 export class VariantService {

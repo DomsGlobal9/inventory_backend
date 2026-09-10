@@ -2,7 +2,7 @@ import { prisma } from '../lib/prisma';
 import { Prisma, ReturnReason } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
-import { notFound } from '../utils/httpError';
+import { notFound, conflict } from '../utils/httpError';
 
 export class ReturnService {
   /**
@@ -81,7 +81,14 @@ export class ReturnService {
     if (!salesReturn) throw notFound('Return not found');
 
     if (salesReturn.status !== 'REQUESTED') {
-      throw new Error(`Cannot transition from ${salesReturn.status} to RECEIVED`);
+      // 409, not a bare Error: the request is fine, the return has moved on. And said in
+      // words -- "Cannot transition from RECEIVED to RECEIVED" is not something to show
+      // somebody standing at a counter with the customer in front of them.
+      throw conflict(
+        salesReturn.status === 'RECEIVED'
+          ? 'These goods have already been booked in. Refresh to see where this return got to.'
+          : 'This return has already moved past being booked in.'
+      );
     }
 
     return prisma.salesReturn.update({

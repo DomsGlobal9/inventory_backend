@@ -108,6 +108,7 @@ async function teardown() {
   if (KEEP) { console.log(`\nkept ${CLIENT}`); return; }
   const w = { clientId: CLIENT };
   // Children first -- nothing here relies on a cascade that may not be declared.
+  await prisma.clientErrorLog.deleteMany({ where: w }).catch(() => {});
   await prisma.inventoryTransaction.deleteMany({ where: w });
   await prisma.inventoryStock.deleteMany({ where: w });
   await prisma.inventoryReservation.deleteMany({ where: w }).catch(() => {});
@@ -116,6 +117,11 @@ async function teardown() {
   await prisma.dispatch.deleteMany({ where: w }).catch(() => {});
   await prisma.salesOrderItem.deleteMany({ where: { salesOrder: { clientId: CLIENT } } }).catch(() => {});
   await prisma.salesOrder.deleteMany({ where: w }).catch(() => {});
+  // Stock counts hold a row per variant, so they have to go before the variants do -- the
+  // foreign key is not declared as a cascade and the delete fails outright without this.
+  await prisma.stockCountItem.deleteMany({ where: { stockCount: { clientId: CLIENT } } }).catch(() => {});
+  await prisma.stockCount.deleteMany({ where: w }).catch(() => {});
+  await prisma.inventoryReservation.deleteMany({ where: w }).catch(() => {});
   await prisma.productVariant.deleteMany({ where: w });
   await prisma.product.deleteMany({ where: w });
   await prisma.stockLocation.deleteMany({ where: w });
@@ -329,7 +335,7 @@ async function atomicity(owner: string, ctx: { variantId: string; locationId: st
 
   const r = await call(owner, 'POST', '/sales-orders/full', {
     locationId: ctx.locationId,
-    customerId: ctx.customerId,
+    customer: { id: ctx.customerId },
     items: [
       { variantId: ctx.variantId, quantity: 1, unitPrice: 100 },
       { variantId: '00000000-0000-0000-0000-000000000000', quantity: 1, unitPrice: 100 }
@@ -503,6 +509,88 @@ async function sequentialCodes(owner: string) {
   console.log('');
 }
 
+// ── STATES: the same step, taken twice ──────────────────────────────────
+/**
+ * Every workflow in this product has states, and every one of them can be asked to repeat a
+ * step it has already taken -- a slow connection, a double click, two people on two tills, a
+ * tab left open. That is not an error in the shop; it is Tuesday.
+ *
+ * What a refusal must NOT be is a 500. A 5xx says the server broke, invites the caller to
+ * retry something that can never succeed, and -- because errorHandler persists only 5xx --
+ * writes the refusal onto the Platform Console's Errors page, where a real crash then has to
+ * be found among hundreds of them.
+ *
+ * 409 is the honest answer: the request was fine, the thing has moved on.
+ */
+async function stateMachines(owner: string, ctx: { locationId: string; variantId: string; customerId: string }) {
+  console.log('STATES the same step, taken twice');
+
+  // ── a sales order, confirmed twice ──
+  const order = await call(owner, 'POST', '/sales-orders/full', {
+    locationId: ctx.locationId,
+    customer: { id: ctx.customerId },
+    items: [{ variantId: ctx.variantId, quantity: 1, unitPrice: 100 }]
+  });
+  const orderId = order.body?.data?.id ?? order.body?.id;
+  if (orderId) {
+    // Something to actually reserve, or the first confirm fails for an unrelated reason.
+    await call(owner, 'POST', '/inventory/adjustment', {
+      variantId: ctx.variantId, locationId: ctx.locationId, quantity: 10, reason: 'MANUAL_ADJUSTMENT'
+    });
+    const first = await call(owner, 'POST', `/sales-orders/${orderId}/confirm`, {});
+    check('an order confirms once', first.status < 400, `${first.status} :: ${said(first)}`);
+
+    const again = await call(owner, 'POST', `/sales-orders/${orderId}/confirm`, {});
+    check('confirming it again is refused, not a crash',
+      again.status === 409 || again.status === 400, `got ${again.status} :: ${said(again)}`);
+    // Deliberately case-SENSITIVE for the enum names: "confirmed" is the English word and is
+    // exactly right in a sentence, while "CONFIRMED" is the database's spelling leaking out.
+    const words = said(again);
+    check('and says so in words a shopkeeper can act on',
+      !/transition|status:|(DRAFT|CONFIRMED|CANCELLED|DISPATCHED|PARTIALLY_DISPATCHED|TRASHED|ARCHIVED|IN_PROGRESS|COMPLETED)/.test(words),
+      `it says: ${words}`);
+
+    // Cancelling a dispatched order, and cancelling twice.
+    const cancel = await call(owner, 'POST', `/sales-orders/${orderId}/cancel`, {});
+    check('a confirmed order can be cancelled', cancel.status < 400, `${cancel.status} :: ${said(cancel)}`);
+    const cancelAgain = await call(owner, 'POST', `/sales-orders/${orderId}/cancel`, {});
+    check('cancelling it again is refused, not a crash',
+      cancelAgain.status === 409 || cancelAgain.status === 400, `got ${cancelAgain.status} :: ${said(cancelAgain)}`);
+  } else {
+    check('an order to confirm', false, `${order.status} :: ${said(order)}`);
+  }
+
+  // ── a stock count, started twice and completed twice ──
+  const count = await call(owner, 'POST', '/stock-counts', {
+    name: `QA audit ${STAMP}`, locationId: ctx.locationId
+  });
+  const countId = count.body?.data?.id ?? count.body?.id;
+  if (countId) {
+    const started = await call(owner, 'POST', `/stock-counts/${countId}/start`, {});
+    check('an audit starts once', started.status < 400, `${started.status} :: ${said(started)}`);
+
+    const restart = await call(owner, 'POST', `/stock-counts/${countId}/start`, {});
+    check('starting it again is refused, not a crash',
+      restart.status === 409 || restart.status === 400, `got ${restart.status} :: ${said(restart)}`);
+
+    const done = await call(owner, 'POST', `/stock-counts/${countId}/complete`, {});
+    check('an audit completes', done.status < 400, `${done.status} :: ${said(done)}`);
+    const doneAgain = await call(owner, 'POST', `/stock-counts/${countId}/complete`, {});
+    check('completing it again is refused, not a crash',
+      doneAgain.status === 409 || doneAgain.status === 400, `got ${doneAgain.status} :: ${said(doneAgain)}`);
+  } else {
+    check('an audit to start', false, `${count.status} :: ${said(count)}`);
+  }
+
+  // ── nothing above may have been filed as a backend crash ──
+  const crashes = await prisma.clientErrorLog.count({
+    where: { clientId: CLIENT, source: 'BACKEND', statusCode: { gte: 500 } }
+  });
+  check('none of it was logged as a server crash', crashes === 0, `${crashes} logged`);
+  console.log('');
+}
+
+
 // ── main ─────────────────────────────────────────────────────────────────────
 async function main() {
   const ping = await fetch(`${BASE}/health`).catch(() => null);
@@ -550,6 +638,7 @@ async function main() {
   await staleData(owner.token, ctx);
   await binnedProduct(owner.token);
   await sequentialCodes(owner.token);
+  await stateMachines(owner.token, ctx);
 
   console.log('─'.repeat(70));
   console.log(`${pass} passed, ${failures.length} failed`);

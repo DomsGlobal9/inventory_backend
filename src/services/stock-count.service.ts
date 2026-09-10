@@ -3,6 +3,7 @@ import { StockCountStatus, TransactionType, InventoryReason, Prisma } from '@pri
 import { inventoryMutationService } from './inventory-mutation.service';
 import { inventoryRepository } from '../repositories/inventory.repository';
 import { notFound } from '../utils/httpError';
+import { conflict } from '../utils/httpError';
 
 export class StockCountService {
   async getCounts(clientId: string) {
@@ -109,7 +110,16 @@ export class StockCountService {
   async startCount(clientId: string, id: string) {
     const count = await prisma.stockCount.findFirst({ where: { id, clientId } });
     if (!count) throw notFound('Stock count not found');
-    if (count.status !== StockCountStatus.DRAFT) throw new Error(`Cannot start audit from status: ${count.status}`);
+    // Bare Errors here meant a second press of Start answered 500 -- "the server broke" for
+    // something the server refused on purpose -- and, because errorHandler persists only 5xx,
+    // every double-click was written onto the Platform Console's Errors page.
+    if (count.status !== StockCountStatus.DRAFT) {
+      throw conflict(
+        count.status === StockCountStatus.IN_PROGRESS
+          ? 'This audit is already under way. Refresh to see where it got to.'
+          : 'This audit has already been completed, so it cannot be started again.'
+      );
+    }
 
     return prisma.stockCount.update({
       where: { id },
@@ -124,7 +134,9 @@ export class StockCountService {
     // Validate count exists and is in progress
     const count = await prisma.stockCount.findFirst({ where: { id, clientId } });
     if (!count) throw notFound('Stock count not found');
-    if (count.status === StockCountStatus.COMPLETED) throw new Error('Audit is already completed');
+    if (count.status === StockCountStatus.COMPLETED) {
+      throw conflict('This audit has already been completed. Start a new one to count again.');
+    }
     
     return prisma.stockCountItem.update({
       where: { id: itemId, stockCountId: id },
@@ -139,7 +151,9 @@ export class StockCountService {
     });
 
     if (!count) throw notFound('Stock count not found');
-    if (count.status === StockCountStatus.COMPLETED) throw new Error('Audit is already completed');
+    if (count.status === StockCountStatus.COMPLETED) {
+      throw conflict('This audit has already been completed. Start a new one to count again.');
+    }
     if (!count.locationId) throw new Error('Legacy stock count without a location cannot be completed in multi-location mode.');
 
     // Filter items with discrepancies
