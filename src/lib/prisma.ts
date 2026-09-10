@@ -21,14 +21,38 @@ import { env } from '../config/env';
  * `/health`, which touches nothing, stayed at 330ms with no errors at every level -- so the
  * Node process was never the constraint.
  *
- * Raising this is safe here because pgbouncer sits in front in transaction mode: these are
+ * Raising this is safe while pgbouncer sits in front in transaction mode: these are
  * connections to the pooler, not to Postgres itself, and the pooler multiplexes them onto a
- * much smaller number of real backends. Without pgbouncer this number would have to stay small.
+ * much smaller number of real backends. On a DIRECT connection this number has to come down,
+ * which DIRECT_CONNECTION_LIMIT below does.
  *
- * It is a mitigation, not the fix. The fix is to put the application in the same region as its
- * database; until then this buys headroom rather than removing the ceiling.
+ * On the region: that was the conclusion drawn from a round trip "about a second", and it was
+ * measured through the pooler. Measured again against both endpoints, interleaved, twenty
+ * samples each:
+ *
+ *     SELECT 1   pooled (6543)   p50 1514ms   p95 1838ms   min 1431ms
+ *                direct (5432)   p50  311ms   p95  618ms   min  286ms
+ *
+ * and the same gap on a real table read (1533ms against 317ms). 311ms is what India to
+ * ap-southeast-2 costs; the other 1203ms is the pooler, on every single query, and its minimum
+ * never drops -- a fixed tax, not jitter. So the region is real but second: the pooler is
+ * costing four times what the ocean does, and switching it off costs nothing.
  */
 const CONNECTION_LIMIT = 25;
+
+/**
+ * The same, for a direct connection.
+ *
+ * Without pgbouncer multiplexing, every one of these is a real Postgres backend out of the
+ * sixty this database allows -- twenty-five in use here was measured alongside the fourteen
+ * this user already held. Ten leaves room for migrations, the Supabase dashboard, and a second
+ * instance during a deploy.
+ *
+ * Direct is right for a long-running server like this one, which holds its connections and
+ * reuses them. It is the wrong answer for serverless, where every invocation opens its own and
+ * the pooler is what stops the database running out.
+ */
+const DIRECT_CONNECTION_LIMIT = 10;
 
 /**
  * How long a query waits for a free connection before giving up.
@@ -50,12 +74,26 @@ const POOL_TIMEOUT_SECONDS = 20;
  * deliberate choice, and this should not quietly override it.
  */
 function tunedDatabaseUrl(): string | undefined {
-  const raw = process.env.DATABASE_URL;
+  // Opt in with DB_USE_DIRECT=true. Deliberately off by default: which endpoint a deployment
+  // should talk to depends on how it is run -- a long-running server wants the direct one, a
+  // serverless deployment needs the pooler -- and that is not something to change under an
+  // operator without them choosing it. See the measurement above for what it is worth.
+  const useDirect = process.env.DB_USE_DIRECT === 'true' && !!process.env.DIRECT_URL;
+  const raw = useDirect ? process.env.DIRECT_URL : process.env.DATABASE_URL;
   if (!raw) return undefined;
   try {
     const url = new URL(raw);
+
+    // pgbouncer=true tells Prisma to stop using prepared statements, which is required through
+    // a transaction-mode pooler and pure loss without one. Carried over from DATABASE_URL it
+    // would quietly make the direct connection slower than it needs to be.
+    if (useDirect) url.searchParams.delete('pgbouncer');
+
     if (!url.searchParams.has('connection_limit')) {
-      url.searchParams.set('connection_limit', String(CONNECTION_LIMIT));
+      url.searchParams.set(
+        'connection_limit',
+        String(useDirect ? DIRECT_CONNECTION_LIMIT : CONNECTION_LIMIT)
+      );
     }
     if (!url.searchParams.has('pool_timeout')) {
       url.searchParams.set('pool_timeout', String(POOL_TIMEOUT_SECONDS));
