@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { notFound } from '../utils/httpError';
 
 // Runs `items` through `fn` with at most `limit` in flight at once -- same pattern as
 // rbac-seed.service.ts, and for the same reason: this environment's Prisma connection
@@ -30,7 +31,7 @@ export async function seedCatalogDefaultsForClient(clientId: string, templateNam
   });
 
   if (!template) {
-    throw new Error(`Catalog template "${templateName}" not found`);
+    throw notFound(`Catalog template "${templateName}" not found`);
   }
 
   const existingItems = await prisma.clientCatalogItem.findMany({

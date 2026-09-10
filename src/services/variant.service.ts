@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma';
 import { generateUniqueCode, generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { valuationService } from './valuation.service';
+import { notFound } from '../utils/httpError';
 
 /**
  * How many rows of a bulk import are worked on at once.
@@ -327,7 +328,7 @@ export class VariantService {
           where: { clientId, sku }
         });
 
-        if (!variant) throw new Error(`SKU not found`);
+        if (!variant) throw notFound(`SKU not found`);
 
         return prisma.$transaction(async (tx) => {
           let dataToUpdate: Prisma.ProductVariantUpdateInput = {};

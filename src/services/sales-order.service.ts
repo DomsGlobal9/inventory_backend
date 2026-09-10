@@ -3,6 +3,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { validateTransition } from '../utils/sales-order-state-machine';
 import { reservationService } from './reservation.service';
 import { resolveVariantForLocation } from '../utils/variant-location';
+import { notFound } from '../utils/httpError';
 
 export class SalesOrderService {
   async createDraftOrder(clientId: string, locationId: string, customerId: string, channel: any = 'POS') {
@@ -99,7 +100,7 @@ export class SalesOrderService {
           where: { id: item.variantId, clientId },
           include: { locationProfiles: true, product: { select: { basePrice: true } } }
         });
-        if (!variant) throw new Error(`Variant not found: ${item.variantId}`);
+        if (!variant) throw notFound(`Variant not found: ${item.variantId}`);
 
         const locationConfig = resolveVariantForLocation(variant, locationId, Number(variant.product.basePrice));
 
@@ -192,14 +193,14 @@ export class SalesOrderService {
         }
       }
     });
-    if (!order) throw new Error('Order not found');
+    if (!order) throw notFound('Order not found');
     return order;
   }
 
   async updateOrder(clientId: string, id: string, data: any) {
     // Basic update for shipping, discount, tax (for Draft orders)
     const order = await prisma.salesOrder.findFirst({ where: { clientId, id } });
-    if (!order) throw new Error('Order not found');
+    if (!order) throw notFound('Order not found');
     
     // We don't use state machine here because status isn't changing, but we enforce DRAFT
     if (order.status !== 'DRAFT') throw new Error('Can only update DRAFT orders');
@@ -218,7 +219,7 @@ export class SalesOrderService {
 
   async deleteOrder(clientId: string, id: string) {
     const order = await prisma.salesOrder.findFirst({ where: { clientId, id } });
-    if (!order) throw new Error('Order not found');
+    if (!order) throw notFound('Order not found');
     if (order.status !== 'DRAFT') throw new Error('Can only delete DRAFT orders');
     return prisma.salesOrder.update({
       where: { id },
@@ -239,7 +240,7 @@ export class SalesOrderService {
         where: { id: variantId, clientId },
         include: { locationProfiles: true, product: { select: { basePrice: true } } }
       });
-      if (!variant) throw new Error('Variant not found');
+      if (!variant) throw notFound('Variant not found');
 
       const locationConfig = resolveVariantForLocation(variant, order.locationId, Number(variant.product.basePrice));
       if (!locationConfig.isAvailable) {
@@ -281,7 +282,7 @@ export class SalesOrderService {
       const deleted = await tx.salesOrderItem.deleteMany({
         where: { id: itemId, salesOrderId: orderId }
       });
-      if (deleted.count === 0) throw new Error('Order item not found on this order');
+      if (deleted.count === 0) throw notFound('Order item not found on this order');
 
       await this.recalculateOrderTotals(clientId, orderId, tx);
     }, { timeout: 30000 });
@@ -322,7 +323,7 @@ export class SalesOrderService {
         include: { items: true }
       });
 
-      if (!order) throw new Error("Order not found");
+      if (!order) throw notFound("Order not found");
       validateTransition(order.status, 'CONFIRMED');
 
       if (order.items.length === 0) {
@@ -350,7 +351,7 @@ export class SalesOrderService {
       include: { items: true }
     });
 
-    if (!order) throw new Error("Order not found");
+    if (!order) throw notFound("Order not found");
     validateTransition(order.status, 'CANCELLED');
 
     // If it was confirmed, we need to release reservations

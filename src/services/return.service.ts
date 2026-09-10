@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { Prisma, ReturnReason } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
+import { notFound } from '../utils/httpError';
 
 export class ReturnService {
   /**
@@ -19,7 +20,7 @@ export class ReturnService {
       const order = await tx.salesOrder.findFirst({
         where: { id: salesOrderId, clientId }
       });
-      if (!order) throw new Error('Sales order not found');
+      if (!order) throw notFound('Sales order not found');
 
       // Create return record
       const returnNumber = await generateSequentialCode(clientId, 'RET', 'SALES_RETURN', tx as any);
@@ -57,7 +58,7 @@ export class ReturnService {
         });
 
         if (!dispatchItem || dispatchItem.dispatch.clientId !== clientId) {
-          throw new Error(`DispatchItem ${item.dispatchItemId} not found`);
+          throw notFound(`DispatchItem ${item.dispatchItemId} not found`);
         }
 
         const availableToReturn = dispatchItem.quantity - dispatchItem.returnedQty;
@@ -77,7 +78,7 @@ export class ReturnService {
     const salesReturn = await prisma.salesReturn.findFirst({
       where: { id, clientId }
     });
-    if (!salesReturn) throw new Error('Return not found');
+    if (!salesReturn) throw notFound('Return not found');
 
     if (salesReturn.status !== 'REQUESTED') {
       throw new Error(`Cannot transition from ${salesReturn.status} to RECEIVED`);
@@ -99,7 +100,7 @@ export class ReturnService {
         include: { items: true }
       });
 
-      if (!salesReturn) throw new Error('Return not found');
+      if (!salesReturn) throw notFound('Return not found');
       if (salesReturn.status !== 'RECEIVED' && salesReturn.status !== 'REQUESTED') {
         throw new Error(`Cannot transition from ${salesReturn.status} to INSPECTED`);
       }
@@ -159,7 +160,7 @@ export class ReturnService {
         }
       });
 
-      if (!salesReturn) throw new Error('Return not found');
+      if (!salesReturn) throw notFound('Return not found');
 
       if (salesReturn.status === 'COMPLETED' || salesReturn.status === 'REJECTED') {
         throw new Error(`Return is already in terminal state: ${salesReturn.status}`);
@@ -224,7 +225,7 @@ export class ReturnService {
       where: { id, clientId }
     });
 
-    if (!salesReturn) throw new Error('Return not found');
+    if (!salesReturn) throw notFound('Return not found');
 
     if (salesReturn.status === 'COMPLETED' || salesReturn.status === 'REJECTED') {
       throw new Error(`Return is already in terminal state: ${salesReturn.status}`);
@@ -278,7 +279,7 @@ export class ReturnService {
         }
       }
     });
-    if (!ret) throw new Error('Return not found');
+    if (!ret) throw notFound('Return not found');
     return ret;
   }
 }

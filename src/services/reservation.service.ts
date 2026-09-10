@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { ReservationStatus } from '@prisma/client';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { storefrontEventService } from './storefront-event.service';
+import { notFound } from '../utils/httpError';
 
 /**
  * Reserving or releasing changes what is AVAILABLE without changing what is physically held,
@@ -39,7 +40,7 @@ export class ReservationService {
         `;
 
         if (stocks.length === 0) {
-          throw new Error(`Stock for variant ${item.variantId} not found in location ${locationId}`);
+          throw notFound(`Stock for variant ${item.variantId} not found in location ${locationId}`);
         }
 
         const stock = stocks[0];

@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { generateSequentialCode } from '../utils/codeGenerator';
+import { notFound } from '../utils/httpError';
 
 export class SupplierService {
   async createSupplier(clientId: string, data: { name: string; email?: string; phone?: string; address?: string }) {
@@ -74,7 +75,7 @@ export class SupplierService {
       include: { purchaseOrders: true } 
     });
     
-    if (!supplier) throw new Error("Supplier not found");
+    if (!supplier) throw notFound("Supplier not found");
     
     if (supplier.purchaseOrders.length > 0) {
       throw new Error("Cannot delete supplier with historical purchase orders. Deactivate instead.");

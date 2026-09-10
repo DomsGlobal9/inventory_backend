@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { reservationService } from './reservation.service';
 import { inventoryMutationService } from './inventory-mutation.service';
+import { notFound } from '../utils/httpError';
 
 export class DispatchService {
   async createDispatch(clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number }[]) {
@@ -16,7 +17,7 @@ export class DispatchService {
       include: { items: true }
     });
 
-    if (!order) throw new Error("Order not found");
+    if (!order) throw notFound("Order not found");
     if (order.status !== 'CONFIRMED' && order.status !== 'PARTIALLY_DISPATCHED') {
       throw new Error(`Cannot dispatch order in ${order.status} state`);
     }
@@ -56,7 +57,7 @@ export class DispatchService {
 
       for (const dItem of dispatch.items) {
         const orderItem = order.items.find((oi: any) => oi.id === dItem.salesOrderItemId);
-        if (!orderItem) throw new Error("Order item not found");
+        if (!orderItem) throw notFound("Order item not found");
 
         // a) Update Reservation (decrements reservedQty)
         await reservationService.dispatchReservation(clientId, dItem.salesOrderItemId, dItem.quantity, dispatch.id, tx);

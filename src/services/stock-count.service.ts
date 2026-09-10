@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { StockCountStatus, TransactionType, InventoryReason, Prisma } from '@prisma/client';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { inventoryRepository } from '../repositories/inventory.repository';
+import { notFound } from '../utils/httpError';
 
 export class StockCountService {
   async getCounts(clientId: string) {
@@ -35,7 +36,7 @@ export class StockCountService {
       }
     });
 
-    if (!count) throw new Error('Stock count not found');
+    if (!count) throw notFound('Stock count not found');
 
     // The audit is scoped to a single location, but `stocks` above returns every
     // location's row for the variant -- flatten to the one this audit actually cares
@@ -107,7 +108,7 @@ export class StockCountService {
 
   async startCount(clientId: string, id: string) {
     const count = await prisma.stockCount.findFirst({ where: { id, clientId } });
-    if (!count) throw new Error('Stock count not found');
+    if (!count) throw notFound('Stock count not found');
     if (count.status !== StockCountStatus.DRAFT) throw new Error(`Cannot start audit from status: ${count.status}`);
 
     return prisma.stockCount.update({
@@ -122,7 +123,7 @@ export class StockCountService {
   async updateItemCount(clientId: string, id: string, itemId: string, countedQty: number | null) {
     // Validate count exists and is in progress
     const count = await prisma.stockCount.findFirst({ where: { id, clientId } });
-    if (!count) throw new Error('Stock count not found');
+    if (!count) throw notFound('Stock count not found');
     if (count.status === StockCountStatus.COMPLETED) throw new Error('Audit is already completed');
     
     return prisma.stockCountItem.update({
@@ -137,7 +138,7 @@ export class StockCountService {
       include: { items: true }
     });
 
-    if (!count) throw new Error('Stock count not found');
+    if (!count) throw notFound('Stock count not found');
     if (count.status === StockCountStatus.COMPLETED) throw new Error('Audit is already completed');
     if (!count.locationId) throw new Error('Legacy stock count without a location cannot be completed in multi-location mode.');
 

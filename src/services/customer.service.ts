@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { CustomerStatus } from '@prisma/client';
+import { notFound } from '../utils/httpError';
 
 export class CustomerService {
   async createCustomer(clientId: string, data: any) {
@@ -60,7 +61,7 @@ export class CustomerService {
     });
 
     if (!customer) {
-      throw new Error(`Customer ${id} not found`);
+      throw notFound(`Customer ${id} not found`);
     }
 
     return customer;
@@ -69,7 +70,7 @@ export class CustomerService {
   async updateCustomer(clientId: string, id: string, data: any) {
     // Ensure customer belongs to client
     const existing = await prisma.customer.findFirst({ where: { clientId, id } });
-    if (!existing) throw new Error('Customer not found');
+    if (!existing) throw notFound('Customer not found');
 
     return prisma.customer.update({
       where: { id },
