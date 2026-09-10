@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase';
 import { storefrontEventService } from './storefront-event.service';
 import { shopperTryOnProductService, type ScanUrlOptions } from './shopper-tryon';
 import { StorefrontEventType } from '@prisma/client';
+import { badRequest } from '../utils/httpError';
 
 /**
  * Tell any connected storefront that a product appeared, changed or was withdrawn.
@@ -124,6 +125,24 @@ export class ProductService {
     // on sale. Trashing and restoring the same product was correct throughout, which is what
     // made it easy to miss.
     const existing = await this.getProductById(id, clientId);
+
+    // Archiving something that is in the bin took it OUT of the bin.
+    //
+    // Nothing checked where the product currently was, so the transition ran anyway: status
+    // became ARCHIVED while trashedAt stayed set, and previousStatus was recorded as TRASHED.
+    // Three things then went wrong at once. The seven-day wait stopped applying, because the
+    // hard-delete rule only recognises a product whose status is TRASHED. Restore sent it back
+    // to TRASHED -- its "previous" status -- while clearing trashedAt, so the wait could never
+    // be computed again and the product could never be deleted. And a product the shopkeeper
+    // had thrown away quietly reappeared in the archive.
+    if (existing.status === 'TRASHED') {
+      throw badRequest('That product is in the bin. Restore it first if you want to archive it.');
+    }
+    if (existing.status === 'ARCHIVED') {
+      // Not an error worth a red banner -- it is already where they are asking to put it.
+      return existing;
+    }
+
     const archived = await productRepository.updateSafe(id, clientId, {
       previousStatus: existing.status,
       status: 'ARCHIVED'
@@ -136,6 +155,12 @@ export class ProductService {
 
   async trashProduct(id: string, clientId: string) {
     const existing = await this.getProductById(id, clientId);
+
+    // Binning something already in the bin would record previousStatus as TRASHED, and restore
+    // would then put it straight back in the bin -- a product with no way out. It also resets
+    // trashedAt, quietly restarting the seven-day wait every time somebody pressed the button.
+    if (existing.status === 'TRASHED') return existing;
+
     const trashed = await productRepository.updateSafe(id, clientId, {
       previousStatus: existing.status,
       status: 'TRASHED',
@@ -148,6 +173,11 @@ export class ProductService {
   async restoreProduct(id: string, clientId: string) {
     const existing = await this.getProductById(id, clientId);
 
+    // There is nowhere to restore from unless it is archived or in the bin.
+    if (existing.status !== 'ARCHIVED' && existing.status !== 'TRASHED') {
+      throw badRequest('That product has not been archived or binned, so there is nothing to restore.');
+    }
+
     // When we genuinely do not know what it was, come back as a DRAFT rather than ACTIVE.
     //
     // Only products archived BEFORE archiveProduct started recording previousStatus land
@@ -156,7 +186,12 @@ export class ProductService {
     // Publish, while restoring to ACTIVE when it should have been DRAFT puts an unfinished
     // product in front of customers and tells the storefront to sell it. The recoverable
     // mistake is the one to make.
-    const restoredStatus = existing.previousStatus ?? 'DRAFT';
+    // Clamped, not trusted. previousStatus is only ever meant to hold a LIVE status, but a
+    // stored TRASHED or ARCHIVED (written by the transitions above before they were guarded)
+    // would otherwise "restore" the product to somewhere it still cannot be used.
+    const remembered = existing.previousStatus;
+    const restoredStatus =
+      (remembered && remembered !== 'ARCHIVED' && remembered !== 'TRASHED') ? remembered : 'DRAFT';
 
     const restored = await productRepository.updateSafe(id, clientId, {
       status: restoredStatus,

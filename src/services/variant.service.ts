@@ -17,6 +17,25 @@ import { notFound } from '../utils/httpError';
  */
 const BULK_UPDATE_CONCURRENCY = 8;
 
+/**
+ * A product has to be in the shop before it can grow new sizes and colours.
+ *
+ * Both creation paths checked only that the product EXISTED. It could be in the bin waiting out
+ * its seven days, or archived and withdrawn from sale, and a new variant went on anyway -- along
+ * with its opening stock, because `quantity` on a new variant puts units on the shelf. That put
+ * real units into the shop's valuation under a product that appears on no screen, and it blocked
+ * the deletion the bin exists for, since stock on hand is one of the things that refuses a hard
+ * delete. Neither would have been easy to explain afterwards.
+ */
+function assertCanTakeVariants(product: { status?: string | null }) {
+  if (product.status === 'TRASHED') {
+    throw { statusCode: 400, message: "That product is in the bin. Restore it before adding sizes or colours." };
+  }
+  if (product.status === 'ARCHIVED') {
+    throw { statusCode: 400, message: "That product is archived. Restore it before adding sizes or colours." };
+  }
+}
+
 export class VariantService {
   
   // Resolves the location(s) that should receive a variant's initial stock quantity.
@@ -124,6 +143,7 @@ export class VariantService {
     // Ensure product exists and belongs to client
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
+    assertCanTakeVariants(product);
 
     const variantCode = await generateSequentialCode(clientId, 'VAR', 'VARIANT');
     const barcode = await generateUniqueCode('SVM', 8, async (code) => variantRepository.barcodeExists(code));
@@ -156,6 +176,7 @@ export class VariantService {
   async bulkCreateVariants(productId: string, clientId: string, variants: any[], locationId?: string, applyToAllLocations?: boolean, supplierId?: string) {
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
+    assertCanTakeVariants(product);
 
     const locationIds = await this.resolveInitialStockLocationIds(clientId, locationId, applyToAllLocations);
 

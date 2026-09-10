@@ -93,8 +93,13 @@ export class ProductController {
       await productService.hardDeleteProduct(req.params.id as string, clientId);
       res.status(200).json({ success: true, message: "Product permanently deleted" });
     } catch (error: any) {
-      // Pass the specific rejection reason to the frontend
-      res.status(400).json({ success: false, message: error.message });
+      // Pass the specific rejection reason to the frontend, at the status it was raised with.
+      //
+      // This was a flat 400. The repository already distinguishes the two cases -- "you cannot
+      // delete this yet" is a 400, "there is no such product" is a 404 -- and flattening them
+      // meant a stale tab deleting something twice was told its request was malformed, and the
+      // frontend could not tell "refresh, it is already gone" from "this is blocked for a reason".
+      res.status(error.statusCode || 400).json({ success: false, message: error.message });
     }
   }
 }
