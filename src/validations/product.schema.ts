@@ -3,7 +3,13 @@ import { ProductCategory, ProductType, ProductStatus } from '@prisma/client';
 
 export const createProductSchema = z.object({
   productCode: z.string().optional(),
-  title: z.string().min(1, "Title is required"),
+  // Trimmed BEFORE the length is checked. `min(1)` counted the spaces, so a title of "   " was
+  // accepted and saved, and the product then sat in every list as a blank row -- impossible to
+  // find by searching and awkward even to click on.
+  //
+  // In the schema rather than the service so it applies everywhere this schema is used,
+  // including the partial update derived from it further down.
+  title: z.string().trim().min(1, "Give the product a name"),
   description: z.string().optional(),
   category: z.nativeEnum(ProductCategory),
   productType: z.nativeEnum(ProductType),

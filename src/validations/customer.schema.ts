@@ -5,7 +5,9 @@ import { z } from 'zod';
 // dropped. companyName, gstNumber and status were all being collected by
 // CustomerModal, stripped here, and then rendered back as "N/A" forever.
 export const customerSchema = z.object({
-  name: z.string().min(1, "Name is required"),
+  // Trimmed before the length check, for the same reason as the product title: "   " passed
+  // min(1) and saved a customer with a blank name, which no search can ever find again.
+  name: z.string().trim().min(1, "Give the customer a name"),
   companyName: z.string().optional().nullable(),
   email: z.string().email("Invalid email").optional().nullable(),
   phone: z.string().optional().nullable(),
