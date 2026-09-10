@@ -41,18 +41,34 @@ import { env } from '../config/env';
 const CONNECTION_LIMIT = 25;
 
 /**
- * The same, for a direct connection.
+ * The same, for the session-mode endpoint.
  *
- * Without pgbouncer multiplexing, every one of these is a real Postgres backend out of the
- * sixty this database allows -- twenty-five in use here was measured alongside the fourteen
- * this user already held. Ten leaves room for migrations, the Supabase dashboard, and a second
- * instance during a deploy.
+ * Five, and the number matters -- ten took production down.
  *
- * Direct is right for a long-running server like this one, which holds its connections and
- * reuses them. It is the wrong answer for serverless, where every invocation opens its own and
- * the pooler is what stops the database running out.
+ * This was sized against Postgres's own max_connections, about sixty, on the assumption that
+ * DIRECT_URL means a direct connection to the database. It does not. It is Supabase's SESSION
+ * pooler, and that has its own far smaller ceiling: pool_size 15 for the whole project. The
+ * name "direct" refers to how it behaves -- one connection held for the length of the session,
+ * no statement-level multiplexing -- not to what it is connected to.
+ *
+ * Session mode is what makes the arithmetic unforgiving. A connection is held for as long as
+ * the client keeps it, so a Prisma pool of ten occupies ten of the fifteen permanently, not
+ * just while a query runs. Render also overlaps instances during a deploy, so for a minute
+ * there are two pools: ten plus ten against a ceiling of fifteen. Production answered
+ *
+ *   FATAL: (EMAXCONNSESSION) max clients reached in session mode - pool_size: 15
+ *
+ * and the dashboard 500'd, twelve minutes after the deploy that turned this on.
+ *
+ * Five leaves the sums working: five live, five more during a deploy overlap, and three spare
+ * for migrations and the Supabase dashboard. One Render instance with WEB_CONCURRENCY=1 has no
+ * use for ten held connections anyway -- the win from this endpoint is the round trip it saves
+ * per query, not depth.
+ *
+ * If this ever needs raising, raise Supabase's pool size first and check it, rather than
+ * inferring a ceiling from the word "direct" as this comment previously did.
  */
-const DIRECT_CONNECTION_LIMIT = 10;
+const DIRECT_CONNECTION_LIMIT = 5;
 
 /**
  * How long a query waits for a free connection before giving up.
