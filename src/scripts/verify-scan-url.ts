@@ -21,7 +21,21 @@ process.env.SHOPPER_TRYON_APP_URL = 'https://www.tryon2buy.com';
 process.env.FRONTEND_URL = 'https://app.inventory.example';
 process.env.SHOPPER_TRYON_RETURN_ORIGINS = 'https://shop.example,https://store.example';
 
-import { shopperTryOnProductService } from '../services/shopper-tryon';
+/**
+ * Loaded with import(), not a top-level import, and that is deliberate.
+ *
+ * config/env.ts calls dotenv.config() and validates the schema the moment it is first
+ * loaded -- and `import` statements are hoisted above everything else in the file, so a
+ * top-level import here would evaluate env.ts BEFORE the assignments above ran. The real
+ * .env would win, the allow-list would come back empty, and the script would report the
+ * allow-list as broken when the only broken thing was the order these two lines run in.
+ *
+ * Importing inside run() puts the assignments first, which is the whole point of making
+ * them. The alternative -- remembering to pass five variables on the command line every
+ * time -- is a script that fails for whoever forgets.
+ */
+type Service = typeof import('../services/shopper-tryon')['shopperTryOnProductService'];
+let shopperTryOnProductService: Service;
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -37,6 +51,8 @@ const q = (u: string | null, key: string) =>
   u ? new URL(u).searchParams.get(key) : null;
 
 async function run() {
+  ({ shopperTryOnProductService } = await import('../services/shopper-tryon'));
+
   console.log('\nTHE LINK ITSELF');
 
   const bare = url();
