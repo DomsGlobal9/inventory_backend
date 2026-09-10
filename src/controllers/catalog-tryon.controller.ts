@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { catalogTryOnService } from '../services/tryon';
 import { tryOnUsageService } from '../services/tryon';
+import { respondWithError } from '../utils/respondWithError';
 
 export class CatalogTryOnController {
 
@@ -102,7 +103,7 @@ export class CatalogTryOnController {
       // who was just told they had none left -- and push them further past a limit they cannot
       // get back under. It is a 429 with a message they can act on, not a 500.
       if (error?.statusCode === 429) {
-        res.status(429).json({ success: false, message: error.message });
+        return respondWithError(res, error, { status: 429 });
         return;
       }
 

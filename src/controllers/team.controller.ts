@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { teamService } from '../services/team.service';
 import { recordCredentialDisclosure } from '../services/credential-audit';
 import { holdsEverything } from '../config/permissions';
+import { respondWithError } from '../utils/respondWithError';
 
 /**
  * Whether this identity is the account owner.
@@ -22,7 +23,7 @@ export const listMembers = async (req: Request, res: Response) => {
     const members = await teamService.listMembers(user.clientId);
     res.json({ success: true, data: members });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load team members', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load team members' });
   }
 };
 
@@ -32,7 +33,7 @@ export const listRoles = async (req: Request, res: Response) => {
     const roles = await teamService.listRoles(user.clientId);
     res.json({ success: true, data: roles });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load roles', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load roles' });
   }
 };
 
@@ -42,7 +43,7 @@ export const listActivity = async (req: Request, res: Response) => {
     const activity = await teamService.listActivity(user.clientId);
     res.json({ success: true, data: activity });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load activity', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load activity' });
   }
 };
 

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { inventoryTransferService } from '../services/inventory-transfer.service';
+import { respondWithError } from '../utils/respondWithError';
 
 export const transferStock = async (req: Request, res: Response) => {
   try {
@@ -18,6 +19,6 @@ export const transferStock = async (req: Request, res: Response) => {
 
     res.status(200).json(result);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };

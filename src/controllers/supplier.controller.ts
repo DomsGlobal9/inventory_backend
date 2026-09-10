@@ -36,6 +36,7 @@ export const getSupplierById = async (req: Request, res: Response, next: NextFun
 };
 
 import { supplierSchema } from '../validations/supplier.schema';
+import { respondWithError } from '../utils/respondWithError';
 
 export const createSupplier = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -82,7 +83,7 @@ export const deleteSupplier = async (req: Request, res: Response, next: NextFunc
   } catch (error: any) {
     // Surface business rule violations (has POs) as 400 instead of 500
     if (error.message?.includes('Cannot delete supplier')) {
-      return res.status(400).json({ success: false, message: error.message });
+      return respondWithError(res, error, { status: 400 });
     }
     next(error);
   }

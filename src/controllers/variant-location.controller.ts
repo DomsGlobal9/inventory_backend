@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { variantLocationService } from '../services/variant-location.service';
+import { respondWithError } from '../utils/respondWithError';
 
 export const upsertVariantLocationProfile = async (req: Request, res: Response) => {
   try {
@@ -23,6 +24,6 @@ export const upsertVariantLocationProfile = async (req: Request, res: Response) 
 
     res.json(profile);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    return respondWithError(res, error, { status: 500 });
   }
 };

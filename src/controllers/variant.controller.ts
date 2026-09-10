@@ -8,6 +8,7 @@ import {
 } from '../validations/variant.schema';
 import { z } from 'zod';
 import { grants } from '../config/permissions';
+import { respondWithError } from '../utils/respondWithError';
 
 const searchQuerySchema = z.object({
   q: z.string().optional().default(''),
@@ -125,7 +126,7 @@ export class VariantController {
     } catch (error: any) {
       // If our own validation blocked it, return descriptive 400
       if (error.message?.startsWith('Cannot delete variant:')) {
-        return res.status(400).json({ success: false, message: error.message });
+        return respondWithError(res, error, { status: 400 });
       }
       next(error);
     }

@@ -586,8 +586,11 @@ async function stateMachines(owner: string, ctx: { locationId: string; variantId
     check('an order confirms once', first.status < 400, `${first.status} :: ${said(first)}`);
 
     const again = await call(owner, 'POST', `/sales-orders/${orderId}/confirm`, {});
-    check('confirming it again is refused, not a crash',
-      again.status === 409 || again.status === 400, `got ${again.status} :: ${said(again)}`);
+    // 409 exactly, not "409 or 400". The state machine raises a conflict and the controller
+    // used to flatten it; now it carries through, so the frontend can tell "this has moved on,
+    // refresh" from "what you sent was malformed".
+    check('confirming it again answers 409, the status it was raised with',
+      again.status === 409, `got ${again.status} :: ${said(again)}`);
     // Deliberately case-SENSITIVE for the enum names: "confirmed" is the English word and is
     // exactly right in a sentence, while "CONFIRMED" is the database's spelling leaking out.
     const words = said(again);
@@ -599,8 +602,8 @@ async function stateMachines(owner: string, ctx: { locationId: string; variantId
     const cancel = await call(owner, 'POST', `/sales-orders/${orderId}/cancel`, {});
     check('a confirmed order can be cancelled', cancel.status < 400, `${cancel.status} :: ${said(cancel)}`);
     const cancelAgain = await call(owner, 'POST', `/sales-orders/${orderId}/cancel`, {});
-    check('cancelling it again is refused, not a crash',
-      cancelAgain.status === 409 || cancelAgain.status === 400, `got ${cancelAgain.status} :: ${said(cancelAgain)}`);
+    check('cancelling it again answers 409 too',
+      cancelAgain.status === 409, `got ${cancelAgain.status} :: ${said(cancelAgain)}`);
   } else {
     check('an order to confirm', false, `${order.status} :: ${said(order)}`);
   }

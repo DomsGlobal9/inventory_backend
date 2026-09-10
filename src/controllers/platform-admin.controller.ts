@@ -5,6 +5,7 @@ import { platformAdminService } from '../services/platform-admin.service';
 import { serviceCredentialService } from '../services/tryon';
 import { tryOnUsageService } from '../services/tryon';
 import { authCookieOptions, platformAdminCookieOptions, clearCookieOptions } from '../lib/cookies';
+import { respondWithError } from '../utils/respondWithError';
 
 const cookieOptions = platformAdminCookieOptions;
 
@@ -30,7 +31,7 @@ export const login = async (req: Request, res: Response) => {
 
     res.json({ success: true, data: { admin: { id: admin.id, name: admin.name, email: admin.email } } });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Login failed', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Login failed' });
   }
 };
 
@@ -71,7 +72,7 @@ export const listClients = async (_req: Request, res: Response) => {
     const clients = await platformAdminService.listClients();
     res.json({ success: true, data: clients });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load clients', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load clients' });
   }
 };
 
@@ -80,7 +81,7 @@ export const listAllUsers = async (_req: Request, res: Response) => {
     const users = await platformAdminService.listAllUsers();
     res.json({ success: true, data: users });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load users', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load users' });
   }
 };
 
@@ -101,7 +102,7 @@ export const onboardClient = async (req: Request, res: Response) => {
 
     res.status(201).json({ success: true, data: result });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to onboard client', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to onboard client' });
   }
 };
 
@@ -123,7 +124,7 @@ export const getClient = async (req: Request, res: Response) => {
 
     res.json({ success: true, data: { ...summary, users } });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load client', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load client' });
   }
 };
 
@@ -159,7 +160,7 @@ export const assumeClient = async (req: Request, res: Response) => {
       }
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to assume client session', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to assume client session' });
   }
 };
 
@@ -170,7 +171,7 @@ export const endAssumedSession = async (req: Request, res: Response) => {
     res.clearCookie('token', cookieOptions);
     res.json({ success: true, message: 'Assumed session ended' });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to end session', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to end session' });
   }
 };
 
@@ -179,7 +180,7 @@ export const listAuditLog = async (_req: Request, res: Response) => {
     const log = await platformAdminService.listAuditLog();
     res.json({ success: true, data: log });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load audit log', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load audit log' });
   }
 };
 
@@ -188,7 +189,7 @@ export const listClientErrors = async (_req: Request, res: Response) => {
     const errors = await platformAdminService.listClientErrors();
     res.json({ success: true, data: errors });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load client errors', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load client errors' });
   }
 };
 
@@ -197,7 +198,7 @@ export const listSupportTickets = async (_req: Request, res: Response) => {
     const tickets = await platformAdminService.listAllSupportTickets();
     res.json({ success: true, data: tickets });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load support tickets', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load support tickets' });
   }
 };
 
@@ -207,7 +208,7 @@ export const getSupportTicket = async (req: Request, res: Response) => {
     if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
     res.json({ success: true, data: ticket });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load ticket', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load ticket' });
   }
 };
 
@@ -221,7 +222,7 @@ export const replyToSupportTicket = async (req: Request, res: Response) => {
     if (!message) return res.status(404).json({ success: false, message: 'Ticket not found' });
     res.status(201).json({ success: true, data: message });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to send reply', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to send reply' });
   }
 };
 
@@ -234,7 +235,7 @@ export const updateSupportTicketStatus = async (req: Request, res: Response) => 
     const ticket = await platformAdminService.updateSupportTicketStatus(req.params.id as string, status);
     res.json({ success: true, data: ticket });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to update ticket', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to update ticket' });
   }
 };
 

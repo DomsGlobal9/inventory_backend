@@ -4,6 +4,7 @@ import { AuthService } from '../services/auth.service';
 import { authCookieOptions, clearCookieOptions } from '../lib/cookies';
 import { encryptCredential } from '../lib/credentialEncryption';
 import { WILDCARD_PERMISSION, expandPermissions, holdsEverything } from '../config/permissions';
+import { respondWithError } from '../utils/respondWithError';
 
 const userWithRolesInclude = {
   roles: {
@@ -130,7 +131,7 @@ export const login = async (req: Request, res: Response) => {
       }
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Login failed', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Login failed' });
   }
 };
 
@@ -160,7 +161,7 @@ export const updateMyProfile = async (req: Request, res: Response) => {
     const updated = await prisma.user.update({ where: { id: authUser.id }, data });
     res.json({ success: true, data: { id: updated.id, name: updated.name, email: updated.email } });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to update profile', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to update profile' });
   }
 };
 
@@ -262,6 +263,6 @@ export const changeMyPassword = async (req: Request, res: Response) => {
     // to someone who just typed it adds a copy in an inbox for no benefit.
     res.json({ success: true, data: { changed: true } });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to change the password', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to change the password' });
   }
 };

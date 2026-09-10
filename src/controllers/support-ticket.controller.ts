@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { supportTicketService } from '../services/support-ticket.service';
 import { createSupportTicketSchema } from '../validations/support-ticket.schema';
+import { respondWithError } from '../utils/respondWithError';
 
 export const createTicket = async (req: Request, res: Response) => {
   try {
@@ -27,7 +28,7 @@ export const createTicket = async (req: Request, res: Response) => {
     });
     res.status(201).json({ success: true, data: ticket });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to create ticket', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to create ticket' });
   }
 };
 
@@ -37,7 +38,7 @@ export const listMyClientTickets = async (req: Request, res: Response) => {
     const tickets = await supportTicketService.listTicketsForClient(user.clientId);
     res.json({ success: true, data: tickets });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load tickets', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load tickets' });
   }
 };
 
@@ -48,7 +49,7 @@ export const getMyClientTicket = async (req: Request, res: Response) => {
     if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
     res.json({ success: true, data: ticket });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to load ticket', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to load ticket' });
   }
 };
 
@@ -66,6 +67,6 @@ export const replyToMyClientTicket = async (req: Request, res: Response) => {
     if (!message) return res.status(404).json({ success: false, message: 'Ticket not found' });
     res.status(201).json({ success: true, data: message });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to send reply', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to send reply' });
   }
 };

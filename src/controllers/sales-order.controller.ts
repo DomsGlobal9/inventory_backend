@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { salesOrderService } from '../services/sales-order.service';
 import { prisma } from '../lib/prisma';
 import { createOrderSchema, createFullOrderSchema } from '../validations/sales-order.schema';
+import { respondWithError } from '../utils/respondWithError';
 
 export const createOrder = async (req: Request, res: Response) => {
   try {
@@ -24,7 +25,7 @@ export const createOrder = async (req: Request, res: Response) => {
     const order = await salesOrderService.createDraftOrder(clientId, locationId, parsed.data.customerId as string);
     res.status(201).json(order);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -42,7 +43,7 @@ export const createFullOrder = async (req: Request, res: Response) => {
     const order = await salesOrderService.createFullOrder(clientId, locationId, parsed.data as any);
     res.status(201).json(order);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -53,7 +54,7 @@ export const getOrders = async (req: Request, res: Response) => {
     const orders = await salesOrderService.getOrders(clientId, filters);
     res.json(orders);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    return respondWithError(res, error, { status: 500 });
   }
 };
 
@@ -63,7 +64,7 @@ export const getOrderById = async (req: Request, res: Response) => {
     const order = await salesOrderService.getOrderById(clientId, req.params.id as string);
     res.json(order);
   } catch (error: any) {
-    res.status(404).json({ error: error.message });
+    return respondWithError(res, error, { status: 404 });
   }
 };
 
@@ -73,7 +74,7 @@ export const updateOrder = async (req: Request, res: Response) => {
     const order = await salesOrderService.updateOrder(clientId, req.params.id as string, req.body);
     res.json(order);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -83,7 +84,7 @@ export const deleteOrder = async (req: Request, res: Response) => {
     await salesOrderService.deleteOrder(clientId, req.params.id as string);
     res.json({ success: true });
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -94,7 +95,7 @@ export const addOrderItem = async (req: Request, res: Response) => {
     const item = await salesOrderService.addOrderItem(clientId, req.params.id as string, variantId, quantity);
     res.status(201).json(item);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -104,7 +105,7 @@ export const removeOrderItem = async (req: Request, res: Response) => {
     await salesOrderService.removeOrderItem(clientId, req.params.id as string, req.params.itemId as string);
     res.json({ success: true });
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -114,7 +115,7 @@ export const confirmOrder = async (req: Request, res: Response) => {
     const order = await salesOrderService.confirmOrder(clientId, req.params.id as string);
     res.json(order);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -124,6 +125,6 @@ export const cancelOrder = async (req: Request, res: Response) => {
     const order = await salesOrderService.cancelOrder(clientId, req.params.id as string);
     res.json(order);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };

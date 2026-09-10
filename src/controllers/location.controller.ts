@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { LocationType } from '@prisma/client';
+import { respondWithError } from '../utils/respondWithError';
 
 export const getLocations = async (req: Request, res: Response) => {
   try {
@@ -11,7 +12,7 @@ export const getLocations = async (req: Request, res: Response) => {
     });
     res.json(locations);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    return respondWithError(res, error, { status: 500 });
   }
 };
 
@@ -40,7 +41,7 @@ export const createLocation = async (req: Request, res: Response) => {
     });
     res.status(201).json(location);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -74,7 +75,7 @@ export const updateLocation = async (req: Request, res: Response) => {
     const location = await prisma.stockLocation.findUnique({ where: { id } });
     res.json(location);
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };
 
@@ -114,6 +115,6 @@ export const deleteLocation = async (req: Request, res: Response) => {
     
     res.json({ success: true });
   } catch (error: any) {
-    res.status(400).json({ error: error.message });
+    return respondWithError(res, error, { status: 400 });
   }
 };

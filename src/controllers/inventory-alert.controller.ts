@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { respondWithError } from '../utils/respondWithError';
 
 export const getAlerts = async (req: Request, res: Response) => {
   try {
@@ -92,7 +93,7 @@ export const getAlerts = async (req: Request, res: Response) => {
       }
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to fetch alerts', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to fetch alerts' });
   }
 };
 
@@ -117,7 +118,7 @@ export const markAsRead = async (req: Request, res: Response) => {
 
     res.json({ success: true, message: 'Alert marked as read' });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to update alert', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to update alert' });
   }
 };
 
@@ -142,7 +143,7 @@ export const markAllAsRead = async (req: Request, res: Response) => {
 
     res.json({ success: true, message: 'All active alerts marked as read' });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to update alerts', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to update alerts' });
   }
 };
 
@@ -166,7 +167,7 @@ export const togglePin = async (req: Request, res: Response) => {
 
     res.json({ success: true, data: { isPinned: updated.isPinned } });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to update alert', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to update alert' });
   }
 };
 
@@ -187,6 +188,6 @@ export const deleteAlert = async (req: Request, res: Response) => {
 
     res.json({ success: true, message: 'Alert dismissed' });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to delete alert', error: error.message });
+    return respondWithError(res, error, { status: 500, message: 'Failed to delete alert' });
   }
 };
