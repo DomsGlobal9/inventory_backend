@@ -107,8 +107,43 @@ function tunedDatabaseUrl(): string | undefined {
   }
 }
 
+/**
+ * Say which endpoint this process is talking to, once, at boot.
+ *
+ * Without this, setting DB_USE_DIRECT is an act of faith: the flag is read here and nothing
+ * anywhere confirms it was picked up. An operator who sets it in Render and restarts has no
+ * way to tell the difference between "it worked" and "the variable was misspelled, or
+ * DIRECT_URL is missing, so it silently carried on using the pooler" -- and the second one
+ * looks exactly like the first until somebody measures query latency and wonders why nothing
+ * changed.
+ *
+ * Host and port only. A connection string carries the password.
+ */
+function announceConnection(url: string | undefined) {
+  const wanted = process.env.DB_USE_DIRECT === 'true';
+  if (!url) {
+    console.log('[db] using DATABASE_URL as given (no tuning applied)');
+    return;
+  }
+  try {
+    const { hostname, port, searchParams } = new URL(url);
+    const direct = wanted && !!process.env.DIRECT_URL;
+    console.log(
+      `[db] ${direct ? 'DIRECT' : 'POOLED'} ${hostname}:${port}` +
+      ` (connection_limit=${searchParams.get('connection_limit')})`
+    );
+    // The near-miss worth naming: asked for direct, and quietly did not get it.
+    if (wanted && !process.env.DIRECT_URL) {
+      console.warn('[db] DB_USE_DIRECT=true but DIRECT_URL is not set -- still using the pooler.');
+    }
+  } catch {
+    console.log('[db] connection string could not be parsed for logging');
+  }
+}
+
 const prismaClientSingleton = () => {
   const url = tunedDatabaseUrl();
+  announceConnection(url);
   return url
     ? new PrismaClient({ datasources: { db: { url } } })
     : new PrismaClient();
