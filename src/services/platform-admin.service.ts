@@ -291,6 +291,25 @@ export class PlatformAdminService {
       data: { clientId, code: 'MAIN-STORE', name: 'Main Store', type: 'STORE', active: true }
     });
 
+    // The shop's name, kept rather than discarded.
+    //
+    // companyName arrived here from the signup form -- "Tell us what the shop is called" --
+    // and was used only to derive the clientId before being dropped. So client_settings was
+    // empty for every client on the platform: the day book printed no business name, orders
+    // sent on WhatsApp signed off with whoever happened to be logged in, and the shop had to
+    // type its own name in again to see it anywhere. It was asked for once already.
+    //
+    // Same reasoning as MAIN-STORE above: a new workspace should be usable, and correct,
+    // the moment the owner logs in.
+    // upsert, not create: generateClientId is deterministic enough that a retried onboarding
+    // can land on the same clientId, and failing the whole thing on a duplicate settings row
+    // would be a poor reason to lose a client's provisioning.
+    await prisma.clientSettings.upsert({
+      where: { clientId },
+      create: { clientId, businessName: companyName.trim() || null },
+      update: { businessName: companyName.trim() || null }
+    });
+
     const user = await prisma.user.create({
       data: { clientId, name: adminName, email: adminEmail, password: hashed, passwordEncrypted, status: 'ACTIVE' }
     });
