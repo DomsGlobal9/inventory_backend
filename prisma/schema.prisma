@@ -1466,6 +1466,15 @@ model ClientSettings {
   /// ISO code. Formatting stays in the frontend; this records the intent.
   currency String @default("INR")
 
+  /// The shop's logo, shown wherever the shop identifies itself to its own staff.
+  ///
+  /// Two fields rather than one because they answer different questions: logoUrl is what a
+  /// browser loads, logoPath is which object in storage it is. Keeping the path means
+  /// replacing or removing a logo can delete the file it replaces, instead of leaving every
+  /// logo a shop has ever uploaded sitting in the bucket for ever.
+  logoUrl  String? @map("logo_url")
+  logoPath String? @map("logo_path")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

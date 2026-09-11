@@ -19,6 +19,7 @@ import customerRoutes from './customer.routes';
 import salesOrderRoutes from './sales-order.routes';
 import dispatchRoutes from './dispatch.routes';
 import roleRoutes from './role.routes';
+import brandingRoutes from './branding.routes';
 import { returnsRoutes } from './returns.routes';
 import authRoutes from './auth.routes';
 import locationRoutes from './location.routes';
@@ -101,6 +102,8 @@ router.use('/inventory/transactions', transactionRoutes);
 router.use('/inventory/alerts', inventoryAlertRoutes);
 router.use('/inventory', inventoryRoutes);
 router.use('/dashboard', dashboardRoutes);
+// The shop's own name and logo. Readable by anyone signed in, changeable only by the owner.
+router.use('/branding', brandingRoutes);
 router.use('/catalog', catalogRoutes);
 router.use('/catalog-tryon', catalogTryOnRoutes);
 router.use('/search', searchRoutes);
