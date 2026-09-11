@@ -143,7 +143,17 @@ export class SupplierProductService {
           select: {
             id: true, sku: true, size: true, colorName: true, barcode: true,
             averageCost: true, reorderLevel: true, reorderQty: true,
-            product: { select: { id: true, title: true } },
+            // variantCode and the three price fields are here for the "order this from
+            // them" button on the supplier page. Without a selling price to compare
+            // against, the purchase order form cannot tell anyone they are about to buy
+            // an item for more than they sell it for -- and this screen, where a
+            // supplier's own price is accepted without being typed, is exactly where
+            // that goes unnoticed. Resolved the same way everywhere else in the app:
+            // location override, then the variant's price, then the product's.
+            variantCode: true,
+            sellingPrice: true,
+            locationProfiles: { select: { locationId: true, priceOverride: true } },
+            product: { select: { id: true, title: true, basePrice: true } },
             stocks: { select: { quantity: true } }
           }
         }
