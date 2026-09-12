@@ -416,7 +416,14 @@ async function run() {
     assert(d.status === 'CONFIRMED', `status=${d.status}`);
     assert(num(d.taxAmount) === 50 && num(d.shippingAmount) === 25 && num(d.discountAmount) === 10,
       'tax/shipping/discount not persisted');
-    assert(num(d.items[0].unitPrice) === 490, `unitPrice=${d.items[0].unitPrice} (expected variant price 490)`);
+    // This used to assert unitPrice === 490, the variant's list price, and passed only because
+    // the ₹10 taken off this order never reached the line it was taken off. It does now: four
+    // units grossing ₹1,960 less ₹10 is ₹1,950, which is ₹487.50 each -- and ₹487.50 is what
+    // the day book and dispatch multiply by the dispatched quantity, so it has to be the net.
+    assert(num(d.items[0].listUnitPrice) === 490, `listUnitPrice=${d.items[0].listUnitPrice}`);
+    assert(num(d.items[0].allocatedDiscount) === 10, `allocatedDiscount=${d.items[0].allocatedDiscount}`);
+    assert(num(d.items[0].totalPrice) === 1950, `totalPrice=${d.items[0].totalPrice}`);
+    assert(num(d.items[0].unitPrice) === 487.5, `unitPrice=${d.items[0].unitPrice} (net of the order discount)`);
     const after = await prisma.inventoryStock.findFirst({ where: { variantId: v1, locationId: locStore } });
     assert(num(after?.reservedQty) === num(before?.reservedQty) + 4,
       `reservedQty ${before?.reservedQty} -> ${after?.reservedQty}`);

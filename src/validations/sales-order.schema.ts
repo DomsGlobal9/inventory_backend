@@ -1,5 +1,24 @@
 import { z } from 'zod';
 
+/**
+ * An amount of money, arriving over JSON.
+ *
+ * Two decimal places at most. The pricing engine works in whole paise, and a caller sending
+ * 12.345 is asking us to pick a side of a half-paisa without saying which -- so it is refused
+ * at the door rather than rounded somewhere in the middle of a calculation where the choice
+ * would be invisible.
+ *
+ * The tolerance is there because 12.34 * 100 is 1233.9999999999998 in binary floating point;
+ * without it every second legitimate price would be rejected.
+ */
+const moneyInput = (label: string) =>
+  z.number()
+    .min(0, `${label} cannot be negative`)
+    .refine(
+      v => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6,
+      `${label} cannot have more than two decimal places`
+    );
+
 // This validates POST /sales-orders, which creates an EMPTY draft
 // (salesOrderService.createDraftOrder / sales-order.controller.ts's createOrder) —
 // items are added afterward one at a time via POST /:id/items. The controller never
@@ -47,12 +66,22 @@ export const createFullOrderSchema = z.object({
   externalOrderId: z.string().optional().nullable(),
   sourceSystem: z.string().optional().nullable(),
   status: z.enum(['DRAFT', 'CONFIRMED']).optional(),
-  taxAmount: z.number().min(0).optional(),
-  discountAmount: z.number().min(0).optional(),
-  shippingAmount: z.number().min(0).optional(),
+  taxAmount: moneyInput('Tax').optional(),
+  discountAmount: moneyInput('Discount').optional(),
+  shippingAmount: moneyInput('Shipping').optional(),
   items: z.array(z.object({
     variantId: z.string().min(1, "Variant ID is required"),
-    quantity: z.number().positive("Quantity must be positive"),
-    unitPrice: z.number().optional()
+    quantity: z.number().int().positive("Quantity must be positive"),
+    // The three money fields a selling system may send about one line. All optional, and a
+    // caller that sends none of them gets the old behaviour -- priced from our catalogue.
+    //
+    // `unitPrice` was already declared here before this change and was then silently ignored by
+    // the service, which re-priced every line from the catalogue. That is the bug this release
+    // fixes; see services/pricing/orderPricing.ts for which of the three wins when they
+    // disagree, and why a contradiction is refused rather than reconciled.
+    unitPrice: moneyInput('Unit price').optional(),
+    listUnitPrice: moneyInput('List price').optional(),
+    /** Total off this LINE, not per unit -- the same shape as Shopify's discount_allocations. */
+    lineDiscount: moneyInput('Line discount').optional()
   })).min(1, "At least one item is required")
 });

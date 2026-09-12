@@ -4,6 +4,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { reservationService } from './reservation.service';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { notFound } from '../utils/httpError';
+import { toMinor, minorToNumber, portionOf } from './pricing';
 
 export class DispatchService {
   async createDispatch(clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number }[]) {
@@ -82,7 +83,25 @@ export class DispatchService {
           tx
         });
 
-        totalRevenue += Number(orderItem.unitPrice) * dItem.quantity;
+        /*
+         * Revenue recognised for the units going out now.
+         *
+         * Was `unitPrice x quantity`. That was exact while every line was sold at its list
+         * price, and stopped being exact the moment a line could carry a discount: three items
+         * sold for ₹7,458.32 have no whole-paisa unit price, so shipping all three recognised
+         * ₹7,458.33 and left a paisa in the sales ledger that no customer ever paid.
+         *
+         * `portionOf` is cumulative -- the value of units (already shipped .. now shipped) --
+         * so however a line is split across dispatches, the revenue recognised over all of them
+         * adds up to the line total exactly.
+         */
+        const shippedBefore = Number(orderItem.fulfilledQty ?? 0);
+        totalRevenue += minorToNumber(portionOf(
+          toMinor(orderItem.totalPrice),
+          orderItem.quantity,
+          shippedBefore,
+          shippedBefore + dItem.quantity
+        ));
         totalCogs += Number(orderItem.unitCost) * dItem.quantity;
       }
 

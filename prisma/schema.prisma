@@ -772,11 +772,46 @@ model SalesOrderItem {
   quantity     Int
   fulfilledQty Int @default(0) @map("fulfilled_qty")
 
+  /// What this variant costs before anything is taken off, per unit.
+  ///
+  /// Inventory never originates a sales order: every one arrives from a till, a website or a
+  /// Shopify checkout that has ALREADY quoted a price to somebody. Until this column existed
+  /// there was nowhere to record that two prices were involved, so `createFullOrder` resolved
+  /// the catalogue price and discarded whatever the caller said it had charged -- a saree sold
+  /// at ₹9,600 after ₹2,400 off was filed as a ₹12,000 sale, and grossProfit with it.
+  listUnitPrice Decimal @map("list_unit_price") @db.Decimal(10, 2)
+
+  /// Taken off THIS line in total -- not per unit. Mirrors Shopify's discount_allocations,
+  /// deliberately, because reconciling an ingested Shopify order against our own offer is much
+  /// easier when the two systems record the same shape.
+  lineDiscount Decimal @default(0) @map("line_discount") @db.Decimal(10, 2)
+
+  /// This line's share of a discount typed against the WHOLE order.
+  ///
+  /// Separate from lineDiscount rather than summed into it, so that recalculating an order is
+  /// idempotent: changing "₹500 off this order" to "₹300 off" has to replace the allocated
+  /// share without touching a markdown that belongs to the line itself. One column holding the
+  /// sum cannot tell those two apart on the second edit.
+  allocatedDiscount Decimal @default(0) @map("allocated_discount") @db.Decimal(10, 2)
+
+  /// Net price per unit -- what was actually charged, after both discounts above.
+  ///
+  /// Derived from totalPrice rather than the other way round: three items sharing a ₹100
+  /// discount do not divide evenly, and multiplying a rounded unit price back up would not
+  /// reproduce the line. Kept as a column because daybook.service and dispatch.service multiply
+  /// it by the DISPATCHED quantity to value a part-shipped order, which needs a per-unit figure.
   unitPrice   Decimal @map("unit_price") @db.Decimal(10, 2)
   unitCost    Decimal @map("unit_cost") @db.Decimal(10, 2)
+  /// Authoritative. listUnitPrice x quantity, less lineDiscount, less allocatedDiscount.
   totalPrice  Decimal @map("total_price") @db.Decimal(15, 2)
   totalCost   Decimal @default(0) @map("total_cost") @db.Decimal(15, 2)
+  /// Computed from the NET total, so a discounted sale no longer reports the margin of an
+  /// undiscounted one.
   grossProfit Decimal @default(0) @map("gross_profit") @db.Decimal(15, 2)
+
+  /// Who decided this line's price, so that "we trusted the caller" is auditable afterwards
+  /// rather than inferred. CATALOGUE | EXTERNAL | QUOTE | MANUAL -- see services/pricing.
+  priceSource String @default("CATALOGUE") @map("price_source")
 
   dispatchItems         DispatchItem[]
   inventoryReservations InventoryReservation[]
