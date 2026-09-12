@@ -38,7 +38,7 @@ export class SalesOrderService {
           externalOrderId: data.externalOrderId,
           sourceSystem: data.sourceSystem
         },
-        include: { items: true, customer: true }
+        include: { items: true, customer: true, discounts: true }
       });
       if (existingOrder) {
         return existingOrder; // Idempotent return
@@ -70,7 +70,41 @@ export class SalesOrderService {
     }
 
     const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
-    
+
+    try {
+      return await this.writeFullOrder(clientId, locationId, data, channel, orderNumber, orderManual);
+    } catch (error: any) {
+      /*
+       * The same order, sent twice at the same moment.
+       *
+       * A till that times out and retries, or a website that fires its checkout twice, sends two
+       * requests carrying one (externalOrderId, sourceSystem). Both pass the check at the top of
+       * this method; the unique key lets exactly one write. The loser used to receive the database's
+       * refusal as an error -- so the till told the cashier the sale had FAILED when it had in fact
+       * gone through, and the cashier rang it up again.
+       *
+       * It is not only the unique key that can refuse the loser. With a quote, the loser usually
+       * fails a step earlier -- "that price has already been used" -- because the winner spent it.
+       * So the test is not the error's code but the fact: the check at the top found no such order,
+       * and now there is one. Something placed it in between, and it was this same request.
+       *
+       * The answer to "place this order" when it is already placed is the order.
+       */
+      if (data.externalOrderId && data.sourceSystem) {
+        const winner = await prisma.salesOrder.findFirst({
+          where: { clientId, externalOrderId: data.externalOrderId, sourceSystem: data.sourceSystem },
+          include: { items: true, customer: true, discounts: true }
+        });
+        if (winner) return winner;
+      }
+      throw error;
+    }
+  }
+
+  private async writeFullOrder(
+    clientId: string, locationId: string, data: any, channel: any,
+    orderNumber: string, orderManual: ManualDiscount | null
+  ) {
     return prisma.$transaction(async (tx) => {
       let customerId = data.customer?.id;
       

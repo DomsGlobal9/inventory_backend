@@ -19,6 +19,8 @@ import { salesOrderService } from '../services/sales-order.service';
 import { dispatchService } from '../services/dispatch.service';
 import { returnService } from '../services/return.service';
 import { dayBookService } from '../services/daybook.service';
+import { todayKey } from '../utils/businessDay';
+import { getShopSettings } from '../lib/clientSettings';
 import { toMinor } from '../services/pricing';
 
 let passed = 0, failed = 0;
@@ -146,7 +148,12 @@ async function main() {
   // ── B. THE DAY BOOK SEES THE DISCOUNTED PRICE ──────────────────────────
   console.log('\nB. THE DAY BOOK SEES WHAT WAS CHARGED, NOT WHAT WAS LISTED');
 
-  const today = new Date().toISOString().slice(0, 10);
+  // The SHOP's today, not UTC's. This used to be toISOString().slice(0, 10), which between
+  // midnight and 5:30am in India names yesterday -- so the day book was asked about the wrong day
+  // and reported nothing, and the suite failed every night for a reason that had nothing to do
+  // with money. The day book itself was right; the question was wrong.
+  const { timezone } = await getShopSettings(CLIENT);
+  const today = todayKey(timezone);
   const day = await dayBookService.getDay(CLIENT, today);
   const daySales = num((day as any)?.sales?.revenue ?? (day as any)?.revenue ?? 0);
   check('the day book reports the discounted revenue',

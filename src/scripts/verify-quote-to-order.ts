@@ -460,6 +460,66 @@ async function main() {
   check('every quote that was used points at the order that used it',
     (await prisma.pricingQuote.findMany({ where: { clientId: CLIENT, consumedAt: { not: null } } }))
       .every(q => !!q.salesOrderId));
+
+  // ── L. THE SAME ORDER, SENT AT THE SAME MOMENT ─────────────────────────
+  console.log('\nL. A TILL THAT RETRIES GETS ITS ORDER, NOT AN ERROR');
+
+  const key = `till-retry-${Date.now()}`;
+  const retries = await Promise.allSettled(Array.from({ length: 5 }, () =>
+    salesOrderService.createFullOrder(CLIENT, locationId, {
+      customer: { id: customerId }, externalOrderId: key, sourceSystem: 'POS',
+      items: [{ variantId: V.blouse, quantity: 1 }]
+    })
+  ));
+  const answered = retries.filter(r => r.status === 'fulfilled').map(r => (r as any).value.id);
+  check('five simultaneous sends of one order all succeed', answered.length === 5,
+    retries.map(r => r.status === 'rejected' ? String((r.reason as any)?.message) : 'ok').join(' | '));
+  check('  ...all answering with the same order', new Set(answered).size === 1, String(new Set(answered).size));
+  check('  ...and only one was written',
+    (await prisma.salesOrder.count({ where: { clientId: CLIENT, externalOrderId: key } })) === 1);
+
+  await offerService.setStatus(CLIENT, twenty.id, 'ACTIVE', USER).catch(() => {});
+  const keyQ = `till-quote-retry-${Date.now()}`;
+  const retryQuote: any = await quoteFor([{ variantId: V.saree, quantity: 1 }]);
+  const usesBefore = (await prisma.offer.findUniqueOrThrow({ where: { id: twenty.id } })).usageCount;
+  const quotedRetries = await Promise.allSettled(Array.from({ length: 3 }, () =>
+    salesOrderService.createFullOrder(CLIENT, locationId, {
+      customer: { id: customerId }, externalOrderId: keyQ, sourceSystem: 'POS',
+      quoteId: retryQuote.quoteId, items: [{ variantId: V.saree, quantity: 1 }]
+    })
+  ));
+  const quotedIds = quotedRetries.filter(r => r.status === 'fulfilled').map(r => (r as any).value.id);
+  check('a retried QUOTED order also answers with the order, not "price already used"',
+    quotedIds.length === 3 && new Set(quotedIds).size === 1,
+    quotedRetries.map(r => r.status === 'rejected' ? String((r.reason as any)?.message) : 'ok').join(' | '));
+  check('  ...spending the offer once',
+    (await prisma.offer.findUniqueOrThrow({ where: { id: twenty.id } })).usageCount === usesBefore + 1);
+  check('  ...at the quoted price',
+    num((await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: keyQ } })).total) === 9600);
+
+  // ── M. HOUSEKEEPING ────────────────────────────────────────────────────
+  console.log('\nM. OLD QUOTES ARE TIDIED, THE ONES THAT MATTER ARE NOT');
+
+  const { HousekeepingScheduler } = await import('../jobs/housekeeping.scheduler');
+  const day = 86400000;
+  const stamp = (label: string, expiresAgo: number, consumed: boolean) => prisma.pricingQuote.create({
+    data: {
+      clientId: CLIENT, locationId, channel: 'POS', inputHash: label, result: {},
+      subtotal: 1, discount: 0, total: 1,
+      expiresAt: new Date(Date.now() - expiresAgo),
+      consumedAt: consumed ? new Date(Date.now() - expiresAgo) : null,
+      salesOrderId: consumed ? order.id : null
+    }
+  });
+  const stale = await stamp('stale', 8 * day, false);
+  const recent = await stamp('recent', 1 * day, false);
+  const bought = await stamp('bought', 60 * day, true);
+
+  const removed = await HousekeepingScheduler.runOnce();
+  const survives = async (id: string) => !!(await prisma.pricingQuote.findUnique({ where: { id } }));
+  check('an unbought quote a week past expiry is removed', !(await survives(stale.id)), JSON.stringify(removed));
+  check('an unbought quote from yesterday is kept, for "the site told me 9,600"', await survives(recent.id));
+  check('a quote that became an order is kept however old', await survives(bought.id));
 }
 
 main()
