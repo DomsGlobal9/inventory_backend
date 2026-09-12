@@ -9,6 +9,7 @@
  *   npx ts-node src/scripts/verify-supplier-products.ts
  */
 import { prisma } from '../lib/prisma';
+import { ensureTestTenant } from './support/testTenant';
 
 const BASE = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
 
@@ -49,19 +50,16 @@ async function main() {
   console.log(`\nVerifying against ${BASE}\n`);
 
   // A tenant with a supplier, a variant and a login is needed to exercise any of this.
-  const owner = await prisma.user.findFirst({
-    where: { email: 'e2e1788452461634@example.com' },
-    select: { clientId: true, email: true }
-  });
-  if (!owner) throw new Error('Test tenant not found -- expected e2e1788452461634@example.com');
-
-  const clientId = owner.clientId;
+  // Recreated if missing, with a fresh password each run -- see scripts/support/testTenant.ts for
+  // why this suite used to stop here with "Test tenant not found".
+  const tenant = await ensureTestTenant();
+  const clientId = tenant.clientId;
   const supplier = await prisma.supplier.findFirst({ where: { clientId }, select: { id: true, name: true } });
   const variants = await prisma.productVariant.findMany({ where: { clientId }, select: { id: true, sku: true }, take: 2 });
   if (!supplier || variants.length < 2) throw new Error('Test tenant needs a supplier and two variants');
 
   const jar = new Jar();
-  const login = await call('POST', '/auth/login', { email: owner.email, password: '0B-GWDgJRCuK' }, jar);
+  const login = await call('POST', '/auth/login', { email: tenant.email, password: tenant.password }, jar);
   if (login.status !== 200) throw new Error(`Could not log in as the test tenant (${login.status})`);
 
   // Start clean so counts below are unambiguous.

@@ -112,10 +112,20 @@ async function run() {
   // ---- B1: the customer schema stripped companyName/gstNumber/status
   console.log('\n-- Customer fields --');
   let customerId = '';
+  /*
+   * A phone number of its own, every run.
+   *
+   * This used 9990001111 every time and never removed the customer it made. Customer phone
+   * numbers are unique per shop, so the second run's create came back 409 -- and with no
+   * customer, every order check after it failed too: eight failures, one cause, none of them a
+   * regression. Earlier runs had left 25 copies of this customer and 96 orders on demo-client,
+   * 23 of them confirmed and holding stock reserved for nobody.
+   */
+  const phone = `9${String(Date.now()).slice(-9)}`;
   await test('companyName / gstNumber survive a create', async () => {
     const r = await api.post('/customers', {
       name: 'Audit Fix Co', companyName: 'Audit Fix Pvt Ltd',
-      gstNumber: '29ABCDE1234F1Z5', phone: '9990001111', status: 'ACTIVE'
+      gstNumber: '29ABCDE1234F1Z5', phone, status: 'ACTIVE'
     });
     assert(r.status === 200 || r.status === 201, `got ${r.status}`);
     const c = unwrap(r);
@@ -145,8 +155,10 @@ async function run() {
     const rA = await api.post('/sales-orders', { customerId, locationId });
     assert(rA.status === 200 || rA.status === 201, `orderA ${rA.status}`);
     orderA = unwrap(rA).id;
+    created.push(orderA);
     const rB = await api.post('/sales-orders', { customerId, locationId });
     orderB = unwrap(rB).id;
+    created.push(orderB);
     const iB = await api.post(`/sales-orders/${orderB}/items`, { variantId: variants[0]!.id, quantity: 1 });
     assert(iB.status === 200 || iB.status === 201, `itemB ${iB.status}`);
     itemB = unwrap(iB).id;
@@ -181,6 +193,7 @@ async function run() {
     assert(r.status === 200 || r.status === 201, `got ${r.status}`);
     const o = unwrap(r);
     fullOrderId = o.id;
+    created.push(fullOrderId);
     assert(o.sourceSystem === 'STOREFRONT', `sourceSystem=${o.sourceSystem}`);
     assert(Number(o.taxAmount) === 50, `taxAmount=${o.taxAmount}`);
     assert(Number(o.shippingAmount) === 30, `shippingAmount=${o.shippingAmount}`);
@@ -211,6 +224,7 @@ async function run() {
     });
     assert(r.status === 200 || r.status === 201, `got ${r.status}`);
     const o = unwrap(r);
+    if (o?.id) created.push(o.id);
     assert(o.status === 'CONFIRMED', `status=${o.status}`);
     const res = await prisma.inventoryReservation.findFirst({
       where: { clientId, salesOrderItemId: o.items[0].id, status: 'ACTIVE' }
@@ -283,9 +297,37 @@ async function run() {
     await prisma.inventoryStock.update({ where: { id: stock.id }, data: { quantity: before } });
   });
 
+  await cleanUp(clientId, customerId);
+
   console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
   await prisma.$disconnect();
   process.exit(failed > 0 ? 1 : 0);
+}
+
+/** Orders this run created, so it can leave demo-client as it found it. */
+const created: string[] = [];
+
+/**
+ * Remove everything this run made.
+ *
+ * A confirmed order is cancelled through the service FIRST, so its reservation is released the
+ * way the app releases one -- deleting the row directly would leave the stock counted as
+ * reserved for an order that no longer exists.
+ */
+async function cleanUp(clientId: string, customerId: string) {
+  const { salesOrderService } = await import('../services/sales-order.service');
+  for (const id of [...new Set(created)]) {
+    const order = await prisma.salesOrder.findUnique({ where: { id }, select: { status: true } });
+    if (!order) continue;
+    if (order.status === 'CONFIRMED') await salesOrderService.cancelOrder(clientId, id).catch(() => {});
+    await prisma.inventoryReservation.deleteMany({ where: { salesOrderItem: { salesOrderId: id } } });
+    await prisma.salesOrderItemDiscount.deleteMany({ where: { salesOrderItem: { salesOrderId: id } } });
+    await prisma.salesOrderDiscount.deleteMany({ where: { salesOrderId: id } });
+    await prisma.salesOrderItem.deleteMany({ where: { salesOrderId: id } });
+    await prisma.salesOrder.delete({ where: { id } }).catch(() => {});
+  }
+  if (customerId) await prisma.customer.delete({ where: { id: customerId } }).catch(() => {});
+  console.log(`\n  (removed ${created.length} order(s) and the customer this run created)`);
 }
 
 run().catch(async (e) => { console.error(e); await prisma.$disconnect(); process.exit(1); });

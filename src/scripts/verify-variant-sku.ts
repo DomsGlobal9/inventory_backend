@@ -10,6 +10,7 @@
  *   npx ts-node src/scripts/verify-variant-sku.ts
  */
 import { prisma } from '../lib/prisma';
+import { ensureTestTenant } from './support/testTenant';
 import { variantService } from '../services/variant.service';
 
 let passed = 0, failed = 0;
@@ -24,11 +25,9 @@ const skuFor = (productCode: string, colour: string, size: string) =>
   `${productCode}-${colour.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 3)}-${size}`;
 
 async function main() {
-  const owner = await prisma.user.findFirst({
-    where: { email: 'e2e1788452461634@example.com' }, select: { clientId: true }
-  });
-  if (!owner) throw new Error('Test tenant not found');
-  const clientId = owner.clientId;
+  // Recreated if missing, with a fresh password each run -- see scripts/support/testTenant.ts for
+  // why this suite used to stop here with "Test tenant not found".
+  const { clientId } = await ensureTestTenant();
 
   console.log('\nTHE SKU RULE COLLIDES');
   check('two different colours can produce one SKU',

@@ -17,6 +17,7 @@
  */
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
+import { ensureTestTenant } from './support/testTenant';
 import { normaliseShopDomain, isShopDomain, adminApiBase } from '../utils/shopifyDomain';
 import { verifyOAuthCallback, verifyWebhook, generateNonce } from '../utils/shopifyHmac';
 import { encryptCredential, decryptCredential } from '../lib/credentialEncryption';
@@ -235,11 +236,14 @@ async function main() {
   // ─── DISPATCHER ───────────────────────────────────────────────────────────
   console.log('\nA SHOPIFY CONNECTION IS NEVER TREATED AS A GENERIC ONE');
 
-  const owner = await prisma.user.findFirst({
-    where: { email: 'e2e1788452461634@example.com' }, select: { clientId: true }
-  });
+  /*
+   * This section used to be wrapped in `if (owner)`, looking the tenant up by a hard-coded email.
+   * When that tenant went, the whole section was SKIPPED -- no failure, no message -- and the suite
+   * went on reporting a clean pass that no longer included any of these checks.
+   */
+  const owner = await ensureTestTenant();
 
-  if (owner) {
+  {
     const { StorefrontDispatcherService } = await import('../services/storefront-dispatcher.service');
     const { generateCredential } = await import('../utils/storefrontCredential');
     const credential = generateCredential();
@@ -286,9 +290,6 @@ async function main() {
     await prisma.storefrontEvent.delete({ where: { id: event.id } });
     await prisma.storefrontConnection.delete({ where: { id: connection.id } });
     console.log('\n(probe connection removed)');
-  } else {
-    check('a Shopify delivery is not posted to as if it were generic', true, 'test tenant not found');
-    check('and it says why, rather than failing as a network error', true, 'test tenant not found');
   }
 
   console.log(`\n================ RESULT: ${passed} passed | ${failed} failed ================`);

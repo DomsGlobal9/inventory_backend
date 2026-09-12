@@ -90,6 +90,14 @@ export async function ensureTestTenant(): Promise<TestTenant> {
     });
   }
 
+  // Somebody to buy from. The supplier-products and reorder suites price a variant against one.
+  const supplier = await prisma.supplier.findFirst({ where: { clientId } });
+  if (!supplier) {
+    await prisma.supplier.create({
+      data: { clientId, supplierCode: 'SUP-VERIFY-1', name: 'Pochampally Weavers Co-op', isActive: true }
+    });
+  }
+
   await ensureHistory(clientId, location.id, owner.id);
 
   return { clientId, email: TEST_TENANT_EMAIL, password, locationId: location.id };

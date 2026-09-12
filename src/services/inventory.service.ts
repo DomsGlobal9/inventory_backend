@@ -153,7 +153,17 @@ export class InventoryService {
       }));
 
       if (isLowStockView) {
-        computed = computed.filter(v => isLowStock(v.qty, v.reorderLevel));
+        /*
+         * In stock, AND low -- the badge's order, not just its rule.
+         *
+         * The badge below decides OUT_OF_STOCK before it ever asks isLowStock, and isLowStock
+         * says yes to zero (nothing on hand is at or below any reorder level). This filter asked
+         * only isLowStock, so "Low Stock" returned every out-of-stock variant too -- measured on
+         * demo-client, the first hundred rows of the Low Stock list were all badged Out of Stock.
+         * A merchant using the filter to decide what to reorder soon saw a list of what had
+         * already run out.
+         */
+        computed = computed.filter(v => v.qty > 0 && isLowStock(v.qty, v.reorderLevel));
       } else if (isHealthyView) {
         // In stock, and not low. A variant nobody tracks counts as healthy once it has
         // stock -- the alternative is a Healthy filter that hides most of a new catalogue.

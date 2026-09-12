@@ -8,6 +8,7 @@
  *   npx ts-node src/scripts/verify-reorder.ts
  */
 import { prisma } from '../lib/prisma';
+import { ensureTestTenant } from './support/testTenant';
 
 const BASE = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
 
@@ -48,12 +49,10 @@ let restore: (() => Promise<void>) | null = null;
 async function main() {
   console.log(`\nVerifying against ${BASE}\n`);
 
-  const owner = await prisma.user.findFirst({
-    where: { email: 'e2e1788452461634@example.com' },
-    select: { clientId: true, email: true }
-  });
-  if (!owner) throw new Error('Test tenant not found');
-  const clientId = owner.clientId;
+  // Recreated if missing, with a fresh password each run -- see scripts/support/testTenant.ts for
+  // why this suite used to stop here with "Test tenant not found".
+  const tenant = await ensureTestTenant();
+  const clientId = tenant.clientId;
 
   const supplier = await prisma.supplier.findFirst({ where: { clientId }, select: { id: true, name: true } });
   const variant = await prisma.productVariant.findFirst({
@@ -90,7 +89,7 @@ async function main() {
   });
 
   const jar = new Jar();
-  const login = await call('POST', '/auth/login', { email: owner.email, password: '0B-GWDgJRCuK' }, jar);
+  const login = await call('POST', '/auth/login', { email: tenant.email, password: tenant.password }, jar);
   if (login.status !== 200) throw new Error(`Login failed (${login.status})`);
 
   // ─── SUGGESTIONS ────────────────────────────────────────────────────────────
