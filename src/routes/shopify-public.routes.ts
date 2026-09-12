@@ -15,6 +15,7 @@ import {
   shopifyRefundService,
   shopifyInboxService
 } from '../services/shopify-orders';
+import { offerMirrorService, discountGidFromWebhook } from '../services/shopify-discounts';
 
 /**
  * The two Shopify endpoints that CANNOT be authenticated the normal way.
@@ -249,6 +250,23 @@ async function handleWebhook(topic: string, shopDomain: string, raw: Buffer): Pr
     case 'refunds/create': {
       const payload = JSON.parse(raw.toString('utf8'));
       return shopifyRefundService.apply(shopDomain, payload);
+    }
+
+    /*
+     * A discount changed or was deleted in Shopify.
+     *
+     * Only a hint: the copy is flagged to be read back on the worker's next pass, and the read-back
+     * decides whether it drifted. The scheduled read-back every 30 minutes is the guaranteed path
+     * and does not depend on these topics being subscribed at all -- they need read_discounts, and a
+     * store that has not re-approved simply never sends them.
+     */
+    case 'discounts/update':
+    case 'discounts/delete': {
+      const payload = JSON.parse(raw.toString('utf8'));
+      const discountGid = discountGidFromWebhook(payload);
+      if (!discountGid) return 'IGNORED';
+      const flagged = await offerMirrorService.flagChangedInShopify(discountGid);
+      return flagged > 0 ? 'APPLIED' : 'IGNORED';
     }
 
     case 'app/uninstalled': {

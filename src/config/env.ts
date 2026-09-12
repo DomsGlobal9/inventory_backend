@@ -193,7 +193,11 @@ const envSchema = z.object({
     // Settings > Storefront says so. Orders are also PROTECTED CUSTOMER DATA: outside
     // development stores Shopify redacts the fields until the app is approved for that use,
     // which is a review, not a toggle, and the longest lead time in this work.
-    'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders'
+    //
+    // write_discounts (which implies read_discounts) is what lets an offer written here be put on
+    // the Shopify store, and read back to see whether it was changed there. Same consequence:
+    // every connected store must approve again before its offers can be mirrored.
+    'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders,write_discounts'
   ),
 
   // Submissions allowed per address per hour on the PUBLIC signup form. Deliberately low:

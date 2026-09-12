@@ -230,7 +230,7 @@ async function main() {
     missing.join(',') || 'none reported');
   check('nothing is reported missing when everything was granted',
     shopifyInstallationService.missingScopes(
-      'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders'
+      'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders,write_discounts'
     ).length === 0);
 
   // ─── DISPATCHER ───────────────────────────────────────────────────────────

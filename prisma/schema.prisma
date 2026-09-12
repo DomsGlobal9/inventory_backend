@@ -1948,6 +1948,7 @@ model ShopifyInstallation {
 
   idMap       ShopifyIdMap[]
   locationMap ShopifyLocationMap[]
+  offerMirrors OfferExternalMirror[]
   echoes      ShopifyInventoryEcho[]
 
   @@index([clientId])
@@ -2441,6 +2442,7 @@ model Offer {
 
   versions    OfferVersion[]
   redemptions OfferRedemption[]
+  mirrors     OfferExternalMirror[]
 
   createdBy  String?   @map("created_by")
   createdAt  DateTime  @default(now()) @map("created_at")
@@ -2533,6 +2535,63 @@ model OfferRedemption {
   @@index([salesOrderId])
   @@index([customerId])
   @@map("offer_redemptions")
+}
+
+/// One offer, copied into one connected Shopify store.
+///
+/// Shopify owns its checkout and cannot be made to ask our pricing engine, so for Shopify we push a
+/// COPY of the rule and then keep checking that the copy still says what we pushed. This row is
+/// both the record of that copy and the unit of work that keeps it true: it carries its own
+/// attempts, backoff and lease, the same pattern StorefrontDelivery uses, because a push is absolute
+/// state -- "this discount should look like this" -- and a retry of absolute state cannot corrupt.
+///
+/// Two hashes, because two different questions get asked:
+///
+///   pushedHash   what we last successfully told Shopify
+///   remoteHash   what Shopify held the last time we looked
+///
+/// Drift is Shopify holding something that is neither what we pushed nor what the offer says now.
+model OfferExternalMirror {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  offerId String @map("offer_id")
+  offer   Offer  @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  installationId String              @map("installation_id")
+  installation   ShopifyInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  /// Shopify's GID for the discount we created. The guard against creating a second one on retry.
+  shopifyDiscountId String? @map("shopify_discount_id")
+  /// AUTOMATIC | CODE -- what the Shopify discount IS. An offer switched between the two cannot be
+  /// updated in place; the old one is removed and a new one created.
+  kind String?
+
+  pushedHash String? @map("pushed_hash")
+  remoteHash String? @map("remote_hash")
+
+  /// PENDING | SYNCED | DRIFTED | FAILED | UNSUPPORTED | REMOVING
+  status String @default("PENDING")
+
+  /// What a merchant is told: why it cannot be expressed, what failed, what changed in Shopify.
+  problem String? @db.Text
+
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime? @map("next_attempt_at")
+  lockedAt      DateTime? @map("locked_at")
+
+  lastPushedAt  DateTime? @map("last_pushed_at")
+  lastCheckedAt DateTime? @map("last_checked_at")
+
+  createdBy String?  @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([offerId, installationId], name: "uq_mirror_offer_installation")
+  @@index([status, nextAttemptAt])
+  @@index([clientId])
+  @@index([shopifyDiscountId])
+  @@map("offer_external_mirrors")
 }
 
 /// A price we quoted, kept so an order can be held to it.

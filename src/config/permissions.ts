@@ -127,14 +127,14 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   // offer:manual_discount is the till override -- the thing every real counter needs and every
   // system that forbids it gets worked around. Gated and reason-required rather than absent.
   //
-  // There is no offer:publish_external yet. It was added with the rest and guarded nothing,
-  // because pushing an offer to Shopify is Phase 4 and not built -- so it sat on the roles screen
-  // as a box that did nothing when ticked. Add it back WITH the route it guards.
+  // offer:publish_external was removed while it guarded nothing, and is back now that Phase 4's
+  // routes exist: putting an offer on a Shopify store changes a public shop front.
   { key: 'offer:view',    group: 'Selling', label: 'See offers and discounts' },
   { key: 'offer:create',  group: 'Selling', label: 'Write a new offer',                    implies: ['offer:view', 'product:view'] },
   { key: 'offer:update',  group: 'Selling', label: 'Change an offer, and start or pause it', implies: ['offer:view'] },
   { key: 'offer:archive', group: 'Selling', label: 'Retire an offer',                      implies: ['offer:view'], sensitive: true,
     checkedInline: 'src/routes/offer.routes.ts' },
+  { key: 'offer:publish_external', group: 'Selling', label: 'Put an offer on a connected Shopify store, and keep it in step', implies: ['offer:view'], sensitive: true },
   { key: 'offer:manual_discount',  group: 'Selling', label: 'Take money off at the till, with a reason', implies: ['sales_order:view'], sensitive: true,
     checkedInline: 'src/controllers/sales-order.controller.ts' },
 

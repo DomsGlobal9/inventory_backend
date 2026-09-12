@@ -27,6 +27,7 @@ export const RBAC_DATA = {
         'purchase_order:create', 'purchase_order:update', 'purchase_order:receive',
         'stock_count:create', 'stock_count:update', 'stock_count:complete',
         'offer:view', 'offer:create', 'offer:update', 'offer:archive', 'offer:manual_discount',
+        'offer:publish_external',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
         'admin:locations', 'admin:catalog', 'admin:users', 'team:view_password'
       ]

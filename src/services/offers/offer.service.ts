@@ -15,6 +15,7 @@ import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../../utils/codeGenerator';
 import { badRequest, conflict, notFound } from '../../utils/httpError';
 import { OfferDraft, validateOffer, effectiveStatus } from './rules';
+import { markOfferMirrorsDirty } from '../shopify-discounts/dirty';
 
 /** Which fields, when changed, mean the rule itself is different and history must be kept. */
 const RULE_FIELDS = [
@@ -229,7 +230,7 @@ export class OfferService {
      * placed keep pointing at the version that priced them.
      */
     try {
-      return await prisma.$transaction(async (tx) => {
+      const saved = await prisma.$transaction(async (tx) => {
         await tx.offerTarget.deleteMany({ where: { offerId: id } });
 
         const updated = await tx.offer.update({
@@ -269,6 +270,10 @@ export class OfferService {
 
         return updated;
       }, { timeout: 20000 });
+
+      // After the commit, never inside it: a Shopify copy must not be able to stop an offer saving.
+      await markOfferMirrorsDirty(id);
+      return saved;
     } catch (error: any) {
       throw this.translate(error, merged);
     }
@@ -330,6 +335,9 @@ export class OfferService {
     }
 
     void userId;
+    // Paused, resumed or retired: every Shopify copy follows. Pausing ends the copy there, resuming
+    // puts its dates back, retiring removes it.
+    await markOfferMirrorsDirty(id);
     return prisma.offer.findFirstOrThrow({ where: { id }, include: { targets: true } });
   }
 

@@ -4,6 +4,8 @@ import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 import { grants, holdsEverything } from '../config/permissions';
 import { respondWithError } from '../utils/respondWithError';
+import { offerMirrorService } from '../services/shopify-discounts';
+import { adminApiFor } from '../services/shopify-mapping';
 
 /**
  * Offers: the rules a shop writes once and sells by everywhere.
@@ -26,7 +28,10 @@ router.get('/', requirePermission('offer:view'), async (req: Request, res: Respo
       status: req.query.status ? String(req.query.status) : undefined,
       search: req.query.search ? String(req.query.search) : undefined
     });
-    res.json({ success: true, data: offers });
+    // Each offer's Shopify copy, if it has one, so the list can say "on Shopify" or "changed there"
+    // without a request per row.
+    const mirrors = await offerMirrorService.summaries(clientOf(req), offers.map((o: any) => o.id));
+    res.json({ success: true, data: offers.map((o: any) => ({ ...o, shopify: mirrors.get(o.id) ?? null })) });
   } catch (error) {
     return respondWithError(res, error, { status: 500, message: 'Could not load the offers.' });
   }
@@ -94,6 +99,65 @@ router.post('/:id/status', requirePermission('offer:update'), async (req: Reques
     res.json({ success: true, data: offer });
   } catch (error) {
     return respondWithError(res, error, { status: 400, message: 'Could not change that offer.' });
+  }
+});
+
+// ── Shopify ─────────────────────────────────────────────────────────────────────────────────────
+//
+// Reading the state needs only offer:view. Everything that changes what a live Shopify store
+// charges needs offer:publish_external -- and accepting Shopify's version also needs offer:update,
+// because it rewrites the offer here.
+
+const apiFor = (installation: { id: string; shopDomain: string }) => adminApiFor(installation.id, installation.shopDomain);
+
+router.get('/:id/shopify', requirePermission('offer:view'), async (req: Request, res: Response) => {
+  try {
+    res.json({ success: true, data: await offerMirrorService.overview(clientOf(req), String(req.params.id)) });
+  } catch (error) {
+    return respondWithError(res, error, { status: 500, message: 'Could not read this offer\'s Shopify copy.' });
+  }
+});
+
+router.post('/:id/shopify', requirePermission('offer:publish_external'), async (req: Request, res: Response) => {
+  try {
+    await offerMirrorService.enable(clientOf(req), String(req.params.id), userOf(req));
+    res.status(202).json({ success: true, data: await offerMirrorService.overview(clientOf(req), String(req.params.id)) });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not put this offer on Shopify.' });
+  }
+});
+
+router.delete('/:id/shopify', requirePermission('offer:publish_external'), async (req: Request, res: Response) => {
+  try {
+    await offerMirrorService.disable(clientOf(req), String(req.params.id));
+    res.status(202).json({ success: true, data: await offerMirrorService.overview(clientOf(req), String(req.params.id)) });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not take this offer off Shopify.' });
+  }
+});
+
+router.post('/:id/shopify/push', requirePermission('offer:publish_external'), async (req: Request, res: Response) => {
+  try {
+    await offerMirrorService.pushOurs(clientOf(req), String(req.params.id));
+    res.status(202).json({ success: true, data: await offerMirrorService.overview(clientOf(req), String(req.params.id)) });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not push this offer to Shopify.' });
+  }
+});
+
+router.post('/:id/shopify/accept', requirePermission('offer:publish_external'), async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!holdsEverything(user?.permissions, user?.roles) && !grants(user?.permissions ?? [], 'offer:update')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Accepting Shopify\'s version changes this offer, which you do not have permission to do.'
+      });
+    }
+    await offerMirrorService.acceptTheirs(clientOf(req), String(req.params.id), userOf(req), apiFor);
+    res.json({ success: true, data: await offerMirrorService.overview(clientOf(req), String(req.params.id)) });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not accept the Shopify version.' });
   }
 });
 

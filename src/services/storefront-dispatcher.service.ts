@@ -2,6 +2,7 @@ import axios from 'axios';
 import { prisma } from '../lib/prisma';
 import { DeliveryStatus } from '@prisma/client';
 import { checkUrlDestination } from '../utils/storefrontUrl';
+import { backoffMs } from '../utils/retryBackoff';
 import {
   sign, SIGNATURE_HEADER, TIMESTAMP_HEADER, KEY_HEADER, DELIVERY_HEADER
 } from '../utils/storefrontSignature';
@@ -41,15 +42,7 @@ const REQUEST_TIMEOUT_MS = 10000;
 /** Response body kept for the log, truncated: it is diagnostics, not storage. */
 const ERROR_SNIPPET = 300;
 
-/**
- * Exponential with a ceiling: roughly 30s, 1m, 2m, 4m, 8m, 16m, 30m, 30m. Jittered, so a
- * storefront that went down while a thousand deliveries were queued does not receive all of
- * them again in the same instant when it returns.
- */
-function backoffMs(attempts: number): number {
-  const base = Math.min(30_000 * 2 ** (attempts - 1), 30 * 60_000);
-  return Math.round(base * (0.75 + Math.random() * 0.5));
-}
+// The retry schedule lives in utils/retryBackoff, shared with the Shopify discount mirror.
 
 export class StorefrontDispatcherService {
   private static timer: NodeJS.Timeout | null = null;

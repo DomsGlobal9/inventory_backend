@@ -8,6 +8,7 @@ import { prisma } from './lib/prisma';
 import { tenantRateLimiter } from './middleware/rate-limiter.middleware';
 import { SnapshotScheduler } from './jobs/snapshot.scheduler';
 import { HousekeepingScheduler } from './jobs/housekeeping.scheduler';
+import { OfferMirrorWorker } from './services/shopify-discounts';
 import { StorefrontDispatcherService } from './services/storefront-dispatcher.service';
 
 import cookieParser from 'cookie-parser';
@@ -146,5 +147,6 @@ app.listen(PORT, () => {
     SnapshotScheduler.start();
     StorefrontDispatcherService.start();
     HousekeepingScheduler.start();
+    OfferMirrorWorker.start();
   }
 });
