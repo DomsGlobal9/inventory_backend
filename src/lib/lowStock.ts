@@ -1,3 +1,5 @@
+import { Prisma } from '@prisma/client';
+
 /**
  * When a variant counts as low. One definition, in one place.
  *
@@ -25,8 +27,33 @@ export function isLowStock(quantityOnHand: number, reorderLevel: number | null |
   const level = reorderLevel ?? 0;
   // Not tracked. Out of stock is a different state, raised separately.
   if (level <= 0) return false;
-  return quantityOnHand <= level;
+  /*
+   * Something left, and not much. Zero is OUT OF STOCK, not low.
+   *
+   * This used to answer yes for zero, because nothing on hand is at or below any level. Every
+   * surface then disagreed about what "low" counted: the dashboard tile, the product page and
+   * the Low Stock filter all included sold-out items, while the stock alert engine and the
+   * Inventory Overview badge raised them as OUT_OF_STOCK. On demo-client the Low Stock filter
+   * showed a hundred rows badged Out of Stock. The two states want different actions -- low is
+   * "reorder soon", out is "you are losing sales now" -- and one number blurring them serves
+   * neither.
+   */
+  return quantityOnHand > 0 && quantityOnHand <= level;
 }
+
+/**
+ * The same rule, for a SQL query.
+ *
+ * Four raw queries count low stock (the dashboard tile, the inventory summary, the owner's
+ * dashboard, the critical-items figure), and each had written the comparison out for itself --
+ * two excluded untracked variants and two did not, none excluded zero. `qty` is the expression
+ * for on-hand units in that query; `v` must be the variant table's alias.
+ */
+export const lowStockSql = (qty: Prisma.Sql) =>
+  Prisma.sql`(${qty} > 0 AND v.reorder_level > 0 AND ${qty} <= v.reorder_level)`;
+
+/** Nothing on hand. Counted beside low stock, never inside it. */
+export const outOfStockSql = (qty: Prisma.Sql) => Prisma.sql`(${qty} <= 0)`;
 
 /**
  * The number a low-stock badge should compare against, or null when the variant is not

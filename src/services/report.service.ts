@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { isLowStock, lowStockSql, outOfStockSql } from '../lib/lowStock';
 import { UNIT_COST, PRICED_NOT_COSTED, inventoryValueFor } from '../lib/inventoryValuation';
 import { TransactionType, Prisma } from '@prisma/client';
 
@@ -92,13 +93,23 @@ export class ReportService {
         _sum: { totalAmount: true }
       }),
       valueQuery,
+      /*
+       * Low and out, counted together but never summed.
+       *
+       * Scoped to ACTIVE and DRAFT products -- the same set the Inventory Overview's Low Stock and
+       * Out of Stock filters show, since that is where the tile sends you. This count used to
+       * include trashed and archived products, so the tile could say 195 and the list it opened
+       * show a different number.
+       */
       prisma.$queryRaw<any[]>`
-        SELECT COUNT(*)::int as count
+        SELECT
+          COUNT(*) FILTER (WHERE ${lowStockSql(Prisma.sql`COALESCE(s.qty, 0)`)})::int as count,
+          COUNT(*) FILTER (WHERE ${outOfStockSql(Prisma.sql`COALESCE(s.qty, 0)`)})::int as "outOfStock"
         FROM "inventory_product_variants" v
+        JOIN "inventory_products" p ON p.id = v.product_id
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId}
-        AND COALESCE(s.qty, 0) <= v.reorder_level
-        AND v.reorder_level > 0;
+        AND p.status IN ('ACTIVE', 'DRAFT');
       `,
       // Same valuation basis as the headline figure above -- two different answers to "what is
       // this stock worth" on the same screen is worse than either answer alone.
@@ -156,6 +167,7 @@ export class ReportService {
       unitsValuedAtPrice: Number(uncostedRes[0]?.pricedUnits || 0),
       openPoValue: Number(openPos._sum.totalAmount || 0),
       lowStockCount: Number(lowStockCountRes[0].count),
+      outOfStockCount: Number(lowStockCountRes[0].outOfStock),
       deadStockValue: Number(deadStockValueRes[0].value || 0),
       activeProducts: products
     };
@@ -179,17 +191,28 @@ export class ReportService {
       include: { stocks: true }
     });
 
-    const actualLowStock = lowStockVariants.map(v => {
+    const scoped = lowStockVariants.map(v => {
       const scopedStocks = locationId ? v.stocks.filter(s => s.locationId === locationId) : v.stocks;
       const qty = scopedStocks.reduce((acc, s) => acc + s.quantity, 0);
       return { ...v, quantity: qty, inventoryValue: locationId ? qty * Number(v.averageCost) : v.inventoryValue };
-    }).filter((v: any) => v.quantity <= v.reorderLevel);
-    
+    });
+
+    // Tracked variants that need buying: low ones AND sold-out ones. Reorder exposure covers
+    // both -- an item that has run out needs reordering more than one that is merely low -- but
+    // the COUNT and VALUE of low stock are only the low ones, so this figure and the dashboard
+    // tile say the same thing.
+    const needsReorder = scoped.filter((v: any) => v.quantity <= v.reorderLevel);
+    const actualLowStock = scoped.filter((v: any) => isLowStock(v.quantity, v.reorderLevel));
+    const outOfStockCount = scoped.filter((v: any) => v.quantity <= 0).length;
+
     let lowStockValue = 0;
     let reorderExposure = 0;
 
     for (const v of actualLowStock) {
       lowStockValue += Number(v.inventoryValue);
+    }
+
+    for (const v of needsReorder) {
       const avgCost = Number(v.averageCost);
       if (v.reorderQty && v.reorderQty > 0) {
         reorderExposure += v.reorderQty * avgCost;
@@ -200,6 +223,7 @@ export class ReportService {
 
     return {
       lowStockCount: actualLowStock.length,
+      outOfStockCount,
       lowStockValue,
       reorderExposure
     };
@@ -265,10 +289,11 @@ export class ReportService {
       prisma.$queryRaw<any[]>`
         SELECT COUNT(*)::int as count
         FROM "inventory_product_variants" v
+        JOIN "inventory_products" p ON p.id = v.product_id
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId}
-        AND COALESCE(s.qty, 0) <= v.reorder_level
-        AND v.reorder_level > 0;
+        AND p.status IN ('ACTIVE', 'DRAFT')
+        AND ${lowStockSql(Prisma.sql`COALESCE(s.qty, 0)`)};
       `,
       valueQuery
     ]);

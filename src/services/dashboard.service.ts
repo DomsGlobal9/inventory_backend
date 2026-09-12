@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { lowStockSql } from '../lib/lowStock';
 import { Prisma } from '@prisma/client';
 import { inventoryValueFor } from '../lib/inventoryValuation';
 
@@ -30,8 +31,8 @@ export class DashboardService {
         JOIN inventory_products p ON v.product_id = p.id
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId}
-          AND p.status != 'TRASHED'
-          AND COALESCE(s.qty, 0) <= v.reorder_level
+          AND p.status IN ('ACTIVE', 'DRAFT')
+          AND ${lowStockSql(Prisma.sql`COALESCE(s.qty, 0)`)}
       `.then((res: any) => res?.[0]?.count || 0),
       prisma.inventoryStock.aggregate({
         where: { clientId, variant: { product: { status: { notIn: ['TRASHED'] } } }, ...(locationId ? { locationId } : {}) },
