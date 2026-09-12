@@ -57,6 +57,34 @@ export class ProductController {
     }
   }
 
+  /** Publish or unpublish a selection at once. See productService.bulkSetStatus. */
+  async bulkStatus(req: Request, res: Response, next: NextFunction) {
+    try {
+      const clientId = (req as any).clientId as string;
+      const { ids, status } = req.body ?? {};
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ success: false, message: 'Choose at least one product.' });
+      }
+      // A ceiling, for the same reason the importer has one: this writes and queues a
+      // storefront event per product, and one request must not become everyone's outage.
+      if (ids.length > 200) {
+        return res.status(400).json({ success: false, message: 'Publish at most 200 products at a time.' });
+      }
+      if (status !== 'ACTIVE' && status !== 'DRAFT') {
+        return res.status(400).json({ success: false, message: 'Status must be ACTIVE or DRAFT.' });
+      }
+      if (!ids.every((id: unknown) => typeof id === 'string')) {
+        return res.status(400).json({ success: false, message: 'Product ids must be text.' });
+      }
+
+      const result = await productService.bulkSetStatus(clientId, ids, status);
+      res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async archive(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;

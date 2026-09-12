@@ -116,6 +116,57 @@ export class ProductService {
     return updated;
   }
 
+  /**
+   * Publish or unpublish many products at once.
+   *
+   * A bulk import creates drafts by design -- a spreadsheet carries no photographs -- and a
+   * shop that has just imported its catalogue may have a hundred of them. Opening each one and
+   * pressing Publish is not a workflow, it is a punishment.
+   *
+   * Deliberately a loop over updateProduct rather than an updateMany. updateMany would be one
+   * query and would skip everything that makes publishing mean something: the state-machine
+   * check, the publishedAt stamp, and the PRODUCT_PUBLISHED event that tells the shop's website
+   * the product exists. A fast bulk publish that leaves the website unaware of 123 products is
+   * not a faster version of publishing, it is a different and broken thing.
+   *
+   * One product failing does not abandon the rest -- a merchant who selected a hundred and got
+   * "something went wrong" with no idea which ones succeeded is worse off than before.
+   */
+  async bulkSetStatus(clientId: string, ids: string[], status: 'ACTIVE' | 'DRAFT') {
+    const unique = [...new Set(ids)];
+
+    const found = await prisma.product.findMany({
+      where: { id: { in: unique }, clientId },
+      select: { id: true, status: true, title: true }
+    });
+    const byId = new Map(found.map(p => [p.id, p]));
+
+    const changed: string[] = [];
+    const unchanged: string[] = [];
+    const failed: { id: string; title?: string; reason: string }[] = [];
+
+    // Not found, and not silently: an id that belongs to another tenant, or to a product
+    // somebody else deleted while this list was on screen, has to be reported rather than
+    // counted as a success.
+    for (const id of unique) {
+      if (!byId.has(id)) failed.push({ id, reason: 'No longer exists.' });
+    }
+
+    // Sequential on purpose. Each of these writes, re-reads and queues a storefront event per
+    // connection; a hundred in parallel is how a pool of about 17 connections falls over.
+    for (const product of found) {
+      if (product.status === status) { unchanged.push(product.id); continue; }
+      try {
+        await this.updateProduct(product.id, clientId, { status });
+        changed.push(product.id);
+      } catch (err: any) {
+        failed.push({ id: product.id, title: product.title, reason: err?.message || 'Could not be changed.' });
+      }
+    }
+
+    return { changed: changed.length, unchanged: unchanged.length, failed, status };
+  }
+
   async archiveProduct(id: string, clientId: string) {
     // Remember what it was, the same way trashProduct does.
     //

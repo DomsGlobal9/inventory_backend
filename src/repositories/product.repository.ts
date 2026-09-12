@@ -62,7 +62,11 @@ export class ProductRepository {
               reorderLevel: true,
               stocks: { select: { quantity: true } }
             }
-          }
+          },
+          // A count, not the rows. Publishing in bulk has to be able to say how many of the
+          // selected products would go live with no photograph of them, and scrolling the
+          // list to find out is not an answer for a merchant with 123 drafts.
+          _count: { select: { images: true } }
         }
       }),
       prisma.product.count({ where })
@@ -79,9 +83,10 @@ export class ProductRepository {
         isLowStock(v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0), v.reorderLevel)
       ).length;
       
-      const { variants, ...rest } = product;
+      const { variants, _count, ...rest } = product as any;
       return {
         ...rest,
+        imageCount: _count?.images ?? 0,
         variantSummary: { variantCount, totalUnits, lowStockVariants }
       };
     });

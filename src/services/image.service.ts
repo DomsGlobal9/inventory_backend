@@ -64,8 +64,25 @@ export class ImageService {
       throw { statusCode: 400, message: "storagePath does not belong to this product" };
     }
 
+    /*
+     * A photograph can name the colour it shows, but only a colour of THIS product.
+     *
+     * Checked rather than trusted: variantId arrives from the browser, and without this a
+     * crafted call could hang one shop's photograph off another shop's variant. Scoped by
+     * clientId AND productId, so neither a foreign tenant nor a different product of the same
+     * tenant is reachable.
+     */
+    if (data.variantId) {
+      const variant = await prisma.productVariant.findFirst({
+        where: { id: data.variantId, clientId, productId },
+        select: { id: true }
+      });
+      if (!variant) throw { statusCode: 400, message: 'That size/colour does not belong to this product.' };
+    }
+
     const imageData: Prisma.ProductImageUncheckedCreateInput = {
       productId,
+      variantId: data.variantId ?? null,
       url: data.url,
       storagePath: data.storagePath,
       fileName: data.fileName,
@@ -76,12 +93,19 @@ export class ImageService {
       orderIndex: data.orderIndex
     };
 
-    // A product can only have one primary image -- clear any existing one first so
-    // creating a new primary (e.g. every publish/regenerate cycle) doesn't just stack
-    // up multiple PRIMARY badges instead of replacing the old one.
+    // One primary image per SET, and a variant is its own set -- clear any existing one
+    // first so creating a new primary (e.g. every publish/regenerate cycle) doesn't just
+    // stack up multiple PRIMARY badges instead of replacing the old one.
+    //
+    // Scoped by variant now that a photograph can name a colour: clearing on productId alone
+    // would mean setting the primary shot of the red saree un-set the primary shot of the
+    // blue one, and a shop with five colours could only ever have one primary between them.
     if (imageData.isPrimary) {
       return prisma.$transaction(async (tx) => {
-        await tx.productImage.updateMany({ where: { productId, isPrimary: true }, data: { isPrimary: false } });
+        await tx.productImage.updateMany({
+          where: { productId, variantId: imageData.variantId ?? null, isPrimary: true },
+          data: { isPrimary: false }
+        });
         return tx.productImage.create({ data: imageData });
       });
     }
@@ -99,7 +123,11 @@ export class ImageService {
 
     if (data.isPrimary) {
       return prisma.$transaction(async (tx) => {
-        await tx.productImage.updateMany({ where: { productId: image.productId, isPrimary: true, id: { not: id } }, data: { isPrimary: false } });
+        // Same scoping as addImage: the primary of one colour is not the primary of another.
+        await tx.productImage.updateMany({
+          where: { productId: image.productId, variantId: image.variantId, isPrimary: true, id: { not: id } },
+          data: { isPrimary: false }
+        });
         return tx.productImage.update({ where: { id }, data });
       });
     }

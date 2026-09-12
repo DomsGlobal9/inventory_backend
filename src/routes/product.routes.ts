@@ -17,6 +17,11 @@ router.get('/:id', requirePermission('product:view'), productController.getOne);
 router.patch('/:id', requirePermission('product:update'), productController.update);
 
 // Lifecycle Commands
+// Before /:id/... so a literal path segment is never swallowed by the id parameter.
+// product:update, not product:delete: publishing changes what a product IS, not whether it
+// exists -- the same permission the single-product Publish button needs.
+router.post('/bulk-status', requirePermission('product:update'), productController.bulkStatus);
+
 router.post('/:id/archive', requirePermission('product:delete'), productController.archive);
 router.post('/:id/restore', requirePermission('product:delete'), productController.restore);
 router.post('/:id/trash', requirePermission('product:delete'), productController.trash);
