@@ -66,6 +66,38 @@ export const createFullOrderSchema = z.object({
   externalOrderId: z.string().optional().nullable(),
   sourceSystem: z.string().optional().nullable(),
   status: z.enum(['DRAFT', 'CONFIRMED']).optional(),
+
+  /*
+   * The price we already quoted this basket, if we did.
+   *
+   * When present it OVERRIDES every per-line price in this request: the quote is what the
+   * customer was shown, and re-deriving the price at order time is exactly how a basket priced
+   * at 23:59:58 gets charged differently at 00:00:03. The order is refused if the items do not
+   * match the ones that were priced.
+   */
+  quoteId: z.string().min(1).optional().nullable(),
+
+  /*
+   * The codes the customer actually gave, resent.
+   *
+   * Needed because the quote's fingerprint covers them: a basket quoted WITH a code and ordered
+   * without one is a different basket, and must not silently keep the discount.
+   */
+  couponCodes: z.array(z.string().min(1)).optional(),
+
+  /*
+   * A person taking money off at the counter.
+   *
+   * Gated on `offer:manual_discount` at the route -- a cashier does not have it by default, a
+   * manager does -- and the reason is required, because it is the only record of who decided.
+   * Mutually exclusive with `discountAmount`: an order carrying both has no answer to whether
+   * the manual amount is already inside the total.
+   */
+  manualDiscount: z.object({
+    amount: moneyInput('Manual discount'),
+    reason: z.string().min(1, 'Say why money is coming off this order')
+  }).optional().nullable(),
+
   taxAmount: moneyInput('Tax').optional(),
   discountAmount: moneyInput('Discount').optional(),
   shippingAmount: moneyInput('Shipping').optional(),
@@ -82,6 +114,17 @@ export const createFullOrderSchema = z.object({
     unitPrice: moneyInput('Unit price').optional(),
     listUnitPrice: moneyInput('List price').optional(),
     /** Total off this LINE, not per unit -- the same shape as Shopify's discount_allocations. */
-    lineDiscount: moneyInput('Line discount').optional()
+    lineDiscount: moneyInput('Line discount').optional(),
+    /**
+     * Money a person took off THIS line, with the reason they gave.
+     *
+     * Separate from `lineDiscount`, which is what an external system says it charged. This one
+     * is a decision made here and now, it needs `offer:manual_discount`, and it lands on the
+     * order as its own row so a report can tell a markdown from an offer.
+     */
+    manualDiscount: z.object({
+      amount: moneyInput('Manual discount'),
+      reason: z.string().min(1, 'Say why money is coming off this line')
+    }).optional().nullable()
   })).min(1, "At least one item is required")
 });

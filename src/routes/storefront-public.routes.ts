@@ -1,8 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../lib/prisma';
-import { authenticateStorefront, storefrontContext } from '../middleware/storefront.middleware';
+import { authenticateStorefront, storefrontContext, StorefrontContext } from '../middleware/storefront.middleware';
 import { storefrontCatalogueService } from '../services/storefront-catalogue.service';
+import { pricingQuoteService } from '../services/pricing';
+import { respondWithError } from '../utils/respondWithError';
 
 /**
  * The API a merchant's website calls.
@@ -18,6 +20,16 @@ import { storefrontCatalogueService } from '../services/storefront-catalogue.ser
  *   GET /products/:code           one product, for filling a gap
  *   POST /sync/complete           the storefront says it has the catalogue; the connection
  *                                 goes ACTIVE and starts receiving events
+ *
+ * And two more that are the whole POINT of the Offers project:
+ *
+ *   GET /offers                   what to put a badge on, before anybody has a basket
+ *   POST /pricing/quote           what this basket costs -- the same question the till asks,
+ *                                 answered by the same engine
+ *
+ * The website never implements a discount rule. It cannot: it is not told what they are, only
+ * what they come to. That is deliberate -- a rule implemented twice is a rule implemented
+ * differently, and the difference is a customer charged a price the shop never agreed to.
  */
 
 const router = Router();
@@ -33,6 +45,22 @@ const storefrontLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests. Slow down and retry shortly.' }
+});
+
+/**
+ * Tighter, because a quote WRITES a row.
+ *
+ * The read endpoints above can be hammered during a sync and cost nothing but a query. Pricing
+ * a basket keeps the answer for fifteen minutes, so a storefront re-pricing on every keystroke
+ * of a quantity box would fill a table with baskets nobody ever bought. One a second is far
+ * more than a real checkout needs.
+ */
+const quoteLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many pricing requests. Slow down and retry shortly.' }
 });
 
 router.use(storefrontLimiter);
@@ -158,6 +186,176 @@ router.post('/sync/complete', async (req: Request, res: Response, next: NextFunc
       data: { status: 'ACTIVE', message: 'Synchronised. Live updates will now be delivered.' }
     });
   } catch (error) { next(error); }
+});
+
+/**
+ * Which of our locations this storefront sells from.
+ *
+ * Pricing needs ONE location: a variant can be priced differently at the shop and at the
+ * warehouse (VariantLocationProfile.priceOverride), and an offer can be limited to one of them.
+ * The catalogue endpoints can quote the lowest price across a scope because they are only
+ * describing; a quote is a promise, and a promise needs a definite answer.
+ *
+ * So: what the caller said, if it is inside the connection's scope. Failing that, the one
+ * location the connection has. Only when neither is true does it ask -- and it asks by name,
+ * with the list, rather than refusing with "locationCode required".
+ */
+async function sellingLocation(
+  ctx: StorefrontContext,
+  requestedCode: string | undefined
+): Promise<{ id: string } | { error: string }> {
+  const scoped = await prisma.stockLocation.findMany({
+    where: {
+      clientId: ctx.clientId,
+      active: true,
+      ...(ctx.locationIds.length > 0 ? { id: { in: ctx.locationIds } } : {})
+    },
+    select: { id: true, code: true, name: true }
+  });
+
+  if (scoped.length === 0) {
+    return { error: 'This storefront has no location to sell from. Ask the shop owner to set one.' };
+  }
+
+  if (requestedCode) {
+    const match = scoped.find(l => l.code.toLowerCase() === requestedCode.toLowerCase());
+    if (!match) {
+      return {
+        error:
+          `This storefront cannot sell from ${requestedCode}. ` +
+          `It sells from: ${scoped.map(l => l.code).join(', ')}.`
+      };
+    }
+    return { id: match.id };
+  }
+
+  if (scoped.length === 1) return { id: scoped[0].id };
+
+  return {
+    error:
+      `Say which location this is selling from: ${scoped.map(l => l.code).join(', ')}.`
+  };
+}
+
+/**
+ * Offers a shopper could see advertised.
+ *
+ * For the badge on a listing page -- "20% off" under a saree, before there is a basket. Calling
+ * the quote endpoint once per tile to discover that would be absurd and would write a quote row
+ * per tile.
+ *
+ * Codes are NOT listed here; see pricing/quote.service.publicOffers for why.
+ */
+router.get('/offers', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+
+    const location = await sellingLocation(
+      ctx, req.query.locationCode ? String(req.query.locationCode) : undefined
+    );
+    if ('error' in location) {
+      res.status(400).json({ success: false, message: location.error });
+      return;
+    }
+
+    const offers = await pricingQuoteService.publicOffers(ctx.clientId, 'ONLINE', location.id);
+    res.json({ success: true, data: { offers } });
+  } catch (error) { next(error); }
+});
+
+/**
+ * What does this basket cost?
+ *
+ * The same engine the till uses, reached through a different door. A storefront speaks in the
+ * codes it was given -- variantCode, locationCode -- never in our internal ids, which it has
+ * never seen and could not match to anything it holds.
+ *
+ * A POST because it CREATES something: the answer is kept for fifteen minutes and the order
+ * that follows is held to it. Send `quoteId` back with the order and the customer is charged
+ * what they were shown, whatever has happened to the offers in between.
+ */
+router.post('/pricing/quote', quoteLimiter, async (req: Request, res: Response) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+
+    const location = await sellingLocation(
+      ctx, req.body?.locationCode ? String(req.body.locationCode) : undefined
+    );
+    if ('error' in location) {
+      return res.status(400).json({ success: false, message: location.error });
+    }
+
+    const incoming = Array.isArray(req.body?.lines) ? req.body.lines : [];
+    if (incoming.length === 0) {
+      return res.status(400).json({ success: false, message: 'There is nothing in this basket.' });
+    }
+
+    /*
+     * Codes to ids, in ONE query.
+     *
+     * A lookup per line would be a basket of thirty items costing thirty round trips, and a
+     * storefront pricing a basket on every quantity change would feel every one of them.
+     */
+    const codes: string[] = [...new Set<string>(incoming.map((l: any) => String(l.variantCode ?? '')).filter(Boolean))];
+    const variants = codes.length
+      ? await prisma.productVariant.findMany({
+          where: { clientId: ctx.clientId, variantCode: { in: codes } },
+          select: { id: true, variantCode: true }
+        })
+      : [];
+    const idFor = new Map(variants.map(v => [v.variantCode, v.id]));
+
+    const lines: { variantId: string; quantity: number }[] = [];
+    for (const line of incoming) {
+      const code = String(line?.variantCode ?? '');
+      if (!code) {
+        return res.status(400).json({
+          success: false,
+          message: 'Every line needs a variantCode -- the code this item has in the catalogue.'
+        });
+      }
+      const variantId = idFor.get(code);
+      if (!variantId) {
+        // The code, not our id, because the code is the only half of this the caller knows.
+        return res.status(404).json({
+          success: false,
+          message: `No item here matches ${code}.`
+        });
+      }
+      lines.push({ variantId, quantity: Number(line.quantity) });
+    }
+
+    /*
+     * The shopper, if we already know them.
+     *
+     * Only used for per-customer limits ("one per customer"), and never created here: pricing a
+     * basket must not quietly write a customer record for somebody who then does not buy. An
+     * unknown shopper is simply a guest, and an offer limited per customer is withheld from a
+     * guest rather than given away without limit.
+     */
+    let customerId: string | null = null;
+    if (req.body?.customerExternalId) {
+      const customer = await prisma.customer.findFirst({
+        where: { clientId: ctx.clientId, externalCustomerId: String(req.body.customerExternalId) },
+        select: { id: true }
+      });
+      customerId = customer?.id ?? null;
+    }
+
+    const quote = await pricingQuoteService.quote(ctx.clientId, {
+      locationId: location.id,
+      channel: 'ONLINE',
+      customerId,
+      couponCodes: Array.isArray(req.body?.couponCodes) ? req.body.couponCodes : [],
+      lines
+    });
+
+    res.json({ success: true, data: quote });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not price that basket.' });
+  }
 });
 
 export default router;

@@ -38,5 +38,8 @@ export type {
   BasketLine, CandidateOffer, AppliedOffer, PricedBasketLine, PricedBasket
 } from './engine';
 
-export { pricingQuoteService, fingerprint, QUOTE_TTL_MS } from './quote.service';
+export { pricingQuoteService, fingerprint, pricedLinesFromQuote, QUOTE_TTL_MS } from './quote.service';
 export type { QuoteRequest } from './quote.service';
+
+export { normaliseManualDiscount, requestsManualDiscount, REASON_MIN_LENGTH, REASON_MAX_LENGTH } from './manualDiscount';
+export type { ManualDiscount, ManualDiscountInput } from './manualDiscount';

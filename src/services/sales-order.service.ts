@@ -5,9 +5,12 @@ import { reservationService } from './reservation.service';
 import { resolveVariantForLocation } from '../utils/variant-location';
 import { notFound, badRequest, conflict } from '../utils/httpError';
 import {
-  toMinor, fromMinor, netUnitPrice,
-  priceLine, allocateOrderDiscount, orderTotalsFrom, PricedLine
+  toMinor, fromMinor, netUnitPrice, allocate,
+  priceLine, allocateOrderDiscount, orderTotalsFrom, PricedLine,
+  fingerprint, pricedLinesFromQuote, pricingQuoteService,
+  normaliseManualDiscount, ManualDiscount
 } from './pricing';
+import { offerRedemptionService } from './offers';
 
 export class SalesOrderService {
   async createDraftOrder(clientId: string, locationId: string, customerId: string, channel: any = 'POS') {
@@ -40,6 +43,30 @@ export class SalesOrderService {
       if (existingOrder) {
         return existingOrder; // Idempotent return
       }
+    }
+
+    /*
+     * A person taking money off by hand, checked before a transaction is ever opened.
+     *
+     * The route has already refused a caller who lacks `offer:manual_discount`; this is the
+     * other half -- whether what they sent is a discount a shop could defend afterwards. See
+     * services/pricing/manualDiscount.ts for why the reason is required and why "na" is not one.
+     */
+    const orderManual = normaliseManualDiscount(data.manualDiscount, 'this order');
+
+    /*
+     * Two ways of saying the same thing, sent together.
+     *
+     * `discountAmount` is the total the CALLER decided -- a Shopify order arrives with one.
+     * `manualDiscount` is a decision made here, at this till, now. An order carrying both has no
+     * answer to whether the manual amount is already inside the total, and picking either
+     * reading charges somebody an amount nobody can account for. Refused, rather than guessed.
+     */
+    if (orderManual && Number(data.discountAmount ?? 0) > 0) {
+      throw badRequest(
+        'This order already carries a discount total, so a second one cannot be typed on top ' +
+        'of it. Send the order discount or the manual one, not both.'
+      );
     }
 
     const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
@@ -97,6 +124,32 @@ export class SalesOrderService {
       });
 
       /*
+       * The quote, if the caller was given one.
+       *
+       * Claimed HERE, inside the same transaction that writes the order, and not a moment
+       * earlier. Claimed outside it, an order that then fails to reserve stock would leave a
+       * quote spent on an order that does not exist -- and the customer could not check out
+       * again at the price they were shown.
+       *
+       * The fingerprint is recomputed from the items that actually arrived, so a basket that
+       * changed between being priced and being ordered is refused rather than given the old
+       * price. That is the whole reason the fingerprint is stored.
+       */
+      let quoted: ReturnType<typeof pricedLinesFromQuote> | null = null;
+      if (data.quoteId) {
+        const expected = fingerprint({
+          locationId,
+          channel,
+          lines: data.items.map((i: any) => ({ variantId: i.variantId, quantity: i.quantity })),
+          couponCodes: data.couponCodes ?? []
+        });
+        const quote = await pricingQuoteService.consume(
+          clientId, data.quoteId, order.id, expected, tx
+        );
+        quoted = pricedLinesFromQuote(quote.result);
+      }
+
+      /*
        * Price every line BEFORE writing any of them.
        *
        * The loop used to create each row as it went and accumulate a subtotal. It cannot any
@@ -104,7 +157,10 @@ export class SalesOrderService {
        * something between lines you have not finished counting. So this is two passes -- resolve
        * and price, then allocate, then write.
        */
-      const resolved: { item: any; unitCostMinor: number; priced: PricedLine }[] = [];
+      const resolved: {
+        item: any; unitCostMinor: number; priced: PricedLine;
+        manual: ManualDiscount | null; orderItemId?: string;
+      }[] = [];
 
       for (const item of data.items) {
         const variant = await tx.productVariant.findFirst({
@@ -119,27 +175,101 @@ export class SalesOrderService {
           throw new Error(`Variant ${variant.sku} is not available for sale at this location`);
         }
 
-        resolved.push({
-          item,
-          unitCostMinor: toMinor(variant.averageCost),
+        // Checked here rather than before the transaction so the message can name the SKU. A
+        // cashier reading "say why money is coming off item 2" has to count down the screen.
+        const manual = normaliseManualDiscount(item.manualDiscount, variant.sku);
+
+        let priced: PricedLine;
+
+        if (quoted) {
+          /*
+           * A quoted line is taken EXACTLY as quoted. Not re-priced, not checked against the
+           * catalogue, not adjusted because an offer has since ended -- that is what freezing
+           * means, and re-deriving it here would put the midnight bug straight back.
+           */
+          const line = quoted.byVariant.get(item.variantId);
+          if (!line) {
+            throw badRequest(
+              `${variant.sku} was not in the basket that was priced. Ask for the price again.`
+            );
+          }
+          if (line.quantity !== item.quantity) {
+            throw badRequest(
+              `${variant.sku} was priced for ${line.quantity} and this order has ` +
+              `${item.quantity}. Ask for the price again.`
+            );
+          }
+          priced = {
+            quantity: item.quantity,
+            listUnitPriceMinor: line.listUnitPriceMinor,
+            lineDiscountMinor: line.discountMinor,
+            allocatedDiscountMinor: 0,
+            totalPriceMinor: line.lineTotalMinor,
+            unitPriceMinor: netUnitPrice(line.lineTotalMinor, item.quantity),
+            priceSource: 'QUOTE'
+          };
+        } else {
           // The caller's prices win where it gave any, and our catalogue fills in where it did
           // not. Which is the whole point of this release: a till or a website that has already
           // charged somebody is telling us what was charged, not asking what it should be.
-          priced: priceLine(
+          priced = priceLine(
             item.quantity,
             toMinor(locationConfig.price || 0),
             item,
             variant.sku
-          )
+          );
+        }
+
+        if (manual) {
+          // On top of whatever the line already costs -- an offer and a goodwill gesture are two
+          // separate decisions, and both are real.
+          if (manual.amountMinor > priced.totalPriceMinor) {
+            throw badRequest(
+              `Taking ${manual.amountMinor / 100} off ${variant.sku} would leave it worth less ` +
+              `than nothing. The line is ${priced.totalPriceMinor / 100}.`
+            );
+          }
+          priced.lineDiscountMinor += manual.amountMinor;
+          priced.totalPriceMinor -= manual.amountMinor;
+          priced.unitPriceMinor = netUnitPrice(priced.totalPriceMinor, priced.quantity);
+          // The price on this row was decided by a person, and the row now says so. Which line
+          // was overridden by hand is a question a shop asks, and inferring it from the presence
+          // of a discount cannot tell a markdown from an offer.
+          priced.priceSource = 'MANUAL';
+        }
+
+        resolved.push({
+          item,
+          unitCostMinor: toMinor(variant.averageCost),
+          priced,
+          manual
         });
       }
 
       const pricedLines = resolved.map(r => r.priced);
-      allocateOrderDiscount(pricedLines, this.orderLevelDiscountMinor(data.discountAmount, pricedLines));
+
+      /*
+       * How an order-level discount is divided, captured BEFORE it is applied.
+       *
+       * `allocateOrderDiscount` rewrites the line totals, so weights taken afterwards would be
+       * the weights of already-discounted lines. The manual share needs the same weights the
+       * allocation itself used, or the rows recording where the manual money went would not add
+       * up to the manual discount.
+       */
+      const weights = pricedLines.map(l => l.listUnitPriceMinor * l.quantity - l.lineDiscountMinor);
+
+      const manualOrderMinor = orderManual?.amountMinor ?? 0;
+      allocateOrderDiscount(
+        pricedLines,
+        this.orderLevelDiscountMinor(data.discountAmount, pricedLines) + manualOrderMinor
+      );
+
+      const manualShares = manualOrderMinor > 0 ? allocate(manualOrderMinor, weights) : [];
 
       const reservationItems = [];
 
-      for (const { item, unitCostMinor, priced } of resolved) {
+      for (const entry of resolved) {
+        const { item, unitCostMinor, priced } = entry;
         const totalCostMinor = unitCostMinor * priced.quantity;
 
         const orderItem = await tx.salesOrderItem.create({
@@ -161,11 +291,125 @@ export class SalesOrderService {
           }
         });
 
+        entry.orderItemId = orderItem.id;
+
         reservationItems.push({
           variantId: item.variantId,
           salesOrderItemId: orderItem.id,
           quantity: priced.quantity
         });
+      }
+
+      /*
+       * WHY the money came off, beside WHAT came off.
+       *
+       * The line columns say a saree was sold at 9,600 instead of 12,000. They cannot say it was
+       * the Deepavali offer, or a manager's decision about a marked hem. Six months later that is
+       * the only question anybody asks about a discount, and a row that cannot answer it is the
+       * reason shops keep a paper book beside the till.
+       *
+       * The shape is Shopify's -- a discount, and its allocations across the lines -- chosen
+       * deliberately so an order we ingest from Shopify and an order we priced ourselves can be
+       * read by the same report.
+       */
+      const writeDiscount = async (
+        input: {
+          source: 'OFFER' | 'MANUAL';
+          title: string;
+          amountMinor: number;
+          offerId?: string | null;
+          offerVersionId?: string | null;
+          shares: { orderItemId: string; amountMinor: number }[];
+        }
+      ) => {
+        if (input.amountMinor <= 0) return;
+        const row = await tx.salesOrderDiscount.create({
+          data: {
+            salesOrderId: order.id,
+            offerId: input.offerId ?? null,
+            offerVersionId: input.offerVersionId ?? null,
+            source: input.source,
+            title: input.title,
+            amount: fromMinor(input.amountMinor)
+          }
+        });
+        for (const share of input.shares) {
+          if (share.amountMinor <= 0) continue;
+          await tx.salesOrderItemDiscount.create({
+            data: {
+              salesOrderItemId: share.orderItemId,
+              salesOrderDiscountId: row.id,
+              amount: fromMinor(share.amountMinor)
+            }
+          });
+        }
+      };
+
+      if (quoted) {
+        for (const discount of quoted.discounts) {
+          await writeDiscount({
+            source: 'OFFER',
+            title: discount.title,
+            amountMinor: discount.amountMinor,
+            offerId: discount.offerId,
+            offerVersionId: discount.offerVersionId,
+            // Taken from what the engine actually did to each line, not re-divided here. Two
+            // allocations of the same total by two different pieces of code is how the parts
+            // stop adding up to the whole.
+            shares: resolved.map(r => ({
+              orderItemId: r.orderItemId!,
+              amountMinor: (quoted!.byVariant.get(r.item.variantId)?.appliedOffers ?? [])
+                .filter(a => a.offerId === discount.offerId)
+                .reduce((sum, a) => sum + a.amountMinor, 0)
+            }))
+          });
+        }
+      }
+
+      // A person's decision on one line. Its own row, with the reason as its title, because the
+      // reason IS the record -- "200 off" six months later with nothing beside it is
+      // indistinguishable from theft.
+      for (const entry of resolved) {
+        if (!entry.manual) continue;
+        await writeDiscount({
+          source: 'MANUAL',
+          title: entry.manual.reason,
+          amountMinor: entry.manual.amountMinor,
+          shares: [{ orderItemId: entry.orderItemId!, amountMinor: entry.manual.amountMinor }]
+        });
+      }
+
+      if (orderManual) {
+        await writeDiscount({
+          source: 'MANUAL',
+          title: orderManual.reason,
+          amountMinor: orderManual.amountMinor,
+          shares: resolved.map((r, index) => ({
+            orderItemId: r.orderItemId!,
+            amountMinor: manualShares[index] ?? 0
+          }))
+        });
+      }
+
+      /*
+       * Spend the offers' allowances.
+       *
+       * Inside this transaction, after the order exists and before anything is returned. Outside
+       * it, two simultaneous checkouts both pass a "one use left" check and a shop that
+       * advertised fifty serves fifty-one. If an allowance has run out between the quote and
+       * now, this throws and the whole order rolls back -- which is the right answer even though
+       * it is an unhappy one.
+       */
+      if (quoted && quoted.discounts.length > 0) {
+        await offerRedemptionService.record(
+          tx,
+          { clientId, salesOrderId: order.id, customerId },
+          quoted.discounts.map(d => ({
+            offerId: d.offerId,
+            offerVersionId: d.offerVersionId,
+            amountMinor: d.amountMinor
+          }))
+        );
       }
 
       const totals = orderTotalsFrom(
@@ -185,7 +429,7 @@ export class SalesOrderService {
           total: fromMinor(totals.totalMinor),
           status: data.status === 'CONFIRMED' ? 'CONFIRMED' : 'DRAFT'
         },
-        include: { items: true, customer: true }
+        include: { items: true, customer: true, discounts: true }
       });
 
       if (data.status === 'CONFIRMED' && reservationItems.length > 0) {
@@ -228,6 +472,18 @@ export class SalesOrderService {
               include: { product: true }
             }
           }
+        },
+        /*
+         * Why the money came off, not only that it did.
+         *
+         * The order screen could always show that a line was discounted; it could not show
+         * whether that was the Deepavali offer or somebody's decision about a marked hem. For a
+         * manual discount the title IS the reason that was typed, which is the only record of
+         * it -- so it has to reach the screen or it may as well not have been required.
+         */
+        discounts: {
+          include: { allocations: true },
+          orderBy: { createdAt: 'asc' }
         }
       }
     });
@@ -533,10 +789,27 @@ export class SalesOrderService {
       }
     }
 
-    return prisma.salesOrder.update({
-      where: { id },
-      data: { status: 'CANCELLED' }
-    });
+    /*
+     * Give the offers' allowances back -- but only if nothing has shipped.
+     *
+     * An order cancelled before dispatch was never a sale, so a "first 50 customers" offer
+     * should not have lost one of its fifty to it. An order that shipped and then had its
+     * remainder cancelled DID sell; keeping its allowance spent is what stops an offer being
+     * used, part-refunded and used again. The same asymmetry Shopify applies, and the reason
+     * returns never restore an allowance either.
+     */
+    const restoresAllowance = order.status === 'DRAFT' || order.status === 'CONFIRMED';
+
+    return prisma.$transaction(async (tx) => {
+      if (restoresAllowance) {
+        await offerRedemptionService.release(tx, clientId, id, `Order ${order.orderNumber} cancelled`);
+      }
+
+      return tx.salesOrder.update({
+        where: { id },
+        data: { status: 'CANCELLED' }
+      });
+    }, { timeout: 30000 });
   }
 }
 

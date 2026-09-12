@@ -66,6 +66,18 @@ export class PricingQuoteService {
     const channel = (req.channel ?? 'POS').toUpperCase();
     const variantIds = [...new Set(req.lines.map(l => l.variantId))];
 
+    /*
+     * The same item twice.
+     *
+     * Refused rather than merged, because a quote is matched back to an order line by line, and
+     * two lines carrying the same variant have no way of saying which quoted price belongs to
+     * which. Merging them silently would also change the basket a till thinks it sent. Asking
+     * for one line with a quantity of two is unambiguous in both directions.
+     */
+    if (variantIds.length !== req.lines.length) {
+      throw badRequest('Send each item once, with its full quantity.');
+    }
+
     const variants = await prisma.productVariant.findMany({
       where: { id: { in: variantIds }, clientId },
       include: {
@@ -137,8 +149,19 @@ export class PricingQuoteService {
    * written against it. The third matters most -- a quote is good ONCE, or one checkout's price
    * could be replayed onto ten orders.
    */
-  async consume(clientId: string, quoteId: string, salesOrderId: string, expectedHash?: string) {
-    const quote = await prisma.pricingQuote.findFirst({ where: { id: quoteId, clientId } });
+  async consume(
+    clientId: string, quoteId: string, salesOrderId: string, expectedHash?: string,
+    /*
+     * The transaction that is writing the order, when there is one.
+     *
+     * A quote has to be claimed in the SAME transaction that writes the order it prices.
+     * Claimed outside it, an order that then fails to reserve stock leaves a quote spent on an
+     * order that does not exist, and the customer cannot re-checkout at the price they were
+     * shown. Defaults to the global client so the standalone path still works.
+     */
+    client: any = prisma
+  ) {
+    const quote = await client.pricingQuote.findFirst({ where: { id: quoteId, clientId } });
     if (!quote) throw notFound('That price is no longer available. Ask for it again.');
 
     if (quote.consumedAt) {
@@ -153,7 +176,7 @@ export class PricingQuoteService {
 
     // Claimed, not written: two orders racing for the same quote must not both get it. The same
     // compare-and-set that stops a double-clicked Confirm reserving stock twice.
-    const claimed = await prisma.pricingQuote.updateMany({
+    const claimed = await client.pricingQuote.updateMany({
       where: { id: quoteId, clientId, consumedAt: null },
       data: { consumedAt: new Date(), salesOrderId }
     });
@@ -171,7 +194,7 @@ export class PricingQuoteService {
    * customer -- and the engine is pure on purpose. `usageCount` is compared in the query so an
    * offer at its limit never even reaches the arithmetic.
    */
-  private async liveOffers(
+  async liveOffers(
     clientId: string, channel: string, locationId: string, customerId: string | null
   ): Promise<CandidateOffer[]> {
     const now = new Date();
@@ -274,6 +297,117 @@ export class PricingQuoteService {
       nearMisses: priced.nearMisses
     };
   }
+
+  /**
+   * The offers a shopper could see advertised, without pricing anything.
+   *
+   * A merchant's website needs this for the badge on a listing page -- "20% off" under a saree,
+   * before anybody has a basket. Calling the quote endpoint once per tile to find that out would
+   * be absurd, and would write a quote row per tile.
+   *
+   * COUPON OFFERS ARE NOT LISTED. A code is worth something because not everybody has it; an
+   * endpoint that hands out every live code turns a targeted campaign into a public sale. A
+   * storefront that legitimately knows a code sends it to the quote endpoint and gets the price.
+   *
+   * Targets come back as the codes a storefront already knows -- productCode, variantCode -- not
+   * our internal ids, which it has never seen and could not match to anything it holds.
+   */
+  async publicOffers(clientId: string, channel: string, locationId: string) {
+    const live = (await this.liveOffers(clientId, channel, locationId, null))
+      .filter(o => o.trigger === 'AUTOMATIC');
+
+    const productIds = live.flatMap(o => o.scope === 'PRODUCT' ? o.targets.map(t => t.refId) : []);
+    const variantIds = live.flatMap(o => o.scope === 'VARIANT' ? o.targets.map(t => t.refId) : []);
+
+    const [products, variants] = await Promise.all([
+      productIds.length
+        ? prisma.product.findMany({
+            where: { id: { in: [...new Set(productIds)] }, clientId },
+            select: { id: true, productCode: true }
+          })
+        : Promise.resolve([] as any[]),
+      variantIds.length
+        ? prisma.productVariant.findMany({
+            where: { id: { in: [...new Set(variantIds)] }, clientId },
+            select: { id: true, variantCode: true }
+          })
+        : Promise.resolve([] as any[])
+    ]);
+
+    const productCode = new Map(products.map((p: any) => [p.id, p.productCode]));
+    const variantCode = new Map(variants.map((v: any) => [v.id, v.variantCode]));
+
+    // Only the offer's own rule is exposed -- not its priority, not whether it stacks, not how
+    // many times it has been used. Those are the shop's business, and a website cannot act on
+    // any of them.
+    return live.map(o => ({
+      name: o.name,
+      valueType: o.valueType,
+      value: Number(o.value),
+      maxDiscount: o.maxDiscount == null ? null : Number(o.maxDiscount),
+      scope: o.scope,
+      appliesTo:
+        o.scope === 'ALL' ? null
+        : o.scope === 'CATEGORY' ? { categories: o.targets.map(t => t.refId) }
+        : o.scope === 'PRODUCT' ? { productCodes: o.targets.map(t => productCode.get(t.refId)).filter(Boolean) }
+        : { variantCodes: o.targets.map(t => variantCode.get(t.refId)).filter(Boolean) },
+      minSubtotal: o.minSubtotalMinor == null ? null : minorToNumber(o.minSubtotalMinor),
+      minQuantity: o.minQuantity
+    }));
+  }
+}
+
+/**
+ * A saved quote, turned back into something an order can be written from.
+ *
+ * The stored result is in rupees, because that is what was SHOWN to somebody -- it is a record
+ * of a conversation, not an internal calculation. Coming back the other way it has to become
+ * paise again before any arithmetic touches it, or the order's totals and the quote's totals
+ * drift by a rounding at the third decimal place.
+ *
+ * Keyed by variant, which is safe because `quote()` refuses a basket containing the same variant
+ * twice.
+ */
+export function pricedLinesFromQuote(result: any) {
+  const lines = Array.isArray(result?.lines) ? result.lines : [];
+
+  const byVariant = new Map<string, {
+    quantity: number;
+    listUnitPriceMinor: number;
+    discountMinor: number;
+    lineTotalMinor: number;
+    appliedOffers: { offerId: string; offerVersionId: string | null; title: string; amountMinor: number; level: string }[];
+  }>();
+
+  for (const l of lines) {
+    byVariant.set(l.variantId, {
+      quantity: Number(l.quantity),
+      listUnitPriceMinor: toMinor(l.listUnitPrice),
+      discountMinor: toMinor(l.discount),
+      lineTotalMinor: toMinor(l.lineTotal),
+      appliedOffers: (l.appliedOffers ?? []).map((a: any) => ({
+        offerId: a.offerId,
+        offerVersionId: a.offerVersionId ?? null,
+        title: a.title,
+        amountMinor: toMinor(a.amount),
+        level: a.level
+      }))
+    });
+  }
+
+  return {
+    byVariant,
+    /** One entry per offer, whatever it touched -- this is what becomes SalesOrderDiscount. */
+    discounts: ((result?.discounts ?? []) as any[]).map((d: any) => ({
+      offerId: String(d.offerId),
+      offerVersionId: (d.offerVersionId ?? null) as string | null,
+      title: String(d.title),
+      amountMinor: toMinor(d.amount),
+      level: String(d.level)
+    })),
+    totalMinor: toMinor(result?.total ?? 0),
+    discountTotalMinor: toMinor(result?.discountTotal ?? 0)
+  };
 }
 
 export const pricingQuoteService = new PricingQuoteService();

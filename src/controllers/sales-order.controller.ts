@@ -3,6 +3,8 @@ import { salesOrderService } from '../services/sales-order.service';
 import { prisma } from '../lib/prisma';
 import { createOrderSchema, createFullOrderSchema } from '../validations/sales-order.schema';
 import { respondWithError } from '../utils/respondWithError';
+import { requestsManualDiscount } from '../services/pricing';
+import { grants, holdsEverything } from '../config/permissions';
 
 export const createOrder = async (req: Request, res: Response) => {
   try {
@@ -33,6 +35,33 @@ export const createFullOrder = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
     
+    /*
+     * Taking money off by hand needs its own permission -- checked BEFORE validation.
+     *
+     * Conditional, because an ordinary order must not require it: most orders arrive from a
+     * website or a till with no manual discount on them at all, and gating the whole route
+     * would stop every one of them.
+     *
+     * Before validation, deliberately. A cashier who is not allowed to do this should be told
+     * that, not handed a validation message that teaches them the shape the field wants.
+     */
+    if (requestsManualDiscount(req.body)) {
+      const user = (req as any).user;
+      const allowed =
+        holdsEverything(user?.permissions, user?.roles) ||
+        grants(user?.permissions ?? [], 'offer:manual_discount');
+
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message:
+            'You do not have permission to take money off at the till. ' +
+            'Ask a manager to approve it.',
+          requiredPermission: 'offer:manual_discount'
+        });
+      }
+    }
+
     const parsed = createFullOrderSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
