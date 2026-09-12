@@ -88,6 +88,22 @@ class ProductImportService {
     return crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex').slice(0, 32);
   }
 
+  /**
+   * The merchant's key, reduced to one spelling.
+   *
+   * "Kanchi" and "kanchi" are the same product to the person who typed them, and Excel
+   * helpfully capitalises the first letter of a column when it feels like it. Matching on
+   * the raw string meant a re-import could produce a duplicate of the very product it
+   * created -- which is the failure this key exists to prevent.
+   */
+  private normaliseKey(v: string | undefined): string | undefined {
+    const t = (v ?? '').trim().toLowerCase();
+    return t || undefined;
+  }
+
+  /** Text that has to fit on a screen and in a report. */
+  private readonly MAX_TEXT = 200;
+
   private num(v: unknown): number | undefined {
     if (v === undefined || v === null || v === '') return undefined;
     const n = Number(v);
@@ -146,7 +162,7 @@ class ProductImportService {
     const groups = new Map<string, { key: string; isExisting: boolean; resolvedCode?: string; rows: ImportRow[] }>();
     for (const row of rows) {
       const code = row.productCode?.trim();
-      const key = row.productKey?.trim();
+      const key = this.normaliseKey(row.productKey);
       if (code) {
         const id = `code:${code}`;
         if (!groups.has(id)) groups.set(id, { key: code, isExisting: true, rows: [] });
@@ -226,6 +242,20 @@ class ProductImportService {
 
     for (const group of groups.values()) {
       const product = group.isExisting ? productByCode.get(group.resolvedCode ?? group.key) : undefined;
+      /*
+       * Within one product, size + colour IS the variant.
+       *
+       * A blank SKU is derived from productCode-COLOUR-SIZE, so two rows of the same product
+       * with the same size and no colour resolve to the same SKU -- and [clientId, sku] is
+       * unique, so the second insert would fail at apply time. The preview said "2 new
+       * variants, ready to import", which is the one thing it must never do: promise
+       * something that will not happen.
+       *
+       * Checked on the pair rather than on the derived SKU so it reads as what it is, and so
+       * it holds for rows that supply a size and colour but no SKU under an existing product
+       * too.
+       */
+      const seenPairs = new Set<string>();
 
       if (group.isExisting && !product) {
         // Deliberately an error, not a create. A typo in a product code must not quietly
@@ -257,6 +287,19 @@ class ProductImportService {
       }
 
       for (const row of group.rows) {
+        if (!row.sku?.trim()) {
+          const pair = `${(row.size || '').trim().toLowerCase()}|${(row.color || '').trim().toLowerCase()}`;
+          if (seenPairs.has(pair)) {
+            const describe = [row.size?.trim(), row.color?.trim()].filter(Boolean).join(' / ') || 'no size and no colour';
+            errors.push({
+              rowNumber: row.rowNumber,
+              message: `This product already has a "${describe}" row in this file. Give the rows different sizes or colours, or set an SKU on each.`
+            });
+            continue;
+          }
+          seenPairs.add(pair);
+        }
+
         /*
          * A blank SKU still names a specific variant.
          *
@@ -319,6 +362,46 @@ class ProductImportService {
           if (product) touchedExistingProducts.add(product.id);
         }
 
+        // ── Text that is too long to be a name ──────────────────────────────
+        //
+        // Postgres text has no limit, so a pasted paragraph is stored happily and then
+        // breaks every screen that renders it. Caught here rather than discovered later
+        // on a product card.
+        for (const [label, value] of [
+          ['Title', row.title], ['Color', row.color], ['Size', row.size],
+          ['DressType', row.dressType], ['Fabric', row.fabric], ['Brand', row.brand], ['SKU', row.sku]
+        ] as const) {
+          if (typeof value === 'string' && value.trim().length > this.MAX_TEXT) {
+            errors.push({ rowNumber: row.rowNumber, message: `${label} is ${value.trim().length} characters. Keep it under ${this.MAX_TEXT}.` });
+          }
+        }
+
+        // ── Numbers must be numbers of the right shape ──────────────────────
+        //
+        // The same rules bulkUpdateVariantSchema enforces, because a file should not be
+        // able to write through this endpoint what the other one would refuse. Left
+        // unchecked these do not bounce off the database politely: quantity and
+        // reorderLevel are integer columns, so 2.5 is truncated or throws at apply time,
+        // and a negative price is simply stored and then shown to customers.
+        for (const [label, value, rule] of [
+          ['Quantity', row.quantity, 'int>=0'],
+          ['ReorderLevel', row.reorderLevel, 'int>=0'],
+          ['BasePrice', row.basePrice, 'money>0'],
+          ['SellingPrice', row.sellingPrice, 'money>0'],
+          ['CostPrice', row.costPrice, 'money>=0']
+        ] as const) {
+          const n = this.num(value);
+          if (n === undefined) continue;
+          if (rule === 'int>=0') {
+            if (!Number.isInteger(n)) errors.push({ rowNumber: row.rowNumber, message: `${label} must be a whole number, not ${n}.` });
+            else if (n < 0) errors.push({ rowNumber: row.rowNumber, message: `${label} cannot be negative.` });
+          } else if (rule === 'money>0') {
+            if (n <= 0) errors.push({ rowNumber: row.rowNumber, message: `${label} must be more than zero.` });
+          } else {
+            if (n < 0) errors.push({ rowNumber: row.rowNumber, message: `${label} cannot be negative.` });
+          }
+        }
+
         // ── Warnings ────────────────────────────────────────────────────────
         const qty = this.num(row.quantity);
         const cost = this.num(row.costPrice);
@@ -328,9 +411,6 @@ class ProductImportService {
           // down, and the first purchase order is then averaged against a number that was
           // never true -- which once priced a 4,999 saree at 98 rupees.
           warnings.push({ rowNumber: row.rowNumber, message: 'Quantity with no CostPrice. This stock will enter valued at zero, which skews the cost average on your first purchase order.' });
-        }
-        if (qty !== undefined && qty < 0) {
-          errors.push({ rowNumber: row.rowNumber, message: 'Quantity cannot be negative.' });
         }
       }
     }
@@ -384,7 +464,7 @@ class ProductImportService {
     const groups = new Map<string, { key: string; isExisting: boolean; rows: ImportRow[] }>();
     for (const row of rows) {
       const code = row.productCode?.trim();
-      const key = row.productKey?.trim();
+      const key = this.normaliseKey(row.productKey);
       const id = code ? `code:${code}` : `key:${key}`;
       if (!groups.has(id)) groups.set(id, { key: code || key!, isExisting: !!code, rows: [] });
       groups.get(id)!.rows.push(row);
