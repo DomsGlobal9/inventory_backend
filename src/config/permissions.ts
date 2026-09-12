@@ -107,6 +107,22 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   // If a dispatch list is ever built, add it back then and gate that route with it.
   { key: 'dispatch:create', group: 'Selling', label: 'Send goods out against an order', implies: ['sales_order:view'] },
 
+  // ── Offers ────────────────────────────────────────────────────────────────
+  //
+  // Writing a discount and PUSHING one to a live Shopify store are deliberately different
+  // permissions. The first changes what this app charges; the second changes somebody's public
+  // shop front, and a shop may well want a manager writing offers without being able to touch
+  // the storefront.
+  //
+  // offer:manual_discount is the till override -- the thing every real counter needs and every
+  // system that forbids it gets worked around. Gated and reason-required rather than absent.
+  { key: 'offer:view',    group: 'Selling', label: 'See offers and discounts' },
+  { key: 'offer:create',  group: 'Selling', label: 'Write a new offer',                    implies: ['offer:view', 'product:view'] },
+  { key: 'offer:update',  group: 'Selling', label: 'Change an offer, and start or pause it', implies: ['offer:view'] },
+  { key: 'offer:archive', group: 'Selling', label: 'Retire an offer',                      implies: ['offer:view'], sensitive: true },
+  { key: 'offer:publish_external', group: 'Selling', label: 'Push an offer to a connected Shopify store', implies: ['offer:view'], sensitive: true },
+  { key: 'offer:manual_discount',  group: 'Selling', label: 'Take money off at the till, with a reason', implies: ['sales_order:view'], sensitive: true },
+
   { key: 'return:view',     group: 'Selling', label: 'See returns' },
   { key: 'return:create',   group: 'Selling', label: 'Log a return',                          implies: ['return:view'] },
   { key: 'return:receive',  group: 'Selling', label: 'Mark a return as arrived',              implies: ['return:view'] },

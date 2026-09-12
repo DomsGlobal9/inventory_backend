@@ -2320,3 +2320,217 @@ model DailyReportDelivery {
   @@index([jobId])
   @@map("daily_report_deliveries")
 }
+
+// =============================================================================
+// OFFERS
+// =============================================================================
+//
+// One place a merchant writes a discount, whichever storefront it sells through.
+//
+// A shop running a Deepavali sale types it once. The till and the shop's own website apply it
+// because they ASK us what a basket costs; Shopify applies it because we push a copy into
+// Shopify, which owns its own checkout and cannot be made to ask. That difference is why Offer
+// is the source of truth and never the mirror.
+//
+// Nothing here APPLIES an offer. Phase 2 is authoring; the engine that prices a basket is
+// Phase 3 and reads these tables.
+
+enum OfferStatus {
+  /// Being written. Never applies to anything.
+  DRAFT
+  ACTIVE
+  /// Switched off by hand, keeping its dates. Distinct from EXPIRED, which time did.
+  PAUSED
+  EXPIRED
+  /// Finished with. Kept, because orders point at its versions.
+  ARCHIVED
+}
+
+enum OfferTrigger {
+  /// Applies on its own, to any basket that qualifies.
+  AUTOMATIC
+  /// Applies only when the customer gives the code.
+  CODE
+}
+
+enum OfferValueType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  /// "This, for 999" -- a price, not a reduction.
+  FIXED_PRICE
+}
+
+enum OfferScope {
+  ALL
+  CATEGORY
+  PRODUCT
+  VARIANT
+}
+
+enum OfferLevel {
+  /// Comes off the matching lines.
+  LINE
+  /// Comes off the basket, then divided between the lines.
+  ORDER
+}
+
+/// A rule a merchant wrote.
+model Offer {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  /// OFR-000001. Ours, sequential, and shown to the merchant.
+  offerCode String @map("offer_code")
+
+  /// What the merchant typed. It reaches the customer on a receipt, so it is a label rather than
+  /// an internal name.
+  name        String
+  description String? @db.Text
+
+  trigger OfferTrigger @default(AUTOMATIC)
+
+  /// Only when trigger = CODE. Matched case-insensitively; stored as typed.
+  couponCode String? @map("coupon_code")
+
+  level     OfferLevel     @default(LINE)
+  valueType OfferValueType @map("value_type")
+  value     Decimal        @db.Decimal(10, 2)
+
+  /// A ceiling on a percentage. "20% off, up to 2,000" is the shape every shop asks for, and the
+  /// one that stops a percentage running away on an unusually large basket.
+  maxDiscount Decimal? @map("max_discount") @db.Decimal(10, 2)
+
+  scope   OfferScope    @default(ALL)
+  targets OfferTarget[]
+
+  /// Conditions on the basket. Null means no condition, which is not the same as zero.
+  minSubtotal Decimal? @map("min_subtotal") @db.Decimal(10, 2)
+  minQuantity Int?     @map("min_quantity")
+
+  /// Where it applies. Empty means everywhere -- the same convention StorefrontConnection uses for
+  /// locationIds, so a merchant meets one idea rather than two.
+  channels    SalesChannel[]
+  locationIds String[]       @map("location_ids")
+
+  /// INCLUSIVE. Stored UTC, entered and shown in the shop's own timezone.
+  startsAt DateTime @map("starts_at")
+
+  /// EXCLUSIVE, and null means open-ended. An offer "ending 30 Sep" is stored as 1 Oct 00:00 and
+  /// shown as "ends 30 Sep, 11:59 pm", so a merchant never has to reason about which it is.
+  endsAt DateTime? @map("ends_at")
+
+  usageLimit            Int? @map("usage_limit")
+  usageLimitPerCustomer Int? @map("usage_limit_per_customer")
+
+  /// Maintained as orders redeem it. A counter rather than a count(*), because the limit has to be
+  /// checkable inside the same transaction that takes the order.
+  usageCount Int @default(0) @map("usage_count")
+
+  /// Higher wins when two offers compete for the same line.
+  priority Int @default(0)
+
+  /// Whether it can apply on top of another. Non-stackable offers compete and only the best one
+  /// applies -- the same rule Shopify uses, so ours and theirs agree by default rather than by
+  /// accident.
+  stackable Boolean @default(false)
+
+  status OfferStatus @default(DRAFT)
+
+  /// The version an order records when it redeems this.
+  currentVersionId String? @map("current_version_id")
+
+  versions    OfferVersion[]
+  redemptions OfferRedemption[]
+
+  createdBy  String?   @map("created_by")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  archivedAt DateTime? @map("archived_at")
+
+  @@unique([clientId, offerCode])
+  /// One live code per shop. Two offers answering to DEEPAVALI is a question with no right answer.
+  @@unique([clientId, couponCode])
+  @@index([clientId, status, startsAt, endsAt])
+  @@map("offers")
+}
+
+/// What an offer applies to, when it does not apply to everything.
+model OfferTarget {
+  id      String @id @default(uuid())
+  offerId String @map("offer_id")
+  offer   Offer  @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  scope OfferScope
+
+  /// A category name, a productId or a variantId, according to `scope`. Deliberately not a foreign
+  /// key: a category is not a row, and an offer has to survive a product being trashed.
+  refId String @map("ref_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([offerId, scope, refId])
+  @@index([offerId])
+  @@map("offer_targets")
+}
+
+/// What the rule said, at a moment. Immutable.
+///
+/// This is what lets an order explain itself six months later. An order records a VERSION, not the
+/// offer, so editing "20% off" down to "10% off" in November cannot rewrite what October's
+/// customers were charged -- which is exactly what happens when a report joins to a mutable rule.
+model OfferVersion {
+  id      String @id @default(uuid())
+  offerId String @map("offer_id")
+  offer   Offer  @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  version Int
+
+  /// The whole rule as it stood. Json rather than a copy of every column, because the shape of an
+  /// offer will grow and an old version must still read correctly when it does.
+  snapshot Json
+
+  changedBy  String? @map("changed_by")
+  changeNote String? @map("change_note")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  redemptions OfferRedemption[]
+
+  @@unique([offerId, version])
+  @@index([offerId])
+  @@map("offer_versions")
+}
+
+/// One order that used one offer.
+///
+/// Separate from SalesOrderDiscount, which records what came OFF. This records that the offer's
+/// allowance was SPENT. They are the same event seen from two ends, and the limits have to be
+/// counted from this side because an order can be cancelled and give its allowance back.
+model OfferRedemption {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  offerId        String       @map("offer_id")
+  offer          Offer        @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  offerVersionId String       @map("offer_version_id")
+  offerVersion   OfferVersion @relation(fields: [offerVersionId], references: [id], onDelete: Restrict)
+
+  salesOrderId String  @map("sales_order_id")
+  customerId   String? @map("customer_id")
+
+  amount Decimal @db.Decimal(10, 2)
+
+  /// COUNTED | RELEASED. An order cancelled before it shipped gives the allowance back; a return
+  /// does not, which matches Shopify and stops refund-and-reuse.
+  status String @default("COUNTED")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// An offer counts once per order, however many lines it touched.
+  @@unique([offerId, salesOrderId], name: "uq_redemption_offer_order")
+  @@index([clientId, offerId])
+  @@index([salesOrderId])
+  @@index([customerId])
+  @@map("offer_redemptions")
+}
