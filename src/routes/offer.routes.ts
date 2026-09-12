@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { offerService } from '../services/offers';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
+import { grants, holdsEverything } from '../config/permissions';
 import { respondWithError } from '../utils/respondWithError';
 
 /**
@@ -77,8 +78,11 @@ router.post('/:id/status', requirePermission('offer:update'), async (req: Reques
     }
 
     if (next === 'ARCHIVED') {
-      const permissions: string[] = (req as any).user?.permissions ?? [];
-      if (!permissions.includes('*') && !permissions.includes('offer:archive')) {
+      // Asked through grants(), as requirePermission asks, rather than a raw includes(): the
+      // catalogue is where implication lives, and a hand-rolled check is how a second, slightly
+      // different idea of "has permission" gets into the codebase.
+      const user = (req as any).user;
+      if (!holdsEverything(user?.permissions, user?.roles) && !grants(user?.permissions ?? [], 'offer:archive')) {
         return res.status(403).json({
           success: false,
           message: 'You do not have permission to retire an offer.'

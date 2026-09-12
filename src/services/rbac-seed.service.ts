@@ -26,8 +26,7 @@ export const RBAC_DATA = {
         'supplier:create', 'supplier:update', 'supplier:delete',
         'purchase_order:create', 'purchase_order:update', 'purchase_order:receive',
         'stock_count:create', 'stock_count:update', 'stock_count:complete',
-        'offer:view', 'offer:create', 'offer:update', 'offer:archive',
-        'offer:publish_external', 'offer:manual_discount',
+        'offer:view', 'offer:create', 'offer:update', 'offer:archive', 'offer:manual_discount',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
         'admin:locations', 'admin:catalog', 'admin:users', 'team:view_password'
       ]
@@ -41,7 +40,12 @@ export const RBAC_DATA = {
         'sales_order:create', 'sales_order:update', 'sales_order:confirm',
         'customer:create', 'customer:update',
         'product:view',
-        'dashboard:view'
+        'dashboard:view',
+        // The person at the counter. They see which offers are running so they can tell a
+        // customer, and they may take money off by hand -- but only with a reason, which is kept
+        // on the order. A system that forbids this gets worked around by editing the product's
+        // price, which is worse for everybody.
+        'offer:view', 'offer:manual_discount'
       ]
     },
 
@@ -55,7 +59,9 @@ export const RBAC_DATA = {
         'product:view',
         'purchase_order:receive',
         'stock_count:create', 'stock_count:update', 'stock_count:complete',
-        'dashboard:view', 'report:view'
+        'dashboard:view', 'report:view',
+        // So a packer can see why an order went out at a price below the tag.
+        'offer:view'
       ]
     },
 
@@ -69,7 +75,9 @@ export const RBAC_DATA = {
         'purchase_order:create', 'purchase_order:update', 'purchase_order:receive',
         'stock_count:create', 'stock_count:update', 'stock_count:complete',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
-        'admin:locations', 'admin:catalog'
+        'admin:locations', 'admin:catalog',
+        // A buyer planning stock needs to know a sale is coming.
+        'offer:view'
       ]
     }
   }

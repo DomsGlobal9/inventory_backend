@@ -62,6 +62,16 @@ export type PermissionDef = {
    * reason lives with the key instead of as an exception in a test.
    */
   fieldLevel?: boolean;
+  /**
+   * Checked inside a handler rather than by requirePermission on the route, because it applies
+   * only to SOME requests the route accepts -- retiring an offer is one of three answers to
+   * "change its status", and a manual discount is an optional part of taking an order. Gating
+   * the whole route would stop everyone else.
+   *
+   * Names the file that does the check, and verify-permissions confirms the key really appears
+   * there -- so the exemption cannot quietly outlive the check it describes.
+   */
+  checkedInline?: string;
 };
 
 export const PERMISSIONS: readonly PermissionDef[] = [
@@ -116,12 +126,17 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   //
   // offer:manual_discount is the till override -- the thing every real counter needs and every
   // system that forbids it gets worked around. Gated and reason-required rather than absent.
+  //
+  // There is no offer:publish_external yet. It was added with the rest and guarded nothing,
+  // because pushing an offer to Shopify is Phase 4 and not built -- so it sat on the roles screen
+  // as a box that did nothing when ticked. Add it back WITH the route it guards.
   { key: 'offer:view',    group: 'Selling', label: 'See offers and discounts' },
   { key: 'offer:create',  group: 'Selling', label: 'Write a new offer',                    implies: ['offer:view', 'product:view'] },
   { key: 'offer:update',  group: 'Selling', label: 'Change an offer, and start or pause it', implies: ['offer:view'] },
-  { key: 'offer:archive', group: 'Selling', label: 'Retire an offer',                      implies: ['offer:view'], sensitive: true },
-  { key: 'offer:publish_external', group: 'Selling', label: 'Push an offer to a connected Shopify store', implies: ['offer:view'], sensitive: true },
-  { key: 'offer:manual_discount',  group: 'Selling', label: 'Take money off at the till, with a reason', implies: ['sales_order:view'], sensitive: true },
+  { key: 'offer:archive', group: 'Selling', label: 'Retire an offer',                      implies: ['offer:view'], sensitive: true,
+    checkedInline: 'src/routes/offer.routes.ts' },
+  { key: 'offer:manual_discount',  group: 'Selling', label: 'Take money off at the till, with a reason', implies: ['sales_order:view'], sensitive: true,
+    checkedInline: 'src/controllers/sales-order.controller.ts' },
 
   { key: 'return:view',     group: 'Selling', label: 'See returns' },
   { key: 'return:create',   group: 'Selling', label: 'Log a return',                          implies: ['return:view'] },

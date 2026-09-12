@@ -55,8 +55,17 @@ async function main() {
   // A permission that guards nothing teaches people that ticking boxes has no effect. The one
   // legitimate exception is a field-level key: cost:view is enforced on the way out, on the
   // response body, not on the way in -- and the catalogue says so itself.
-  const unused = ALL_PERMISSION_KEYS.filter(k => !used.has(k) && !getPermission(k)?.fieldLevel);
+  const unused = ALL_PERMISSION_KEYS.filter(k =>
+    !used.has(k) && !getPermission(k)?.fieldLevel && !getPermission(k)?.checkedInline);
   check('every route-level permission guards a route', unused.length === 0, unused.join(', '));
+
+  // An inline check is exempt only while it is really there. Without this the marker would be a
+  // way to silence the check above for ever, including after the code it points at is deleted.
+  const staleInline = PERMISSIONS
+    .filter(p => p.checkedInline)
+    .filter(p => !existsSync(p.checkedInline!) || !readFileSync(p.checkedInline!, 'utf8').includes(`'${p.key}'`));
+  check('every inline permission check is really in the file it names', staleInline.length === 0,
+    staleInline.map(p => `${p.key} -> ${p.checkedInline}`).join(', '));
 
   const fieldLevelOnARoute = PERMISSIONS.filter(p => p.fieldLevel && used.has(p.key));
   // The reverse mistake: gating a whole route on cost:view would turn a redaction into a 403
@@ -166,10 +175,23 @@ async function main() {
     !/roleName === 'SUPER_ADMIN'\)\s*return \[\]/.test(seedSrc));
   check('and creates the wildcard permission row itself', seedSrc.includes('WILDCARD_PERMISSION'));
 
-  // The migration is what makes the two safe to ship together.
-  const mig = readFileSync('prisma/migrations/20260909210000_split_money_permissions/migration.sql', 'utf8');
-  check('the migration grants the wildcard before any code stops reading names',
-    /INSERT INTO "role_permissions"[\s\S]*'\*'[\s\S]*r\."name" = 'SUPER_ADMIN'/.test(mig));
+  /*
+   * What makes the two safe to ship together: every owner role actually HOLDS the wildcard.
+   *
+   * This used to read the migration that issued the grant, and crashed once that migration was
+   * folded into 0_baseline -- which stopped the suite before any of the checks below ran, for
+   * months of commits. A baseline is schema, not data, so the file could never have answered it
+   * again anyway. The database can: asked directly, read-only.
+   */
+  const { prisma } = await import('../lib/prisma');
+  const owners = await prisma.role.findMany({
+    where: { name: 'SUPER_ADMIN' },
+    select: { clientId: true, permissions: { select: { permission: { select: { key: true } } } } }
+  });
+  const withoutWildcard = owners.filter(r => !r.permissions.some(p => p.permission.key === WILDCARD_PERMISSION));
+  check('every SUPER_ADMIN role in the database holds the wildcard',
+    owners.length > 0 && withoutWildcard.length === 0,
+    `${withoutWildcard.length} of ${owners.length} lack it: ${withoutWildcard.slice(0, 5).map(r => r.clientId).join(', ')}`);
 
   // ── WHAT A MODULE WOULD NEED ──────────────────────────────────────────────
   console.log('\nA POS IDENTITY NEEDS NO MONEY PERMISSION');
