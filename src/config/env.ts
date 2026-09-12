@@ -188,7 +188,12 @@ const envSchema = z.object({
   // Requested at install. A merchant can grant fewer, so what was actually granted is stored
   // per installation and checked before any operation that needs one.
   SHOPIFY_SCOPES: z.string().default(
-    'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications'
+    // read_orders is what makes a shop's online sales visible here at all. Adding it means
+    // every already-connected store has to approve again -- missingScopes() detects that and
+    // Settings > Storefront says so. Orders are also PROTECTED CUSTOMER DATA: outside
+    // development stores Shopify redacts the fields until the app is approved for that use,
+    // which is a review, not a toggle, and the longest lead time in this work.
+    'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders'
   ),
 
   // Submissions allowed per address per hour on the PUBLIC signup form. Deliberately low:

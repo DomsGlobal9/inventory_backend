@@ -312,15 +312,23 @@ async function main() {
   check('the order still records what the customer paid',
     sameMoney(soldAfter.items[0].totalPrice, 28800), String(soldAfter.items[0].totalPrice));
   /*
-   * Stated rather than asserted-away: a return moves stock and does not move money. SalesReturn
-   * has no refund amount and no link back to the order line, so nothing here can say what the
-   * customer is owed -- it is 9,600, the NET of the line, not the 12,000 it is listed at.
-   * Recorded in the plan as Phase 1 work (SalesReturnItem.refundAmount + salesOrderItemId).
+   * A return can now carry money -- the columns arrived with Phase 1 -- but OUR return flow does
+   * not put anything in them yet. A return raised here still only moves stock; a Shopify refund
+   * is what fills these in, because Shopify has already paid the customer back.
+   *
+   * This tripwire was the previous version of this check, and it fired the moment the migration
+   * landed, which is what it was for. It now guards the other half: the day our own returns
+   * start refunding, this fails and somebody has to decide what the number should be. It is the
+   * NET of the line -- 9,600 here -- never the 12,000 it is listed at.
    */
   const returnRow: any = await prisma.salesReturn.findUniqueOrThrow({ where: { id: ret.id } });
-  check('a return still carries no money (known gap, Phase 1)',
-    returnRow.refundTotal === undefined,
-    'SalesReturn has gained a refund field -- update this expectation and the plan');
+  check('a return raised here carries the money columns',
+    returnRow.refundTotal !== undefined && returnRow.refundStatus !== undefined,
+    'the Phase 1 refund columns are missing');
+  check('  ...and leaves them empty, because nothing here refunds yet',
+    num(returnRow.refundTotal) === 0 && returnRow.refundStatus === 'NONE',
+    `${returnRow.refundTotal} / ${returnRow.refundStatus} -- if our returns now refund, this ` +
+    `must assert the NET of the line (9600), never the list price`);
 
   // ── H. AN ORDER THAT NEVER HAPPENS ─────────────────────────────────────
   console.log('\nH. AN ORDER THAT NEVER HAPPENS');

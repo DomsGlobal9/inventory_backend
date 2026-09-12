@@ -8,6 +8,7 @@ import {
   ShopifyConfigurationError,
   ShopifyInstallError
 } from '../services/shopify-installation.service';
+import { shopifyOrderIngestService, shopifyOrderCancelService } from '../services/shopify-orders';
 
 /**
  * The two Shopify endpoints that CANNOT be authenticated the normal way.
@@ -188,6 +189,27 @@ router.post('/webhooks', async (req: Request, res: Response) => {
  */
 async function handleWebhook(topic: string, shopDomain: string, raw: Buffer): Promise<string> {
   switch (topic) {
+    /*
+     * The sales themselves.
+     *
+     * Parsed here rather than in the route because the signature is verified over the exact
+     * bytes, and `raw` is what was signed -- see the note on the route above. Everything below
+     * returns an outcome instead of throwing: Shopify retries a non-2xx for days and then
+     * unsubscribes the topic, which is a far worse failure than an order parked where somebody
+     * can see it.
+     */
+    case 'orders/create':
+    case 'orders/updated': {
+      const payload = JSON.parse(raw.toString('utf8'));
+      const result = await shopifyOrderIngestService.ingest(shopDomain, payload, topic);
+      return result.status;
+    }
+
+    case 'orders/cancelled': {
+      const payload = JSON.parse(raw.toString('utf8'));
+      return shopifyOrderCancelService.cancel(shopDomain, payload);
+    }
+
     case 'app/uninstalled': {
       // The token is already dead at this point; Shopify revoked it when the merchant clicked
       // uninstall. Without this the dispatcher keeps trying it forever -- the exact "dead

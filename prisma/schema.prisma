@@ -236,7 +236,7 @@ model Product {
   /// This is what the file called ProductKey. Storing it means a re-run finds what it made
   /// last time and updates it. Null for everything created any other way.
   importKey String? @map("import_key")
-  slug        String
+  slug      String
 
   // General Info
   title       String
@@ -724,6 +724,16 @@ model SalesOrder {
   externalOrderId String? @map("external_order_id")
   sourceSystem    String? @map("source_system")
 
+  /// The selling system's own "last changed" stamp for this order.
+  ///
+  /// Shopify redelivers webhooks and does not promise order: an `orders/updated` from two
+  /// minutes ago can arrive after a newer one. Comparing against this is what makes that
+  /// self-correcting -- anything older than what we already hold is dropped rather than
+  /// applied, the same last-writer-wins rule StorefrontEvent.sequence uses in the other
+  /// direction. Timestamps cannot order two events in the same millisecond, which is why this
+  /// only ever DISCARDS; it never decides which of two simultaneous changes wins.
+  externalUpdatedAt DateTime? @map("external_updated_at")
+
   customerId String   @map("customer_id")
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
@@ -748,6 +758,7 @@ model SalesOrder {
   items      SalesOrderItem[]
   dispatches Dispatch[]
   returns    SalesReturn[]
+  discounts  SalesOrderDiscount[]
 
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -815,6 +826,7 @@ model SalesOrderItem {
 
   dispatchItems         DispatchItem[]
   inventoryReservations InventoryReservation[]
+  discountAllocations   SalesOrderItemDiscount[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -932,6 +944,16 @@ model SalesReturn {
 
   notes String?
 
+  /// What the customer is owed, and whether it has been paid back.
+  ///
+  /// A return moved stock and nothing else until now, so nothing could say what a refund was
+  /// worth -- and with discounts on a line the answer is emphatically not the list price. For a
+  /// Shopify refund this is a RECORD: Shopify has already moved the money.
+  refundTotal      Decimal @default(0) @map("refund_total") @db.Decimal(10, 2)
+  /// NONE | PENDING | REFUNDED | FAILED
+  refundStatus     String  @default("NONE") @map("refund_status")
+  externalRefundId String? @map("external_refund_id")
+
   items SalesReturnItem[]
 
   completedAt DateTime? @map("completed_at")
@@ -953,7 +975,17 @@ model SalesReturnItem {
   dispatchItemId String       @map("dispatch_item_id")
   dispatchItem   DispatchItem @relation(fields: [dispatchItemId], references: [id], onDelete: Restrict)
 
+  /// The order line this came off, directly.
+  ///
+  /// It was only ever reachable through DispatchItem, which is fine for moving stock and no use
+  /// at all for money: refunding the NET price needs the line that carries it. Nullable because
+  /// every existing row predates this and cannot be filled in reliably.
+  salesOrderItemId String? @map("sales_order_item_id")
+
   quantity Int
+
+  /// What was actually given back for these units. Net, never list.
+  refundAmount Decimal @default(0) @map("refund_amount") @db.Decimal(10, 2)
 
   disposition ReturnDisposition @default(PENDING)
 
@@ -963,6 +995,107 @@ model SalesReturnItem {
   @@index([salesReturnId])
   @@index([dispatchItemId])
   @@map("sales_return_items")
+}
+
+/// What was taken off an order, and who said so.
+///
+/// Deliberately the same shape as Shopify's `discount_applications`, because reconciling an
+/// ingested Shopify order against our own offer is far easier when both systems record the same
+/// thing the same way -- and impossible when they do not.
+///
+/// `offerId` is nullable on purpose. A merchant can run a discount inside Shopify that ScaleEzy
+/// never created, and that order still has to be recorded truthfully. Refusing to ingest sales
+/// we cannot explain would lose real money from the books.
+model SalesOrderDiscount {
+  id           String     @id @default(uuid())
+  salesOrderId String     @map("sales_order_id")
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+
+  /// Ours, when we own the rule. Null when it came from elsewhere.
+  offerId        String? @map("offer_id")
+  offerVersionId String? @map("offer_version_id")
+
+  /// OFFER | SHOPIFY | MANUAL
+  source     String
+  /// Shopify's discount id or code, for drift detection later.
+  externalId String? @map("external_id")
+
+  /// What the customer saw it called.
+  title  String
+  amount Decimal @db.Decimal(10, 2)
+
+  allocations SalesOrderItemDiscount[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([salesOrderId])
+  @@index([offerId])
+  @@map("sales_order_discounts")
+}
+
+/// How one discount was divided between the lines it applied to.
+///
+/// Shopify's `discount_allocations`. Without it a two-line order with one 500-off code cannot
+/// say which line to refund what, and a partial return guesses.
+model SalesOrderItemDiscount {
+  id String @id @default(uuid())
+
+  salesOrderItemId String         @map("sales_order_item_id")
+  salesOrderItem   SalesOrderItem @relation(fields: [salesOrderItemId], references: [id], onDelete: Cascade)
+
+  salesOrderDiscountId String             @map("sales_order_discount_id")
+  salesOrderDiscount   SalesOrderDiscount @relation(fields: [salesOrderDiscountId], references: [id], onDelete: Cascade)
+
+  amount Decimal @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([salesOrderItemId])
+  @@index([salesOrderDiscountId])
+  @@map("sales_order_item_discounts")
+}
+
+/// A Shopify order we could not place, kept until somebody can.
+///
+/// Every reason below is a decision a person has to make -- which of our locations this shop's
+/// orders belong to, what this unrecognised SKU is. Guessing any of them writes a real sale
+/// against the wrong shop floor, and dropping them loses money that was actually taken.
+///
+/// So the order is parked with its whole payload and replayed once the decision exists. The
+/// alternative, discovered in every integration that does not do this, is a merchant asking why
+/// their Shopify total and their ScaleEzy total differ and nobody being able to say.
+model ShopifyOrderInbox {
+  id String @id @default(uuid())
+
+  shopDomain     String  @map("shop_domain")
+  /// Null while the installation is still unclaimed -- we do not yet know whose order it is.
+  clientId       String? @map("client_id")
+  shopifyOrderId String  @map("shopify_order_id")
+  topic          String
+
+  /// The webhook body, verbatim. Replay must use what Shopify actually sent, not our reading
+  /// of it at the time -- our reading is the thing that was wrong.
+  payload Json
+
+  /// UNMAPPED_LOCATION | UNMAPPED_VARIANT | CURRENCY_MISMATCH | NOT_SYNCED
+  /// | UNCLAIMED_INSTALL | RECONCILE_MISMATCH | FAILED
+  reason String
+  detail String? @db.Text
+
+  attempts     Int       @default(0)
+  resolvedAt   DateTime? @map("resolved_at")
+  resolvedBy   String?   @map("resolved_by")
+  /// The order it eventually became, once it was replayed successfully.
+  salesOrderId String?   @map("sales_order_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// A redelivered webhook updates its parked row instead of adding a second one.
+  @@unique([shopDomain, shopifyOrderId, topic], name: "uq_inbox_order_topic")
+  @@index([clientId, resolvedAt])
+  @@index([shopDomain, createdAt])
+  @@map("shopify_order_inbox")
 }
 
 // ─── RBAC & AUTH ───
