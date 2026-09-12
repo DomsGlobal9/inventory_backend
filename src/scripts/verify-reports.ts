@@ -11,10 +11,9 @@
  *   npx ts-node src/scripts/verify-reports.ts
  */
 import { prisma } from '../lib/prisma';
+import { ensureTestTenant } from './support/testTenant';
 
 const BASE = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
-const TENANT_EMAIL = 'e2e1788452461634@example.com';
-const TENANT_PASSWORD = process.env.TEST_TENANT_PASSWORD || '0B-GWDgJRCuK';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -65,12 +64,13 @@ const ENDPOINTS = [
 async function main() {
   console.log(`\nVerifying reports against ${BASE}\n`);
 
-  const owner = await prisma.user.findFirst({ where: { email: TENANT_EMAIL }, select: { clientId: true } });
-  if (!owner) throw new Error('Test tenant not found');
-  const clientId = owner.clientId;
+  // Recreated if missing, with a fresh password each run -- see scripts/support/testTenant.ts for
+  // why these suites used to stop at this line with "Test tenant not found".
+  const tenant = await ensureTestTenant();
+  const clientId = tenant.clientId;
 
   const jar = new Jar();
-  const login = await call('POST', '/auth/login', jar, { email: TENANT_EMAIL, password: TENANT_PASSWORD });
+  const login = await call('POST', '/auth/login', jar, { email: tenant.email, password: tenant.password });
   if (login.status !== 200) throw new Error(`Login failed (${login.status})`);
 
   // --- ACCESS ---------------------------------------------------------------

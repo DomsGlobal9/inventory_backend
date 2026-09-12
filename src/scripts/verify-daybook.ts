@@ -9,12 +9,11 @@
  *   npx ts-node src/scripts/verify-daybook.ts
  */
 import { prisma } from '../lib/prisma';
+import { ensureTestTenant } from './support/testTenant';
 import { localDayRange, previousDayKey, todayKey, localDayKey } from '../utils/businessDay';
 import { SnapshotService } from '../services/snapshot.service';
 
 const BASE = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
-const TENANT_EMAIL = 'e2e1788452461634@example.com';
-const TENANT_PASSWORD = process.env.TEST_TENANT_PASSWORD || '0B-GWDgJRCuK';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -50,12 +49,13 @@ async function call(method: string, path: string, body?: any, jar?: Jar) {
 async function main() {
   console.log(`\nVerifying against ${BASE}\n`);
 
-  const owner = await prisma.user.findFirst({ where: { email: TENANT_EMAIL }, select: { clientId: true } });
-  if (!owner) throw new Error('Test tenant not found');
-  const clientId = owner.clientId;
+  // Recreated if missing, with a fresh password each run -- see scripts/support/testTenant.ts for
+  // why these suites used to stop at this line with "Test tenant not found".
+  const tenant = await ensureTestTenant();
+  const clientId = tenant.clientId;
 
   const jar = new Jar();
-  const login = await call('POST', '/auth/login', { email: TENANT_EMAIL, password: TENANT_PASSWORD }, jar);
+  const login = await call('POST', '/auth/login', { email: tenant.email, password: tenant.password }, jar);
   if (login.status !== 200) throw new Error(`Login failed (${login.status})`);
 
   // ─── ACCESS ─────────────────────────────────────────────────────────────────
@@ -108,9 +108,12 @@ async function main() {
       check(`${d.date}: makes no balance claim when there is nothing to check against`,
         d.balanced === null, `balanced=${d.balanced}`);
     } else {
+      // measuredClosing became { units, value } when the value started being checked separately
+      // from the count. This suite could not run at the time, so it went on comparing a number
+      // with an object -- which is never equal, and read as seven failures once it ran again.
       check(`${d.date}: the calculated closing matches an independently measured one`,
-        d.closing.units === d.measuredClosing && d.balanced === true,
-        `calculated ${d.closing.units} vs measured ${d.measuredClosing}`);
+        d.closing.units === d.measuredClosing.units && d.balanced === true,
+        `calculated ${d.closing.units} vs measured ${d.measuredClosing.units}`);
     }
   }
 
@@ -118,7 +121,10 @@ async function main() {
   // number must come out false. A check that cannot fail tells you nothing when it passes.
   const sample = results.find(r => r.closing && r.measuredClosing !== null);
   check('the balance check can detect a mismatch',
-    sample ? sample.closing.units !== sample.measuredClosing + 1 : false,
+    // `.units`, not the object: `{...} + 1` is the STRING "[object Object]1", which is never equal
+    // to a number, so this sanity check passed for the wrong reason for as long as the shape had
+    // changed -- a check proving checks can fail, that could not fail.
+    sample ? sample.closing.units !== sample.measuredClosing.units + 1 : false,
     'sanity: closing should not equal measured+1');
 
   // Each day must hand its closing figure to the next day's opening, or the series has a
@@ -203,8 +209,8 @@ async function main() {
         if (!dd?.opening || !dd?.closing) continue;
         const calc = dd.opening.units + dd.stockIn.totalUnits - dd.stockOut.totalUnits;
         check(`${loc.name} on ${day}: balances against its own measurement`,
-          calc === dd.closing.units && (dd.measuredClosing === null || dd.closing.units === dd.measuredClosing),
-          `${dd.opening.units} + ${dd.stockIn.totalUnits} - ${dd.stockOut.totalUnits} = ${calc}, measured ${dd.measuredClosing}`);
+          calc === dd.closing.units && (dd.measuredClosing === null || dd.closing.units === dd.measuredClosing.units),
+          `${dd.opening.units} + ${dd.stockIn.totalUnits} - ${dd.stockOut.totalUnits} = ${calc}, measured ${dd.measuredClosing?.units}`);
         check(`${loc.name} on ${day}: closing stock is not negative`,
           dd.closing.units >= 0, String(dd.closing.units));
       }

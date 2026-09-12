@@ -13,6 +13,7 @@
  *   npx ts-node src/scripts/verify-day-boundary.ts
  */
 import { prisma } from '../lib/prisma';
+import { ensureTestTenant } from './support/testTenant';
 import { SnapshotService } from '../services/snapshot.service';
 import { DayBookService } from '../services/daybook.service';
 import { startOfLocalDay, todayKey, previousDayKey } from '../utils/businessDay';
@@ -25,11 +26,9 @@ const check = (name: string, ok: boolean, detail?: string) => {
 };
 
 async function main() {
-  const owner = await prisma.user.findFirst({
-    where: { email: 'e2e1788452461634@example.com' }, select: { clientId: true }
-  });
-  if (!owner) throw new Error('Test tenant not found');
-  const clientId = owner.clientId;
+  // Recreated if missing, with a fresh password each run -- see scripts/support/testTenant.ts for
+  // why these suites used to stop at this line with "Test tenant not found".
+  const { clientId } = await ensureTestTenant();
 
   const snapshots = new SnapshotService();
   const daybook = new DayBookService();
