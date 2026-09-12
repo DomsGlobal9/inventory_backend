@@ -60,7 +60,12 @@ export class ProductRepository {
           variants: {
             select: {
               reorderLevel: true,
-              stocks: { select: { quantity: true } }
+              stocks: { select: { quantity: true } },
+              // Per variant, so the list can say how many SIZES AND COLOURS have no
+              // photograph rather than only whether the product has any at all. A saree with
+              // three photos of the red one and none of the blue passes the coarse test and
+              // still shows a customer the wrong colour.
+              _count: { select: { images: true } }
             }
           },
           // A count, not the rows. Publishing in bulk has to be able to say how many of the
@@ -83,11 +88,13 @@ export class ProductRepository {
         isLowStock(v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0), v.reorderLevel)
       ).length;
       
+      const variantsWithoutImages = product.variants.filter((v: any) => (v._count?.images ?? 0) === 0).length;
+
       const { variants, _count, ...rest } = product as any;
       return {
         ...rest,
         imageCount: _count?.images ?? 0,
-        variantSummary: { variantCount, totalUnits, lowStockVariants }
+        variantSummary: { variantCount, totalUnits, lowStockVariants, variantsWithoutImages }
       };
     });
 

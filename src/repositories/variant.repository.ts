@@ -30,7 +30,12 @@ export class VariantRepository {
         locationProfiles: true,
         // basePrice is the catalogue-wide fallback price. Without it the barcode-label
         // generator had nothing to fall back to and printed "Rs.N/A" on every sticker.
-        product: { select: { title: true, basePrice: true } }
+        product: { select: { title: true, basePrice: true } },
+        // How many photographs are of THIS size and colour. A count, not the rows: the
+        // Variants tab only needs to mark the ones with none, and pulling image records into
+        // a list that already carries stock and location profiles per row would be paying
+        // for data nobody renders.
+        _count: { select: { images: true } }
       }
     });
   }

@@ -447,8 +447,13 @@ export class VariantService {
       // Add missing locations to settings conceptually in the service if needed,
       // but UI can also just rely on this explicit list and fallback to global
 
+      // Flattened off the Prisma _count so the browser reads a plain number rather than
+      // learning the shape of a Prisma include.
+      const { _count, ...variant } = v;
+
       return {
-        ...v,
+        ...variant,
+        imageCount: _count?.images ?? 0,
         totalQuantity,
         stockByLocation,
         locationSettings
