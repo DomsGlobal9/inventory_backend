@@ -180,12 +180,33 @@ export class ProductRepository {
     // reported every product as having none.
     const imageCount = await prisma.productImage.count({ where: { productId: id } });
 
+    /*
+     * How many sizes and colours have no photograph of their own.
+     *
+     * "This product has five photos" is not the useful number for a shop selling one saree in
+     * five colours -- all five could be of the red one, and the customer choosing blue sees a
+     * red saree. This is the number that belongs at the top of the page, where somebody will
+     * see it before they publish rather than after a customer does.
+     *
+     * `distinct` on variantId, so one variant with four photos counts once.
+     */
+    const variantIds = product.variants.map(v => v.id);
+    const photographed = variantIds.length
+      ? await prisma.productImage.findMany({
+          where: { variantId: { in: variantIds } },
+          select: { variantId: true },
+          distinct: ['variantId']
+        })
+      : [];
+    const variantsWithoutImages = variantIds.length - photographed.length;
+
     return {
       ...productWithoutVariants,
       variantSummary: {
         variantCount,
         totalUnits,
-        lowStockVariants
+        lowStockVariants,
+        variantsWithoutImages
       },
       imageCount,
       canHardDelete: eligibility.canHardDelete,
