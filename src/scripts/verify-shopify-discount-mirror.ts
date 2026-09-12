@@ -530,6 +530,16 @@ async function main() {
   await settle(ending.id);
   check('"take it off Shopify" deletes it there and here', !store.discounts.has(offGid!) && !(await mirrorOf(ending.id)));
 
+  // Taken off before it ever reached Shopify: nothing to ask Shopify, so nothing to wait for.
+  const neverSent = await liveOffer({ name: 'Changed my mind', value: 1, stackable: true });
+  await offerMirrorService.enable(CLIENT, neverSent.id, USER);
+  await offerMirrorService.disable(CLIENT, neverSent.id);
+  const callsBefore = store.calls.length;
+  const unreachable = async () => { throw new ShopifyApiError('Could not reach the store.', 504); };
+  const neverOutcome = await offerMirrorService.process((await mirrorOf(neverSent.id))!.id, unreachable as any);
+  check('taking off an offer that never reached Shopify forgets it without asking Shopify',
+    neverOutcome === 'REMOVED' && !(await mirrorOf(neverSent.id)) && store.calls.length === callsBefore, neverOutcome);
+
   // Uninstalled.
   const late = await liveOffer({ name: 'After uninstall', value: 2, stackable: true });
   await offerMirrorService.enable(CLIENT, late.id, USER);

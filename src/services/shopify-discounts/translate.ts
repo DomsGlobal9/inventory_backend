@@ -101,6 +101,15 @@ const gid = (type: 'Product' | 'ProductVariant', id: string) => `gid://shopify/$
 export const isoSeconds = (d: Date | string) => new Date(d).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 const money = (n: number | string) => Number(n).toFixed(2);
+
+/** Money as a merchant reads it in a sentence -- "₹1,000", not "1000.00". Only for messages. */
+const shown = (n: number | string, currency: string) => {
+  try {
+    return new Intl.NumberFormat('en-IN', { style: 'currency', currency, maximumFractionDigits: 2 }).format(Number(n));
+  } catch {
+    return `${currency} ${Number(n).toFixed(2)}`;
+  }
+};
 const pct = (fraction: number | string) => Number(fraction).toFixed(4);
 
 export function hashCanonical(c: CanonicalDiscount): string {
@@ -156,7 +165,7 @@ export function translateOffer(offer: MirrorableOffer, ctx: TranslationContext):
     say('Shopify cannot express "this, for a fixed price". Only a percentage or an amount off can be put on Shopify.');
   } else if (offer.valueType === 'PERCENTAGE') {
     if (offer.maxDiscount != null) {
-      say(`Shopify cannot cap a percentage, so "up to ${money(offer.maxDiscount)}" would be lost and Shopify would give more away than you do. Remove the cap to put it on Shopify.`);
+      say(`Shopify cannot cap a percentage, so "up to ${shown(offer.maxDiscount, ctx.shopCurrency)}" would be lost and Shopify would give more away than you do. Remove the cap to put it on Shopify.`);
     } else {
       value = { percentage: pct(Number(offer.value) / 100) };
     }

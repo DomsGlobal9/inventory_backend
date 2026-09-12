@@ -452,6 +452,19 @@ export class OfferMirrorService {
     const release = (data: Record<string, unknown>) =>
       prisma.offerExternalMirror.update({ where: { id: mirror.id }, data: { lockedAt: null, ...data } });
 
+    /*
+     * Taken off Shopify before it ever got there -- or from a store that has uninstalled the app.
+     *
+     * Nothing to delete on Shopify's side, or no way left to reach it, so the copy is simply
+     * forgotten. Asking Shopify first would make "take it off" retry for ever against a store that
+     * cannot answer, for a discount that does not exist.
+     */
+    const removing = mirror.status === 'REMOVING' || mirror.offer.status === 'ARCHIVED';
+    if (removing && (!mirror.shopifyDiscountId || mirror.installation.uninstalledAt)) {
+      await prisma.offerExternalMirror.delete({ where: { id: mirror.id } });
+      return 'REMOVED';
+    }
+
     if (mirror.installation.uninstalledAt) {
       await release({ status: 'FAILED', problem: 'The app was uninstalled from this Shopify store.', nextAttemptAt: null });
       return 'FAILED';
@@ -466,7 +479,6 @@ export class OfferMirrorService {
 
     try {
       const api = await apiFor(mirror.installation);
-      const removing = mirror.status === 'REMOVING' || mirror.offer.status === 'ARCHIVED';
 
       if (removing) {
         if (mirror.shopifyDiscountId) await this.deleteRemote(api, mirror.shopifyDiscountId, mirror.kind);
