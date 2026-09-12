@@ -16,36 +16,12 @@ import { generateSequentialCode } from '../../utils/codeGenerator';
 import { reservationService } from '../reservation.service';
 import { fromMinor, toMinor } from '../pricing';
 import { mapShopifyOrder, MappedOrder, ParkReason } from './mapping';
+import { park, ORDER_TOPICS } from './parking';
 
 export type IngestOutcome =
   | { status: 'APPLIED'; salesOrderId: string; orderNumber: string }
   | { status: 'STALE' }
   | { status: 'PARKED'; reason: ParkReason; detail: string };
-
-/**
- * Park an order with everything needed to replay it.
- *
- * Upserted on (shop, order, topic) so a redelivered webhook updates its row instead of adding a
- * second one -- otherwise a shop with one unmapped location accumulates a parked row per retry,
- * for days, and the panel becomes unreadable exactly when it matters.
- */
-async function park(
-  shopDomain: string,
-  clientId: string | null,
-  shopifyOrderId: string,
-  topic: string,
-  payload: any,
-  reason: ParkReason,
-  detail: string
-): Promise<IngestOutcome> {
-  await prisma.shopifyOrderInbox.upsert({
-    where: { uq_inbox_order_topic: { shopDomain, shopifyOrderId, topic } },
-    create: { shopDomain, clientId, shopifyOrderId, topic, payload, reason, detail, attempts: 1 },
-    update: { reason, detail, payload, clientId, attempts: { increment: 1 }, resolvedAt: null }
-  });
-  console.warn(`[Shopify] order ${shopifyOrderId} from ${shopDomain} parked: ${reason} -- ${detail}`);
-  return { status: 'PARKED', reason, detail };
-}
 
 /**
  * Which of OUR locations this order sold from.
@@ -237,9 +213,16 @@ export class ShopifyOrderIngestService {
     try {
       const result = await this.write(clientId, mapped.order, shopifyOrderId);
       if (result.status === 'APPLIED') {
-        // Whatever was waiting for this order is now settled.
+        /*
+         * The ORDER rows waiting for this order are now settled -- and only those.
+         *
+         * This used to resolve every open row for the order, which included a parked fulfilment
+         * or refund that had not been applied yet. They were marked done without ever running:
+         * the order's stock stayed reserved after it had shipped, and its refund never happened.
+         * Follow-ups are applied by the inbox service once the order exists.
+         */
         await prisma.shopifyOrderInbox.updateMany({
-          where: { shopDomain, shopifyOrderId, resolvedAt: null },
+          where: { shopDomain, shopifyOrderId, topic: { in: ORDER_TOPICS }, resolvedAt: null },
           data: { resolvedAt: new Date(), resolvedBy: 'system', salesOrderId: result.salesOrderId }
         });
       }
@@ -278,7 +261,37 @@ export class ShopifyOrderIngestService {
 
     const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
 
-    const created = await prisma.$transaction(async (tx) => {
+    let created;
+    try {
+      created = await this.createOrder(clientId, orderNumber, customerId, order);
+    } catch (error: any) {
+      /*
+       * Somebody else placed it first.
+       *
+       * `orders/create` and `orders/updated` for the same order routinely arrive within the same
+       * second, and a merchant can press Retry while a webhook is mid-flight. Both pass the
+       * existence check above; the unique key on (client, externalOrderId, sourceSystem) lets
+       * exactly one write. The loser used to be parked as FAILED with a database error in it --
+       * a scary row in the inbox for an order that had in fact been placed perfectly.
+       */
+      if (error?.code === 'P2002') {
+        const winner = await prisma.salesOrder.findFirst({
+          where: { clientId, externalOrderId: order.externalOrderId, sourceSystem: 'SHOPIFY' },
+          select: { id: true, orderNumber: true }
+        });
+        if (winner) return { status: 'APPLIED', salesOrderId: winner.id, orderNumber: winner.orderNumber };
+      }
+      throw error;
+    }
+
+    await this.settleStatus(clientId, created.id, order);
+
+    console.log(`[Shopify] order ${shopifyOrderId} ingested as ${orderNumber} (${order.status})`);
+    return { status: 'APPLIED', salesOrderId: created.id, orderNumber };
+  }
+
+  private async createOrder(clientId: string, orderNumber: string, customerId: string, order: MappedOrder) {
+    return prisma.$transaction(async (tx) => {
       const so = await tx.salesOrder.create({
         data: {
           clientId,
@@ -307,11 +320,6 @@ export class ShopifyOrderIngestService {
       await this.writeLinesAndDiscounts(tx, so.id, order);
       return so;
     }, { timeout: 30000 });
-
-    await this.settleStatus(clientId, created.id, order);
-
-    console.log(`[Shopify] order ${shopifyOrderId} ingested as ${orderNumber} (${order.status})`);
-    return { status: 'APPLIED', salesOrderId: created.id, orderNumber };
   }
 
   /** Lines, the discounts that produced them, and how each was divided. */

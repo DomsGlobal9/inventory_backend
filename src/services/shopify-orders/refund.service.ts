@@ -18,6 +18,7 @@
  */
 
 import { prisma } from '../../lib/prisma';
+import { park, isOrderWaiting, refundTopic } from './parking';
 import { returnService } from '../return.service';
 import { toMinor, fromMinor, portionOf } from '../pricing';
 
@@ -40,7 +41,15 @@ export class ShopifyRefundService {
     const installation = await prisma.shopifyInstallation.findUnique({
       where: { shopDomain }, select: { clientId: true }
     });
-    if (!installation?.clientId) return 'IGNORED';
+    if (!installation?.clientId) {
+      // An unclaimed store's order is parked; so is its refund, for the same reason.
+      if (await isOrderWaiting(shopDomain, shopifyOrderId)) {
+        await park(shopDomain, null, shopifyOrderId, refundTopic(refundId), payload,
+          'AWAITING_ORDER', 'A refund for an order that has not been placed here yet. It will be recorded as soon as the order is.');
+        return 'PARKED';
+      }
+      return 'IGNORED';
+    }
     const clientId = installation.clientId;
 
     // Redelivered. Shopify sends the same refund more than once by design, and a second run
@@ -55,7 +64,21 @@ export class ShopifyRefundService {
       where: { clientId, externalOrderId: shopifyOrderId, sourceSystem: 'SHOPIFY', deletedAt: null },
       include: { items: { orderBy: { createdAt: 'asc' } } }
     });
-    if (!order) return 'IGNORED';
+    if (!order) {
+      /*
+       * Money went back on an order we have not placed yet.
+       *
+       * Dropping this is the expensive version of the fulfilment problem: the order is placed
+       * later, the refund never is, and the day book reports a sale the shop has already
+       * returned the money for. Kept, per refund, and applied after the order.
+       */
+      if (await isOrderWaiting(shopDomain, shopifyOrderId)) {
+        await park(shopDomain, clientId, shopifyOrderId, refundTopic(refundId), payload,
+          'AWAITING_ORDER', 'A refund for an order that has not been placed here yet. It will be recorded as soon as the order is.');
+        return 'PARKED';
+      }
+      return 'IGNORED';
+    }
 
     const refundLines: any[] = Array.isArray(payload.refund_line_items) ? payload.refund_line_items : [];
     if (refundLines.length === 0) {

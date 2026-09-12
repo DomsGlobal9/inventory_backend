@@ -8,6 +8,12 @@ import {
   ShopifyConfigurationError,
   ShopifyInstallError
 } from '../services/shopify-installation.service';
+import { shopifyInboxService } from '../services/shopify-orders';
+import {
+  adminApiFor, activeInstallation,
+  shopifyLocationPairingService, shopifyVariantMatchingService
+} from '../services/shopify-mapping';
+import { respondWithError } from '../utils/respondWithError';
 
 /**
  * The merchant's side of Shopify: starting an install, and claiming one that started on
@@ -99,7 +105,18 @@ router.post('/claim', requirePermission(PERMISSION), async (req, res, next) => {
   try {
     const body = z.object({ shop: z.string().trim().min(1) }).parse(req.body);
     const installation = await shopifyInstallationService.claim(body.shop, clientOf(req), userOf(req));
-    res.json({ success: true, data: installation });
+
+    /*
+     * Orders that arrived while the store belonged to nobody now have an owner.
+     *
+     * Attached and retried straight away. Most will park again for want of a location pairing --
+     * a store claimed a minute ago has none yet -- but they now appear in this workspace's inbox
+     * with that reason, instead of sitting unowned where no panel could ever show them.
+     */
+    const attached = await shopifyInboxService.attachClaimed(installation.shopDomain, clientOf(req));
+    const replay = attached > 0 ? await shopifyInboxService.replayAll(clientOf(req), userOf(req)) : null;
+
+    res.json({ success: true, data: { ...installation, waitingOrders: attached, replay } });
   } catch (error: any) {
     if (error?.issues) {
       return res.status(400).json({ success: false, message: error.issues[0]?.message ?? 'Invalid request' });
@@ -140,6 +157,129 @@ router.get('/status', requirePermission(PERMISSION), async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+});
+
+// ── Setting the store up ─────────────────────────────────────────────────────────────────────
+//
+// Everything below needs a connected store and the same admin permission as connecting one:
+// pairing a location decides which shop floor's stock every Shopify sale moves.
+
+/** A store to talk to, for this tenant. */
+async function storeApi(req: Request) {
+  const installation = await activeInstallation(clientOf(req));
+  return adminApiFor(installation.id, installation.shopDomain);
+}
+
+/**
+ * After anything that could unblock a parked order, try them.
+ *
+ * Returned with the response so the screen can say "2 waiting orders were placed" at the moment
+ * the merchant did the thing that placed them -- the cause and the effect in one sentence.
+ */
+async function retryWaiting(req: Request) {
+  try {
+    return await shopifyInboxService.replayAll(clientOf(req), userOf(req));
+  } catch (error) {
+    console.error('[Shopify] automatic retry after a mapping change failed', error);
+    return null;
+  }
+}
+
+/** The store's locations beside ours, with what is paired to what. */
+router.get('/locations', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    const overview = await shopifyLocationPairingService.overview(clientOf(req), await storeApi(req));
+    res.json({ success: true, data: overview });
+  } catch (error) {
+    respondWithError(res, error, { status: 502, message: 'Could not read your Shopify locations.' });
+  }
+});
+
+/** Pair one Shopify location with one of ours, or unpair it with `locationId: null`. */
+router.put('/locations/:shopifyLocationId', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    const body = z.object({ locationId: z.string().min(1).nullable() }).parse(req.body);
+    const result = await shopifyLocationPairingService.pair(
+      clientOf(req), String(req.params.shopifyLocationId), body.locationId, await storeApi(req)
+    );
+    res.json({ success: true, data: { ...result, replay: body.locationId ? await retryWaiting(req) : null } });
+  } catch (error: any) {
+    if (error?.issues) {
+      return res.status(400).json({ success: false, message: 'Choose a location, or none to unpair.' });
+    }
+    respondWithError(res, error, { status: 400, message: 'Could not pair that location.' });
+  }
+});
+
+/** How many products are matched, without asking Shopify. */
+router.get('/products/summary', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    res.json({ success: true, data: await shopifyVariantMatchingService.summary(clientOf(req)) });
+  } catch (error) {
+    respondWithError(res, error, { status: 400, message: 'Could not read the product matches.' });
+  }
+});
+
+/**
+ * Read the store's products and match them to ours by SKU.
+ *
+ * A POST although it only reads Shopify, because it writes here -- every match is a row that
+ * decides which of our variants a Shopify sale moves.
+ */
+router.post('/products/match', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    const result = await shopifyVariantMatchingService.matchBySku(clientOf(req), await storeApi(req));
+    res.json({ success: true, data: { ...result, replay: result.newlyMatched > 0 ? await retryWaiting(req) : null } });
+  } catch (error) {
+    respondWithError(res, error, { status: 502, message: 'Could not match your Shopify products.' });
+  }
+});
+
+// ── Orders waiting to be placed ──────────────────────────────────────────────────────────────
+
+router.get('/inbox', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    const state = req.query.state === 'resolved' ? 'resolved' : 'open';
+    res.json({ success: true, data: await shopifyInboxService.list(clientOf(req), state) });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not load the waiting orders.' });
+  }
+});
+
+router.get('/inbox/summary', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    res.json({ success: true, data: await shopifyInboxService.summary(clientOf(req)) });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not count the waiting orders.' });
+  }
+});
+
+router.post('/inbox/replay-all', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    res.json({ success: true, data: await shopifyInboxService.replayAll(clientOf(req), userOf(req)) });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not retry the waiting orders.' });
+  }
+});
+
+router.post('/inbox/:id/replay', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    const result = await shopifyInboxService.replay(clientOf(req), String(req.params.id), userOf(req));
+    res.json({ success: true, data: result });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not retry that order.' });
+  }
+});
+
+router.post('/inbox/:id/dismiss', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    const result = await shopifyInboxService.dismiss(
+      clientOf(req), String(req.params.id), userOf(req), String(req.body?.reason ?? '')
+    );
+    res.json({ success: true, data: result });
+  } catch (error) {
+    respondWithError(res, error, { status: 400, message: 'Could not dismiss that order.' });
   }
 });
 

@@ -12,7 +12,8 @@ import {
   shopifyOrderIngestService,
   shopifyOrderCancelService,
   shopifyFulfilmentService,
-  shopifyRefundService
+  shopifyRefundService,
+  shopifyInboxService
 } from '../services/shopify-orders';
 
 /**
@@ -207,6 +208,24 @@ async function handleWebhook(topic: string, shopDomain: string, raw: Buffer): Pr
     case 'orders/updated': {
       const payload = JSON.parse(raw.toString('utf8'));
       const result = await shopifyOrderIngestService.ingest(shopDomain, payload, topic);
+
+      /*
+       * Placed -- so anything that happened to it while it waited happens now.
+       *
+       * An order can be placed by a fresh webhook as easily as by somebody pressing Retry, and a
+       * shipment parked behind it must not depend on which. Failure here is logged and left
+       * parked; the order itself is already safely placed and Shopify must still get its 200.
+       */
+      if (result.status === 'APPLIED') {
+        const installation = await prisma.shopifyInstallation.findUnique({
+          where: { shopDomain }, select: { clientId: true }
+        });
+        if (installation?.clientId) {
+          await shopifyInboxService
+            .applyFollowUps(installation.clientId, shopDomain, String(payload.id), result.salesOrderId)
+            .catch(error => console.error(`[Shopify] follow-ups for ${payload.id} failed`, error));
+        }
+      }
       return result.status;
     }
 
@@ -237,6 +256,9 @@ async function handleWebhook(topic: string, shopDomain: string, raw: Buffer): Pr
       // uninstall. Without this the dispatcher keeps trying it forever -- the exact "dead
       // connection retrying into the void" the generic pipeline was designed to avoid.
       const installation = await shopifyInstallationService.markUninstalled(shopDomain);
+      // Nothing parked for this store can ever be placed now. Closed, not deleted, so a merchant
+      // who reinstalls can still see what was waiting when they left.
+      await shopifyInboxService.closeForUninstall(shopDomain);
       if (installation) {
         const connections = await prisma.storefrontConnection.findMany({
           where: { clientId: installation.clientId ?? '__none__', type: 'SHOPIFY' },

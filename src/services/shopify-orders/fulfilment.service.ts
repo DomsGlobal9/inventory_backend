@@ -25,6 +25,7 @@
 
 import { prisma } from '../../lib/prisma';
 import { dispatchService } from '../dispatch.service';
+import { park, isOrderWaiting, FULFILMENT_TOPIC } from './parking';
 
 export class ShopifyFulfilmentService {
   /**
@@ -41,14 +42,34 @@ export class ShopifyFulfilmentService {
     const installation = await prisma.shopifyInstallation.findUnique({
       where: { shopDomain }, select: { clientId: true }
     });
-    if (!installation?.clientId) return 'IGNORED';
-    const clientId = installation.clientId;
 
-    const order = await prisma.salesOrder.findFirst({
-      where: { clientId, externalOrderId: shopifyOrderId, sourceSystem: 'SHOPIFY', deletedAt: null },
-      include: { items: { orderBy: { createdAt: 'asc' } } }
-    });
-    if (!order) return 'IGNORED';
+    const order = installation?.clientId
+      ? await prisma.salesOrder.findFirst({
+          where: {
+            clientId: installation.clientId, externalOrderId: shopifyOrderId,
+            sourceSystem: 'SHOPIFY', deletedAt: null
+          },
+          include: { items: { orderBy: { createdAt: 'asc' } } }
+        })
+      : null;
+
+    if (!order) {
+      /*
+       * Shipped before it could be placed here.
+       *
+       * If the order is waiting in the inbox this shipment belongs to a real sale, and dropping
+       * it means that sale reserves its stock the moment it is placed and never lets go. Kept
+       * with the order and applied straight after it. Otherwise the order predates the
+       * connection and there is genuinely nothing to do.
+       */
+      if (await isOrderWaiting(shopDomain, shopifyOrderId)) {
+        await park(shopDomain, installation?.clientId ?? null, shopifyOrderId, FULFILMENT_TOPIC, payload,
+          'AWAITING_ORDER', 'Shopify shipped this order before it could be placed here. It will be recorded as soon as the order is.');
+        return 'PARKED';
+      }
+      return 'IGNORED';
+    }
+    const clientId = installation!.clientId!;
 
     if (order.status === 'CANCELLED') {
       console.warn(`[Shopify] fulfilment for ${shopifyOrderId} ignored -- the order here is cancelled.`);

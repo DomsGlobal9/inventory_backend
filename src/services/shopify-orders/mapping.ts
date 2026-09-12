@@ -22,6 +22,8 @@ export type ParkReason =
   | 'NOT_SYNCED'
   | 'UNCLAIMED_INSTALL'
   | 'RECONCILE_MISMATCH'
+  /** A shipment or refund for an order that is itself still waiting to be placed. */
+  | 'AWAITING_ORDER'
   | 'FAILED';
 
 export interface MappingContext {

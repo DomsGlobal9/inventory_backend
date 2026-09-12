@@ -15,6 +15,9 @@
  *   cancel.service   an order called off in Shopify, and the reserved stock going back on sale.
  *   fulfilment       goods leaving, recorded as a real Dispatch so the day book sees the sale.
  *   refund.service   money going back, driven through the existing return flow.
+ *   parking          where an event waits when it cannot be acted on yet.
+ *   inbox.service    what is waiting, shown to the merchant, and replayed -- the order first,
+ *                    then whatever happened to it while it waited.
  *
  * Importers take this folder, not the files inside it.
  */
@@ -27,3 +30,5 @@ export type { IngestOutcome } from './ingest.service';
 export { shopifyOrderCancelService } from './cancel.service';
 export { shopifyFulfilmentService } from './fulfilment.service';
 export { shopifyRefundService } from './refund.service';
+export { shopifyInboxService, REASON_GUIDANCE } from './inbox.service';
+export type { ReplayResult } from './inbox.service';
