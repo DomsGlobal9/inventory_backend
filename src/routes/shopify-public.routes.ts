@@ -8,7 +8,12 @@ import {
   ShopifyConfigurationError,
   ShopifyInstallError
 } from '../services/shopify-installation.service';
-import { shopifyOrderIngestService, shopifyOrderCancelService } from '../services/shopify-orders';
+import {
+  shopifyOrderIngestService,
+  shopifyOrderCancelService,
+  shopifyFulfilmentService,
+  shopifyRefundService
+} from '../services/shopify-orders';
 
 /**
  * The two Shopify endpoints that CANNOT be authenticated the normal way.
@@ -208,6 +213,23 @@ async function handleWebhook(topic: string, shopDomain: string, raw: Buffer): Pr
     case 'orders/cancelled': {
       const payload = JSON.parse(raw.toString('utf8'));
       return shopifyOrderCancelService.cancel(shopDomain, payload);
+    }
+
+    /*
+     * Goods leaving, and money going back.
+     *
+     * Both read ABSOLUTE state rather than a delta -- how much Shopify says has shipped in total,
+     * and which refund id this is -- so a redelivery moves nothing a second time. That is what
+     * makes Shopify's habit of sending the same webhook twice harmless rather than expensive.
+     */
+    case 'orders/fulfilled': {
+      const payload = JSON.parse(raw.toString('utf8'));
+      return shopifyFulfilmentService.apply(shopDomain, payload);
+    }
+
+    case 'refunds/create': {
+      const payload = JSON.parse(raw.toString('utf8'));
+      return shopifyRefundService.apply(shopDomain, payload);
     }
 
     case 'app/uninstalled': {
