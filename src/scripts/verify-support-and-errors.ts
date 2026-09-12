@@ -24,7 +24,10 @@ const check = (name: string, ok: boolean, detail?: string) => {
 
 const CLIENT = `support-e2e-${Date.now()}`;
 const OTHER = `support-other-${Date.now()}`;
-const API = process.env.TEST_API_URL || 'https://inventory-backend-6vk5.onrender.com';
+// LOCAL by default, like every other suite. This used to default to the production API, so running
+// the regression without TEST_API_URL posted synthetic crash reports at the live service. Point it at
+// production deliberately, with TEST_API_URL, or not at all.
+const API = process.env.TEST_API_URL || 'http://localhost:4006';
 
 async function main() {
   let userId = '';

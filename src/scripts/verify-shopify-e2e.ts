@@ -92,7 +92,7 @@ function startFakeShopify(): Promise<{ port: number; close: () => Promise<void>;
             // read_orders is not collapsed into anything, so a store that grants everything
             // has to name it. Without it here the suite would report the app's own new scope
             // as declined -- which is exactly what it did when read_orders was added.
-            scope: 'write_products,write_inventory,read_locations,write_publications,read_orders'
+            scope: 'write_products,write_inventory,read_locations,write_publications,read_orders,write_discounts'
           }));
         }
 

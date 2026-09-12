@@ -332,10 +332,12 @@ async function main() {
   check('a return raised here carries the money columns',
     returnRow.refundTotal !== undefined && returnRow.refundStatus !== undefined,
     'the Phase 1 refund columns are missing');
-  check('  ...and leaves them empty, because nothing here refunds yet',
-    num(returnRow.refundTotal) === 0 && returnRow.refundStatus === 'NONE',
-    `${returnRow.refundTotal} / ${returnRow.refundStatus} -- if our returns now refund, this ` +
-    `must assert the NET of the line (9600), never the list price`);
+  // The day came: returns raised here now record what is owed. As decided when this tripwire was
+  // set, the answer is the NET paid for the line -- 9,600 -- never the 12,000 it is listed at, and
+  // PENDING because the shop hands it back at the counter rather than Shopify having paid it.
+  check('  ...owing the NET price paid, never the list price',
+    num(returnRow.refundTotal) === 9600 && returnRow.refundStatus === 'PENDING',
+    `${returnRow.refundTotal} / ${returnRow.refundStatus} (list price would be 12000)`);
 
   // ── H. AN ORDER THAT NEVER HAPPENS ─────────────────────────────────────
   console.log('\nH. AN ORDER THAT NEVER HAPPENS');

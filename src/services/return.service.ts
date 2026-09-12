@@ -2,7 +2,8 @@ import { prisma } from '../lib/prisma';
 import { Prisma, ReturnReason } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
-import { notFound, conflict } from '../utils/httpError';
+import { notFound, conflict, badRequest } from '../utils/httpError';
+import { portionOf, toMinor, fromMinor } from './pricing';
 
 export class ReturnService {
   /**
@@ -61,13 +62,74 @@ export class ReturnService {
           throw notFound(`DispatchItem ${item.dispatchItemId} not found`);
         }
 
+        // Shipped on THIS order. The shop check above was not enough: an item shipped on one order
+        // could be returned against another of the same shop, crediting the wrong customer's order
+        // and leaving the right one looking unreturned.
+        if (dispatchItem.dispatch.salesOrderId !== salesOrderId) {
+          throw badRequest('That shipped item belongs to a different order.');
+        }
+
         const availableToReturn = dispatchItem.quantity - dispatchItem.returnedQty;
         if (item.quantity > availableToReturn) {
           throw new Error(`Cannot return ${item.quantity} units for dispatch item ${item.dispatchItemId}. Only ${availableToReturn} available to return.`);
         }
       }
 
-      return salesReturn;
+      /*
+       * What is owed back: the NET price paid, never the tag.
+       *
+       * A return logged here used to record no money at all -- refundTotal stayed 0 -- so a saree
+       * bought for 8,000 after an offer came back with no record that 8,000 was owed, and nothing
+       * to stop somebody refunding the 10,000 on the tag. Shopify refunds already carried their
+       * amount; returns taken at the counter did not.
+       *
+       * Divided with portionOf, cumulatively across every earlier return of the same line, so
+       * returning three sarees one at a time refunds exactly what the three cost together, to the
+       * paisa. Rejected returns do not count as returned. PENDING, because this records what is
+       * owed -- the shop pays it back at the counter. (A Shopify refund overwrites this afterwards
+       * with Shopify's own figure and REFUNDED.)
+       */
+      const dispatchItems = await tx.dispatchItem.findMany({
+        where: { id: { in: salesReturn.items.map(i => i.dispatchItemId) } },
+        select: { id: true, salesOrderItemId: true, salesOrderItem: { select: { id: true, quantity: true, totalPrice: true } } }
+      });
+      const lineOf = new Map(dispatchItems.map(d => [d.id, d.salesOrderItem]));
+      const alreadyReturned = new Map<string, number>();
+      let totalMinor = 0;
+
+      for (const item of salesReturn.items) {
+        const line = lineOf.get(item.dispatchItemId);
+        if (!line) continue;
+
+        if (!alreadyReturned.has(line.id)) {
+          const earlier = await tx.salesReturnItem.aggregate({
+            where: {
+              salesOrderItemId: line.id,
+              salesReturnId: { not: salesReturn.id },
+              salesReturn: { status: { not: 'REJECTED' } }
+            },
+            _sum: { quantity: true }
+          });
+          alreadyReturned.set(line.id, earlier._sum.quantity ?? 0);
+        }
+
+        const before = alreadyReturned.get(line.id)!;
+        const after = Math.min(before + item.quantity, line.quantity);
+        const amountMinor = portionOf(toMinor(line.totalPrice), line.quantity, before, after);
+        alreadyReturned.set(line.id, after);
+        totalMinor += amountMinor;
+
+        await tx.salesReturnItem.update({
+          where: { id: item.id },
+          data: { salesOrderItemId: line.id, refundAmount: fromMinor(amountMinor) }
+        });
+      }
+
+      return tx.salesReturn.update({
+        where: { id: salesReturn.id },
+        data: { refundTotal: fromMinor(totalMinor), refundStatus: totalMinor > 0 ? 'PENDING' : 'NONE' },
+        include: { items: true }
+      });
     }, { timeout: 15000 });
   }
 
@@ -238,9 +300,11 @@ export class ReturnService {
       throw new Error(`Return is already in terminal state: ${salesReturn.status}`);
     }
 
+    // Nothing is owed on a return that was turned down, and it no longer counts against the line --
+    // so a later, genuine return of the same saree is refunded in full.
     return prisma.salesReturn.update({
       where: { id },
-      data: { status: 'REJECTED' }
+      data: { status: 'REJECTED', refundTotal: 0, refundStatus: 'NONE' }
     });
   }
 

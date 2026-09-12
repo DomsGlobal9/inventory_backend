@@ -84,7 +84,13 @@ export class OfferService {
             }
           : {})
       },
-      include: { targets: true, _count: { select: { redemptions: true } } },
+      include: {
+        targets: true,
+        // COUNTED only. A use given back by a cancelled order is history, not usage -- counting it
+        // made the list say an offer had been used more times than its own allowance said, and a
+        // merchant watching "first 50" saw it fill up with orders that never happened.
+        _count: { select: { redemptions: { where: { status: 'COUNTED' } } } }
+      },
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }]
     });
 
