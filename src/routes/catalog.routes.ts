@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 
 import { usageCountsForClient, usageCountFor } from '../services/catalog-usage.service';
+import { resolveColorMetadata, readColorMetadata } from '../lib/catalogMetadata';
+import { HttpError } from '../utils/httpError';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 
@@ -30,10 +32,16 @@ router.get('/config', requirePermission('product:view'), async (req: Request, re
       }
     });
 
-    // Group by type
+    // Group by type, naming colour shades on the way out. See catalogMetadata.readColorMetadata:
+    // rows written before shades had names still hold bare hex strings, and the pickers read
+    // `shade.name`, so this is what stops the app depending on a backfill having run.
     const grouped = items.reduce((acc: Record<string, any[]>, item: any) => {
       if (!acc[item.type]) acc[item.type] = [];
-      acc[item.type].push(item);
+      acc[item.type].push(
+        item.type === 'COLOR'
+          ? { ...item, metadata: readColorMetadata(item.metadata, item.label) ?? item.metadata }
+          : item
+      );
       return acc;
     }, {});
 
@@ -58,7 +66,13 @@ router.get('/items', requirePermission('product:view'), async (req: Request, res
     // catalog-usage.service.ts -- a typical tenant has 72 entries, and this screen used to
     // open 72 simultaneous counts against a pool of about 17.
     const usage = await usageCountsForClient(clientId);
-    const itemsWithUsage = items.map(item => ({ ...item, usageCount: usage.countFor(item) }));
+    const itemsWithUsage = items.map(item => ({
+      ...item,
+      metadata: item.type === 'COLOR'
+        ? (readColorMetadata(item.metadata, item.label) ?? item.metadata)
+        : item.metadata,
+      usageCount: usage.countFor(item)
+    }));
 
     res.json({ success: true, data: itemsWithUsage });
   } catch (error) {
@@ -73,6 +87,11 @@ router.post('/items', requirePermission('admin:catalog'), async (req: Request, r
     const clientId = (req as any).clientId;
     const { type, value, label, category, metadata, sortOrder } = req.body;
 
+    // A colour added here is a colour the product form will offer, so its details are checked
+    // and its shades named before they are stored rather than after. Everything else keeps
+    // passing metadata through: only COLOR has a shape anything depends on.
+    const storedMetadata = type === 'COLOR' ? resolveColorMetadata(metadata, null) : metadata;
+
     const item = await prisma.clientCatalogItem.create({
       data: {
         clientId,
@@ -80,7 +99,7 @@ router.post('/items', requirePermission('admin:catalog'), async (req: Request, r
         value,
         label,
         category,
-        metadata,
+        metadata: storedMetadata,
         sortOrder: sortOrder || 0,
         isSystem: false,
         isActive: true,
@@ -89,6 +108,12 @@ router.post('/items', requirePermission('admin:catalog'), async (req: Request, r
 
     res.status(201).json({ success: true, data: item });
   } catch (error: any) {
+    // A rejected hex or an over-long shade list is the shopkeeper's typo, not a server fault.
+    // Reported as a 500 it would be filed against the tenant as a backend crash -- see
+    // utils/httpError.
+    if (error instanceof HttpError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     res.status(500).json({ success: false, message: 'Failed to create catalog item', error: error.message });
   }
 });
@@ -110,13 +135,20 @@ router.patch('/items/:id', requirePermission('admin:catalog'), async (req: Reque
       return res.status(404).json({ success: false, message: 'Item not found' });
     }
 
+    // Merged against what is already stored, never replaced. The edit form sends
+    // `metadata: { hex }` when someone corrects a colour's spelling, and a wholesale
+    // replacement deleted every shade that colour had -- silently, with no way back.
+    const storedMetadata = existing.type === 'COLOR'
+      ? resolveColorMetadata(metadata, existing.metadata)
+      : (metadata !== undefined ? metadata : existing.metadata);
+
     const item = await prisma.clientCatalogItem.update({
       where: { id },
       data: {
         label: label !== undefined ? label : existing.label,
         value: value !== undefined ? value : existing.value,
         category: category !== undefined ? category : existing.category,
-        metadata: metadata !== undefined ? metadata : existing.metadata,
+        metadata: storedMetadata,
         sortOrder: sortOrder !== undefined ? sortOrder : existing.sortOrder,
         isActive: isActive !== undefined ? isActive : existing.isActive,
       }
@@ -124,6 +156,9 @@ router.patch('/items/:id', requirePermission('admin:catalog'), async (req: Reque
 
     res.json({ success: true, data: item });
   } catch (error: any) {
+    if (error instanceof HttpError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     res.status(500).json({ success: false, message: 'Failed to update catalog item', error: error.message });
   }
 });
