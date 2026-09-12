@@ -237,15 +237,90 @@ async function main() {
   const ok = attempts.filter(a => a.status === 'fulfilled').length;
   const refusedCount = attempts.filter(
     a => a.status === 'rejected' && (a as any).reason?.statusCode === 409).length;
-  check('exactly one start succeeds', ok === 1, `${ok} succeeded, ${refusedCount} refused`);
-  check('  ...and the rest are a conflict, not a crash', ok + refusedCount === 5,
-    `${ok} + ${refusedCount} of 5`);
+
+  /*
+   * NOT "exactly one succeeds", and the difference matters.
+   *
+   * Confirming an order has to admit exactly one winner because the loser would reserve stock a
+   * second time. Starting an offer has no such side effect: a caller that reads the row AFTER the
+   * first one committed finds it already ACTIVE and returns it, which is an idempotent success and
+   * the friendlier answer. Whether a given attempt lands in that branch or on the compare-and-set
+   * is a matter of microseconds, so asserting a count here only produced a test that failed when
+   * the database was fast.
+   *
+   * What must hold is that nothing CRASHED and the offer ended in one state.
+   */
+  check('every simultaneous start is either applied or a clean conflict',
+    ok + refusedCount === 5, `${ok} succeeded, ${refusedCount} refused, of 5`);
+  check('  ...and at least one really did the work', ok >= 1, String(ok));
+
+  const racedAfter = await prisma.offer.findUniqueOrThrow({ where: { id: raced.id } });
+  check('  ...leaving the offer running, once', racedAfter.status === 'ACTIVE', racedAfter.status);
+  const racedVersions = await prisma.offerVersion.count({ where: { offerId: raced.id } });
+  check('  ...and no extra versions written by the losers', racedVersions === 1, String(racedVersions));
+
+  // ── K. SCHEDULING ──────────────────────────────────────────────────────
+  console.log('\nK. AN OFFER SET UP IN ADVANCE');
+
+  const soon = new Date(Date.now() + 7 * 86400000);
+  const later = new Date(Date.now() + 14 * 86400000);
+  const future: any = await offerService.create(
+    CLIENT, draft({ name: 'Next Friday', startsAt: soon, endsAt: later }) as any, USER);
+
+  const armed: any = await offerService.setStatus(CLIENT, future.id, 'ACTIVE', USER);
+  check('an offer that starts later can still be armed', armed.status === 'ACTIVE', armed.status);
+  check('  ...and reads as waiting, not running',
+    effectiveStatus(armed as any) === 'SCHEDULED', effectiveStatus(armed as any));
+  check('  ...so nothing can apply it yet',
+    isLive({ ...armed, usageLimit: null, usageCount: 0 } as any) === false);
+
+  /*
+   * The bug this section exists for.
+   *
+   * Filtering on the STATUS COLUMN alone, "what is running" returns an offer that starts next
+   * Friday and an offer that ended in August -- both of which the very same screen labels as not
+   * running. The filters have to mean what the merchant means.
+   */
+  const running: any[] = await offerService.list(CLIENT, { status: 'ACTIVE' });
+  check('"running" does not include one that starts next Friday',
+    !running.some(o => o.id === future.id), running.map(o => o.name).join(', '));
+  check('  ...and everything it does list really is running',
+    running.every(o => o.effectiveStatus === 'ACTIVE'),
+    running.map(o => o.effectiveStatus).join(', '));
+
+  const scheduled: any[] = await offerService.list(CLIENT, { status: 'SCHEDULED' });
+  check('"starts later" finds it', scheduled.some(o => o.id === future.id), String(scheduled.length));
+  check('  ...and nothing that has already begun',
+    scheduled.every(o => o.effectiveStatus === 'SCHEDULED'));
+
+  // An armed offer whose end has passed. Its column still says ACTIVE, and it is not running.
+  const done: any = await offerService.create(
+    CLIENT, draft({ name: 'Ran in September', startsAt: day(1), endsAt: day(2) }) as any, USER);
+  await prisma.offer.update({ where: { id: done.id }, data: { status: 'ACTIVE' } });
+
+  const endedList: any[] = await offerService.list(CLIENT, { status: 'EXPIRED' });
+  check('"ended" finds an offer time switched off', endedList.some(o => o.id === done.id), String(endedList.length));
+  check('  ...and "running" does not', !(await offerService.list(CLIENT, { status: 'ACTIVE' })).some((o: any) => o.id === done.id));
+
+  // A flash sale: a time of day on both ends, not just a date.
+  const flashStart = new Date(Date.now() + 3600_000);
+  const flashEnd = new Date(Date.now() + 7200_000);
+  const flash: any = await offerService.create(
+    CLIENT, draft({ name: 'Two hours only', startsAt: flashStart, endsAt: flashEnd }) as any, USER);
+  check('an offer can run for hours rather than days',
+    new Date(flash.endsAt).getTime() - new Date(flash.startsAt).getTime() === 3600_000,
+    String(new Date(flash.endsAt).getTime() - new Date(flash.startsAt).getTime()));
+  check('  ...and is not live before its hour',
+    isLive({ ...flash, status: 'ACTIVE', usageLimit: null, usageCount: 0 } as any, new Date()) === false);
+  check('  ...but is, inside it',
+    isLive({ ...flash, status: 'ACTIVE', usageLimit: null, usageCount: 0 } as any,
+      new Date(flashStart.getTime() + 60_000)) === true);
 
   // ── J. THE LIST A MERCHANT READS ───────────────────────────────────────
   console.log('\nJ. THE LIST A MERCHANT READS');
 
   const list: any[] = await offerService.list(CLIENT);
-  check('every offer is listed', list.length === 5, String(list.length));
+  check('every offer is listed', list.length === 8, String(list.length));
   check('each says what it IS, not what its column says',
     list.every(o => typeof o.effectiveStatus === 'string'));
   const dead = list.find(o => o.name === 'Too late');

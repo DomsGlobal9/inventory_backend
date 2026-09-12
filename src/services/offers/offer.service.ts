@@ -30,11 +30,49 @@ export interface OfferInput extends OfferDraft {
 }
 
 export class OfferService {
+  /**
+   * The offers a merchant sees, filtered by what they ARE rather than what their column says.
+   *
+   * Filtering on the column alone is wrong in a way that is easy to miss: an offer switched on in
+   * August with an end date in September still has status ACTIVE, so "show me what is running"
+   * returned offers the very same screen labelled "Ended". Scheduled ones had the same problem
+   * from the other side -- an offer that starts next Friday is ACTIVE in the column and is not
+   * running at all.
+   *
+   * So SCHEDULED and EXPIRED are real filters here, expressed as the date conditions that define
+   * them, rather than states anything has to remember to write.
+   */
   async list(clientId: string, filters: { status?: string; search?: string } = {}) {
+    const now = new Date();
+
+    const byStatus = (wanted?: string): Prisma.OfferWhereInput => {
+      switch (wanted) {
+        case undefined:
+        case '':
+        case 'ALL':
+          return {};
+        // Running NOW: switched on, started, and not yet finished.
+        case 'ACTIVE':
+          return {
+            status: 'ACTIVE',
+            startsAt: { lte: now },
+            OR: [{ endsAt: null }, { endsAt: { gt: now } }]
+          };
+        // Switched on, but its moment has not come.
+        case 'SCHEDULED':
+          return { status: 'ACTIVE', startsAt: { gt: now } };
+        // Switched on, and time ended it.
+        case 'EXPIRED':
+          return { status: 'ACTIVE', endsAt: { lte: now } };
+        default:
+          return { status: wanted as any };
+      }
+    };
+
     const offers = await prisma.offer.findMany({
       where: {
         clientId,
-        ...(filters.status && filters.status !== 'ALL' ? { status: filters.status as any } : {}),
+        ...byStatus(filters.status),
         ...(filters.search
           ? {
               OR: [
@@ -49,7 +87,6 @@ export class OfferService {
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }]
     });
 
-    const now = new Date();
     return offers.map(o => ({
       ...o,
       redemptionCount: (o as any)._count.redemptions,
