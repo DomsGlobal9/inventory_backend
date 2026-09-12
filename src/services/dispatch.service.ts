@@ -42,6 +42,21 @@ export class DispatchService {
           salesOrderId,
           dispatchNumber: dispatchCode,
           status: 'SHIPPED', // Simplified for Sprint 4
+          /*
+           * When the goods actually left.
+           *
+           * Nothing has ever set this. The column is nullable, nothing defaults it, and the day
+           * book selects dispatches with `dispatchedAt` inside the day -- so its entire Sales
+           * section (revenue, units dispatched, gross profit, the list of the day's orders) has
+           * been empty for every shop since it was written. Confirmed against the database:
+           * 0 of 14 dispatch rows across all tenants had a value.
+           *
+           * Set here rather than defaulted in the schema because the comment on the day book's
+           * query is right about the intent -- a dispatch record could be prepared in advance
+           * and only become a sale when it ships. This service does both in one step, so for
+           * now the two moments are the same one.
+           */
+          dispatchedAt: new Date(),
           items: {
             create: items.map((item: any) => ({
               salesOrderItemId: item.salesOrderItemId,

@@ -123,7 +123,8 @@ export async function inventoryValueByClient(): Promise<Map<string, number>> {
  *
  * So the caveat lives beside the value, and is computed the same way for both.
  */
-const PRICED_NOT_COSTED = Prisma.sql`
+/** Exported so report.service uses THIS definition rather than keeping a fourth copy. */
+export const PRICED_NOT_COSTED = Prisma.sql`
   COALESCE(NULLIF(v.average_cost, 0), NULLIF(v.last_purchase_cost, 0), NULLIF(v.cost_price, 0)) IS NULL
   AND COALESCE(NULLIF(v.selling_price, 0), NULLIF(v.compare_at_price, 0), NULLIF(p.base_price, 0), 0) > 0`;
 

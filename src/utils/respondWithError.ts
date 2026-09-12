@@ -1,4 +1,34 @@
 import { Response } from 'express';
+import { Prisma } from '@prisma/client';
+import { safeMessage } from '../lib/safeMessage';
+
+/**
+ * Anything that reads like it came out of the engine rather than out of a decision.
+ *
+ * Seen in a browser, verbatim, by pressing Dispatch twice:
+ *
+ *   Invalid `db.clientSequence.upsert()` invocation in
+ *   D:\villy\inventory\backend\src\utils\codeGenerator.ts:65:44
+ *   Transaction failed due to a write conflict or a deadlock. Please retry your transaction
+ *
+ * That is the server's absolute file path, its ORM, its table and its line number, handed to a
+ * shop owner in a red toast. The error middleware already translates the common Prisma codes;
+ * this is the other road out of the building -- forty-seven controller catch blocks -- and it
+ * had no such guard.
+ */
+
+/**
+ * A write conflict is not a fault, it is two people saving at the same moment.
+ *
+ * Prisma raises P2034 when a Serializable transaction loses a race -- which is exactly what a
+ * double-clicked Dispatch produces, and the outcome is correct: one succeeded. It deserves a
+ * 409 and a sentence, not a 400 carrying a stack trace.
+ */
+function writeConflict(error: any): boolean {
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') return true;
+  return typeof error?.message === 'string'
+    && /write conflict or a deadlock/i.test(error.message);
+}
 
 /**
  * Answer a caught error at the status it was raised with, in the shape this API answers in.
@@ -30,11 +60,25 @@ export function respondWithError(
   error: any,
   fallback: { status: number; message?: string }
 ) {
+  if (writeConflict(error)) {
+    return res.status(409).json({
+      success: false,
+      message: 'Somebody saved this at the same moment you did. Nothing was lost -- refresh and try again.',
+      error: 'Somebody saved this at the same moment you did. Nothing was lost -- refresh and try again.'
+    });
+  }
+
   const deliberate = typeof error?.statusCode === 'number';
   const status = deliberate ? error.statusCode : fallback.status;
-  const message = deliberate
+
+  // An error raised on purpose carries wording somebody chose, and that wording is shown. One
+  // that merely escaped does not: the caller's fallback is used, and failing that a generic --
+  // never the exception's own text, which is where the engine's file paths live.
+  const raw = deliberate
     ? (error.message || fallback.message || 'That did not work.')
     : (fallback.message || error?.message || 'That did not work.');
+
+  const message = safeMessage(raw, fallback.message);
 
   return res.status(status).json({
     success: false,

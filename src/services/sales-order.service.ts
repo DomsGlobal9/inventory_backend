@@ -3,7 +3,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { validateTransition } from '../utils/sales-order-state-machine';
 import { reservationService } from './reservation.service';
 import { resolveVariantForLocation } from '../utils/variant-location';
-import { notFound, badRequest } from '../utils/httpError';
+import { notFound, badRequest, conflict } from '../utils/httpError';
 import {
   toMinor, fromMinor, netUnitPrice,
   priceLine, allocateOrderDiscount, orderTotalsFrom, PricedLine
@@ -459,12 +459,26 @@ export class SalesOrderService {
   }
 
   async confirmOrder(clientId: string, id: string) {
-    // Re-read, validate, reserve and flip status inside ONE transaction. Previously
-    // reserveStock opened its own transaction and the status update was a separate
-    // statement, so two concurrent confirms both saw DRAFT, both passed validateTransition
-    // and both reserved -- doubling reservedQty. Cancel then released only the first row
-    // (findFirst), stranding the rest as stock nobody could ever sell. It also meant a
-    // failed status write left live reservations against an order still shown as DRAFT.
+    /*
+     * Re-read, CLAIM, reserve -- in that order, inside one transaction.
+     *
+     * The previous version wrapped all of this in a transaction and believed that was enough.
+     * It is not, and the comment it carried described the very bug it still had: at the default
+     * isolation level two concurrent confirms both read DRAFT, both pass validateTransition,
+     * both reserve, and both write CONFIRMED. A transaction makes the work atomic; it does not
+     * make a read-then-write serialisable.
+     *
+     * Demonstrated from the UI, not theorised: pressing Confirm three times in one tick on a
+     * 3+2+1 order produced NINE reservation rows holding EIGHTEEN units. Twelve units of a real
+     * shop's stock, reserved against an order that wanted six, and unsellable.
+     *
+     * The claim below is a single atomic compare-and-set. The first transaction to reach it
+     * takes the row lock and flips DRAFT to CONFIRMED; the second blocks on that lock, and when
+     * it is released re-evaluates its own WHERE against the committed row, matches nothing, and
+     * is told plainly that somebody got there first. Nothing is reserved on that path because
+     * the claim happens BEFORE the reservation -- and if reserving then fails, the whole
+     * transaction rolls back and the claim goes with it.
+     */
     return prisma.$transaction(async (tx) => {
       const order = await tx.salesOrder.findFirst({
         where: { clientId, id, deletedAt: null },
@@ -472,10 +486,23 @@ export class SalesOrderService {
       });
 
       if (!order) throw notFound("Order not found");
+      // Kept for the message it gives: "cannot go from CANCELLED to CONFIRMED" is worth saying
+      // properly. The claim below is what actually enforces it.
       validateTransition(order.status, 'CONFIRMED');
 
       if (order.items.length === 0) {
         throw new Error("Cannot confirm an order with no items");
+      }
+
+      const claimed = await tx.salesOrder.updateMany({
+        where: { id, clientId, status: 'DRAFT', deletedAt: null },
+        data: { status: 'CONFIRMED' }
+      });
+
+      if (claimed.count === 0) {
+        // 409, not 400: the request was fine, the order moved on. Said in words, because this
+        // reaches somebody standing at a counter who pressed a button twice.
+        throw conflict('This order has already been confirmed. Refresh to see where it got to.');
       }
 
       const reservationItems = order.items.map((item: any) => ({
@@ -486,10 +513,7 @@ export class SalesOrderService {
 
       await reservationService.reserveStock(clientId, order.locationId, reservationItems, tx);
 
-      return tx.salesOrder.update({
-        where: { id },
-        data: { status: 'CONFIRMED' }
-      });
+      return tx.salesOrder.findFirstOrThrow({ where: { id } });
     }, { timeout: 30000 });
   }
 

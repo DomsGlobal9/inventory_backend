@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { UNIT_COST, inventoryValueFor } from '../lib/inventoryValuation';
+import { UNIT_COST, PRICED_NOT_COSTED, inventoryValueFor } from '../lib/inventoryValuation';
 import { TransactionType, Prisma } from '@prisma/client';
 
 export class ReportService {
@@ -42,10 +42,31 @@ export class ReportService {
     // and the console's drift apart until five tenants saw two different inventory values
     // depending on which screen they opened. See lib/inventoryValuation.ts.
     const unitCost = UNIT_COST;
-    // True when nothing better than a selling price was available for that row.
-    const pricedNotCosted = Prisma.sql`
-      COALESCE(NULLIF(v.average_cost, 0), v.last_purchase_cost, v.cost_price) IS NULL
-      AND COALESCE(v.selling_price, p.base_price, 0) > 0`;
+    /*
+     * FOURTH TIME, and the same shape as the other three.
+     *
+     * UNIT_COST was moved into lib/inventoryValuation so the console and the dashboard could not
+     * drift -- but the CAVEAT beside it was left as a local copy, and it drifted anyway. The
+     * copy dropped NULLIF from last_purchase_cost and cost_price (so a column holding 0 rather
+     * than NULL counted as "a cost was recorded") and left out compare_at_price entirely. On
+     * demo-client the two screens reported 501 and 509 units valued at a price.
+     *
+     * Imported now, like UNIT_COST, so there is one definition of each.
+     */
+    const pricedNotCosted = PRICED_NOT_COSTED;
+
+    /*
+     * Trashed products are not stock.
+     *
+     * inventoryValueFor ends `AND p.status != 'TRASHED'`; these queries joined the products
+     * table and never filtered on it. So a merchant's own dashboard valued goods they had
+     * thrown away while the platform console did not -- demo-client differed by ₹1,98,700 across
+     * 8 units, which is exactly the "two screens, two numbers" failure lib/inventoryValuation
+     * exists to prevent.
+     *
+     * One fragment, used by every query below, so the next one added cannot forget it.
+     */
+    const notTrashed = Prisma.sql`AND p.status != 'TRASHED'`;
 
     const valueQuery = locationId
       ? prisma.$queryRaw<any[]>`
@@ -53,14 +74,14 @@ export class ReportService {
           FROM "inventory_stocks" s
           JOIN "inventory_product_variants" v ON v.id = s.variant_id
           JOIN "inventory_products" p ON p.id = v.product_id
-          WHERE s.client_id = ${clientId} AND s.location_id = ${locationId};
+          WHERE s.client_id = ${clientId} AND s.location_id = ${locationId} ${notTrashed};
         `.then(rows => Number(rows[0]?.value || 0))
       : prisma.$queryRaw<any[]>`
           SELECT SUM(COALESCE(s.qty, 0) * ${unitCost}) as value
           FROM "inventory_product_variants" v
           JOIN "inventory_products" p ON p.id = v.product_id
           LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
-          WHERE v.client_id = ${clientId};
+          WHERE v.client_id = ${clientId} ${notTrashed};
         `.then(rows => Number(rows[0]?.value || 0));
 
     const [products, openPos, inventoryValue, lowStockCountRes, deadStockValueRes, uncostedRes] =
@@ -86,7 +107,7 @@ export class ReportService {
         FROM "inventory_product_variants" v
         JOIN "inventory_products" p ON p.id = v.product_id
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
-        WHERE v.client_id = ${clientId}
+        WHERE v.client_id = ${clientId} ${notTrashed}
         AND COALESCE(s.qty, 0) > 0
         AND v.last_movement_at IS NOT NULL
         AND v.last_movement_at < NOW() - INTERVAL '90 days';
@@ -104,7 +125,7 @@ export class ReportService {
         FROM "inventory_product_variants" v
         JOIN "inventory_products" p ON p.id = v.product_id
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
-        WHERE v.client_id = ${clientId}
+        WHERE v.client_id = ${clientId} ${notTrashed}
         AND COALESCE(s.qty, 0) > 0;
       `
     ]);

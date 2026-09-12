@@ -347,13 +347,34 @@ export class DayBookService {
       (s, d) => s + d.items.reduce((a, i) => a + (i.quantity || 0), 0), 0
     );
 
-    // Revenue for exactly what left the building: dispatched quantity x that line's agreed
-    // price. Cancelled orders contribute nothing.
-    const revenue = round(countable.reduce(
-      (s, d) => s + d.items.reduce(
-        (a, i) => a + (i.quantity || 0) * Number(i.salesOrderItem?.unitPrice || 0), 0
-      ), 0
-    ));
+    /*
+     * Revenue, read from the sales ledger rather than worked out again here.
+     *
+     * This used to be `dispatched quantity x that line's unit price`, which was exact while
+     * every line was sold at its list price. It is not any more: a line of three sold for
+     * ₹7,458.32 has no whole-paisa unit price, so multiplying up recognises ₹7,458.33 -- and the
+     * day book would then disagree with the sales ledger about the same shipment, by a paisa,
+     * for no reason a shop owner could ever discover.
+     *
+     * dispatch.service already computes this once, at the moment goods leave, using a cumulative
+     * split that adds up to the line exactly however it is shipped. One number, computed once,
+     * read everywhere. A dispatch with no ledger row earned nothing -- a wholly free shipment --
+     * and contributes nothing.
+     */
+    const ledgerByDispatch = new Map<string, number>();
+    if (countable.length > 0) {
+      const rows = await prisma.salesLedger.findMany({
+        where: { clientId, dispatchId: { in: countable.map(d => d.id) } },
+        select: { dispatchId: true, revenue: true }
+      });
+      for (const row of rows) {
+        if (row.dispatchId) {
+          ledgerByDispatch.set(row.dispatchId, (ledgerByDispatch.get(row.dispatchId) || 0) + Number(row.revenue));
+        }
+      }
+    }
+
+    const revenue = round(countable.reduce((s, d) => s + (ledgerByDispatch.get(d.id) || 0), 0));
 
     // What those goods cost, taken from the stock movements rather than the order, so profit
     // compares like with like.
@@ -472,10 +493,9 @@ export class DayBookService {
             orderNumber: d.salesOrder!.orderNumber,
             customer: d.salesOrder!.customer?.name || null,
             units: d.items.reduce((a, i) => a + (i.quantity || 0), 0),
-            // This dispatch's own value, not the parent order's.
-            value: round(d.items.reduce(
-              (a, i) => a + (i.quantity || 0) * Number(i.salesOrderItem?.unitPrice || 0), 0
-            )),
+            // This dispatch's own value, not the parent order's -- and from the same ledger the
+            // day's total above is summed from, so the rows add up to the figure beside them.
+            value: round(ledgerByDispatch.get(d.id) || 0),
             status: d.salesOrder!.status
           }))
       },

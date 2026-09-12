@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { safeMessage } from '../lib/safeMessage';
 
 /**
  * Turns a Prisma engine error into something a shop owner can act on.
@@ -42,10 +43,28 @@ function translatePrismaError(err: any): { statusCode: number; message: string }
         statusCode: 409,
         message: 'This is still referenced by other records, so it cannot be changed or removed.'
       };
+    case 'P2034':
+      // Two Serializable transactions raced and this one lost. Not a fault: the other one
+      // succeeded. Raised by a double-clicked Dispatch, among other things, and it used to
+      // arrive in the browser as Prisma's own multi-line invocation dump with the server's
+      // absolute file path in it.
+      return {
+        statusCode: 409,
+        message: 'Somebody saved this at the same moment you did. Nothing was lost -- refresh and try again.'
+      };
     default:
       return null;
   }
 }
+
+/**
+ * The last gate before a message leaves the building.
+ *
+ * translatePrismaError covers the codes worth wording properly; anything it returns null for
+ * falls through to `err.message`, and for an engine-level failure that text names our ORM, our
+ * tables and the absolute path of a file on the server. None of that belongs in a toast on a
+ * shop floor, and a 5xx still keeps the real error in the log and in clientErrorLog.
+ */
 
 export const errorHandler = (
   err: any,
@@ -104,6 +123,8 @@ export const errorHandler = (
 
   res.status(statusCode).json({
     success: false,
-    message,
+    // The log above and clientErrorLog below both keep the real text; this is what the browser
+    // gets, and it never carries the shape of an engine error.
+    message: safeMessage(message),
   });
 };

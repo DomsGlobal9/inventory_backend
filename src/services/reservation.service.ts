@@ -97,27 +97,38 @@ export class ReservationService {
       // remainder stayed reserved forever -- invisible stock that no future order could
       // ever claim. The decrement below already handles it correctly, subtracting only
       // (reserved - dispatched), so nothing already shipped is double-counted.
-      const reservation = await tx.inventoryReservation.findFirst({
+      //
+      // findMany, not findFirst.
+      //
+      // One order item is supposed to have exactly one live reservation, and with the
+      // compare-and-set in confirmOrder it now does. But "supposed to" is not a guarantee to
+      // build a release on: any row this misses stays reserved for ever, and reserved stock
+      // that belongs to no live order is invisible -- it never appears as missing, it simply
+      // stops being sellable. Releasing every live row costs one extra query and cannot strand
+      // anything, including rows left behind by an older build.
+      const reservations = await tx.inventoryReservation.findMany({
         where: { clientId, salesOrderItemId, status: { in: ['ACTIVE', 'PARTIALLY_FULFILLED'] } }
       });
 
-      if (!reservation) {
+      if (reservations.length === 0) {
         return null;
       }
 
-      // Update reservation status
-      const updatedReservation = await tx.inventoryReservation.update({
-        where: { id: reservation.id },
-        data: { status: 'CANCELLED' }
-      });
+      let updatedReservation = null;
+      for (const reservation of reservations) {
+        updatedReservation = await tx.inventoryReservation.update({
+          where: { id: reservation.id },
+          data: { status: 'CANCELLED' }
+        });
 
-      // Release reserved stock from location stock
-      await tx.inventoryStock.update({
-        where: { variantId_locationId: { variantId: reservation.variantId, locationId: reservation.locationId as string } },
-        data: {
-          reservedQty: { decrement: reservation.reservedQty - reservation.dispatchedQty }
-        }
-      });
+        // Release reserved stock from location stock
+        await tx.inventoryStock.update({
+          where: { variantId_locationId: { variantId: reservation.variantId, locationId: reservation.locationId as string } },
+          data: {
+            reservedQty: { decrement: reservation.reservedQty - reservation.dispatchedQty }
+          }
+        });
+      }
 
       return updatedReservation;
     });
