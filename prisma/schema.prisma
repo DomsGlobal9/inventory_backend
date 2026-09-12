@@ -2534,3 +2534,46 @@ model OfferRedemption {
   @@index([customerId])
   @@map("offer_redemptions")
 }
+
+/// A price we quoted, kept so an order can be held to it.
+///
+/// Without this an offer that ends at midnight prices a basket at 23:59:58 and charges a different
+/// amount when the customer presses pay at 00:00:03. The customer saw a number; charging more is
+/// not acceptable, and re-pricing at order time is exactly how that happens.
+///
+/// So the quote is frozen and short-lived. Fifteen minutes is long enough for a checkout and short
+/// enough that an expired sale is not honoured for hours.
+model PricingQuote {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  locationId String       @map("location_id")
+  channel    SalesChannel
+  customerId String?      @map("customer_id")
+
+  /// A fingerprint of what was asked: the lines, the codes, the location. An order that arrives
+  /// with a different basket than the one quoted must not be given the quoted price, and this is
+  /// what makes that checkable rather than assumed.
+  inputHash String @map("input_hash")
+
+  /// The whole priced result, as it was shown. Json rather than columns: this is a record of what
+  /// somebody was told, and it must still read correctly when the shape of a quote grows.
+  result Json
+
+  subtotal Decimal @db.Decimal(10, 2)
+  discount Decimal @db.Decimal(10, 2)
+  total    Decimal @db.Decimal(10, 2)
+
+  expiresAt DateTime @map("expires_at")
+
+  /// Set when an order was actually written against it. A quote is good once -- otherwise one
+  /// checkout's price could be replayed onto ten orders.
+  consumedAt   DateTime? @map("consumed_at")
+  salesOrderId String?   @map("sales_order_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, expiresAt])
+  @@index([salesOrderId])
+  @@map("pricing_quotes")
+}
