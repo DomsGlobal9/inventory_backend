@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { readColorMetadata } from '../lib/catalogMetadata';
 import { grants } from '../config/permissions';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { generateSequentialCode } from '../utils/codeGenerator';
@@ -240,6 +241,21 @@ class ProductImportService {
     const touchedExistingProducts = new Set<string>();
     const seenSkus = new Set<string>();
 
+    /*
+     * The names this shop already uses, so the file can say "you already have one of these".
+     *
+     * Scoped to this client, like every other lookup here. Fetched once rather than per group:
+     * a file of 300 products would otherwise be 300 queries to answer a warning.
+     */
+    const existingTitles = new Set(
+      (await prisma.product.findMany({
+        where: { clientId, trashedAt: null },
+        select: { title: true }
+      })).map(p => this.normaliseKey(p.title)!).filter(Boolean)
+    );
+    /** Titles this file itself creates, so two new products with one name are caught too. */
+    const newTitles = new Map<string, string>();
+
     for (const group of groups.values()) {
       const product = group.isExisting ? productByCode.get(group.resolvedCode ?? group.key) : undefined;
       /*
@@ -283,6 +299,34 @@ class ProductImportService {
           errors.push({ rowNumber: group.rows[0].rowNumber, message: `New product "${group.key}" has no BasePrice on any of its rows.` });
           continue;
         }
+
+        /*
+         * A name that is already taken.
+         *
+         * The title is NOT identity here -- ProductKey is -- and that is the right model: a
+         * shop can genuinely stock two different "Red Silk Saree". But it is also exactly what
+         * happens when somebody forgets to put the ProductCode on rows meant to UPDATE an
+         * existing product: the file quietly creates a second one, and the shopkeeper has two
+         * of everything with no moment where it went wrong.
+         *
+         * So: a warning, never an error. The merchant is told and decides.
+         */
+        const title = withTitle.title!.trim();
+        const titleKey = this.normaliseKey(title)!;
+        const clash = newTitles.get(titleKey);
+        if (clash) {
+          warnings.push({
+            rowNumber: withTitle.rowNumber,
+            message: `"${title}" is created twice by this file, under ProductKey "${clash}" and "${group.key}". If these are the same saree, give both rows one ProductKey.`
+          });
+        } else if (existingTitles.has(titleKey)) {
+          warnings.push({
+            rowNumber: withTitle.rowNumber,
+            message: `You already have a product called "${title}". This adds a second one. To update the one you have, export it and use its ProductCode.`
+          });
+        }
+        newTitles.set(titleKey, group.key);
+
         newProducts++;
       }
 
@@ -415,6 +459,22 @@ class ProductImportService {
       }
     }
 
+    /*
+     * What a new product is when it arrives, said before the button is pressed.
+     *
+     * A file carries no photographs, so imported products are created as drafts -- a
+     * storefront listing with no picture is worse than one not yet listed. That is the right
+     * behaviour and the wrong secret: somebody imports two hundred sarees, goes to look at
+     * the shop, and finds nothing there. Row 0 means "this is about the file", the same
+     * convention the permission refusals use.
+     */
+    if (newProducts > 0 && errors.length === 0) {
+      warnings.push({
+        rowNumber: 0,
+        message: `${newProducts} new ${newProducts === 1 ? 'product arrives' : 'products arrive'} as a draft, because a file cannot carry photographs. Add photos, then publish from the product page.`
+      });
+    }
+
     return {
       summary: {
         newProducts,
@@ -459,6 +519,8 @@ class ProductImportService {
       select: { id: true, code: true }
     });
     if (!location) throw { statusCode: 400, message: 'This shop has no stock location, so imported stock has nowhere to go.' };
+
+    const swatches = await this.swatchesFor(clientId);
 
     // Group again, this time to write.
     const groups = new Map<string, { key: string; isExisting: boolean; rows: ImportRow[] }>();
@@ -554,6 +616,12 @@ class ProductImportService {
                 clientId, productId, sku, variantCode,
                 size: row.size?.trim() || null,
                 colorName: row.color?.trim() || null,
+                // The swatch, when the shop's own palette knows this colour by name. A
+                // variant added through the form carries one; one added by import did not, so
+                // the same "Royal Blue" drew a dot on one screen and nothing on another. A
+                // colour the palette has never heard of is left without one rather than
+                // guessed at -- see lib/colorNames for why an invented colour is worse.
+                ...(swatches.get(this.normaliseKey(row.color) ?? '') ? { hexCode: swatches.get(this.normaliseKey(row.color)!)! } : {}),
                 ...(this.num(row.sellingPrice) !== undefined ? { sellingPrice: new Prisma.Decimal(this.num(row.sellingPrice)!) } : {}),
                 ...(this.num(row.costPrice) !== undefined ? { costPrice: new Prisma.Decimal(this.num(row.costPrice)!) } : {}),
                 reorderLevel: this.num(row.reorderLevel) ?? 5
@@ -596,6 +664,33 @@ class ProductImportService {
    * The same SKU rule the rest of the app uses, so an imported variant is indistinguishable
    * from one added by hand. Never invents a prefix -- the product code is always present.
    */
+  /**
+   * Every colour name this shop knows, and the colour it stands for.
+   *
+   * Covers base colours and their named shades alike, because a spreadsheet says "Royal Blue"
+   * without caring which of the two it is. Built once per import rather than per row.
+   */
+  private async swatchesFor(clientId: string): Promise<Map<string, string>> {
+    const colors = await prisma.clientCatalogItem.findMany({
+      where: { clientId, type: 'COLOR', isActive: true },
+      select: { label: true, metadata: true }
+    });
+
+    const map = new Map<string, string>();
+    for (const color of colors) {
+      const meta = readColorMetadata(color.metadata, color.label);
+      if (!meta) continue;
+      const base = this.normaliseKey(color.label);
+      // First wins, so a shade never displaces the base colour it belongs to.
+      if (base && !map.has(base)) map.set(base, meta.hex);
+      for (const shade of meta.shades) {
+        const key = this.normaliseKey(shade.name);
+        if (key && !map.has(key)) map.set(key, shade.hex);
+      }
+    }
+    return map;
+  }
+
   private buildSku(productCode: string, color?: string, size?: string): string {
     const safe = (v: string | undefined, len: number) =>
       (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, len);

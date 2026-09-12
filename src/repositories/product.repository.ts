@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { isLowStock } from '../lib/lowStock';
 import { Prisma, Product } from '@prisma/client';
 
 export class ProductRepository {
@@ -70,7 +71,13 @@ export class ProductRepository {
     const data = rawData.map(product => {
       const variantCount = product.variants.length;
       const totalUnits = product.variants.reduce((sum, v) => sum + v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0), 0);
-      const lowStockVariants = product.variants.filter((v) => v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0) <= v.reorderLevel).length;
+      // isLowStock, not a comparison written out again here. This was the third definition of
+      // the rule in the codebase, and the one nobody looked at: `qty <= reorderLevel` counts a
+      // variant with a reorder level of 0 -- meaning "do not chase me about this one" -- as low
+      // the moment it reaches zero stock, which is a different state raised separately.
+      const lowStockVariants = product.variants.filter((v) =>
+        isLowStock(v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0), v.reorderLevel)
+      ).length;
       
       const { variants, ...rest } = product;
       return {
@@ -153,12 +160,20 @@ export class ProductRepository {
 
     const variantCount = product.variants.length;
     const totalUnits = product.variants.reduce((sum, v) => sum + v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0), 0);
-    const lowStockVariants = product.variants.filter((v) => v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0) <= v.reorderLevel).length;
+    const lowStockVariants = product.variants.filter((v) =>
+      isLowStock(v.stocks.reduce((acc: number, s: any) => acc + s.quantity, 0), v.reorderLevel)
+    ).length;
 
     // Exclude the raw variants array from the response to keep it clean, just send summary
     const { variants, ...productWithoutVariants } = product;
     
     const eligibility = await this.checkHardDeleteEligibility(id);
+
+    // How many photographs it has. A count, not the rows -- the page has an Images tab that
+    // fetches those itself. Publishing needs to know whether there are any at all, and the
+    // detail response did not say, so a guard written against `product.images` would have
+    // reported every product as having none.
+    const imageCount = await prisma.productImage.count({ where: { productId: id } });
 
     return {
       ...productWithoutVariants,
@@ -167,6 +182,7 @@ export class ProductRepository {
         totalUnits,
         lowStockVariants
       },
+      imageCount,
       canHardDelete: eligibility.canHardDelete,
       hardDeleteReason: eligibility.reason
     };
