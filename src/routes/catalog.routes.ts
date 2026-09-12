@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma';
 
 import { usageCountsForClient, usageCountFor } from '../services/catalog-usage.service';
 import { resolveColorMetadata, readColorMetadata } from '../lib/catalogMetadata';
-import { HttpError } from '../utils/httpError';
+import { HttpError, badRequest } from '../utils/httpError';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 
@@ -87,6 +87,16 @@ router.post('/items', requirePermission('admin:catalog'), async (req: Request, r
     const clientId = (req as any).clientId;
     const { type, value, label, category, metadata, sortOrder } = req.body;
 
+    const cleanLabel = String(label ?? '').trim();
+    if (!type || !cleanLabel) {
+      throw badRequest('A catalog item needs a type and a label.');
+    }
+
+    // The screen derives this when the field is left blank; a caller that is not the screen
+    // got a raw Prisma error instead -- "Argument `value` is missing", quoting the source file
+    // and its absolute path back to whoever asked. Same rule, applied server-side.
+    const cleanValue = String(value ?? '').trim() || cleanLabel.toUpperCase().replace(/\s+/g, '_');
+
     // A colour added here is a colour the product form will offer, so its details are checked
     // and its shades named before they are stored rather than after. Everything else keeps
     // passing metadata through: only COLOR has a shape anything depends on.
@@ -96,8 +106,8 @@ router.post('/items', requirePermission('admin:catalog'), async (req: Request, r
       data: {
         clientId,
         type,
-        value,
-        label,
+        value: cleanValue,
+        label: cleanLabel,
         category,
         metadata: storedMetadata,
         sortOrder: sortOrder || 0,
@@ -114,7 +124,10 @@ router.post('/items', requirePermission('admin:catalog'), async (req: Request, r
     if (error instanceof HttpError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    res.status(500).json({ success: false, message: 'Failed to create catalog item', error: error.message });
+    // The raw error is logged, not returned. A Prisma failure's message quotes the query and
+    // the absolute path of the source file, and that went straight to the browser.
+    console.error('[catalog] create failed', error);
+    res.status(500).json({ success: false, message: 'Failed to create catalog item' });
   }
 });
 
@@ -159,7 +172,8 @@ router.patch('/items/:id', requirePermission('admin:catalog'), async (req: Reque
     if (error instanceof HttpError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    res.status(500).json({ success: false, message: 'Failed to update catalog item', error: error.message });
+    console.error('[catalog] update failed', error);
+    res.status(500).json({ success: false, message: 'Failed to update catalog item' });
   }
 });
 
@@ -196,7 +210,8 @@ router.delete('/items/:id', requirePermission('admin:catalog'), async (req: Requ
 
     res.json({ success: true, message: 'Item deleted successfully', data: item });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Failed to delete catalog item', error: error.message });
+    console.error('[catalog] delete failed', error);
+    res.status(500).json({ success: false, message: 'Failed to delete catalog item' });
   }
 });
 
