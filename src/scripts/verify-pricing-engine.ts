@@ -267,6 +267,36 @@ function main() {
   check('an empty basket costs nothing and does not throw',
     empty.totalMinor === 0 && empty.discountTotalMinor === 0);
   check('  ...and no offer is claimed to have applied', empty.discounts.length === 0);
+
+  // ── MINIMUMS COUNT THE ITEMS THE OFFER COVERS ──────────────────────────
+  console.log('\nMINIMUMS COUNT ONLY THE ITEMS AN OFFER COVERS');
+
+  const sareeLine = (q: number, price = 1000000) => line({ variantId: 'v-saree', productId: 'p-saree', category: 'SAREE', quantity: q, listUnitPriceMinor: price });
+  const blouseLine = (q: number, price = 80000) => line({ variantId: 'v-blouse', productId: 'p-blouse', category: 'BLOUSE', quantity: q, listUnitPriceMinor: price, sku: 'BLOUSE' });
+  const sareesOnly = { scope: 'CATEGORY' as const, targets: [{ scope: 'CATEGORY', refId: 'SAREE' }] };
+
+  const buyTwo = offer({ name: 'Buy 2 sarees', ...sareesOnly, minQuantity: 2 });
+  check('"buy 2 sarees" applies to two sarees', priceBasket([sareeLine(2)], [buyTwo]).discountTotalMinor === 200000);
+  const oneOfEach = priceBasket([sareeLine(1), blouseLine(1)], [buyTwo]);
+  check('  ...but NOT to one saree and one blouse', oneOfEach.discountTotalMinor === 0, rupees(oneOfEach.discountTotalMinor));
+  check('  ...and says how many more sarees it needs', oneOfEach.nearMisses[0]?.reason === 'Add 1 more item(s) to get this.', oneOfEach.nearMisses[0]?.reason);
+
+  const spendOnSarees = offer({ name: 'Spend 15k on sarees', ...sareesOnly, minSubtotalMinor: 1500000 });
+  const mixed = priceBasket([sareeLine(1), blouseLine(1, 600000)], [spendOnSarees]);
+  check('"spend 15,000 on sarees" is not met by 10,000 of sarees and 6,000 of blouses', mixed.discountTotalMinor === 0, rupees(mixed.discountTotalMinor));
+  check('  ...and names the real shortfall', mixed.nearMisses[0]?.reason === 'Spend 5000.00 more to get this.', mixed.nearMisses[0]?.reason);
+  check('  ...but is met by 15,000 of sarees', priceBasket([sareeLine(1, 1500000), blouseLine(1)], [spendOnSarees]).discountTotalMinor === 150000);
+
+  const everything = offer({ name: 'Everything, 2 items', minQuantity: 2 });
+  check('an offer on everything still counts the whole basket', priceBasket([sareeLine(1), blouseLine(1)], [everything]).discountTotalMinor === 108000);
+
+  // The measure is the LIST price, so the order the lines are priced in cannot change the answer.
+  const minimumGated = [offer({ id: 'deep', name: 'Deep cut', value: 50, stackable: true, priority: 9 }), offer({ id: 'gated', name: 'Gated', ...sareesOnly, stackable: true, minSubtotalMinor: 1500000 })];
+  const forward = priceBasket([sareeLine(1, 1600000), blouseLine(1)], minimumGated);
+  const backward = priceBasket([blouseLine(1), sareeLine(1, 1600000)], minimumGated);
+  check('a minimum is measured before other offers cut the price, whatever the line order',
+    forward.totalMinor === backward.totalMinor && forward.lines.some(l => l.appliedOffers.some(a => a.offerId === 'gated')),
+    `${rupees(forward.totalMinor)} vs ${rupees(backward.totalMinor)}`);
 }
 
 try { main(); } catch (e: any) { console.error('\nSUITE CRASHED:', e?.stack ?? e); failed++; failures.push('crashed'); }

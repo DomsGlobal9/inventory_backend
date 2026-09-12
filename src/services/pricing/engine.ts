@@ -156,15 +156,40 @@ export function priceBasket(
   );
 
   /** Whether the basket meets an offer's conditions, and what to say when it does not. */
-  const conditionsMet = (offer: CandidateOffer, againstMinor: number): string | null => {
+  const conditionsMet = (offer: CandidateOffer, againstMinor: number, againstQuantity = totalQuantity): string | null => {
     if (offer.minSubtotalMinor != null && againstMinor < offer.minSubtotalMinor) {
       const short = offer.minSubtotalMinor - againstMinor;
       return `Spend ${(short / 100).toFixed(2)} more to get this.`;
     }
-    if (offer.minQuantity != null && totalQuantity < offer.minQuantity) {
-      return `Add ${offer.minQuantity - totalQuantity} more item(s) to get this.`;
+    if (offer.minQuantity != null && againstQuantity < offer.minQuantity) {
+      return `Add ${offer.minQuantity - againstQuantity} more item(s) to get this.`;
     }
     return null;
+  };
+
+  /*
+   * A per-item offer's minimums count only the items it COVERS.
+   *
+   * "Buy 2 sarees, get 10% off sarees" was satisfied by one saree and one blouse, and "10% off
+   * sarees when you spend 15,000 on sarees" by a 10,000 saree and 6,000 of blouses -- the conditions
+   * were measured against the whole basket. That is not what either offer says, and it is not what
+   * Shopify does either: a product discount's minimum requirement applies to its selected items, so a
+   * copy on Shopify and the till would have charged the same basket differently.
+   *
+   * For an offer on everything the covered items ARE the basket, so nothing changes there.
+   */
+  const coveredBy = new Map<string, { minor: number; quantity: number }>();
+  const covered = (offer: CandidateOffer) => {
+    let hit = coveredBy.get(offer.id);
+    if (!hit) {
+      hit = lines.reduce((acc, l) => matches(offer, l)
+        // At LIST price, as the basket's own subtotal is -- measured before any offer has touched a
+        // line, so the answer cannot depend on which line happened to be priced first.
+        ? { minor: acc.minor + l.listUnitPriceMinor * l.quantity, quantity: acc.quantity + l.quantity }
+        : acc, { minor: 0, quantity: 0 });
+      coveredBy.set(offer.id, hit);
+    }
+    return hit;
   };
 
   // ── LINE-LEVEL ─────────────────────────────────────────────────────────────
@@ -191,7 +216,7 @@ export function priceBasket(
 
     if (exclusive.length > 0) {
       const scored = exclusive.map(o => {
-        const condition = conditionsMet(o, subtotalMinor);
+        const condition = conditionsMet(o, covered(o).minor, covered(o).quantity);
         return {
           offer: o,
           blocked: condition,
@@ -221,7 +246,7 @@ export function priceBasket(
 
     // Stackable ones apply after, each on what is left.
     for (const o of stackable.sort((a, b) => b.priority - a.priority)) {
-      const condition = conditionsMet(o, subtotalMinor);
+      const condition = conditionsMet(o, covered(o).minor, covered(o).quantity);
       if (condition) {
         nearMisses.push({ offerId: o.id, title: o.name, reason: condition });
         continue;
