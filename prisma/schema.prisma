@@ -938,6 +938,15 @@ model User {
 
   roles UserRole[]
 
+  /// Quarantined on 12 Sep 2026 -- see the note above DailyReportJob. These two columns
+  /// exist in production with real data (3 users opted in) and are declared here so that
+  /// Prisma stops treating them as drift to be dropped. Nothing in THIS repository reads
+  /// or writes them.
+  phone              String?
+  receiveDailyReport Boolean @default(false) @map("receive_daily_report")
+
+  dailyReportDeliveries DailyReportDelivery[]
+
   lastLoginAt  DateTime? @map("last_login_at")
   // Bumped on every authenticated business-API request (see activity-tracker.middleware.ts),
   // not just on login -- lastLoginAt alone under-represents a user who logged in once and
@@ -2053,4 +2062,81 @@ model ClientServiceLimit {
 
   @@unique([clientId, service], name: "uq_client_service_limit")
   @@map("client_service_limits")
+}
+
+// ─── QUARANTINED: WHATSAPP DAILY REPORT ──────────────────────────────────────
+//
+// These three declarations describe tables that EXIST IN PRODUCTION but whose code does
+// not exist in this repository. They were found on 12 Sep 2026 while verifying the
+// migration baseline: `migrate diff` between the live database and this schema proposed
+// dropping two tables, an enum and two user columns -- a live feature with real data
+// (6 jobs, 3 deliveries, 3 users opted in with phone numbers).
+//
+// They are declared here for ONE reason: so that Prisma no longer sees them as drift.
+// Without this, the next `migrate dev` would generate DROP TABLE for a running feature
+// and take three users' notification settings with it.
+//
+// This is quarantine, not adoption. Nothing in this repo reads or writes these tables,
+// and no service class, route or job here refers to them. Whoever owns the WhatsApp daily
+// report should either bring its code into this repository -- at which point these become
+// ordinary models and this comment goes -- or retire the feature and drop the tables in a
+// deliberate migration. Until one of those happens, leave them alone.
+//
+// Field names and types are exactly as introspected from production, so this schema
+// describes what is really there rather than what we would have designed.
+
+enum ReportDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
+model DailyReportJob {
+  id String @id
+
+  clientId   String @map("client_id")
+  reportDate String @map("report_date")
+
+  status      String    @default("IN_PROGRESS")
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  deliveries DailyReportDelivery[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, reportDate])
+  @@index([clientId, reportDate])
+  @@map("daily_report_jobs")
+}
+
+model DailyReportDelivery {
+  id String @id
+
+  jobId String         @map("job_id")
+  job   DailyReportJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  clientId String @map("client_id")
+
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  reportDate String @map("report_date")
+  phone      String
+
+  status       ReportDeliveryStatus @default(PENDING)
+  errorMessage String?              @map("error_message")
+  sentAt       DateTime?            @map("sent_at")
+  attemptedAt  DateTime?            @map("attempted_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // One message per user per day -- the constraint that stops a retry double-messaging.
+  @@unique([reportDate, userId])
+  @@index([clientId, reportDate])
+  @@index([jobId])
+  @@map("daily_report_deliveries")
 }
