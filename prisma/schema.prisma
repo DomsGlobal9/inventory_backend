@@ -225,6 +225,17 @@ model Product {
   id          String @id @default(uuid())
   clientId    String @map("client_id")
   productCode String @map("product_code") // e.g. SE-SAREE-001
+
+  /// The merchant's own key for this product, from the file that imported it.
+  ///
+  /// productCode is generated here, so a spreadsheet describing products that do not exist
+  /// yet cannot carry one -- which left an import unable to recognise its own work. Upload
+  /// the same file twice and the second run saw two more new products, which is precisely
+  /// the duplication the importer exists to avoid.
+  ///
+  /// This is what the file called ProductKey. Storing it means a re-run finds what it made
+  /// last time and updates it. Null for everything created any other way.
+  importKey String? @map("import_key")
   slug        String
 
   // General Info
@@ -253,6 +264,7 @@ model Product {
   updatedAt      DateTime       @updatedAt @map("updated_at")
 
   @@unique([clientId, productCode])
+  @@unique([clientId, importKey])
   @@unique([clientId, slug])
   @@index([clientId, title])
   @@index([clientId, status])

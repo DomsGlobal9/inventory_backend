@@ -20,6 +20,7 @@ import salesOrderRoutes from './sales-order.routes';
 import dispatchRoutes from './dispatch.routes';
 import roleRoutes from './role.routes';
 import brandingRoutes from './branding.routes';
+import productImportRoutes from './product-import.routes';
 import { returnsRoutes } from './returns.routes';
 import authRoutes from './auth.routes';
 import locationRoutes from './location.routes';
@@ -96,6 +97,8 @@ router.use(trackActivity);
 router.use(auditLogger);
 
 // Mount Business Routes
+// Mounted BEFORE /products so that /products/import is not swallowed by /products/:id.
+router.use('/products/import', productImportRoutes);
 router.use('/products', productRoutes);
 router.use('/variants', variantRoutes);
 router.use('/inventory/transactions', transactionRoutes);
