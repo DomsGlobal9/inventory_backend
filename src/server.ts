@@ -74,6 +74,19 @@ app.use('/api/v1/catalog-tryon', express.json({ limit: '30mb' }));
 // ahead of the global parser for that reason, exactly like the oversized path above.
 // The cap is Shopify's own maximum webhook payload; anything larger is not from them.
 app.use('/api/v1/shopify/webhooks', express.raw({ type: '*/*', limit: '5mb' }));
+/*
+ * A catalogue file is bigger than a form post.
+ *
+ * express.json() defaults to 100kb, which is generous for every other endpoint here and
+ * far too small for an import: the service accepts up to 2000 rows, and a realistic row is
+ * a couple of hundred bytes of JSON, so a merchant with a few hundred products was refused
+ * with a bare 413 before any of the importer's own, friendlier limits were reached.
+ *
+ * Mounted before the default below, and scoped to the import routes only, so nothing else
+ * gains a larger attack surface.
+ */
+app.use('/api/v1/products/import', express.json({ limit: '10mb' }));
+
 app.use(express.json());
 app.use(requestLogger);
 

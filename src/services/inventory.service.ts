@@ -2,6 +2,7 @@ import { inventoryRepository } from '../repositories/inventory.repository';
 import { TransactionType, InventoryReason, Prisma } from '@prisma/client';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { prisma } from '../lib/prisma';
+import { isLowStock, lowStockThreshold } from '../lib/lowStock';
 
 export class InventoryService {
   
@@ -118,24 +119,12 @@ export class InventoryService {
       (locationId ? stocks.filter(s => s.locationId === locationId) : stocks)
         .reduce((acc, s) => acc + s.quantity, 0);
 
-    /**
-     * When a variant counts as low.
-     *
-     * Was Math.max(reorderLevel || 0, 10), which quietly overruled the merchant whenever they
-     * set a reorder level below ten. Measured on a real tenant: four variants with a reorder
-     * level of 5 holding 4, 5, 6 and 8 pieces were ALL badged Low Stock on this screen, while
-     * the product page and the dashboard -- which compare against the reorder level itself --
-     * said two of them were. One product, two answers, on screens a shopkeeper reads minutes
-     * apart.
-     *
-     * The floor was presumably meant for variants with nothing set. That is what it does now:
-     * a reorder level that has been chosen is honoured exactly, and ten is only a fallback for
-     * variants that have never been given one. Anything else makes the setting a suggestion,
-     * and a low-stock badge on well-stocked items is how people learn to ignore the badge.
+    /*
+     * The rule now lives in lib/lowStock, and this screen asks it rather than keeping its
+     * own copy. The copy here substituted 10 whenever the reorder level was 0, which no
+     * other surface did -- so a variant set to 0 was badged Low Stock here and nowhere else.
+     * The note in that file explains why the exact level wins.
      */
-    const DEFAULT_LOW_STOCK_THRESHOLD = 10;
-    const lowStockThreshold = (reorderLevel: number | null) =>
-      (reorderLevel && reorderLevel > 0) ? reorderLevel : DEFAULT_LOW_STOCK_THRESHOLD;
 
     let variants: any[];
     let total: number;
@@ -154,16 +143,21 @@ export class InventoryService {
         }
       });
 
+      // reorderLevel is carried through rather than pre-reduced to a threshold, because
+      // "not tracked" is a third answer that a single number cannot express: such a variant
+      // is neither low nor, meaningfully, healthy-by-comparison.
       let computed = candidates.map(v => ({
         id: v.id,
         qty: onHand(v.stocks),
-        threshold: lowStockThreshold(v.reorderLevel)
+        reorderLevel: v.reorderLevel
       }));
 
       if (isLowStockView) {
-        computed = computed.filter(v => v.qty > 0 && v.qty <= v.threshold);
+        computed = computed.filter(v => isLowStock(v.qty, v.reorderLevel));
       } else if (isHealthyView) {
-        computed = computed.filter(v => v.qty > v.threshold);
+        // In stock, and not low. A variant nobody tracks counts as healthy once it has
+        // stock -- the alternative is a Healthy filter that hides most of a new catalogue.
+        computed = computed.filter(v => v.qty > 0 && !isLowStock(v.qty, v.reorderLevel));
       }
 
       if (sortBy === 'quantity') {
@@ -212,7 +206,7 @@ export class InventoryService {
         inventoryStatus = 'ARCHIVED';
       } else if (qty <= 0) {
         inventoryStatus = 'OUT_OF_STOCK';
-      } else if (qty <= lowStockThreshold(v.reorderLevel)) {
+      } else if (isLowStock(qty, v.reorderLevel)) {
         inventoryStatus = 'LOW_STOCK';
       }
 
