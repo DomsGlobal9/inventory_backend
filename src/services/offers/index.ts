@@ -26,7 +26,10 @@ export {
   effectiveStatus,
   isLive,
   discountFor,
-  compareCandidates
+  compareCandidates,
+  dedupeTargets,
+  OFFER_CHANNELS,
+  OFFER_DEPARTMENTS
 } from './rules';
 export type { OfferDraft, OfferStatusName } from './rules';
 
@@ -34,4 +37,6 @@ export { offerService } from './offer.service';
 export type { OfferInput } from './offer.service';
 
 export { offerRedemptionService } from './redemption.service';
+export { offerInsightService } from './insight.service';
+export { describeChanges, valueText } from './describe';
 export type { RedemptionRequest, RedemptionContext } from './redemption.service';

@@ -14,7 +14,7 @@ import { prisma } from '../../lib/prisma';
 import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../../utils/codeGenerator';
 import { badRequest, conflict, notFound } from '../../utils/httpError';
-import { OfferDraft, validateOffer, effectiveStatus } from './rules';
+import { OfferDraft, validateOffer, effectiveStatus, dedupeTargets } from './rules';
 import { markOfferMirrorsDirty } from '../shopify-discounts/dirty';
 
 /** Which fields, when changed, mean the rule itself is different and history must be kept. */
@@ -130,8 +130,10 @@ export class OfferService {
   }
 
   async create(clientId: string, input: OfferInput, userId?: string) {
+    input = { ...input, targets: dedupeTargets(String(input.scope ?? 'ALL'), input.targets ?? []) as any };
     const problems = validateOffer(input);
     if (problems.length) throw badRequest(problems.join(' '));
+    await this.checkReferences(clientId, input);
 
     const offerCode = await generateSequentialCode(clientId, 'OFR', 'OFFER');
 
@@ -225,8 +227,13 @@ export class OfferService {
       stackable: input.stackable ?? existing.stackable
     };
 
+    merged.targets = dedupeTargets(String(merged.scope ?? 'ALL'), merged.targets ?? []) as any;
     const problems = validateOffer(merged);
     if (problems.length) throw badRequest(problems.join(' '));
+    await this.checkReferences(clientId, merged, {
+      targets: existing.targets.map(t => t.refId),
+      locations: existing.locationIds
+    });
 
     /*
      * Changing a live offer that people have already used.
@@ -345,6 +352,54 @@ export class OfferService {
     // puts its dates back, retiring removes it.
     await markOfferMirrorsDirty(id);
     return prisma.offer.findFirstOrThrow({ where: { id }, include: { targets: true } });
+  }
+
+  /**
+   * Everything an offer names really exists, in THIS shop.
+   *
+   * Checked on save rather than trusted from the screen: an id the screen sent could be another
+   * shop's product (the offer would then apply to nothing here, silently), a product since moved
+   * to the bin, or a location that was closed. Each is refused by name, so the merchant knows which
+   * choice to remove.
+   */
+  private async checkReferences(
+    clientId: string,
+    input: OfferInput,
+    kept: { targets: string[]; locations: string[] } = { targets: [], locations: [] }
+  ) {
+    const scope = input.scope ?? 'ALL';
+    // Only what this save ADDS. A product that went to the bin after the offer named it must not
+    // stop the merchant renaming the offer; the engine already skips products that cannot sell.
+    const ids = (input.targets ?? []).map(t => t.refId).filter(id => !kept.targets.includes(id));
+
+    if (scope === 'PRODUCT' && ids.length) {
+      const found = await prisma.product.findMany({
+        where: { id: { in: ids }, clientId }, select: { id: true, title: true, status: true, trashedAt: true }
+      });
+      const byId = new Map(found.map(p => [p.id, p]));
+      const missing = ids.filter(id => !byId.has(id));
+      if (missing.length) throw badRequest(`${missing.length === 1 ? 'One chosen product no longer exists' : `${missing.length} chosen products no longer exist`} in this shop. Remove ${missing.length === 1 ? 'it' : 'them'} and save again.`);
+      const binned = found.filter(p => p.trashedAt || p.status === 'TRASHED');
+      if (binned.length) throw badRequest(`${binned.map(p => p.title).slice(0, 3).join(', ')} ${binned.length === 1 ? 'is' : 'are'} in the bin. Remove ${binned.length === 1 ? 'it' : 'them'} from the offer, or restore ${binned.length === 1 ? 'it' : 'them'} first.`);
+    }
+
+    if (scope === 'VARIANT' && ids.length) {
+      const found = await prisma.productVariant.findMany({ where: { id: { in: ids }, clientId }, select: { id: true } });
+      const missing = ids.length - new Set(found.map(v => v.id)).size;
+      if (missing > 0) throw badRequest(`${missing === 1 ? 'One chosen item no longer exists' : `${missing} chosen items no longer exist`} in this shop. Remove ${missing === 1 ? 'it' : 'them'} and save again.`);
+    }
+
+    const locationIds = (input.locationIds ?? []).filter(id => !kept.locations.includes(id));
+    if (locationIds.length) {
+      const found = await prisma.stockLocation.findMany({
+        where: { id: { in: locationIds }, clientId }, select: { id: true, name: true, active: true }
+      });
+      if (found.length !== new Set(locationIds).size) {
+        throw badRequest('One of the chosen locations no longer exists in this shop. Choose again.');
+      }
+      const closed = found.filter(l => !l.active);
+      if (closed.length) throw badRequest(`${closed.map(l => l.name).join(', ')} ${closed.length === 1 ? 'is' : 'are'} closed. Choose an open location.`);
+    }
   }
 
   /** The immutable record of what the rule said. */

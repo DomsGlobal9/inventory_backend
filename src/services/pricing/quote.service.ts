@@ -82,7 +82,7 @@ export class PricingQuoteService {
       where: { id: { in: variantIds }, clientId },
       include: {
         locationProfiles: true,
-        product: { select: { id: true, title: true, category: true, basePrice: true } }
+        product: { select: { id: true, title: true, category: true, dressType: true, basePrice: true } }
       }
     });
 
@@ -111,6 +111,7 @@ export class PricingQuoteService {
         variantId: variant.id,
         productId: variant.product.id,
         category: variant.product.category ?? null,
+        dressType: variant.product.dressType ?? null,
         quantity,
         listUnitPriceMinor: toMinor(resolved.price ?? 0),
         sku: variant.sku,
@@ -349,6 +350,7 @@ export class PricingQuoteService {
       appliesTo:
         o.scope === 'ALL' ? null
         : o.scope === 'CATEGORY' ? { categories: o.targets.map(t => t.refId) }
+        : o.scope === 'DRESS_TYPE' ? { dressTypes: o.targets.map(t => t.refId) }
         : o.scope === 'PRODUCT' ? { productCodes: o.targets.map(t => productCode.get(t.refId)).filter(Boolean) }
         : { variantCodes: o.targets.map(t => variantCode.get(t.refId)).filter(Boolean) },
       minSubtotal: o.minSubtotalMinor == null ? null : minorToNumber(o.minSubtotalMinor),

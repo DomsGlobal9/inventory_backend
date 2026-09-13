@@ -71,7 +71,7 @@ async function main() {
   check('an automatic offer carrying a code is refused',
     validateOffer(draft({ couponCode: 'X1' })).some(p => /cannot also have a code/i.test(p)));
   check('a category offer naming no categories is refused',
-    validateOffer(draft({ scope: 'CATEGORY' })).some(p => /which categories/i.test(p)));
+    validateOffer(draft({ scope: 'CATEGORY' })).some(p => /which departments/i.test(p)));
   check('an everything offer naming particular items is refused',
     validateOffer(draft({ targets: [{ scope: 'PRODUCT', refId: 'p1' }] }))
       .some(p => /cannot also list/i.test(p)));

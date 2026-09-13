@@ -28,6 +28,8 @@ export interface BasketLine {
   /** For matching an offer's targets. */
   productId: string;
   category: string | null;
+  /** Product.dressType -- Saree, Lehenga. Matched case-blind and trimmed, as a shop types it. */
+  dressType?: string | null;
   sku?: string;
   title?: string;
 }
@@ -43,7 +45,7 @@ export interface CandidateOffer {
   valueType: 'PERCENTAGE' | 'FIXED_AMOUNT' | 'FIXED_PRICE';
   value: any;
   maxDiscount: any;
-  scope: 'ALL' | 'CATEGORY' | 'PRODUCT' | 'VARIANT';
+  scope: 'ALL' | 'CATEGORY' | 'DRESS_TYPE' | 'PRODUCT' | 'VARIANT';
   targets: { scope: string; refId: string }[];
   minSubtotalMinor: number | null;
   minQuantity: number | null;
@@ -84,6 +86,8 @@ export interface PricedBasket {
   nearMisses: { offerId: string; title: string; reason: string }[];
 }
 
+export const normaliseType = (v: string | null | undefined) => String(v ?? '').trim().toLowerCase();
+
 /** Does this offer apply to this line at all? */
 function matches(offer: CandidateOffer, line: BasketLine): boolean {
   switch (offer.scope) {
@@ -91,6 +95,12 @@ function matches(offer: CandidateOffer, line: BasketLine): boolean {
       return true;
     case 'CATEGORY':
       return !!line.category && offer.targets.some(t => t.refId === line.category);
+    case 'DRESS_TYPE': {
+      // "Saree", "saree " and "SAREE" are the same shelf. The product form is free text, so the
+      // comparison forgives what a person typing it would never notice.
+      const type = normaliseType(line.dressType);
+      return !!type && offer.targets.some(t => normaliseType(t.refId) === type);
+    }
     case 'PRODUCT':
       return offer.targets.some(t => t.refId === line.productId);
     case 'VARIANT':

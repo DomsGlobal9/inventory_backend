@@ -21,7 +21,7 @@ export interface OfferDraft {
   valueType?: 'PERCENTAGE' | 'FIXED_AMOUNT' | 'FIXED_PRICE' | null;
   value?: number | null;
   maxDiscount?: number | null;
-  scope?: 'ALL' | 'CATEGORY' | 'PRODUCT' | 'VARIANT' | null;
+  scope?: 'ALL' | 'CATEGORY' | 'DRESS_TYPE' | 'PRODUCT' | 'VARIANT' | null;
   targets?: { scope: string; refId: string }[] | null;
   minSubtotal?: number | null;
   minQuantity?: number | null;
@@ -31,6 +31,25 @@ export interface OfferDraft {
   usageLimitPerCustomer?: number | null;
   priority?: number | null;
   stackable?: boolean | null;
+  channels?: string[] | null;
+  locationIds?: string[] | null;
+}
+
+export const OFFER_CHANNELS = ['POS', 'ONLINE', 'MANUAL', 'MARKETPLACE'] as const;
+export const OFFER_DEPARTMENTS = ['WOMEN', 'MEN', 'KIDS', 'UNISEX'] as const;
+
+/** One target per thing. A type typed twice with different capitals is still one type. */
+export function dedupeTargets(scope: string, targets: { scope: string; refId: string }[]) {
+  const seen = new Set<string>();
+  const out: { scope: string; refId: string }[] = [];
+  for (const t of targets) {
+    const refId = String(t.refId ?? '').trim();
+    const key = scope === 'DRESS_TYPE' ? refId.toLowerCase() : refId;
+    if (!refId || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ scope: t.scope, refId });
+  }
+  return out;
 }
 
 /** Said the way a merchant would hear it, because these end up on their screen. */
@@ -75,14 +94,54 @@ export function validateOffer(draft: OfferDraft): string[] {
 
   const scope = draft.scope ?? 'ALL';
   const targets = draft.targets ?? [];
+  if (!['ALL', 'CATEGORY', 'DRESS_TYPE', 'PRODUCT', 'VARIANT'].includes(scope)) {
+    problems.push('Choose what the offer applies to.');
+  }
+  if (draft.level != null && !['LINE', 'ORDER'].includes(draft.level)) {
+    problems.push('Choose whether it comes off each item or the whole bill.');
+  }
+  if (valueType && !['PERCENTAGE', 'FIXED_AMOUNT', 'FIXED_PRICE'].includes(valueType)) {
+    problems.push('Choose whether this takes off a percentage, an amount, or sets a price.');
+  }
   if (scope !== 'ALL' && targets.length === 0) {
-    problems.push(`Choose which ${scope === 'CATEGORY' ? 'categories' : scope === 'PRODUCT' ? 'products' : 'items'} this applies to.`);
+    const what = { CATEGORY: 'departments', DRESS_TYPE: 'types of garment', PRODUCT: 'products', VARIANT: 'items' }[scope as string] ?? 'items';
+    problems.push(`Choose which ${what} this applies to.`);
   }
   if (scope === 'ALL' && targets.length > 0) {
     problems.push('This offer applies to everything, so it cannot also list particular items.');
   }
   if (targets.some(t => t.scope !== scope)) {
     problems.push('Every item chosen has to match what the offer applies to.');
+  }
+  if (scope === 'CATEGORY' && targets.some(t => !(OFFER_DEPARTMENTS as readonly string[]).includes(t.refId))) {
+    problems.push('A department has to be Women, Men, Kids or Unisex.');
+  }
+  if (scope === 'DRESS_TYPE' && targets.some(t => !String(t.refId ?? '').trim() || String(t.refId).trim().length > 60)) {
+    problems.push('Each type of garment needs a name of up to 60 characters.');
+  }
+  if (targets.length > 500) {
+    problems.push('An offer can name at most 500 items. For more, apply it to a type of garment or a department.');
+  }
+
+  const channels = draft.channels ?? [];
+  if (channels.some(c => !(OFFER_CHANNELS as readonly string[]).includes(c))) {
+    problems.push('Choose where it sells from the till, the online store, or both.');
+  }
+
+  /*
+   * "Set a price" on a whole bill.
+   *
+   * "Everything for 999" means each piece at 999 -- which is a per-item offer. A bill set to 999
+   * whatever is in it is not an offer any shop runs, and the engine would have to invent which
+   * lines absorb the difference.
+   */
+  if (draft.level === 'ORDER' && draft.valueType === 'FIXED_PRICE') {
+    problems.push('A whole bill cannot be set to one price. Set the price on the items instead.');
+  }
+
+  if (draft.usageLimit != null && draft.usageLimitPerCustomer != null
+      && Number(draft.usageLimitPerCustomer) > Number(draft.usageLimit)) {
+    problems.push('One customer cannot use it more times than the offer can be used in total.');
   }
 
   const starts = asDate(draft.startsAt);

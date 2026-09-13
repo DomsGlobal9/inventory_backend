@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { offerService } from '../services/offers';
+import { offerService, offerInsightService } from '../services/offers';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 import { grants, holdsEverything } from '../config/permissions';
@@ -37,9 +37,30 @@ router.get('/', requirePermission('offer:view'), async (req: Request, res: Respo
   }
 });
 
+// Declared before /:id, or Express would read "options" as an offer id.
+router.get('/options', requirePermission('offer:view'), async (req: Request, res: Response) => {
+  try {
+    res.json({ success: true, data: await offerInsightService.options(clientOf(req)) });
+  } catch (error) {
+    return respondWithError(res, error, { status: 500, message: 'Could not load what offers can apply to.' });
+  }
+});
+
+router.get('/targets', requirePermission('offer:view'), async (req: Request, res: Response) => {
+  try {
+    const scope = String(req.query.scope ?? '').toUpperCase();
+    const data = await offerInsightService.search(clientOf(req), scope, String(req.query.q ?? ''));
+    res.json({ success: true, data });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not search.' });
+  }
+});
+
 router.get('/:id', requirePermission('offer:view'), async (req: Request, res: Response) => {
   try {
-    res.json({ success: true, data: await offerService.getById(clientOf(req), String(req.params.id)) });
+    const detail = await offerInsightService.detail(clientOf(req), String(req.params.id));
+    const mirrors = await offerMirrorService.summaries(clientOf(req), [detail.id]);
+    res.json({ success: true, data: { ...detail, shopify: mirrors.get(detail.id) ?? null } });
   } catch (error) {
     return respondWithError(res, error, { status: 500, message: 'Could not load that offer.' });
   }

@@ -2363,7 +2363,11 @@ enum OfferValueType {
 
 enum OfferScope {
   ALL
+  /// A department: WOMEN, MEN, KIDS, UNISEX -- Product.category.
   CATEGORY
+  /// What a shop calls a kind of garment: Saree, Lehenga, Anarkali -- Product.dressType. This is what
+  /// a merchant means by "20% off sarees"; the department alone cannot say it.
+  DRESS_TYPE
   PRODUCT
   VARIANT
 }

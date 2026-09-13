@@ -266,7 +266,8 @@ async function main() {
     orderAmount.ok && (orderAmount.input as any).customerGets.value.discountAmount.appliesOnEachItem === false);
   check('an amount is refused when the store sells in another currency',
     /never converted/i.test(reasonOf(t({ valueType: 'FIXED_AMOUNT', value: 500, level: 'ORDER' }, { storeCurrency: 'USD' }))));
-  check('a category is refused -- Shopify has none', /no categories/i.test(reasonOf(t({ scope: 'CATEGORY', targets: [{ scope: 'CATEGORY', refId: 'WOMEN' }] }))));
+  check('a department is refused -- Shopify has none', /no departments/i.test(reasonOf(t({ scope: 'CATEGORY', targets: [{ scope: 'CATEGORY', refId: 'WOMEN' }] }))));
+  check('a type of garment is refused -- Shopify has none', /no garment types/i.test(reasonOf(t({ scope: 'DRESS_TYPE', targets: [{ scope: 'DRESS_TYPE', refId: 'Saree' }] }))));
   check('a variant not matched to Shopify is refused, by name',
     /is matched to your Shopify store/i.test(reasonOf(t({ scope: 'VARIANT', targets: [{ scope: 'VARIANT', refId: 'v9' }] }, { labelOf: new Map([['v9', 'SKU-NINE']]) })))
     && /SKU-NINE/.test(reasonOf(t({ scope: 'VARIANT', targets: [{ scope: 'VARIANT', refId: 'v9' }] }, { labelOf: new Map([['v9', 'SKU-NINE']]) }))));

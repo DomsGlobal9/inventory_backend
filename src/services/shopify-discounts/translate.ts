@@ -45,7 +45,7 @@ export interface MirrorableOffer {
   valueType: 'PERCENTAGE' | 'FIXED_AMOUNT' | 'FIXED_PRICE';
   value: number;
   maxDiscount: number | null;
-  scope: 'ALL' | 'CATEGORY' | 'PRODUCT' | 'VARIANT';
+  scope: 'ALL' | 'CATEGORY' | 'DRESS_TYPE' | 'PRODUCT' | 'VARIANT';
   targets: { scope: string; refId: string }[];
   minSubtotal: number | null;
   minQuantity: number | null;
@@ -184,8 +184,8 @@ export function translateOffer(offer: MirrorableOffer, ctx: TranslationContext):
 
   if (offer.scope === 'ALL') {
     items = 'ALL';
-  } else if (offer.scope === 'CATEGORY') {
-    say('Shopify has no categories -- it discounts products, variants or collections. Choose the products instead to put this on Shopify.');
+  } else if (offer.scope === 'CATEGORY' || offer.scope === 'DRESS_TYPE') {
+    say(`Shopify has no ${offer.scope === 'CATEGORY' ? 'departments' : 'garment types'} -- it discounts products, variants or collections. Choose the products instead to put this on Shopify.`);
   } else {
     const products = new Set<string>();
     const variants = new Set<string>();
