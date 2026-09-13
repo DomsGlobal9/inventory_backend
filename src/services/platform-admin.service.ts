@@ -380,7 +380,7 @@ export class PlatformAdminService {
    * anyone has to notice they are looking at the wrong tenant.
    */
   async previewClientDeletion(clientId: string) {
-    const [users, products, variants, orders, purchaseOrders, locations, suppliers, transactions] =
+    const [users, products, variants, orders, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting] =
       await Promise.all([
         prisma.user.count({ where: { clientId } }),
         prisma.product.count({ where: { clientId } }),
@@ -389,10 +389,14 @@ export class PlatformAdminService {
         prisma.purchaseOrder.count({ where: { clientId } }),
         prisma.stockLocation.count({ where: { clientId } }),
         prisma.supplier.count({ where: { clientId } }),
-        prisma.inventoryTransaction.count({ where: { variant: { clientId } } })
+        prisma.inventoryTransaction.count({ where: { variant: { clientId } } }),
+        // The offers a shop wrote and the history of their use are part of what goes.
+        prisma.offer.count({ where: { clientId } }),
+        prisma.offerRedemption.count({ where: { clientId } }),
+        prisma.shopifyOrderInbox.count({ where: { clientId, resolvedAt: null } })
       ]);
 
-    return { clientId, users, products, variants, orders, purchaseOrders, locations, suppliers, transactions };
+    return { clientId, users, products, variants, orders, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting };
   }
 
   /**
@@ -473,6 +477,18 @@ export class PlatformAdminService {
       `DELETE FROM shopify_id_maps WHERE client_id = $1`,
       `DELETE FROM shopify_location_maps WHERE client_id = $1`,
       `DELETE FROM shopify_oauth_states WHERE client_id = $1`,
+      // Shopify orders parked for this shop -- including ones parked before the install was
+      // claimed, which carry only the shop's domain. Read by domain before the installation goes.
+      `DELETE FROM shopify_order_inbox WHERE client_id = $1 OR (client_id IS NULL AND shop_domain IN (SELECT shop_domain FROM shopify_installations WHERE client_id = $1))`,
+      // Offers. Listed rather than left to the sweep, because the sweep's order is whatever the
+      // catalogue returns: a redemption holds its offer VERSION with ON DELETE RESTRICT, so the
+      // redemptions go first, then codes, quotes and Shopify copies, then the offers themselves
+      // (which take their targets, exclusions and versions with them).
+      `DELETE FROM offer_redemptions WHERE client_id = $1`,
+      `DELETE FROM offer_codes WHERE client_id = $1`,
+      `DELETE FROM pricing_quotes WHERE client_id = $1`,
+      `DELETE FROM offer_external_mirrors WHERE client_id = $1`,
+      `DELETE FROM offers WHERE client_id = $1`,
       `DELETE FROM shopify_installations WHERE client_id = $1`,
       // Reservations point at sales order items, so they go before the order chain.
       `DELETE FROM inventory_reservations WHERE client_id = $1`,

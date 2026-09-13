@@ -17,6 +17,7 @@ import { prisma } from '../lib/prisma';
 import { platformAdminService } from '../services/platform-admin.service';
 import { platformAuditService } from '../services/platform-audit.service';
 import { leadService } from '../services/lead.service';
+import { offersHealthService } from '../services/platform-health';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -55,6 +56,10 @@ async function main() {
     await screen('Audit Log', () => platformAdminService.listAuditLog(100));
     await screen('Platform Admins', () => platformAdminService.listPlatformAdmins());
     await screen('Staff actions', () => platformAuditService.list(100));
+    const offersHealth = await screen('Offers & Shopify', async () => (await offersHealthService.overview()).clients);
+    check('the Offers & Shopify screen has a row for every shop the Clients screen lists',
+      !!offersHealth.data && !!clients.data && offersHealth.data.length === clients.data.length,
+      `${offersHealth.data?.length} vs ${clients.data?.length}`);
 
     console.log('\nAND THERE WAS REAL DATA BEHIND THEM, NOT AN EMPTY DATABASE');
     // Without this, every check above passes on a platform with nothing in it.

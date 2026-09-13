@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { offersHealthService } from '../services/platform-health';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { platformAdminService } from '../services/platform-admin.service';
@@ -181,6 +182,16 @@ export const listAuditLog = async (_req: Request, res: Response) => {
     res.json({ success: true, data: log });
   } catch (error: any) {
     return respondWithError(res, error, { status: 500, message: 'Failed to load audit log' });
+  }
+};
+
+/** Offers and Shopify across every shop, worst first. Read only. */
+export const getOffersHealth = async (_req: Request, res: Response) => {
+  try {
+    const data = await offersHealthService.overview();
+    res.json({ success: true, data });
+  } catch (error: any) {
+    return respondWithError(res, error, { status: 500, message: 'Failed to load offers and Shopify health' });
   }
 };
 

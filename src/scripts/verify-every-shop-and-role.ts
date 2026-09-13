@@ -30,6 +30,7 @@ import { offerService, offerInsightService, validateOffer } from '../services/of
 import { getShopSettings, forgetShopSettings } from '../lib/clientSettings';
 import { resolveVariantForLocation } from '../utils/variant-location';
 import { toMinor } from '../services/pricing/money';
+import { offersHealthService } from '../services/platform-health';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 
@@ -201,6 +202,32 @@ async function partA() {
   check('  ...and so may the owner', ownerOver.status === 201, brief(ownerOver));
   const warehouseHand = await paced(() => people.WAREHOUSE.api.post('/sales-orders/full', byHand(100)));
   check('a packer cannot take money off at all', warehouseHand.status === 403, brief(warehouseHand));
+
+  // ── What the platform console sees of this shop ──
+  console.log('\n  -- The platform console (Offers & Shopify) --');
+  // Spend every remaining card, park a Shopify order, and take a permission away from the shop's
+  // salespeople -- the three things the screen exists to point at.
+  await offerService.setStatus(SHOP, cards.id, 'ACTIVE', people.ADMIN.id);
+  await prisma.offerCode.updateMany({ where: { offerId: cards.id, usedAt: null }, data: { usedAt: new Date() } });
+  await prisma.shopifyOrderInbox.create({ data: { clientId: SHOP, shopDomain: `${SHOP}.myshopify.com`, shopifyOrderId: String(STAMP), topic: 'orders/create', payload: {}, reason: 'UNMAPPED_VARIANT' } });
+  const salesManual = await prisma.permission.findUniqueOrThrow({ where: { key: 'offer:manual_discount' } });
+  await prisma.rolePermission.deleteMany({ where: { roleId: roleIds.SALES, permissionId: salesManual.id } });
+  const health = await offersHealthService.overview();
+  const mine = health.clients.find(c => c.clientId === SHOP);
+  check('the console lists the new shop', !!mine);
+  check('  ...with its running offers and the uses of the last 30 days', (mine?.offers.running ?? 0) >= 1 && (mine?.last30Days.uses ?? 0) >= 2, JSON.stringify({ offers: mine?.offers, used: mine?.last30Days }));
+  check('  ...the till limit it set', mine?.tillLimitPercent === 10, String(mine?.tillLimitPercent));
+  check('  ...and says, in words, that its cards ran out, a Shopify order is waiting and a role lost a permission',
+    !!mine && mine.offers.outOfCodes === 1 && mine.shopify.ordersWaiting === 1
+      && mine.attention.some(a => /no single-use codes left/.test(a))
+      && mine.attention.some(a => /Shopify order is waiting/.test(a))
+      && mine.attention.some(a => /missing offer permissions/.test(a))
+      && mine.rolesMissingOfferPermissions.some(r => /^SALES: offer:manual_discount$/.test(r)),
+    JSON.stringify(mine?.attention) + ' ' + JSON.stringify(mine?.rolesMissingOfferPermissions));
+  check('  ...and a shop needing attention is listed before the ones that do not', health.clients.findIndex(c => c.clientId === SHOP) < health.clients.findIndex(c => c.attention.length === 0) || health.clients.every(c => c.attention.length > 0));
+  const overHttp = await paced(() => owner.get('/admin/offers-health'));
+  check("a shop's own owner cannot reach the console's screen", overHttp.status === 404 || overHttp.status === 401 || overHttp.status === 403, brief(overHttp));
+  await prisma.shopifyOrderInbox.deleteMany({ where: { clientId: SHOP } });
 
   // ── Another shop ──
   console.log('\n  -- Another shop --');

@@ -29,7 +29,8 @@ import {
   setClientServiceKey,
   revokeClientServiceKey,
   getClientTryOnUsage,
-  setClientTryOnLimit
+  setClientTryOnLimit,
+  getOffersHealth
 } from '../controllers/platform-admin.controller';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 import { platformAuditLogger } from '../middleware/platform-audit.middleware';
@@ -69,6 +70,8 @@ consoleRouter.patch('/platform-admins/:id/status', setPlatformAdminStatus);
 consoleRouter.post('/platform-admins/:id/password', resetPlatformAdminPassword);
 consoleRouter.get('/audit-log', listAuditLog);
 consoleRouter.get('/client-errors', listClientErrors);
+// Offers and Shopify across every shop: copies failing, orders waiting, codes run out. Read only.
+consoleRouter.get('/offers-health', getOffersHealth);
 consoleRouter.get('/support-tickets', listSupportTickets);
 consoleRouter.get('/support-tickets/:id', getSupportTicket);
 consoleRouter.post('/support-tickets/:id/messages', replyToSupportTicket);

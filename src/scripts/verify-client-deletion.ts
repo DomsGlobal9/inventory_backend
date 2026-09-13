@@ -22,6 +22,9 @@ import { platformAdminService } from '../services/platform-admin.service';
 import { AuthService } from '../services/auth.service';
 import { seedRolesForClient } from '../services/rbac-seed.service';
 import { seedCatalogDefaultsForClient } from '../services/catalog-seed.service';
+import { offerService } from '../services/offers';
+import { pricingQuoteService } from '../services/pricing';
+import { salesOrderService } from '../services/sales-order.service';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -95,6 +98,33 @@ async function buildTenant(clientId: string) {
     data: { clientId, userId: user.id, action: 'CREATE', entityType: 'Product', entityId: product.id }
   });
 
+  /*
+   * Offers, and an order that used one -- through the real services, so the rows are the ones a
+   * shop really leaves behind: an offer with its version, targets and single-use codes, a quote,
+   * an order carrying discount rows, a redemption pointing at the offer's VERSION (the one foreign
+   * key here that refuses, rather than follows, a delete), a spent code and a group customer. A
+   * parked Shopify order and a till limit as well. None of this existed in the test tenant, so the
+   * suite could not have noticed a delete that failed on it.
+   */
+  await prisma.clientSettings.upsert({ where: { clientId }, create: { clientId, manualDiscountMaxPercent: 10 }, update: { manualDiscountMaxPercent: 10 } });
+  const customer = await prisma.customer.create({ data: { clientId, customerCode: `DC-${Date.now()}`, name: 'Doomed VIP', status: 'ACTIVE', tags: ['VIP'] } });
+  const offer: any = await offerService.create(clientId, {
+    name: 'Doomed card', trigger: 'CODE', uniqueCodes: true, level: 'ORDER', valueType: 'FIXED_AMOUNT', value: 100,
+    scope: 'ALL', startsAt: new Date(Date.now() - 60_000), exclusions: [{ scope: 'DRESS_TYPE', refId: 'Lehenga' }]
+  } as any, user.id);
+  await offerService.makeCodes(clientId, offer.id, 'DOOM', 3);
+  await offerService.setStatus(clientId, offer.id, 'ACTIVE', user.id);
+  const [code] = (await prisma.offerCode.findMany({ where: { offerId: offer.id } })).map(c => c.code);
+  const quote: any = await pricingQuoteService.quote(clientId, {
+    locationId: location.id, channel: 'POS', customerId: customer.id, couponCodes: [code], lines: [{ variantId: variant.id, quantity: 1 }]
+  });
+  await salesOrderService.createFullOrder(clientId, location.id, {
+    customer: { id: customer.id }, quoteId: quote.quoteId, couponCodes: [code], items: [{ variantId: variant.id, quantity: 1 }]
+  }, 'POS');
+  await prisma.shopifyOrderInbox.create({
+    data: { clientId, shopDomain: `${clientId}.myshopify.com`, shopifyOrderId: String(Date.now()), topic: 'orders/create', payload: {}, reason: 'UNMAPPED_VARIANT' }
+  });
+
   return { userId: user.id, productId: product.id, variantId: variant.id, locationId: location.id };
 }
 
@@ -110,6 +140,9 @@ async function main() {
   const neighbourBefore = await footprint(neighbour);
   check('the doomed tenant has rows in several tables',
     Object.keys(doomedBefore).length >= 6, Object.keys(doomedBefore).join(', '));
+  const offerTables = ['offers', 'offer_codes', 'offer_redemptions', 'pricing_quotes', 'sales_orders', 'shopify_order_inbox'];
+  check('  ...including an offer that an order used, its codes, the quote and a parked Shopify order',
+    offerTables.every(t => (doomedBefore[t] ?? 0) > 0), offerTables.map(t => `${t}=${doomedBefore[t] ?? 0}`).join(', '));
   check('so does the neighbour', Object.keys(neighbourBefore).length >= 6);
 
   // ─── SUSPEND ──────────────────────────────────────────────────────────────
@@ -130,6 +163,9 @@ async function main() {
   const preview = await platformAdminService.previewClientDeletion(doomed);
   check('a preview says what would be destroyed', preview.products >= 1 && preview.users >= 1,
     `${preview.products} products, ${preview.users} users`);
+  check('  ...including its offers, their uses and the Shopify orders still waiting',
+    preview.offers >= 1 && preview.offerUses >= 1 && preview.shopifyOrdersWaiting >= 1,
+    `${preview.offers} offers, ${preview.offerUses} uses, ${preview.shopifyOrdersWaiting} waiting`);
 
   for (const wrong of ['', 'yes', doomed.toUpperCase(), doomed + ' ', neighbour]) {
     let refused = false;
