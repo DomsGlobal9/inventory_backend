@@ -77,7 +77,12 @@ export class OfferRedemptionService {
 
     const written: any[] = [];
 
-    for (const request of merged.values()) {
+    // Claimed in one fixed order. Each claim locks its offer's row until the order commits, so two
+    // tills taking [saree offer, blouse offer] and [blouse offer, saree offer] at the same moment
+    // would each wait on the other's lock, and the database kills one of them.
+    const inOrder = [...merged.values()].sort((a, b) => (a.offerId < b.offerId ? -1 : a.offerId > b.offerId ? 1 : 0));
+
+    for (const request of inOrder) {
       const offer: any = byId.get(request.offerId);
       if (!offer) {
         // Archived and hard-deleted between the quote and the order. Vanishingly rare, and
@@ -199,11 +204,6 @@ export class OfferRedemptionService {
     });
     if (counted.length === 0) return 0;
 
-    await tx.offerRedemption.updateMany({
-      where: { id: { in: counted.map((c: any) => c.id) } },
-      data: { status: 'RELEASED' }
-    });
-
     // A single-use code spent on an order that never happened is good again -- the customer still
     // holds the card, and the shop still owes them the offer printed on it.
     await tx.offerCode.updateMany({
@@ -211,7 +211,20 @@ export class OfferRedemptionService {
       data: { usedAt: null, salesOrderId: null }
     });
 
+    let released = 0;
     for (const row of counted) {
+      /*
+       * Released one at a time, and only if still counted. Two cancels of the same order at the
+       * same moment both READ these rows as counted; without the status in the WHERE both would
+       * then give the use back, and a "first 50" offer would serve 51. The second one's update now
+       * waits for the first to commit, finds the row already released, and gives nothing back.
+       */
+      const flipped = await tx.offerRedemption.updateMany({
+        where: { id: row.id, status: 'COUNTED' },
+        data: { status: 'RELEASED' }
+      });
+      if (flipped.count === 0) continue;
+      released++;
       // GREATEST, so a counter that has already been corrected by hand cannot be driven
       // negative by a release -- a negative allowance would then let the offer run for ever.
       await tx.$executeRaw(Prisma.sql`
@@ -223,10 +236,10 @@ export class OfferRedemptionService {
       `);
     }
 
-    console.log(
-      `[offers] released ${counted.length} redemption(s) on order ${salesOrderId} -- ${reason}`
-    );
-    return counted.length;
+    if (released > 0) {
+      console.log(`[offers] released ${released} redemption(s) on order ${salesOrderId} -- ${reason}`);
+    }
+    return released;
   }
 }
 

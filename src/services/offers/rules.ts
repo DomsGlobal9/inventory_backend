@@ -98,7 +98,7 @@ export function validateOffer(draft: OfferDraft): string[] {
   if (draft.maxDiscount != null) {
     if (valueType !== 'PERCENTAGE') {
       problems.push('A cap only means something on a percentage offer.');
-    } else if (Number(draft.maxDiscount) <= 0) {
+    } else if (!Number.isFinite(Number(draft.maxDiscount)) || Number(draft.maxDiscount) <= 0) {
       problems.push('A cap has to be more than nothing.');
     }
   }
@@ -118,7 +118,11 @@ export function validateOffer(draft: OfferDraft): string[] {
   }
 
   const scope = draft.scope ?? 'ALL';
-  const targets = draft.targets ?? [];
+  // Anything but a list of { scope, refId } is refused in words rather than crashing further down.
+  const targets = Array.isArray(draft.targets) ? draft.targets.filter(t => t && typeof t === 'object') : [];
+  if (draft.targets != null && (!Array.isArray(draft.targets) || targets.length !== draft.targets.length)) {
+    problems.push('Send what the offer applies to as a list.');
+  }
   if (!['ALL', 'CATEGORY', 'DRESS_TYPE', 'PRODUCT', 'VARIANT'].includes(scope)) {
     problems.push('Choose what the offer applies to.');
   }
@@ -203,8 +207,8 @@ export function validateOffer(draft: OfferDraft): string[] {
     }
   }
 
-  const channels = draft.channels ?? [];
-  if (channels.some(c => !(OFFER_CHANNELS as readonly string[]).includes(c))) {
+  const channels = Array.isArray(draft.channels) ? draft.channels : [];
+  if ((draft.channels != null && !Array.isArray(draft.channels)) || channels.some(c => !(OFFER_CHANNELS as readonly string[]).includes(c))) {
     problems.push('Choose where it sells from the till, the online store, or both.');
   }
 
@@ -241,8 +245,14 @@ export function validateOffer(draft: OfferDraft): string[] {
     }
   }
 
-  if (draft.minSubtotal != null && Number(draft.minSubtotal) < 0) {
-    problems.push('The smallest basket cannot be a negative amount.');
+  if (draft.minSubtotal != null && (!Number.isFinite(Number(draft.minSubtotal)) || Number(draft.minSubtotal) < 0)) {
+    problems.push('The smallest basket has to be an amount, and not a negative one.');
+  }
+
+  // A whole number the database can hold. 1.5 or "high" used to reach the database and come back
+  // as a bare "could not save".
+  if (draft.priority != null && (!Number.isInteger(Number(draft.priority)) || Math.abs(Number(draft.priority)) > 1_000_000)) {
+    problems.push('Priority has to be a whole number.');
   }
 
   /*

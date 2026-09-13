@@ -72,6 +72,12 @@ export function validateSchedule(schedule: unknown): string[] {
 export function normaliseSchedule(schedule: OfferSchedule | null | undefined): OfferSchedule | null {
   if (!schedule) return null;
   if (schedule.days == null) return { from: schedule.from, to: schedule.to };
+  // Anything that is not a list of real days goes on untouched, for validateSchedule to refuse.
+  // Seven DISTINCT values is not the same as every day: [0,1,2,3,4,5,9] or seven strings were
+  // quietly saved as "every day" when this counted before checking.
+  if (!Array.isArray(schedule.days) || !schedule.days.every(d => Number.isInteger(d) && d >= 0 && d <= 6)) {
+    return schedule;
+  }
   const days = [...new Set(schedule.days)].sort((a, b) => a - b);
   return days.length === 7 ? { from: schedule.from, to: schedule.to } : { days, from: schedule.from, to: schedule.to };
 }

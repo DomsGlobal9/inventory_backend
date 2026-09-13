@@ -282,11 +282,23 @@ export function priceBasket(
 
       for (const s of scored) {
         if (s.blocked) nearMisses.push({ offerId: s.offer.id, title: s.offer.name, reason: s.blocked });
+        // Except a code somebody typed: "nothing in this basket qualifies" is false when the code
+        // did qualify and simply lost to a better offer that does not combine with it.
+        else if (winner && s !== winner && s.offer.trigger === 'CODE' && s.amountMinor > 0) {
+          nearMisses.push({
+            offerId: s.offer.id, title: s.offer.name,
+            reason: `"${winner.offer.name}" already takes more off, and the two do not combine.`
+          });
+        }
       }
     }
 
-    // Stackable ones apply after, each on what is left.
-    for (const o of stackable.sort((a, b) => b.priority - a.priority)) {
+    // Stackable ones apply after, each on what is left. The order changes the money (10% then 500
+    // off is not 500 off then 10%), so ties are broken by age and id rather than left to whatever
+    // order the database returned the offers in -- which moves after any edit.
+    const steady = (a: CandidateOffer, b: CandidateOffer) =>
+      b.priority - a.priority || a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    for (const o of stackable.sort(steady)) {
       const condition = conditionsMet(o, covered(o).minor, covered(o).quantity);
       if (condition) {
         nearMisses.push({ offerId: o.id, title: o.name, reason: condition });
@@ -319,50 +331,70 @@ export function priceBasket(
    */
   const discounts: AppliedOffer[] = [];
 
-  /*
-   * Which bill offer goes first: higher priority, then the one worth MORE to this customer, then
-   * older. Sorting on priority and age alone let an older 100 off beat a newer 300-off card on the
-   * same bill -- the customer handed over a card and got the worse deal. Worth is measured the way
-   * the offer will actually apply: after line discounts, on the part of the bill it covers.
+  /**
+   * Run some bill offers, in order, against what the lines cost after line offers -- on a copy,
+   * so two different plans can be compared before either is applied.
+   *
+   * A whole-bill offer with exclusions is an offer on the rest of the bill. "500 off bills over
+   * 5,000, not on bridal wear": the lehenga neither counts towards the 5,000 nor takes a share of
+   * the 500. Anything else lets a customer reach the minimum with the very item the shop said the
+   * offer was not for.
    */
-  const worthOf = new Map<string, number>();
-  for (const o of usable.filter(x => x.level === 'ORDER')) {
-    const inBill = lines.map(l => !excluded(o, l));
-    const base = priced.reduce((s, l, i) => s + (inBill[i] ? l.lineTotalMinor : 0), 0);
-    const qty = lines.reduce((s, l, i) => s + (inBill[i] ? l.quantity : 0), 0);
-    worthOf.set(o.id, conditionsMet(o, base, qty) ? 0 : Math.min(discountFor({ ...o, perPiece: false }, base, qty), base));
-  }
-  const orderOffers = usable.filter(o => o.level === 'ORDER').sort((a, b) => compareCandidates(
-    { priority: a.priority, amountMinor: worthOf.get(a.id) ?? 0, createdAt: a.createdAt, id: a.id },
-    { priority: b.priority, amountMinor: worthOf.get(b.id) ?? 0, createdAt: b.createdAt, id: b.id }
-  ));
-  for (let k = 0; k < orderOffers.length; k++) {
-    const offer = orderOffers[k];
-    /*
-     * A whole-bill offer with exclusions is an offer on the rest of the bill.
-     *
-     * "500 off bills over 5,000, not on bridal wear": the lehenga neither counts towards the 5,000
-     * nor takes a share of the 500. Anything else lets a customer reach the minimum with the very
-     * item the shop said the offer was not for.
-     */
-    const inBill = lines.map(l => !excluded(offer, l));
-    const eligibleAfterLines = priced.reduce((s, l, i) => s + (inBill[i] ? l.lineTotalMinor : 0), 0);
-    const eligibleQuantity = lines.reduce((s, l, i) => s + (inBill[i] ? l.quantity : 0), 0);
-
-    const condition = conditionsMet(offer, eligibleAfterLines, eligibleQuantity);
-    if (condition) {
-      nearMisses.push({ offerId: offer.id, title: offer.name, reason: condition });
-      continue;
+  const runBill = (plan: CandidateOffer[]) => {
+    const totals = priced.map(l => l.lineTotalMinor);
+    const applied: { offer: CandidateOffer; amountMinor: number; shares: number[] }[] = [];
+    const blocked: { offer: CandidateOffer; reason: string }[] = [];
+    for (const offer of plan) {
+      const inBill = lines.map(l => !excluded(offer, l));
+      const base = totals.reduce((s, t, i) => s + (inBill[i] ? t : 0), 0);
+      const quantity = lines.reduce((s, l, i) => s + (inBill[i] ? l.quantity : 0), 0);
+      const condition = conditionsMet(offer, base, quantity);
+      if (condition) { blocked.push({ offer, reason: condition }); continue; }
+      // Never per piece on a bill: "200 off the bill" is 200.
+      const amountMinor = Math.min(discountFor({ ...offer, perPiece: false }, base, quantity), base);
+      if (amountMinor <= 0) continue;
+      // Divided between the lines by what each is still worth, so the parts add up exactly and a
+      // line already marked down does not absorb a share of a price nobody is paying.
+      const shares = allocate(amountMinor, totals.map((t, i) => (inBill[i] ? t : 0)));
+      shares.forEach((s, i) => { totals[i] -= s; });
+      applied.push({ offer, amountMinor, shares });
     }
+    return {
+      applied, blocked,
+      worth: applied.reduce((s, a) => s + a.amountMinor, 0),
+      priority: applied.length ? Math.max(...applied.map(a => a.offer.priority)) : -Infinity
+    };
+  };
 
-    const remaining = priced.reduce((s, l, i) => s + (inBill[i] ? l.lineTotalMinor : 0), 0);
-    // Never per piece on a bill: "200 off the bill" is 200.
-    const amountMinor = Math.min(discountFor({ ...offer, perPiece: false }, remaining, eligibleQuantity), remaining);
-    if (amountMinor <= 0) continue;
+  /*
+   * Which bill offers apply.
+   *
+   * One that does not combine takes the bill ALONE; the ones that combine take it together. Both
+   * plans are worked out and the better one wins -- higher priority first, then more money to the
+   * customer. It used to walk the offers in order and stop at the first that did not combine, so
+   * whether a 300 card joined an automatic 10% depended on which happened to be worth more on that
+   * bill: a 2,900 bill got both (560 off) and a 3,500 bill got only the 10% (350 off). The same two
+   * offers either combine or they do not, whatever the bill comes to.
+   *
+   * Within a plan: higher priority, then worth MORE to this customer, then older. Sorting on
+   * priority and age alone let an older 100 off beat a newer 300-off card on the same bill.
+   */
+  const billOffers = usable.filter(o => o.level === 'ORDER');
+  const alone = new Map(billOffers.map(o => [o.id, runBill([o])]));
+  const byWorth = (a: CandidateOffer, b: CandidateOffer) => compareCandidates(
+    { priority: a.priority, amountMinor: alone.get(a.id)!.worth, createdAt: a.createdAt, id: a.id },
+    { priority: b.priority, amountMinor: alone.get(b.id)!.worth, createdAt: b.createdAt, id: b.id }
+  );
+  const soloWinner = billOffers.filter(o => !o.stackable && alone.get(o.id)!.worth > 0).sort(byWorth)[0];
+  const plans = [
+    ...(soloWinner ? [alone.get(soloWinner.id)!] : []),
+    runBill(billOffers.filter(o => o.stackable).sort(byWorth))
+  ];
+  // Ties go to the single offer: the same money for one allowance spent rather than several.
+  const chosen = plans.reduce((best, p) =>
+    p.priority > best.priority || (p.priority === best.priority && p.worth > best.worth) ? p : best);
 
-    // Divided between the lines by what each is still worth, so the parts add up exactly and a
-    // line already marked down does not absorb a share of a price nobody is paying.
-    const shares = allocate(amountMinor, priced.map((l, i) => (inBill[i] ? l.lineTotalMinor : 0)));
+  for (const { offer, amountMinor, shares } of chosen.applied) {
     priced.forEach((l, idx) => {
       if (shares[idx] <= 0) return;
       l.lineTotalMinor -= shares[idx];
@@ -373,28 +405,26 @@ export function priceBasket(
         title: offer.name, amountMinor: shares[idx], level: 'ORDER', code: codeOf(offer)
       });
     });
-
     discounts.push({
       offerId: offer.id, offerVersionId: offer.versionId,
       title: offer.name, amountMinor, level: 'ORDER', code: codeOf(offer)
     });
+  }
 
-    // Only one order-level offer applies unless it says it stacks. Two "500 off the order"
-    // rules both firing is almost never what a merchant meant.
-    if (!offer.stackable) {
-      /*
-       * The bill offers that lose to it are still worth explaining. A customer who typed a code
-       * for 300 off, on a bill already getting 500 off that does not combine, was told "nothing in
-       * this basket qualifies" -- which is false, and sends them back to the counter to argue.
-       */
-      for (const lost of orderOffers.slice(k + 1)) {
-        nearMisses.push({
-          offerId: lost.id, title: lost.name,
-          reason: `"${offer.name}" already takes money off this bill, and the two do not combine.`
-        });
-      }
-      break;
-    }
+  /*
+   * The bill offers that did not apply are still worth explaining. A customer who typed a code for
+   * 300 off, on a bill already getting 500 off that does not combine, was told "nothing in this
+   * basket qualifies" -- which is false, and sends them back to the counter to argue.
+   */
+  const leader = chosen.applied[0]?.offer;
+  for (const offer of billOffers) {
+    if (chosen.applied.some(a => a.offer.id === offer.id)) continue;
+    const reason = chosen.blocked.find(b => b.offer.id === offer.id)?.reason
+      ?? alone.get(offer.id)!.blocked[0]?.reason
+      ?? (leader && alone.get(offer.id)!.worth > 0
+        ? `"${leader.name}" already takes money off this bill, and the two do not combine.`
+        : null);
+    if (reason) nearMisses.push({ offerId: offer.id, title: offer.name, reason });
   }
 
   // Line-level offers, gathered per offer so the basket can say what each rule did in total.
@@ -439,6 +469,9 @@ export function priceBasket(
     rejected,
     // One entry per offer, keeping the first reason -- the same rule blocked on several lines is
     // still one thing to tell the customer.
-    nearMisses: nearMisses.filter((n, i, all) => all.findIndex(x => x.offerId === n.offerId) === i)
+    // An offer that did take money off somewhere in the basket is not a near miss, whatever it
+    // missed on another line.
+    nearMisses: nearMisses.filter((n, i, all) =>
+      all.findIndex(x => x.offerId === n.offerId) === i && !allDiscounts.some(d => d.offerId === n.offerId))
   };
 }

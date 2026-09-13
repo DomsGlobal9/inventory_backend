@@ -210,7 +210,7 @@ export class SalesOrderService {
           couponCodes: data.couponCodes ?? []
         });
         const quote = await pricingQuoteService.consume(
-          clientId, data.quoteId, order.id, expected, tx
+          clientId, data.quoteId, order.id, expected, tx, customerId
         );
         quoted = pricedLinesFromQuote(quote.result);
       }
@@ -327,6 +327,18 @@ export class SalesOrderService {
 
       const manualOrderMinor = orderManual?.amountMinor ?? 0;
       if (orderManual) overLimit(manualOrderMinor, weights.reduce((s, w) => s + w, 0), 'this order');
+
+      /*
+       * And the two together. Each check above measures one decision against what it came off, so
+       * 10% off every line and then 10% off the bill passed both -- 19% by hand on a 10% till. What
+       * the limit means is how much a person took off this order, measured against the order as it
+       * stood before anybody took anything off by hand.
+       */
+      const manualLinesMinor = resolved.reduce((s, r) => s + (r.manual?.amountMinor ?? 0), 0);
+      if (orderManual && manualLinesMinor > 0) {
+        const beforeManual = resolved.reduce((s, r) => s + r.priced.totalPriceMinor + (r.manual?.amountMinor ?? 0), 0);
+        overLimit(manualLinesMinor + manualOrderMinor, beforeManual, 'this order in all');
+      }
       allocateOrderDiscount(
         pricedLines,
         this.orderLevelDiscountMinor(data.discountAmount, pricedLines) + manualOrderMinor
@@ -588,13 +600,24 @@ export class SalesOrderService {
   }
 
   async deleteOrder(clientId: string, id: string) {
-    const order = await prisma.salesOrder.findFirst({ where: { clientId, id } });
+    const order = await prisma.salesOrder.findFirst({ where: { clientId, id, deletedAt: null } });
     if (!order) throw notFound('Order not found');
     if (order.status !== 'DRAFT') throw new Error('Can only delete DRAFT orders');
-    return prisma.salesOrder.update({
-      where: { id },
-      data: { deletedAt: new Date() }
-    });
+    /*
+     * A draft can already have spent offers: an order placed as a draft with a quote claims its
+     * allowances and single-use codes at once. Deleting it without giving them back left the card
+     * in the customer's hand dead for good and a "first 50" offer one short -- and nothing could
+     * release them later, because a deleted order can no longer be found to cancel.
+     */
+    return prisma.$transaction(async (tx) => {
+      const gone = await tx.salesOrder.updateMany({
+        where: { id, clientId, status: 'DRAFT', deletedAt: null },
+        data: { deletedAt: new Date() }
+      });
+      if (gone.count === 0) throw conflict('This order changed while it was being deleted. Open it again and check.');
+      await offerRedemptionService.release(tx, clientId, id, `Draft order ${order.orderNumber} deleted`);
+      return tx.salesOrder.findFirstOrThrow({ where: { id, clientId } });
+    }, { timeout: 30000 });
   }
 
   async addOrderItem(clientId: string, orderId: string, variantId: string, quantity: number) {
@@ -877,14 +900,24 @@ export class SalesOrderService {
     const restoresAllowance = order.status === 'DRAFT' || order.status === 'CONFIRMED';
 
     return prisma.$transaction(async (tx) => {
+      /*
+       * Only if it is still what it was a moment ago. The status above was read outside this
+       * transaction, so a second cancel -- or a dispatch -- could have landed in between; without
+       * the check an order that shipped meanwhile would have its allowance and codes handed back.
+       */
+      const flipped = await tx.salesOrder.updateMany({
+        where: { id, clientId, status: order.status, deletedAt: null },
+        data: { status: 'CANCELLED' }
+      });
+      if (flipped.count === 0) {
+        throw conflict('This order changed while it was being cancelled. Open it again and check.');
+      }
+
       if (restoresAllowance) {
         await offerRedemptionService.release(tx, clientId, id, `Order ${order.orderNumber} cancelled`);
       }
 
-      return tx.salesOrder.update({
-        where: { id },
-        data: { status: 'CANCELLED' }
-      });
+      return tx.salesOrder.findFirstOrThrow({ where: { id, clientId } });
     }, { timeout: 30000 });
   }
 }

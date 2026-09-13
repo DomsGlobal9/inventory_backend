@@ -179,6 +179,7 @@ export class OfferInsightService {
    * can know the second, and a number that pretends to is worse than none.
    */
   async detail(clientId: string, id: string) {
+    const HISTORY_SHOWN = 20;
     /*
      * Two rounds of queries, each in parallel.
      *
@@ -190,7 +191,7 @@ export class OfferInsightService {
     const [offer, statRows, useRows, codeRows] = await Promise.all([
       prisma.offer.findFirst({
         where: { id, clientId },
-        include: { targets: true, exclusions: true, versions: { orderBy: { version: 'desc' }, take: 20 } }
+        include: { targets: true, exclusions: true, versions: { orderBy: { version: 'desc' }, take: HISTORY_SHOWN + 1 } }
       }),
       prisma.$queryRaw<{ used: bigint; given: Prisma.Decimal | null; released: bigint; sales: Prisma.Decimal | null; customers: bigint }[]>`
         SELECT COUNT(*) FILTER (WHERE r.status = 'COUNTED')                     AS used,
@@ -248,7 +249,9 @@ export class OfferInsightService {
     const userById = new Map(users.map(u => [u.id, u.name]));
 
     // Newest first, each described against the one before it.
-    const history = offer.versions.map((v, i) => {
+    // One more version is loaded than is shown, so the oldest one shown can still be compared with
+    // the one before it rather than saying it changed nothing.
+    const history = offer.versions.slice(0, HISTORY_SHOWN).map((v, i) => {
       const previous = offer.versions[i + 1];
       return {
         id: v.id,

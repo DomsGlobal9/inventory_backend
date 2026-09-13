@@ -352,7 +352,10 @@ async function main() {
   check('making codes over HTTP', mk.status === 201 && mk.data?.data?.made === 3, `${mk.status} ${JSON.stringify(mk.data).slice(0, 120)}`);
   const mkCashier = await cashierApi.post(`/offers/${single.id}/codes`, { prefix: 'CARD', count: 3 });
   check('a cashier cannot make codes', mkCashier.status === 403, String(mkCashier.status));
-  const ls = await cashierApi.get(`/offers/${single.id}/codes`, { params: { status: 'unused', take: 5 } });
+  // Unspent codes are money: seeing them needs the same permission as making them.
+  const lsCashier = await cashierApi.get(`/offers/${single.id}/codes`, { params: { status: 'unused', all: 1 } });
+  check('a cashier cannot list or copy out the codes', lsCashier.status === 403, String(lsCashier.status));
+  const ls = await managerApi.get(`/offers/${single.id}/codes`, { params: { status: 'unused', take: 5 } });
   check('the code list pages, five at a time', ls.status === 200 && ls.data?.data?.codes?.length === 5 && ls.data?.data?.unused === 27, JSON.stringify(ls.data?.data && { n: ls.data.data.codes.length, u: ls.data.data.unused }));
 
   // ── I. HISTORY ─────────────────────────────────────────────────────────

@@ -187,13 +187,17 @@ export class ProductRepository {
      * But it can only ever say yes for a product that has sat in the bin for a week; for anything
      * else the answer is known from the status alone. Only that case pays for the full check.
      */
-    const weekInBin = product.status === 'TRASHED' && product.trashedAt
-      && (Date.now() - new Date(product.trashedAt).getTime()) / 86_400_000 >= 7;
-    const eligibilityQuery: Promise<{ canHardDelete: boolean; reason?: string }> = weekInBin
-      ? this.checkHardDeleteEligibility(id)
-      : Promise.resolve(product.status === 'TRASHED'
-          ? { canHardDelete: false, reason: 'Product must remain in Trash for 7 days before permanent deletion' }
-          : { canHardDelete: false, reason: 'Product must be Trashed before permanent deletion' });
+    // The shortcut answers exactly as the full check would, and only where it is sure: not binned,
+    // or binned less than a week ago. A binned product with no bin date skips the wait in the full
+    // check, so that case -- like a week in the bin -- still asks it.
+    const binnedRecently = product.status === 'TRASHED' && product.trashedAt
+      && (Date.now() - new Date(product.trashedAt).getTime()) / 86_400_000 < 7;
+    const eligibilityQuery: Promise<{ canHardDelete: boolean; reason?: string }> =
+      product.status !== 'TRASHED'
+        ? Promise.resolve({ canHardDelete: false, reason: 'Product must be Trashed before permanent deletion' })
+        : binnedRecently
+          ? Promise.resolve({ canHardDelete: false, reason: 'Product must remain in Trash for 7 days before permanent deletion' })
+          : this.checkHardDeleteEligibility(id);
 
     /*
      * How many sizes and colours have no photograph of their own.

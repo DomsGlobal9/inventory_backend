@@ -171,7 +171,7 @@ export class OfferService {
             endsAt: input.endsAt ? new Date(input.endsAt as any) : null,
             usageLimit: input.usageLimit ?? null,
             usageLimitPerCustomer: input.usageLimitPerCustomer ?? null,
-            priority: input.priority ?? 0,
+            priority: input.priority == null ? 0 : Number(input.priority),
             stackable: input.stackable ?? false,
             perPiece: !!input.perPiece,
             customerTags: input.customerTags ?? [],
@@ -259,7 +259,19 @@ export class OfferService {
       locations: existing.locationIds
     });
     if ((merged.couponCode ?? null) !== (existing.couponCode ?? null)) {
-      await this.checkSharedCodeFree(clientId, merged.couponCode);
+      await this.checkSharedCodeFree(clientId, merged.couponCode, id);
+    }
+
+    /*
+     * Turning single-use codes ON for an offer people already hold a shared code for.
+     *
+     * Saving it deletes the shared code, so everyone holding SALE is told there is no such offer --
+     * and the offer stays running with no codes at all. The same reasoning as the other direction
+     * below: once it is running or has been used, the honest way is a new offer.
+     */
+    if (!existing.uniqueCodes && merged.uniqueCodes && existing.couponCode
+        && (existing.status === 'ACTIVE' || existing.status === 'PAUSED' || existing.usageCount > 0)) {
+      throw conflict(`People may already have the code ${existing.couponCode}, and switching to single-use codes would stop it working. Duplicate it into a new offer instead.`);
     }
 
     /*
@@ -308,7 +320,7 @@ export class OfferService {
             endsAt: merged.endsAt ? new Date(merged.endsAt as any) : null,
             usageLimit: merged.usageLimit ?? null,
             usageLimitPerCustomer: merged.usageLimitPerCustomer ?? null,
-            priority: merged.priority ?? 0,
+            priority: merged.priority == null ? 0 : Number(merged.priority),
             stackable: merged.stackable ?? false,
             perPiece: !!merged.perPiece,
             customerTags: merged.customerTags ?? [],
@@ -479,6 +491,9 @@ export class OfferService {
     if (input.customerTags != null && (!Array.isArray(input.customerTags) || input.customerTags.some((t: any) => typeof t !== 'string'))) {
       return input;
     }
+    if (input.targets != null && (!Array.isArray(input.targets) || input.targets.some((t: any) => !t || typeof t !== 'object'))) {
+      return input;
+    }
     for (const v of [input.perPiece, input.uniqueCodes, input.stackable]) {
       if (v != null && typeof v !== 'boolean') return input;
     }
@@ -504,11 +519,23 @@ export class OfferService {
     };
   }
 
-  /** A shared code must not be one of the single-use codes already printed. */
-  private async checkSharedCodeFree(clientId: string, couponCode?: string | null) {
+  /**
+   * A shared code must not be one of the single-use codes already printed -- nor another offer's
+   * code in different capitals. The database's own unique rule is case-sensitive, so SALE and sale
+   * both saved; pricing compares codes without capitals, so a customer typing either got BOTH offers.
+   */
+  private async checkSharedCodeFree(clientId: string, couponCode?: string | null, exceptOfferId?: string) {
     if (!couponCode) return;
-    const taken = await prisma.offerCode.findFirst({ where: { clientId, code: canonicalCode(couponCode) }, select: { id: true } });
-    if (taken) throw conflict(`${canonicalCode(couponCode)} is already one of your single-use codes. Pick a different code.`);
+    const code = canonicalCode(couponCode);
+    const [taken, other] = await Promise.all([
+      prisma.offerCode.findFirst({ where: { clientId, code }, select: { id: true } }),
+      prisma.offer.findFirst({
+        where: { clientId, couponCode: { equals: code, mode: 'insensitive' }, ...(exceptOfferId ? { id: { not: exceptOfferId } } : {}) },
+        select: { id: true }
+      })
+    ]);
+    if (taken) throw conflict(`${code} is already one of your single-use codes. Pick a different code.`);
+    if (other) throw conflict(`Another offer already uses the code ${code}. Pick a different one.`);
   }
 
   /**
@@ -541,6 +568,11 @@ export class OfferService {
     const openLocations = source.locationIds.length
       ? (await prisma.stockLocation.findMany({ where: { clientId, id: { in: source.locationIds }, active: true }, select: { id: true } })).map(l => l.id)
       : [];
+    // But never widened. No locations means EVERY location, so a copy of an offer for one shop that
+    // has since closed would otherwise quietly run in all of them.
+    if (source.locationIds.length > 0 && openLocations.length === 0) {
+      throw conflict('Every location this offer was for has closed. Create a new offer and choose where it runs.');
+    }
 
     const attempt = (couponCode: string | null) => this.create(clientId, {
       name: `Copy of ${source.name}`.slice(0, 120),
@@ -672,8 +704,18 @@ export class OfferService {
   }
 
   async setSettings(clientId: string, input: { manualDiscountMaxPercent?: number | string | null }) {
+    /*
+     * Said, not assumed. A body that leaves the limit out used to clear it -- no limit at all -- and
+     * `true` or `[50]` were read as 1% and 50%. Clearing it is an explicit null or empty.
+     */
+    if (!input || typeof input !== 'object' || !('manualDiscountMaxPercent' in input)) {
+      throw badRequest('Say what the till limit is, or send it empty for no limit.');
+    }
     const raw = input.manualDiscountMaxPercent;
-    const value = raw === '' || raw == null ? null : Number(raw);
+    if (raw != null && typeof raw !== 'number' && typeof raw !== 'string') {
+      throw badRequest('The till limit is a percentage above 0 and up to 100. Leave it empty for no limit.');
+    }
+    const value = raw == null || String(raw).trim() === '' ? null : Number(raw);
     if (value != null && (!Number.isFinite(value) || value <= 0 || value > 100)) {
       throw badRequest('The till limit is a percentage above 0 and up to 100. Leave it empty for no limit.');
     }

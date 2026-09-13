@@ -80,6 +80,9 @@ export class CustomerService {
           billingAddress: data.billingAddress,
           shippingAddress: data.shippingAddress,
           status: data.status || 'ACTIVE',
+          // Groups sent with a new customer are kept. Only the update path wrote them, so a customer
+          // created as a VIP came back in no group and no VIP offer ever reached them.
+          tags: normaliseTags(data.tags),
         }
       });
     }, {

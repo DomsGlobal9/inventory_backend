@@ -46,7 +46,10 @@ export function fingerprint(req: QuoteRequest): string {
     lines: [...req.lines]
       .map(l => ({ v: l.variantId, q: Number(l.quantity) }))
       .sort((a, b) => (a.v < b.v ? -1 : a.v > b.v ? 1 : a.q - b.q)),
-    coupons: [...(req.couponCodes ?? [])].map(c => c.trim().toUpperCase()).filter(Boolean).sort()
+    // The same tidy-up pricing applies -- strings only, compared without capitals, each once -- so
+    // a stray null cannot crash the quote and ["A","a"] then ["A"] is the same set of codes.
+    coupons: [...new Set((Array.isArray(req.couponCodes) ? req.couponCodes : [])
+      .filter(c => typeof c === 'string').map(canonicalCode).filter(Boolean))].sort()
   });
   return crypto.createHash('sha256').update(canonical).digest('hex');
 }
@@ -197,10 +200,24 @@ export class PricingQuoteService {
      * order that does not exist, and the customer cannot re-checkout at the price they were
      * shown. Defaults to the global client so the standalone path still works.
      */
-    client: any = prisma
+    client: any = prisma,
+    /** Who the order is for. Undefined skips the check, for callers that have no customer. */
+    customerId?: string | null
   ) {
     const quote = await client.pricingQuote.findFirst({ where: { id: quoteId, clientId } });
     if (!quote) throw notFound('That price is no longer available. Ask for it again.');
+
+    /*
+     * A price worked out for one customer is that customer's.
+     *
+     * A group offer ("VIP 30%") is decided when the basket is priced. Without this, a till prices
+     * the basket for a VIP and then places the order for a walk-in, and the walk-in pays the VIP
+     * price. A guest's quote going onto a named customer is fine: a guest is in no group and gets
+     * no per-customer offer, so it can only ever be the same price or a worse one.
+     */
+    if (customerId !== undefined && quote.customerId && quote.customerId !== customerId) {
+      throw badRequest('That price was worked out for a different customer. Ask for it again.');
+    }
 
     if (quote.consumedAt) {
       throw badRequest('That price has already been used on another order.');

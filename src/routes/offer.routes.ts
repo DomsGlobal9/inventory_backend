@@ -118,8 +118,10 @@ router.post('/:id/duplicate', requirePermission('offer:create'), async (req: Req
 });
 
 // ── Single-use codes ────────────────────────────────────────────────────────────────────────────
+// Seeing them needs the same permission as making them. Unspent codes are money: a view-only role
+// -- a cashier -- could otherwise copy out every one of 50,000.
 
-router.get('/:id/codes', requirePermission('offer:view'), async (req: Request, res: Response) => {
+router.get('/:id/codes', requirePermission('offer:update'), async (req: Request, res: Response) => {
   try {
     const data = await offerService.listCodes(clientOf(req), String(req.params.id), {
       status: req.query.status ? String(req.query.status).toUpperCase() : undefined,

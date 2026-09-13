@@ -356,6 +356,15 @@ export class OfferMirrorService {
     if (!theirs) throw conflict('The Shopify copy is gone. It cannot be accepted.');
 
     const ctx = await this.contextFor(clientId, mirror.installationId, offer);
+
+    // An offer that has since gained something Shopify cannot hold (customer groups, left-out items,
+    // hours, single-use codes) would keep that after accepting, and the next push would take the copy
+    // off Shopify anyway -- "accepted" followed by the discount disappearing. Said now instead.
+    const asItStands = translateOffer(asMirrorable(offer), ctx);
+    if (!asItStands.ok) {
+      throw conflict(`This offer can no longer be copied to Shopify, so Shopify's version cannot be accepted: ${asItStands.reasons.join(' ')}`);
+    }
+
     const changes = this.offerChangesFrom(theirs, ctx);
 
     await offerService.update(clientId, offerId, changes.input as any, userId,
@@ -457,8 +466,7 @@ export class OfferMirrorService {
     });
     if (!mirror) return 'GONE';
 
-    const release = (data: Record<string, unknown>) =>
-      prisma.offerExternalMirror.update({ where: { id: mirror.id }, data: { lockedAt: null, ...data } });
+    const release = (data: Record<string, unknown>) => this.settle(mirror, data);
 
     /*
      * Taken off Shopify before it ever got there -- or from a store that has uninstalled the app.
@@ -469,6 +477,19 @@ export class OfferMirrorService {
      */
     const removing = mirror.status === 'REMOVING' || mirror.offer.status === 'ARCHIVED';
     if (removing && (!mirror.shopifyDiscountId || mirror.installation.uninstalledAt)) {
+      /*
+       * Without an id there may still be a discount there: a create Shopify carried out whose answer
+       * never reached us. So Shopify is asked once, by the tag, while it can be -- but only asked, never
+       * waited on: if the store cannot answer, the copy is forgotten as before rather than retried.
+       */
+      if (!mirror.shopifyDiscountId && !mirror.installation.uninstalledAt && this.canWriteDiscounts(mirror.installation.scopes)) {
+        try {
+          const api = await apiFor(mirror.installation);
+          for (const node of await this.findByTag(api, mirror.offerId)) await this.deleteRemote(api, node.id, null);
+        } catch (error) {
+          console.error(`[offer mirror] ${mirror.id}: could not check Shopify for an untracked copy`, error);
+        }
+      }
       await prisma.offerExternalMirror.delete({ where: { id: mirror.id } });
       return 'REMOVED';
     }
@@ -506,10 +527,13 @@ export class OfferMirrorService {
          * on Shopify, rather than finding out from a customer.
          */
         let removedNote = '';
-        if (mirror.shopifyDiscountId) {
-          await this.deleteRemote(api, mirror.shopifyDiscountId, mirror.kind);
-          removedNote = ' The copy on Shopify was removed so it cannot charge the old rule.';
-        }
+        // Including one created without us learning its id -- found by its tag, or it would stay live
+        // on Shopify with nothing here tracking it.
+        const stale = mirror.shopifyDiscountId
+          ? [{ id: mirror.shopifyDiscountId, kind: mirror.kind }]
+          : (await this.findByTag(api, mirror.offerId)).map(n => ({ id: n.id, kind: null }));
+        for (const copy of stale) await this.deleteRemote(api, copy.id, copy.kind);
+        if (stale.length) removedNote = ' The copy on Shopify was removed so it cannot charge the old rule.';
         await release({
           status: 'UNSUPPORTED', problem: translation.reasons.join(' ') + removedNote,
           shopifyDiscountId: null, kind: null, pushedHash: null, remoteHash: null, nextAttemptAt: null, attempts: 0
@@ -528,8 +552,7 @@ export class OfferMirrorService {
 
       // A push that timed out after Shopify created the discount: find it by its tag.
       if (!discountId) {
-        const found: any = await api.graphql(QUERIES.byTag, { query: `tag:'${mirrorTag(mirror.offerId)}'` });
-        const node = (found?.discountNodes?.nodes ?? []).find((n: any) =>
+        const node = (await this.findByTag(api, mirror.offerId)).find((n: any) =>
           (translation.kind === 'CODE' ? n.discount?.__typename === 'DiscountCodeBasic' : n.discount?.__typename === 'DiscountAutomaticBasic'));
         if (node) discountId = node.id;
       }
@@ -646,6 +669,47 @@ export class OfferMirrorService {
     };
   }
 
+  /** Discounts on Shopify carrying this offer's tag -- how a copy whose id we never saved is found. */
+  private async findByTag(api: ShopifyAdminApi, offerId: string): Promise<{ id: string; discount?: { __typename?: string } }[]> {
+    const found: any = await api.graphql(QUERIES.byTag, { query: `tag:'${mirrorTag(offerId)}'` });
+    return found?.discountNodes?.nodes ?? [];
+  }
+
+  /**
+   * Finish with a claimed mirror: write what happened, and let go of it.
+   *
+   * Unless something moved while it was being worked on. A push takes several Shopify calls; if the
+   * merchant edits the offer (or takes it off Shopify) in those seconds, writing SYNCED from the
+   * version loaded before the edit would leave Shopify holding the older, looser rule while this
+   * says all is well -- for up to half an hour, until a read-back noticed. So the write only lands if
+   * the offer is unchanged and the mirror's status is still the one it was claimed with. Otherwise
+   * what Shopify now holds is still recorded, and the copy is left for the next pass.
+   */
+  private async settle(
+    mirror: { id: string; offerId: string; status: string; offer: { updatedAt: Date } },
+    data: Record<string, unknown>,
+    extra: Record<string, unknown> = {}
+  ) {
+    const offerNow = await prisma.offer.findUnique({ where: { id: mirror.offerId }, select: { updatedAt: true } });
+    const offerMoved = !offerNow || offerNow.updatedAt.getTime() !== mirror.offer.updatedAt.getTime();
+    if (!offerMoved) {
+      const done = await prisma.offerExternalMirror.updateMany({
+        where: { id: mirror.id, status: mirror.status as any },
+        data: { lockedAt: null, ...extra, ...data }
+      });
+      if (done.count === 1) return;
+    }
+    const known: Record<string, unknown> = { lockedAt: null, ...extra };
+    for (const key of ['shopifyDiscountId', 'kind'] as const) if (key in data) known[key] = data[key];
+    await prisma.offerExternalMirror.updateMany({ where: { id: mirror.id }, data: known });
+    if (offerMoved) {
+      await prisma.offerExternalMirror.updateMany({
+        where: { id: mirror.id, status: { not: 'REMOVING' } },
+        data: { status: 'PENDING', attempts: 0, nextAttemptAt: null, problem: null }
+      });
+    }
+  }
+
   private async deleteRemote(api: ShopifyAdminApi, discountId: string, kind: string | null) {
     const isCode = kind === 'CODE' || /DiscountCodeNode/.test(discountId);
     const result: any = await api.graphql(isCode ? QUERIES.deleteCode : QUERIES.deleteAutomatic, { id: discountId });
@@ -670,8 +734,7 @@ export class OfferMirrorService {
       include: { offer: { include: { targets: true, exclusions: true } }, installation: { select: { id: true, shopDomain: true, uninstalledAt: true } } }
     });
     if (!mirror) return 'GONE';
-    const release = (data: Record<string, unknown>) =>
-      prisma.offerExternalMirror.update({ where: { id: mirror.id }, data: { lockedAt: null, lastCheckedAt: new Date(), ...data } });
+    const release = (data: Record<string, unknown>) => this.settle(mirror, data, { lastCheckedAt: new Date() });
 
     if (!mirror.shopifyDiscountId || mirror.installation.uninstalledAt) {
       await release({});
