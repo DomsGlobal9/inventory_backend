@@ -121,7 +121,13 @@ export class PricingQuoteService {
       });
     }
 
-    const coupons = (req.couponCodes ?? []).map(canonicalCode).filter(Boolean);
+    /*
+     * At most twenty distinct codes, none longer than any real code could be. A website sending
+     * three hundred codes, or one of five thousand characters, is either broken or fishing -- and
+     * either way must not turn one basket into a large lookup.
+     */
+    const coupons = [...new Set((Array.isArray(req.couponCodes) ? req.couponCodes : [])
+      .filter(c => typeof c === 'string').map(canonicalCode).filter(c => c && c.length <= 64))].slice(0, 20);
     const offers = await this.liveOffers(clientId, channel, req.locationId, req.customerId ?? null, coupons);
     const priced = priceBasket(basket, offers, coupons);
 
@@ -133,13 +139,24 @@ export class PricingQuoteService {
      * an argument. Said as what it is.
      */
     if (priced.rejected.length) {
-      const spent = await prisma.offerCode.findMany({
-        where: { clientId, code: { in: priced.rejected.map(r => r.code) }, usedAt: { not: null } },
-        select: { code: true }
-      });
+      const unknown = priced.rejected.filter(r => r.reason === 'There is no offer with that code.').map(r => r.code);
+      const [spent, singleUse, shared] = unknown.length === 0 ? [[], [], []] : await Promise.all([
+        prisma.offerCode.findMany({ where: { clientId, code: { in: unknown }, usedAt: { not: null } }, select: { code: true } }),
+        prisma.offerCode.findMany({ where: { clientId, code: { in: unknown }, usedAt: null }, select: { code: true } }),
+        prisma.offer.findMany({ where: { clientId, couponCode: { in: unknown, mode: 'insensitive' } }, select: { couponCode: true } })
+      ]);
       const spentSet = new Set(spent.map(c => c.code));
+      /*
+       * A real code whose offer is not running here, now: paused, ended, not started, outside its
+       * hours, for another channel or shop, or for a group this customer is not in. Saying "there
+       * is no offer with that code" to somebody holding a genuine card sends them to argue at the
+       * counter; this says the code is real and simply does not apply to this basket.
+       */
+      const dormant = new Set([...singleUse.map(c => c.code), ...shared.map(o => String(o.couponCode).toUpperCase())]);
       priced.rejected = priced.rejected.map(r =>
-        spentSet.has(r.code) ? { ...r, reason: 'That code has already been used.' } : r);
+        spentSet.has(r.code) ? { ...r, reason: 'That code has already been used.' }
+        : dormant.has(r.code) ? { ...r, reason: 'That code is not valid for this order right now.' }
+        : r);
     }
 
     const { currency } = await getShopSettings(clientId);

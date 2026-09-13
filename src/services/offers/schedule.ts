@@ -30,9 +30,15 @@ const WEEKDAY_INDEX: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, 
 
 /** The weekday and minute-of-day at `now` on the shop's own clock. */
 export function shopClock(now: Date, timezone: string): { day: number; minute: number } {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: timezone, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
-  }).formatToParts(now);
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  } catch {
+    // A timezone the runtime does not know must not stop the till pricing every basket. India's
+    // clock is the default every shop starts with.
+    format = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  }
+  const parts = format.formatToParts(now);
   const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
   return { day: WEEKDAY_INDEX[get('weekday')] ?? 0, minute: Number(get('hour')) * 60 + Number(get('minute')) };
 }

@@ -70,7 +70,7 @@ export const createFullOrder = async (req: Request, res: Response) => {
     let locationId = parsed.data.locationId;
 
     const user = (req as any).user;
-    const order = await salesOrderService.createFullOrder(clientId, locationId, parsed.data as any, 'POS', {
+    const order = await salesOrderService.createFullOrder(clientId, locationId, parsed.data as any, parsed.data.channel ?? 'POS', {
       userId: user?.id ?? null,
       mayExceedManualLimit:
         holdsEverything(user?.permissions, user?.roles) ||

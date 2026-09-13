@@ -319,7 +319,25 @@ export function priceBasket(
    */
   const discounts: AppliedOffer[] = [];
 
-  for (const offer of usable.filter(o => o.level === 'ORDER').sort(compareCandidates as any)) {
+  /*
+   * Which bill offer goes first: higher priority, then the one worth MORE to this customer, then
+   * older. Sorting on priority and age alone let an older 100 off beat a newer 300-off card on the
+   * same bill -- the customer handed over a card and got the worse deal. Worth is measured the way
+   * the offer will actually apply: after line discounts, on the part of the bill it covers.
+   */
+  const worthOf = new Map<string, number>();
+  for (const o of usable.filter(x => x.level === 'ORDER')) {
+    const inBill = lines.map(l => !excluded(o, l));
+    const base = priced.reduce((s, l, i) => s + (inBill[i] ? l.lineTotalMinor : 0), 0);
+    const qty = lines.reduce((s, l, i) => s + (inBill[i] ? l.quantity : 0), 0);
+    worthOf.set(o.id, conditionsMet(o, base, qty) ? 0 : Math.min(discountFor({ ...o, perPiece: false }, base, qty), base));
+  }
+  const orderOffers = usable.filter(o => o.level === 'ORDER').sort((a, b) => compareCandidates(
+    { priority: a.priority, amountMinor: worthOf.get(a.id) ?? 0, createdAt: a.createdAt, id: a.id },
+    { priority: b.priority, amountMinor: worthOf.get(b.id) ?? 0, createdAt: b.createdAt, id: b.id }
+  ));
+  for (let k = 0; k < orderOffers.length; k++) {
+    const offer = orderOffers[k];
     /*
      * A whole-bill offer with exclusions is an offer on the rest of the bill.
      *
@@ -363,7 +381,20 @@ export function priceBasket(
 
     // Only one order-level offer applies unless it says it stacks. Two "500 off the order"
     // rules both firing is almost never what a merchant meant.
-    if (!offer.stackable) break;
+    if (!offer.stackable) {
+      /*
+       * The bill offers that lose to it are still worth explaining. A customer who typed a code
+       * for 300 off, on a bill already getting 500 off that does not combine, was told "nothing in
+       * this basket qualifies" -- which is false, and sends them back to the counter to argue.
+       */
+      for (const lost of orderOffers.slice(k + 1)) {
+        nearMisses.push({
+          offerId: lost.id, title: lost.name,
+          reason: `"${offer.name}" already takes money off this bill, and the two do not combine.`
+        });
+      }
+      break;
+    }
   }
 
   // Line-level offers, gathered per offer so the basket can say what each rule did in total.

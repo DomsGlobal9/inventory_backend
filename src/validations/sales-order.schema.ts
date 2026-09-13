@@ -68,6 +68,13 @@ export const createFullOrderSchema = z.object({
   status: z.enum(['DRAFT', 'CONFIRMED']).optional(),
 
   /*
+   * Where the sale happened. A website placing its own order says ONLINE: its quote was priced
+   * as ONLINE, the quote's fingerprint includes the channel, and without this every website
+   * checkout that sent its quote back was refused as "the basket has changed".
+   */
+  channel: z.enum(['POS', 'ONLINE', 'MANUAL', 'MARKETPLACE']).optional(),
+
+  /*
    * The price we already quoted this basket, if we did.
    *
    * When present it OVERRIDES every per-line price in this request: the quote is what the

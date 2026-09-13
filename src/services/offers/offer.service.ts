@@ -135,11 +135,15 @@ export class OfferService {
     };
   }
 
-  async create(clientId: string, input: OfferInput, userId?: string) {
+  async create(
+    clientId: string, input: OfferInput, userId?: string,
+    /** For a copy: what the original already named may be kept even if it is binned since. */
+    kept: { targets: string[]; locations: string[] } = { targets: [], locations: [] }
+  ) {
     input = this.prepare(input);
     const problems = validateOffer(input);
     if (problems.length) throw badRequest(problems.join(' '));
-    await this.checkReferences(clientId, input);
+    await this.checkReferences(clientId, input, kept);
     await this.checkSharedCodeFree(clientId, input.couponCode);
 
     const offerCode = await generateSequentialCode(clientId, 'OFR', 'OFFER');
@@ -466,11 +470,23 @@ export class OfferService {
   /** One shape for every save: duplicates gone, tags tidied, per-piece only where it means something. */
   private prepare(input: OfferInput): OfferInput {
     const scope = String(input.scope ?? 'ALL');
+    // Junk is passed through untouched for validateOffer to refuse in words; only good entries are
+    // tidied. Silently dropping a malformed entry would save an offer that is not what was sent.
+    if (input.exclusions != null && (!Array.isArray(input.exclusions)
+        || input.exclusions.some((e: any) => !e || typeof e !== 'object' || !String(e.refId ?? '').trim()))) {
+      return input;
+    }
+    if (input.customerTags != null && (!Array.isArray(input.customerTags) || input.customerTags.some((t: any) => typeof t !== 'string'))) {
+      return input;
+    }
+    for (const v of [input.perPiece, input.uniqueCodes, input.stackable]) {
+      if (v != null && typeof v !== 'boolean') return input;
+    }
     const exclusions = (input.exclusions ?? []).map(e => ({ scope: e.scope, refId: String(e.refId ?? '').trim() }));
     const outByKey = new Map<string, { scope: string; refId: string }>();
     for (const e of exclusions) {
       const key = `${e.scope}:${e.scope === 'DRESS_TYPE' ? e.refId.toLowerCase() : e.refId}`;
-      if (e.refId && !outByKey.has(key)) outByKey.set(key, e);
+      if (!outByKey.has(key)) outByKey.set(key, e);
     }
     const level = input.level ?? 'LINE';
     return {
@@ -482,7 +498,8 @@ export class OfferService {
       // Per piece is a property of an amount off items. On a percentage or a bill it means nothing,
       // and storing it there would make two identical offers look different in their history.
       perPiece: input.valueType === 'FIXED_AMOUNT' && level === 'LINE' ? !!input.perPiece : false,
-      uniqueCodes: input.trigger === 'CODE' ? !!input.uniqueCodes : false,
+      // Kept as sent, so "single-use codes on an automatic offer" is refused rather than quietly undone.
+      uniqueCodes: !!input.uniqueCodes,
       couponCode: input.trigger === 'CODE' && input.uniqueCodes ? null : input.couponCode
     };
   }
@@ -520,7 +537,12 @@ export class OfferService {
       }
     }
 
-    return this.create(clientId, {
+    // Only locations still open: a copy should not fail to save over a shop that has since closed.
+    const openLocations = source.locationIds.length
+      ? (await prisma.stockLocation.findMany({ where: { clientId, id: { in: source.locationIds }, active: true }, select: { id: true } })).map(l => l.id)
+      : [];
+
+    const attempt = (couponCode: string | null) => this.create(clientId, {
       name: `Copy of ${source.name}`.slice(0, 120),
       description: source.description,
       trigger: source.trigger as any,
@@ -535,10 +557,7 @@ export class OfferService {
       minSubtotal: source.minSubtotal == null ? null : Number(source.minSubtotal),
       minQuantity: source.minQuantity,
       channels: source.channels as any,
-      // Only locations still open: a copy should not fail to save over a shop that has since closed.
-      locationIds: source.locationIds.length
-        ? (await prisma.stockLocation.findMany({ where: { clientId, id: { in: source.locationIds }, active: true }, select: { id: true } })).map(l => l.id)
-        : [],
+      locationIds: openLocations,
       startsAt,
       endsAt,
       usageLimit: source.usageLimit,
@@ -549,7 +568,24 @@ export class OfferService {
       customerTags: source.customerTags,
       schedule: source.schedule,
       uniqueCodes: source.uniqueCodes
-    } as any, userId);
+    } as any, userId, {
+      // A product binned since the original was written must not make the copy impossible.
+      targets: [...source.targets, ...source.exclusions].map(t => t.refId),
+      locations: []
+    });
+
+    for (let tries = 0; ; tries++) {
+      try {
+        return await attempt(couponCode);
+      } catch (error: any) {
+        const clash = error?.statusCode === 409 && /already uses the code/.test(String(error?.message));
+        if (!clash || !couponCode || tries >= 5) throw error;
+        // Two people pressed Duplicate at once and the other copy took this code first.
+        const base = couponCode.replace(/-COPY\d*$/, '');
+        const n = Number((couponCode.match(/-COPY(\d*)$/)?.[1] || '1')) + 1;
+        couponCode = `${base}-COPY${n}`;
+      }
+    }
   }
 
   /**

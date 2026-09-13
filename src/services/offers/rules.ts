@@ -155,8 +155,14 @@ export function validateOffer(draft: OfferDraft): string[] {
    * Banarasi" names a product inside a garment type. Leaving out the very thing it applies to is
    * refused: an offer on sarees that excludes sarees applies to nothing, and nobody means that.
    */
-  const exclusions = draft.exclusions ?? [];
-  if (exclusions.some(e => !['CATEGORY', 'DRESS_TYPE', 'PRODUCT', 'VARIANT'].includes(e.scope))) {
+  const exclusions = Array.isArray(draft.exclusions) ? draft.exclusions : [];
+  if (draft.exclusions != null && !Array.isArray(draft.exclusions)) {
+    problems.push('Send what the offer leaves out as a list.');
+  }
+  if (exclusions.some(e => !e || typeof e !== 'object' || !String((e as any).refId ?? '').trim())) {
+    problems.push('Each thing the offer leaves out has to say which one it is.');
+  }
+  if (exclusions.some(e => !['CATEGORY', 'DRESS_TYPE', 'PRODUCT', 'VARIANT'].includes(e?.scope))) {
     problems.push('Leave out departments, types of garment, products or particular items.');
   }
   if (exclusions.some(e => e.scope === 'CATEGORY' && !(OFFER_DEPARTMENTS as readonly string[]).includes(e.refId))) {
@@ -173,13 +179,21 @@ export function validateOffer(draft: OfferDraft): string[] {
     problems.push('Something is both included and left out. Remove it from one of the two.');
   }
 
-  const tags = draft.customerTags ?? [];
+  const tags = Array.isArray(draft.customerTags) ? draft.customerTags : [];
+  if (draft.customerTags != null && (!Array.isArray(draft.customerTags) || draft.customerTags.some(t => typeof t !== 'string'))) {
+    problems.push('Send customer groups as a list of names.');
+  }
   if (tags.length > MAX_CUSTOMER_TAGS) problems.push(`An offer can be for at most ${MAX_CUSTOMER_TAGS} customer groups.`);
   if (tags.some(t => !String(t ?? '').trim() || String(t).trim().length > MAX_TAG_LENGTH)) {
     problems.push(`Each customer group needs a name of up to ${MAX_TAG_LENGTH} characters.`);
   }
 
   problems.push(...validateSchedule(draft.schedule));
+
+  // Yes-or-no settings must be yes or no. "yes" meaning true is how a typo ships a discount.
+  for (const [label, v] of [['Per piece', draft.perPiece], ['Single-use codes', draft.uniqueCodes], ['Combining', draft.stackable]] as const) {
+    if (v != null && typeof v !== 'boolean') problems.push(`${label} has to be true or false.`);
+  }
 
   if (draft.uniqueCodes) {
     if (draft.trigger !== 'CODE') {
