@@ -18,6 +18,8 @@ import { badRequest, notFound } from '../../utils/httpError';
 import { resolveVariantForLocation } from '../../utils/variant-location';
 import { toMinor, fromMinor, minorToNumber } from './money';
 import { priceBasket, BasketLine, CandidateOffer, PricedBasket } from './engine';
+import { withinSchedule, OfferSchedule } from '../offers/schedule';
+import { canonicalCode } from '../offers/codes';
 
 /** How long a quoted price is honoured. Decision D7. */
 export const QUOTE_TTL_MS = 15 * 60 * 1000;
@@ -119,8 +121,26 @@ export class PricingQuoteService {
       });
     }
 
-    const offers = await this.liveOffers(clientId, channel, req.locationId, req.customerId ?? null);
-    const priced = priceBasket(basket, offers, req.couponCodes ?? []);
+    const coupons = (req.couponCodes ?? []).map(canonicalCode).filter(Boolean);
+    const offers = await this.liveOffers(clientId, channel, req.locationId, req.customerId ?? null, coupons);
+    const priced = priceBasket(basket, offers, coupons);
+
+    /*
+     * A single-use code that was already spent.
+     *
+     * The engine only ever sees unspent codes, so to it a spent one is simply unknown -- and "there
+     * is no offer with that code" to a customer holding the card in their hand is a lie that starts
+     * an argument. Said as what it is.
+     */
+    if (priced.rejected.length) {
+      const spent = await prisma.offerCode.findMany({
+        where: { clientId, code: { in: priced.rejected.map(r => r.code) }, usedAt: { not: null } },
+        select: { code: true }
+      });
+      const spentSet = new Set(spent.map(c => c.code));
+      priced.rejected = priced.rejected.map(r =>
+        spentSet.has(r.code) ? { ...r, reason: 'That code has already been used.' } : r);
+    }
 
     const { currency } = await getShopSettings(clientId);
     const expiresAt = new Date(Date.now() + QUOTE_TTL_MS);
@@ -196,10 +216,11 @@ export class PricingQuoteService {
    * offer at its limit never even reaches the arithmetic.
    */
   async liveOffers(
-    clientId: string, channel: string, locationId: string, customerId: string | null
+    clientId: string, channel: string, locationId: string, customerId: string | null,
+    /** Codes the customer gave, upper-cased. Only these single-use codes are ever loaded. */
+    coupons: string[] = [],
+    now: Date = new Date()
   ): Promise<CandidateOffer[]> {
-    const now = new Date();
-
     const rows = await prisma.offer.findMany({
       where: {
         clientId,
@@ -207,8 +228,18 @@ export class PricingQuoteService {
         startsAt: { lte: now },
         OR: [{ endsAt: null }, { endsAt: { gt: now } }]
       },
-      include: { targets: true }
+      include: { targets: true, exclusions: true }
     });
+
+    const needsClock = rows.some(o => o.schedule != null);
+    const needsTags = rows.some(o => o.customerTags.length > 0);
+    const [{ timezone }, customer] = await Promise.all([
+      needsClock ? getShopSettings(clientId) : Promise.resolve({ timezone: 'Asia/Kolkata' } as any),
+      needsTags && customerId
+        ? prisma.customer.findFirst({ where: { id: customerId, clientId }, select: { tags: true } })
+        : Promise.resolve(null)
+    ]);
+    const customerTags = new Set((customer?.tags ?? []).map(t => t.trim().toLowerCase()));
 
     const eligible = rows.filter(o => {
       // Empty means everywhere -- the same convention StorefrontConnection uses for locationIds,
@@ -216,8 +247,26 @@ export class PricingQuoteService {
       if (o.channels.length > 0 && !o.channels.includes(channel as any)) return false;
       if (o.locationIds.length > 0 && !o.locationIds.includes(locationId)) return false;
       if (o.usageLimit != null && o.usageCount >= o.usageLimit) return false;
+      // Happy hours, on the shop's clock.
+      if (o.schedule != null && !withinSchedule(o.schedule as unknown as OfferSchedule, now, timezone)) return false;
+      // A group offer needs a customer who is in the group. A guest is in no group.
+      if (o.customerTags.length > 0 && !o.customerTags.some(t => customerTags.has(t.trim().toLowerCase()))) return false;
       return true;
     });
+
+    /*
+     * Single-use codes: only the ones the customer actually gave, and only unspent. An offer with a
+     * batch of 5,000 codes must not load 5,000 rows to price a basket.
+     */
+    const withCodes = eligible.filter(o => o.uniqueCodes);
+    const acceptedByOffer = new Map<string, string[]>();
+    if (withCodes.length > 0 && coupons.length > 0) {
+      const codes = await prisma.offerCode.findMany({
+        where: { clientId, offerId: { in: withCodes.map(o => o.id) }, code: { in: coupons }, usedAt: null },
+        select: { offerId: true, code: true }
+      });
+      for (const c of codes) acceptedByOffer.set(c.offerId, [...(acceptedByOffer.get(c.offerId) ?? []), c.code]);
+    }
 
     /*
      * Per-customer limits.
@@ -263,7 +312,11 @@ export class PricingQuoteService {
         minQuantity: o.minQuantity,
         priority: o.priority,
         stackable: o.stackable,
-        createdAt: o.createdAt
+        createdAt: o.createdAt,
+        perPiece: o.perPiece,
+        exclusions: o.exclusions.map(e => ({ scope: e.scope as string, refId: e.refId })),
+        // A single-use offer's shared couponCode is always null, so these are its only way in.
+        acceptedCodes: acceptedByOffer.get(o.id) ?? []
       }));
   }
 
@@ -282,12 +335,12 @@ export class PricingQuoteService {
         lineTotal: minorToNumber(l.lineTotalMinor),
         appliedOffers: l.appliedOffers.map(a => ({
           offerId: a.offerId, offerVersionId: a.offerVersionId,
-          title: a.title, amount: minorToNumber(a.amountMinor), level: a.level
+          title: a.title, amount: minorToNumber(a.amountMinor), level: a.level, code: a.code ?? null
         }))
       })),
       discounts: priced.discounts.map(d => ({
         offerId: d.offerId, offerVersionId: d.offerVersionId,
-        title: d.title, amount: minorToNumber(d.amountMinor), level: d.level
+        title: d.title, amount: minorToNumber(d.amountMinor), level: d.level, code: d.code ?? null
       })),
       subtotal: minorToNumber(priced.subtotalMinor),
       discountTotal: minorToNumber(priced.discountTotalMinor),
@@ -317,8 +370,14 @@ export class PricingQuoteService {
     const live = (await this.liveOffers(clientId, channel, locationId, null))
       .filter(o => o.trigger === 'AUTOMATIC');
 
-    const productIds = live.flatMap(o => o.scope === 'PRODUCT' ? o.targets.map(t => t.refId) : []);
-    const variantIds = live.flatMap(o => o.scope === 'VARIANT' ? o.targets.map(t => t.refId) : []);
+    const productIds = live.flatMap(o => [
+      ...(o.scope === 'PRODUCT' ? o.targets.map(t => t.refId) : []),
+      ...(o.exclusions ?? []).filter(e => e.scope === 'PRODUCT').map(e => e.refId)
+    ]);
+    const variantIds = live.flatMap(o => [
+      ...(o.scope === 'VARIANT' ? o.targets.map(t => t.refId) : []),
+      ...(o.exclusions ?? []).filter(e => e.scope === 'VARIANT').map(e => e.refId)
+    ]);
 
     const [products, variants] = await Promise.all([
       productIds.length
@@ -354,7 +413,14 @@ export class PricingQuoteService {
         : o.scope === 'PRODUCT' ? { productCodes: o.targets.map(t => productCode.get(t.refId)).filter(Boolean) }
         : { variantCodes: o.targets.map(t => variantCode.get(t.refId)).filter(Boolean) },
       minSubtotal: o.minSubtotalMinor == null ? null : minorToNumber(o.minSubtotalMinor),
-      minQuantity: o.minQuantity
+      minQuantity: o.minQuantity,
+      perPiece: !!o.perPiece,
+      excludes: (o.exclusions ?? []).length === 0 ? null : {
+        categories: o.exclusions!.filter(e => e.scope === 'CATEGORY').map(e => e.refId),
+        dressTypes: o.exclusions!.filter(e => e.scope === 'DRESS_TYPE').map(e => e.refId),
+        productCodes: o.exclusions!.filter(e => e.scope === 'PRODUCT').map(e => productCode.get(e.refId)).filter(Boolean),
+        variantCodes: o.exclusions!.filter(e => e.scope === 'VARIANT').map(e => variantCode.get(e.refId)).filter(Boolean)
+      }
     }));
   }
 }
@@ -405,7 +471,8 @@ export function pricedLinesFromQuote(result: any) {
       offerVersionId: (d.offerVersionId ?? null) as string | null,
       title: String(d.title),
       amountMinor: toMinor(d.amount),
-      level: String(d.level)
+      level: String(d.level),
+      code: (d.code ?? null) as string | null
     })),
     totalMinor: toMinor(result?.total ?? 0),
     discountTotalMinor: toMinor(result?.discountTotal ?? 0)

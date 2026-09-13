@@ -26,6 +26,8 @@ export interface RedemptionRequest {
   /** The rule as it stood. Null is resolved to the offer's current version. */
   offerVersionId?: string | null;
   amountMinor: number;
+  /** The code that unlocked it. For a single-use offer this code is spent here, once. */
+  code?: string | null;
 }
 
 export interface RedemptionContext {
@@ -60,7 +62,7 @@ export class OfferRedemptionService {
       if (!r.offerId || r.amountMinor <= 0) continue;
       const at = merged.get(r.offerId);
       if (at) at.amountMinor += r.amountMinor;
-      else merged.set(r.offerId, { ...r });
+      else merged.set(r.offerId, { ...r, code: r.code ?? null });
     }
     if (merged.size === 0) return [];
 
@@ -68,7 +70,7 @@ export class OfferRedemptionService {
       where: { id: { in: [...merged.keys()], }, clientId: ctx.clientId },
       select: {
         id: true, name: true, currentVersionId: true,
-        usageLimit: true, usageLimitPerCustomer: true
+        usageLimit: true, usageLimitPerCustomer: true, uniqueCodes: true
       }
     });
     const byId = new Map(offers.map((o: any) => [o.id, o]));
@@ -139,6 +141,26 @@ export class OfferRedemptionService {
         }
       }
 
+      /*
+       * The single-use code, spent in the same breath as the allowance.
+       *
+       * Claimed with the same compare-and-set: two tills taking the same printed card at the same
+       * moment both quoted it as good, and exactly one of them may have it.
+       */
+      if (offer.uniqueCodes) {
+        const code = String(request.code ?? '').trim().toUpperCase();
+        if (!code) {
+          throw conflict(`"${offer.name}" needs one of its codes. Price the basket again with the code.`);
+        }
+        const spent = await tx.offerCode.updateMany({
+          where: { clientId: ctx.clientId, offerId: offer.id, code, usedAt: null },
+          data: { usedAt: new Date(), salesOrderId: ctx.salesOrderId }
+        });
+        if (spent.count === 0) {
+          throw conflict(`The code ${code} has already been used. Price the basket again without it.`);
+        }
+      }
+
       const row = await tx.offerRedemption.create({
         data: {
           clientId: ctx.clientId,
@@ -180,6 +202,13 @@ export class OfferRedemptionService {
     await tx.offerRedemption.updateMany({
       where: { id: { in: counted.map((c: any) => c.id) } },
       data: { status: 'RELEASED' }
+    });
+
+    // A single-use code spent on an order that never happened is good again -- the customer still
+    // holds the card, and the shop still owes them the offer printed on it.
+    await tx.offerCode.updateMany({
+      where: { clientId, salesOrderId },
+      data: { usedAt: null, salesOrderId: null }
     });
 
     for (const row of counted) {

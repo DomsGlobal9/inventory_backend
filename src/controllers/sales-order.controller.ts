@@ -69,7 +69,13 @@ export const createFullOrder = async (req: Request, res: Response) => {
 
     let locationId = parsed.data.locationId;
 
-    const order = await salesOrderService.createFullOrder(clientId, locationId, parsed.data as any);
+    const user = (req as any).user;
+    const order = await salesOrderService.createFullOrder(clientId, locationId, parsed.data as any, 'POS', {
+      userId: user?.id ?? null,
+      mayExceedManualLimit:
+        holdsEverything(user?.permissions, user?.roles) ||
+        grants(user?.permissions ?? [], 'offer:manual_discount_unlimited')
+    });
     res.status(201).json(order);
   } catch (error: any) {
     return respondWithError(res, error, { status: 400 });

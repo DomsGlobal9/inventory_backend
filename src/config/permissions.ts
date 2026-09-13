@@ -135,6 +135,10 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'offer:archive', group: 'Selling', label: 'Retire an offer',                      implies: ['offer:view'], sensitive: true,
     checkedInline: 'src/routes/offer.routes.ts' },
   { key: 'offer:publish_external', group: 'Selling', label: 'Put an offer on a connected Shopify store, and keep it in step', implies: ['offer:view'], sensitive: true },
+  // Checked in the order controller, not on a route: an order within the limit must not need it.
+  { key: 'offer:manual_discount_unlimited', group: 'Selling', label: 'Take off more than the till limit by hand', implies: ['offer:manual_discount'], sensitive: true,
+    checkedInline: 'src/controllers/sales-order.controller.ts' },
+  { key: 'offer:settings', group: 'Selling', label: 'Set how much the till may take off by hand', implies: ['offer:view'], sensitive: true },
   { key: 'offer:manual_discount',  group: 'Selling', label: 'Take money off at the till, with a reason', implies: ['sales_order:view'], sensitive: true,
     checkedInline: 'src/controllers/sales-order.controller.ts' },
 

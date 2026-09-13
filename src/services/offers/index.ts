@@ -28,6 +28,7 @@ export {
   discountFor,
   compareCandidates,
   dedupeTargets,
+  normaliseTags,
   OFFER_CHANNELS,
   OFFER_DEPARTMENTS
 } from './rules';
@@ -38,5 +39,8 @@ export type { OfferInput } from './offer.service';
 
 export { offerRedemptionService } from './redemption.service';
 export { offerInsightService } from './insight.service';
+export { withinSchedule, validateSchedule, normaliseSchedule, describeSchedule, shopClock } from './schedule';
+export type { OfferSchedule } from './schedule';
+export { generateCodes, validateCodeBatch, canonicalCode, CODE_ALPHABET } from './codes';
 export { describeChanges, valueText } from './describe';
 export type { RedemptionRequest, RedemptionContext } from './redemption.service';

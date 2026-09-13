@@ -6,6 +6,8 @@
  * the same words should come back from the API whoever asks, and they should be tested.
  */
 
+import { describeSchedule, OfferSchedule } from './schedule';
+
 export type Labels = {
   /** refId -> what the merchant calls it. Missing ids read as "an item that was removed". */
   targets: Map<string, string>;
@@ -60,7 +62,7 @@ export function describeChanges(before: any, after: any, labels: Labels): string
   if (!same(before.maxDiscount, after.maxDiscount)) {
     out.push(after.maxDiscount == null ? 'Removed the cap.' : `Capped at ${money(after.maxDiscount)}${before.maxDiscount == null ? '' : ` (was ${money(before.maxDiscount)})`}.`);
   }
-  if (before.trigger !== after.trigger || (before.couponCode ?? null) !== (after.couponCode ?? null)) {
+  if ((before.trigger !== after.trigger || (before.couponCode ?? null) !== (after.couponCode ?? null)) && !after.uniqueCodes) {
     out.push(after.trigger === 'CODE' ? `Now needs the code ${after.couponCode}.` : 'Now applies automatically, without a code.');
   }
 
@@ -103,6 +105,29 @@ export function describeChanges(before: any, after: any, labels: Labels): string
   }
   if (!same(before.usageLimitPerCustomer, after.usageLimitPerCustomer)) {
     out.push(after.usageLimitPerCustomer == null ? 'No limit per customer.' : `Limited to ${after.usageLimitPerCustomer} per customer.`);
+  }
+  if (!!before.perPiece !== !!after.perPiece && after.valueType === 'FIXED_AMOUNT' && after.level !== 'ORDER') {
+    out.push(after.perPiece ? 'Now comes off each piece.' : 'Now comes off each line once.');
+  }
+  {
+    const key = (x: any) => `${x.scope}:${x.refId}`;
+    const was = new Map<string, any>(((before.exclusions ?? []) as any[]).map(x => [key(x), x]));
+    const now = new Map<string, any>(((after.exclusions ?? []) as any[]).map(x => [key(x), x]));
+    const added = [...now.entries()].filter(([k]) => !was.has(k)).map(([, x]) => targetLabel(x.scope, x.refId, labels));
+    const removed = [...was.entries()].filter(([k]) => !now.has(k)).map(([, x]) => targetLabel(x.scope, x.refId, labels));
+    if (added.length) out.push(`Now leaves out ${list(added)}.`);
+    if (removed.length) out.push(`No longer leaves out ${list(removed)}.`);
+  }
+  if (!same([...(before.customerTags ?? [])].sort(), [...(after.customerTags ?? [])].sort())) {
+    const t = (after.customerTags ?? []) as string[];
+    out.push(t.length ? `Now only for ${list(t)} customers.` : 'Now for every customer.');
+  }
+  if (!same(before.schedule ?? null, after.schedule ?? null)) {
+    const s = describeSchedule(after.schedule as OfferSchedule | null);
+    out.push(s ? `Now runs only ${s}.` : 'Now runs at any hour.');
+  }
+  if (!!before.uniqueCodes !== !!after.uniqueCodes) {
+    out.push(after.uniqueCodes ? 'Now given with single-use codes.' : 'No longer uses single-use codes.');
   }
   if (!same(before.priority, after.priority)) out.push(`Priority set to ${after.priority}.`);
   if (!same(before.stackable, after.stackable)) {

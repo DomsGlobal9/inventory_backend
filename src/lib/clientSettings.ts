@@ -23,6 +23,8 @@ export interface ShopSettings {
   timezone: string;
   currency: string;
   businessName: string | null;
+  /** The most the till may take off by hand, as a percentage, without a manager. Null = no limit. */
+  manualDiscountMaxPercent: number | null;
 }
 
 export const DEFAULT_TIMEZONE = 'Asia/Kolkata';
@@ -38,13 +40,14 @@ export async function getShopSettings(clientId: string): Promise<ShopSettings> {
 
   const row = await prisma.clientSettings.findUnique({
     where: { clientId },
-    select: { timezone: true, currency: true, businessName: true }
+    select: { timezone: true, currency: true, businessName: true, manualDiscountMaxPercent: true }
   });
 
   const value: ShopSettings = {
     timezone: row?.timezone || DEFAULT_TIMEZONE,
     currency: row?.currency || DEFAULT_CURRENCY,
-    businessName: row?.businessName || null
+    businessName: row?.businessName || null,
+    manualDiscountMaxPercent: row?.manualDiscountMaxPercent == null ? null : Number(row.manualDiscountMaxPercent)
   };
 
   cache.set(clientId, { value, expires: Date.now() + TTL_MS });

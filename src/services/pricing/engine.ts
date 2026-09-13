@@ -52,6 +52,15 @@ export interface CandidateOffer {
   priority: number;
   stackable: boolean;
   createdAt: Date;
+  /** FIXED_AMOUNT on items: off every piece rather than once per line. */
+  perPiece?: boolean;
+  /** What it leaves out, whatever it applies to. */
+  exclusions?: { scope: string; refId: string }[];
+  /**
+   * Single-use codes the customer gave that belong to this offer and are still unspent. Loaded by
+   * the quote service for exactly the codes given, never the whole batch.
+   */
+  acceptedCodes?: string[];
 }
 
 export interface AppliedOffer {
@@ -60,6 +69,8 @@ export interface AppliedOffer {
   title: string;
   amountMinor: number;
   level: 'LINE' | 'ORDER';
+  /** The code that unlocked it, when a code did. A single-use code is spent against this. */
+  code?: string | null;
 }
 
 export interface PricedBasketLine {
@@ -88,26 +99,36 @@ export interface PricedBasket {
 
 export const normaliseType = (v: string | null | undefined) => String(v ?? '').trim().toLowerCase();
 
-/** Does this offer apply to this line at all? */
-function matches(offer: CandidateOffer, line: BasketLine): boolean {
-  switch (offer.scope) {
-    case 'ALL':
-      return true;
+/** Does one target name this line? */
+function hits(target: { scope: string; refId: string }, line: BasketLine): boolean {
+  switch (target.scope) {
     case 'CATEGORY':
-      return !!line.category && offer.targets.some(t => t.refId === line.category);
+      return !!line.category && target.refId === line.category;
     case 'DRESS_TYPE': {
       // "Saree", "saree " and "SAREE" are the same shelf. The product form is free text, so the
       // comparison forgives what a person typing it would never notice.
       const type = normaliseType(line.dressType);
-      return !!type && offer.targets.some(t => normaliseType(t.refId) === type);
+      return !!type && normaliseType(target.refId) === type;
     }
     case 'PRODUCT':
-      return offer.targets.some(t => t.refId === line.productId);
+      return target.refId === line.productId;
     case 'VARIANT':
-      return offer.targets.some(t => t.refId === line.variantId);
+      return target.refId === line.variantId;
     default:
       return false;
   }
+}
+
+/** Is this line one the offer leaves out? An exclusion beats any target. */
+function excluded(offer: CandidateOffer, line: BasketLine): boolean {
+  return (offer.exclusions ?? []).some(e => hits(e, line));
+}
+
+/** Does this offer apply to this line at all? */
+function matches(offer: CandidateOffer, line: BasketLine): boolean {
+  if (excluded(offer, line)) return false;
+  if (offer.scope === 'ALL') return true;
+  return offer.targets.some(t => hits({ scope: offer.scope, refId: t.refId }, line));
 }
 
 /**
@@ -150,20 +171,29 @@ export function priceBasket(
    * an instruction to add something. "Invalid code" at a till with a customer waiting tells
    * nobody which.
    */
-  const knownCodes = new Set(
-    offers.filter(o => o.trigger === 'CODE' && o.couponCode)
-      .map(o => o.couponCode!.toUpperCase())
-  );
+  const knownCodes = new Set([
+    ...offers.filter(o => o.trigger === 'CODE' && o.couponCode).map(o => o.couponCode!.toUpperCase()),
+    ...offers.flatMap(o => (o.acceptedCodes ?? []).map(c => c.toUpperCase()))
+  ]);
   for (const code of given) {
     if (!knownCodes.has(code)) {
       rejected.push({ code, reason: 'There is no offer with that code.' });
     }
   }
 
+  /**
+   * The code that unlocks an offer in this basket, if any. A single-use code is one per offer: a
+   * customer giving two of the same batch spends one, and the other stays good for next time.
+   */
+  const unlockingCode = (o: CandidateOffer): string | null => {
+    if (o.couponCode && given.has(o.couponCode.toUpperCase())) return o.couponCode.toUpperCase();
+    const single = (o.acceptedCodes ?? []).map(c => c.toUpperCase()).filter(c => given.has(c)).sort()[0];
+    return single ?? null;
+  };
+
   /** Usable at all: an automatic offer, or a code offer whose code was given. */
-  const usable = offers.filter(o =>
-    o.trigger === 'AUTOMATIC' || (o.couponCode ? given.has(o.couponCode.toUpperCase()) : false)
-  );
+  const usable = offers.filter(o => o.trigger === 'AUTOMATIC' || unlockingCode(o) != null);
+  const codeOf = (o: CandidateOffer) => (o.trigger === 'CODE' ? unlockingCode(o) : null);
 
   /** Whether the basket meets an offer's conditions, and what to say when it does not. */
   const conditionsMet = (offer: CandidateOffer, againstMinor: number, againstQuantity = totalQuantity): string | null => {
@@ -230,7 +260,7 @@ export function priceBasket(
         return {
           offer: o,
           blocked: condition,
-          amountMinor: condition ? 0 : discountFor(o, running, line.quantity),
+          amountMinor: condition ? 0 : discountFor({ ...o, perPiece: !!o.perPiece }, running, line.quantity),
           priority: o.priority,
           createdAt: o.createdAt,
           id: o.id
@@ -243,7 +273,8 @@ export function priceBasket(
         running -= winner.amountMinor;
         line.appliedOffers.push({
           offerId: winner.offer.id, offerVersionId: winner.offer.versionId,
-          title: winner.offer.name, amountMinor: winner.amountMinor, level: 'LINE'
+          title: winner.offer.name, amountMinor: winner.amountMinor, level: 'LINE',
+          code: codeOf(winner.offer)
         });
         // Everything it beat is a near miss worth nothing to say -- the customer lost nothing.
         // Only a BLOCKED offer is worth reporting, and that is done below.
@@ -261,11 +292,12 @@ export function priceBasket(
         nearMisses.push({ offerId: o.id, title: o.name, reason: condition });
         continue;
       }
-      const amountMinor = discountFor(o, running, line.quantity);
+      const amountMinor = discountFor({ ...o, perPiece: !!o.perPiece }, running, line.quantity);
       if (amountMinor <= 0) continue;
       running -= amountMinor;
       line.appliedOffers.push({
-        offerId: o.id, offerVersionId: o.versionId, title: o.name, amountMinor, level: 'LINE'
+        offerId: o.id, offerVersionId: o.versionId, title: o.name, amountMinor, level: 'LINE',
+        code: codeOf(o)
       });
     }
 
@@ -285,23 +317,34 @@ export function priceBasket(
    * 19,920 once a line offer has applied. It genuinely does not qualify, and the engine reports
    * it as a near miss with the shortfall rather than silently doing nothing.
    */
-  const afterLinesMinor = priced.reduce((s, l) => s + l.lineTotalMinor, 0);
   const discounts: AppliedOffer[] = [];
 
   for (const offer of usable.filter(o => o.level === 'ORDER').sort(compareCandidates as any)) {
-    const condition = conditionsMet(offer, afterLinesMinor);
+    /*
+     * A whole-bill offer with exclusions is an offer on the rest of the bill.
+     *
+     * "500 off bills over 5,000, not on bridal wear": the lehenga neither counts towards the 5,000
+     * nor takes a share of the 500. Anything else lets a customer reach the minimum with the very
+     * item the shop said the offer was not for.
+     */
+    const inBill = lines.map(l => !excluded(offer, l));
+    const eligibleAfterLines = priced.reduce((s, l, i) => s + (inBill[i] ? l.lineTotalMinor : 0), 0);
+    const eligibleQuantity = lines.reduce((s, l, i) => s + (inBill[i] ? l.quantity : 0), 0);
+
+    const condition = conditionsMet(offer, eligibleAfterLines, eligibleQuantity);
     if (condition) {
       nearMisses.push({ offerId: offer.id, title: offer.name, reason: condition });
       continue;
     }
 
-    const remaining = priced.reduce((s, l) => s + l.lineTotalMinor, 0);
-    const amountMinor = Math.min(discountFor(offer, remaining, totalQuantity), remaining);
+    const remaining = priced.reduce((s, l, i) => s + (inBill[i] ? l.lineTotalMinor : 0), 0);
+    // Never per piece on a bill: "200 off the bill" is 200.
+    const amountMinor = Math.min(discountFor({ ...offer, perPiece: false }, remaining, eligibleQuantity), remaining);
     if (amountMinor <= 0) continue;
 
     // Divided between the lines by what each is still worth, so the parts add up exactly and a
     // line already marked down does not absorb a share of a price nobody is paying.
-    const shares = allocate(amountMinor, priced.map(l => l.lineTotalMinor));
+    const shares = allocate(amountMinor, priced.map((l, i) => (inBill[i] ? l.lineTotalMinor : 0)));
     priced.forEach((l, idx) => {
       if (shares[idx] <= 0) return;
       l.lineTotalMinor -= shares[idx];
@@ -309,13 +352,13 @@ export function priceBasket(
       l.netUnitPriceMinor = netUnitPrice(l.lineTotalMinor, l.quantity);
       l.appliedOffers.push({
         offerId: offer.id, offerVersionId: offer.versionId,
-        title: offer.name, amountMinor: shares[idx], level: 'ORDER'
+        title: offer.name, amountMinor: shares[idx], level: 'ORDER', code: codeOf(offer)
       });
     });
 
     discounts.push({
       offerId: offer.id, offerVersionId: offer.versionId,
-      title: offer.name, amountMinor, level: 'ORDER'
+      title: offer.name, amountMinor, level: 'ORDER', code: codeOf(offer)
     });
 
     // Only one order-level offer applies unless it says it stacks. Two "500 off the order"
@@ -345,12 +388,13 @@ export function priceBasket(
    * nothing, rather than watching the total not change.
    */
   for (const offer of usable) {
-    if (offer.trigger !== 'CODE' || !offer.couponCode) continue;
+    const code = codeOf(offer);
+    if (offer.trigger !== 'CODE' || !code) continue;
     const did = allDiscounts.some(d => d.offerId === offer.id);
     if (did) continue;
     const near = nearMisses.find(n => n.offerId === offer.id);
     rejected.push({
-      code: offer.couponCode.toUpperCase(),
+      code,
       reason: near ? near.reason : 'Nothing in this basket qualifies for that offer.'
     });
   }

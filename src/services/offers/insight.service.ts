@@ -34,7 +34,7 @@ const variantLabel = (v: { sku: string; size: string | null; colorName: string |
 
 export class OfferInsightService {
   async options(clientId: string) {
-    const [byCategory, byType, catalogue, locations] = await Promise.all([
+    const [byCategory, byType, catalogue, locations, tagRows] = await Promise.all([
       prisma.product.groupBy({ by: ['category'], where: { clientId, ...onSale }, _count: { _all: true } }),
       prisma.product.groupBy({ by: ['dressType'], where: { clientId, ...onSale, dressType: { not: null } }, _count: { _all: true } }),
       prisma.clientCatalogItem.findMany({
@@ -46,8 +46,22 @@ export class OfferInsightService {
         where: { clientId, active: true },
         select: { id: true, name: true, code: true, type: true },
         orderBy: [{ type: 'asc' }, { name: 'asc' }]
-      })
+      }),
+      // Every group a customer is in, with how many are in it, so "VIP (42)" says who gets it.
+      prisma.$queryRaw<{ tag: string; count: bigint }[]>`
+        SELECT t AS tag, COUNT(*) AS count
+          FROM customers c, UNNEST(c.tags) AS t
+         WHERE c.client_id = ${clientId} AND c.deleted_at IS NULL
+         GROUP BY t ORDER BY COUNT(*) DESC, t ASC LIMIT 200`
     ]);
+
+    const tagCounts = new Map<string, { value: string; count: number }>();
+    for (const r of tagRows) {
+      const key = r.tag.trim().toLowerCase();
+      const at = tagCounts.get(key);
+      if (at) at.count += Number(r.count);
+      else tagCounts.set(key, { value: r.tag.trim(), count: Number(r.count) });
+    }
 
     const categoryCount = new Map(byCategory.map(c => [c.category as string, c._count._all]));
 
@@ -81,7 +95,8 @@ export class OfferInsightService {
       channels: [
         { value: 'POS', label: 'Till' },
         { value: 'ONLINE', label: 'Online store' }
-      ]
+      ],
+      customerTags: [...tagCounts.values()]
     };
   }
 
@@ -170,11 +185,12 @@ export class OfferInsightService {
     const snapshots = offer.versions.map(v => v.snapshot as any);
     const allRefs = [
       ...offer.targets.map(t => ({ scope: t.scope as string, refId: t.refId })),
-      ...snapshots.flatMap(s => (s?.targets ?? []) as { scope: string; refId: string }[])
+      ...offer.exclusions.map(t => ({ scope: t.scope as string, refId: t.refId })),
+      ...snapshots.flatMap(s => [...(s?.targets ?? []), ...(s?.exclusions ?? [])] as { scope: string; refId: string }[])
     ];
     const allLocations = [...new Set([...offer.locationIds, ...snapshots.flatMap(s => (s?.locationIds ?? []) as string[])])];
 
-    const [labels, uses, released, orderTotals, users, locationRows] = await Promise.all([
+    const [labels, uses, released, orderTotals, users, locationRows, codeRows] = await Promise.all([
       this.labels(clientId, allRefs, allLocations),
       prisma.offerRedemption.findMany({
         where: { clientId, offerId: id },
@@ -192,8 +208,22 @@ export class OfferInsightService {
         where: { id: { in: [...new Set(offer.versions.map(v => v.changedBy).filter(Boolean) as string[])] } },
         select: { id: true, name: true }
       }),
-      prisma.stockLocation.findMany({ where: { clientId, id: { in: offer.locationIds } }, select: { id: true, name: true, active: true } })
+      prisma.stockLocation.findMany({ where: { clientId, id: { in: offer.locationIds } }, select: { id: true, name: true, active: true } }),
+      offer.uniqueCodes
+        ? Promise.all([
+            prisma.offerCode.count({ where: { offerId: id } }),
+            prisma.offerCode.count({ where: { offerId: id, usedAt: { not: null } } })
+          ])
+        : Promise.resolve(null)
     ]);
+
+    const spentCodes = uses.length
+      ? await prisma.salesOrderDiscount.findMany({
+          where: { offerId: id, salesOrderId: { in: uses.map(u => u.salesOrderId) }, code: { not: null } },
+          select: { salesOrderId: true, code: true }
+        })
+      : [];
+    const codeOfOrder = new Map(spentCodes.map(c => [c.salesOrderId, c.code]));
 
     const orders = uses.length
       ? await prisma.salesOrder.findMany({
@@ -219,6 +249,10 @@ export class OfferInsightService {
 
     const { versions: _versions, ...rest } = offer as any;
     const totals = orderTotals[0];
+    const nameOf = (t: { scope: string; refId: string }) =>
+      t.scope === 'CATEGORY' ? (DEPARTMENTS.find(d => d.value === t.refId)?.label ?? t.refId)
+        : t.scope === 'DRESS_TYPE' ? t.refId
+        : (labels.targets.get(t.refId) ?? 'An item that was removed');
 
     return {
       ...rest,
@@ -230,6 +264,13 @@ export class OfferInsightService {
           : (labels.targets.get(t.refId) ?? 'An item that was removed'),
         missing: (t.scope === 'PRODUCT' || t.scope === 'VARIANT') && !labels.targets.has(t.refId)
       })),
+      exclusions: offer.exclusions.map(t => ({
+        scope: t.scope,
+        refId: t.refId,
+        label: nameOf(t as any),
+        missing: (t.scope === 'PRODUCT' || t.scope === 'VARIANT') && !labels.targets.has(t.refId)
+      })),
+      codes: codeRows ? { total: codeRows[0], used: codeRows[1], unused: codeRows[0] - codeRows[1] } : null,
       locations: offer.locationIds.map(lid => {
         const row = locationRows.find(l => l.id === lid);
         return { id: lid, name: row?.name ?? 'A removed location', active: row?.active ?? false };
@@ -254,6 +295,7 @@ export class OfferInsightService {
           orderStatus: order?.status ?? null,
           channel: order?.channel ?? null,
           amount: u.amount,
+          code: codeOfOrder.get(u.salesOrderId) ?? null,
           status: u.status,
           createdAt: u.createdAt
         };

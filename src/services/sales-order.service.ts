@@ -3,7 +3,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { validateTransition } from '../utils/sales-order-state-machine';
 import { reservationService } from './reservation.service';
 import { resolveVariantForLocation } from '../utils/variant-location';
-import { notFound, badRequest, conflict } from '../utils/httpError';
+import { notFound, badRequest, conflict, forbidden } from '../utils/httpError';
 import {
   toMinor, fromMinor, netUnitPrice, allocate,
   priceLine, allocateOrderDiscount, orderTotalsFrom, PricedLine,
@@ -11,6 +11,7 @@ import {
   normaliseManualDiscount, ManualDiscount
 } from './pricing';
 import { offerRedemptionService } from './offers';
+import { getShopSettings } from '../lib/clientSettings';
 
 export class SalesOrderService {
   async createDraftOrder(clientId: string, locationId: string, customerId: string, channel: any = 'POS') {
@@ -29,7 +30,14 @@ export class SalesOrderService {
     });
   }
 
-  async createFullOrder(clientId: string, locationId: string, data: any, channel: any = 'POS') {
+  /**
+   * `caller` is who is placing the order, when a person is. The till limit on manual discounts
+   * applies to people; a system writing an order it received (Shopify) passes nothing.
+   */
+  async createFullOrder(
+    clientId: string, locationId: string, data: any, channel: any = 'POS',
+    caller?: { userId?: string | null; mayExceedManualLimit?: boolean }
+  ) {
     // 1. Idempotency Check
     if (data.externalOrderId && data.sourceSystem) {
       const existingOrder = await prisma.salesOrder.findFirst({
@@ -72,7 +80,12 @@ export class SalesOrderService {
     const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
 
     try {
-      return await this.writeFullOrder(clientId, locationId, data, channel, orderNumber, orderManual);
+      const { manualDiscountMaxPercent } = await getShopSettings(clientId);
+      const manualLimit = caller && !caller.mayExceedManualLimit ? manualDiscountMaxPercent : null;
+      return await this.writeFullOrder(
+        clientId, locationId, data, channel, orderNumber, orderManual,
+        { userId: caller?.userId ?? null, manualLimitPercent: manualLimit }
+      );
     } catch (error: any) {
       /*
        * The same order, sent twice at the same moment.
@@ -103,8 +116,27 @@ export class SalesOrderService {
 
   private async writeFullOrder(
     clientId: string, locationId: string, data: any, channel: any,
-    orderNumber: string, orderManual: ManualDiscount | null
+    orderNumber: string, orderManual: ManualDiscount | null,
+    who: { userId: string | null; manualLimitPercent: number | null } = { userId: null, manualLimitPercent: null }
   ) {
+    /*
+     * The till limit.
+     *
+     * "Up to 10% by hand; more needs a manager." Measured against what the discount comes off --
+     * the line as it stood, or the bill after line discounts -- because 500 off a 50,000 lehenga
+     * and 500 off a 900 blouse are not the same decision.
+     */
+    const overLimit = (amountMinor: number, ofMinor: number, label: string) => {
+      if (who.manualLimitPercent == null || ofMinor <= 0) return;
+      if (amountMinor * 100 > ofMinor * who.manualLimitPercent + 1e-6) {
+        const pct = Math.round((amountMinor / ofMinor) * 1000) / 10;
+        throw forbidden(
+          `Taking ${amountMinor / 100} off ${label} is ${pct}% -- more than the ${who.manualLimitPercent}% ` +
+          `the till may take off by hand. A manager has to take this one off.`
+        );
+      }
+    };
+
     return prisma.$transaction(async (tx) => {
       let customerId = data.customer?.id;
       
@@ -255,6 +287,7 @@ export class SalesOrderService {
         }
 
         if (manual) {
+          overLimit(manual.amountMinor, priced.totalPriceMinor, variant.sku);
           // On top of whatever the line already costs -- an offer and a goodwill gesture are two
           // separate decisions, and both are real.
           if (manual.amountMinor > priced.totalPriceMinor) {
@@ -293,6 +326,7 @@ export class SalesOrderService {
       const weights = pricedLines.map(l => l.listUnitPriceMinor * l.quantity - l.lineDiscountMinor);
 
       const manualOrderMinor = orderManual?.amountMinor ?? 0;
+      if (orderManual) overLimit(manualOrderMinor, weights.reduce((s, w) => s + w, 0), 'this order');
       allocateOrderDiscount(
         pricedLines,
         this.orderLevelDiscountMinor(data.discountAmount, pricedLines) + manualOrderMinor
@@ -353,6 +387,8 @@ export class SalesOrderService {
           amountMinor: number;
           offerId?: string | null;
           offerVersionId?: string | null;
+          code?: string | null;
+          appliedBy?: string | null;
           shares: { orderItemId: string; amountMinor: number }[];
         }
       ) => {
@@ -364,7 +400,9 @@ export class SalesOrderService {
             offerVersionId: input.offerVersionId ?? null,
             source: input.source,
             title: input.title,
-            amount: fromMinor(input.amountMinor)
+            amount: fromMinor(input.amountMinor),
+            code: input.code ?? null,
+            appliedBy: input.appliedBy ?? null
           }
         });
         for (const share of input.shares) {
@@ -387,6 +425,7 @@ export class SalesOrderService {
             amountMinor: discount.amountMinor,
             offerId: discount.offerId,
             offerVersionId: discount.offerVersionId,
+            code: discount.code,
             // Taken from what the engine actually did to each line, not re-divided here. Two
             // allocations of the same total by two different pieces of code is how the parts
             // stop adding up to the whole.
@@ -408,6 +447,7 @@ export class SalesOrderService {
         await writeDiscount({
           source: 'MANUAL',
           title: entry.manual.reason,
+          appliedBy: who.userId,
           amountMinor: entry.manual.amountMinor,
           shares: [{ orderItemId: entry.orderItemId!, amountMinor: entry.manual.amountMinor }]
         });
@@ -417,6 +457,7 @@ export class SalesOrderService {
         await writeDiscount({
           source: 'MANUAL',
           title: orderManual.reason,
+          appliedBy: who.userId,
           amountMinor: orderManual.amountMinor,
           shares: resolved.map((r, index) => ({
             orderItemId: r.orderItemId!,
@@ -441,7 +482,8 @@ export class SalesOrderService {
           quoted.discounts.map(d => ({
             offerId: d.offerId,
             offerVersionId: d.offerVersionId,
-            amountMinor: d.amountMinor
+            amountMinor: d.amountMinor,
+            code: d.code
           }))
         );
       }

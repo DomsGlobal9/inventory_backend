@@ -9,6 +9,7 @@
  */
 
 import { applyPercent, toMinor } from '../pricing';
+import { validateSchedule } from './schedule';
 
 export type OfferStatusName = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'EXPIRED' | 'ARCHIVED';
 
@@ -33,6 +34,28 @@ export interface OfferDraft {
   stackable?: boolean | null;
   channels?: string[] | null;
   locationIds?: string[] | null;
+  perPiece?: boolean | null;
+  exclusions?: { scope: string; refId: string }[] | null;
+  customerTags?: string[] | null;
+  schedule?: unknown;
+  uniqueCodes?: boolean | null;
+}
+
+export const MAX_CUSTOMER_TAGS = 20;
+export const MAX_TAG_LENGTH = 40;
+
+/** Tags as a shop means them: trimmed, and "vip" and "VIP" one tag, spelt the first way given. */
+export function normaliseTags(tags: string[] | null | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of tags ?? []) {
+    const tag = String(raw ?? '').trim().replace(/\s+/g, ' ');
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+  }
+  return out;
 }
 
 export const OFFER_CHANNELS = ['POS', 'ONLINE', 'MANUAL', 'MARKETPLACE'] as const;
@@ -80,7 +103,9 @@ export function validateOffer(draft: OfferDraft): string[] {
     }
   }
 
-  if (draft.trigger === 'CODE') {
+  if (draft.trigger === 'CODE' && draft.uniqueCodes) {
+    // Its codes are made after it is saved, on the offer page. Nothing to check here.
+  } else if (draft.trigger === 'CODE') {
     if (!draft.couponCode || !String(draft.couponCode).trim()) {
       problems.push('A code offer needs a code for the customer to type.');
     } else if (!/^[A-Za-z0-9_-]{3,32}$/.test(String(draft.couponCode).trim())) {
@@ -121,6 +146,47 @@ export function validateOffer(draft: OfferDraft): string[] {
   }
   if (targets.length > 500) {
     problems.push('An offer can name at most 500 items. For more, apply it to a type of garment or a department.');
+  }
+
+  /*
+   * What it leaves out.
+   *
+   * Any kind of thing but "everything", whatever the offer applies to -- "20% off sarees except the
+   * Banarasi" names a product inside a garment type. Leaving out the very thing it applies to is
+   * refused: an offer on sarees that excludes sarees applies to nothing, and nobody means that.
+   */
+  const exclusions = draft.exclusions ?? [];
+  if (exclusions.some(e => !['CATEGORY', 'DRESS_TYPE', 'PRODUCT', 'VARIANT'].includes(e.scope))) {
+    problems.push('Leave out departments, types of garment, products or particular items.');
+  }
+  if (exclusions.some(e => e.scope === 'CATEGORY' && !(OFFER_DEPARTMENTS as readonly string[]).includes(e.refId))) {
+    problems.push('A department left out has to be Women, Men, Kids or Unisex.');
+  }
+  if (exclusions.some(e => e.scope === 'DRESS_TYPE' && (!String(e.refId ?? '').trim() || String(e.refId).trim().length > 60))) {
+    problems.push('Each type of garment left out needs a name of up to 60 characters.');
+  }
+  if (exclusions.length > 500) problems.push('An offer can leave out at most 500 items.');
+  const sameKey = (x: { scope: string; refId: string }) =>
+    `${x.scope}:${x.scope === 'DRESS_TYPE' ? String(x.refId).trim().toLowerCase() : x.refId}`;
+  const included = new Set(targets.map(sameKey));
+  if (exclusions.some(e => included.has(sameKey(e)))) {
+    problems.push('Something is both included and left out. Remove it from one of the two.');
+  }
+
+  const tags = draft.customerTags ?? [];
+  if (tags.length > MAX_CUSTOMER_TAGS) problems.push(`An offer can be for at most ${MAX_CUSTOMER_TAGS} customer groups.`);
+  if (tags.some(t => !String(t ?? '').trim() || String(t).trim().length > MAX_TAG_LENGTH)) {
+    problems.push(`Each customer group needs a name of up to ${MAX_TAG_LENGTH} characters.`);
+  }
+
+  problems.push(...validateSchedule(draft.schedule));
+
+  if (draft.uniqueCodes) {
+    if (draft.trigger !== 'CODE') {
+      problems.push('Single-use codes are for an offer given with a code.');
+    } else if (draft.couponCode) {
+      problems.push('An offer with single-use codes has no shared code as well. Remove the shared code.');
+    }
   }
 
   const channels = draft.channels ?? [];
@@ -231,7 +297,7 @@ export function isLive(
  *   FIXED_PRICE   "this, for 999" -- the difference, and nothing when it is already cheaper
  */
 export function discountFor(
-  offer: { valueType: 'PERCENTAGE' | 'FIXED_AMOUNT' | 'FIXED_PRICE'; value: any; maxDiscount?: any },
+  offer: { valueType: 'PERCENTAGE' | 'FIXED_AMOUNT' | 'FIXED_PRICE'; value: any; maxDiscount?: any; perPiece?: boolean | null },
   amountMinor: number,
   quantity = 1
 ): number {
@@ -246,7 +312,8 @@ export function discountFor(
     }
 
     case 'FIXED_AMOUNT':
-      return Math.min(toMinor(offer.value), amountMinor);
+      // Per piece, "200 off each saree" on a line of three is 600. Otherwise once off the line.
+      return Math.min(toMinor(offer.value) * (offer.perPiece ? Math.max(1, quantity) : 1), amountMinor);
 
     case 'FIXED_PRICE': {
       // A price per unit, not per line: "sarees at 9,999" means each one, and a basket of three

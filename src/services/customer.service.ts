@@ -1,3 +1,4 @@
+import { normaliseTags } from './offers/rules';
 import { prisma } from '../lib/prisma';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { CustomerStatus } from '@prisma/client';
@@ -159,6 +160,7 @@ export class CustomerService {
         billingAddress: data.billingAddress,
         shippingAddress: data.shippingAddress,
         status: data.status,
+        ...(data.tags !== undefined ? { tags: normaliseTags(data.tags) } : {}),
       }
     });
   }

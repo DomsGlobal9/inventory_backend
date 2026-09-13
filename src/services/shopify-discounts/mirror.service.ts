@@ -146,7 +146,10 @@ function asMirrorable(o: any): MirrorableOffer {
     minSubtotal: o.minSubtotal == null ? null : Number(o.minSubtotal),
     minQuantity: o.minQuantity, channels: o.channels ?? [], locationIds: o.locationIds ?? [],
     startsAt: new Date(o.startsAt), endsAt: o.endsAt ? new Date(o.endsAt) : null,
-    usageLimit: o.usageLimit, usageLimitPerCustomer: o.usageLimitPerCustomer, stackable: o.stackable
+    usageLimit: o.usageLimit, usageLimitPerCustomer: o.usageLimitPerCustomer, stackable: o.stackable,
+    perPiece: !!o.perPiece,
+    exclusions: (o.exclusions ?? []).map((e: any) => ({ scope: e.scope, refId: e.refId })),
+    customerTags: o.customerTags ?? [], schedule: o.schedule ?? null, uniqueCodes: !!o.uniqueCodes
   };
 }
 
@@ -235,7 +238,7 @@ export class OfferMirrorService {
 
   /** The state of an offer's Shopify copy, and -- when there is none -- whether there could be. */
   async overview(clientId: string, offerId: string) {
-    const offer = await prisma.offer.findFirst({ where: { id: offerId, clientId }, include: { targets: true } });
+    const offer = await prisma.offer.findFirst({ where: { id: offerId, clientId }, include: { targets: true, exclusions: true } });
     if (!offer) throw notFound('That offer no longer exists.');
 
     const installation = await this.installationFor(clientId);
@@ -276,7 +279,7 @@ export class OfferMirrorService {
 
   /** "Put this offer on Shopify." */
   async enable(clientId: string, offerId: string, userId?: string) {
-    const offer = await prisma.offer.findFirst({ where: { id: offerId, clientId }, include: { targets: true } });
+    const offer = await prisma.offer.findFirst({ where: { id: offerId, clientId }, include: { targets: true, exclusions: true } });
     if (!offer) throw notFound('That offer no longer exists.');
     if (offer.status === 'ARCHIVED') throw conflict('A retired offer cannot be put on Shopify.');
     if (offer.status === 'DRAFT') throw badRequest('Start the offer first. A draft is not put on Shopify.');
@@ -345,7 +348,7 @@ export class OfferMirrorService {
     if (mirror.status !== 'DRIFTED' || !mirror.shopifyDiscountId) {
       throw conflict('There is no Shopify change waiting to be accepted.');
     }
-    const offer = await prisma.offer.findFirstOrThrow({ where: { id: offerId }, include: { targets: true } });
+    const offer = await prisma.offer.findFirstOrThrow({ where: { id: offerId }, include: { targets: true, exclusions: true } });
 
     const api = await apiFor(mirror.installation);
     const data: any = await api.graphql(QUERIES.node, { id: mirror.shopifyDiscountId });
@@ -392,9 +395,14 @@ export class OfferMirrorService {
     } else if (!theirs.value.eachItem) {
       input.valueType = 'FIXED_AMOUNT';
       input.level = 'ORDER';
+      input.perPiece = false;
       input.value = Number(theirs.value.amount);
     } else {
-      throw badRequest('In Shopify this now takes an amount off each item, which an offer here cannot say. Push ours, or change it in Shopify.');
+      // An amount off each item: an offer here says that as "off each piece".
+      input.valueType = 'FIXED_AMOUNT';
+      input.level = 'LINE';
+      input.perPiece = true;
+      input.value = Number(theirs.value.amount);
     }
 
     if (theirs.items === 'ALL') {
@@ -443,7 +451,7 @@ export class OfferMirrorService {
     const mirror = await prisma.offerExternalMirror.findUnique({
       where: { id: mirrorId },
       include: {
-        offer: { include: { targets: true } },
+        offer: { include: { targets: true, exclusions: true } },
         installation: { select: { id: true, shopDomain: true, scopes: true, uninstalledAt: true } }
       }
     });
@@ -659,7 +667,7 @@ export class OfferMirrorService {
     if (!(await this.claim(mirrorId))) return 'BUSY';
     const mirror = await prisma.offerExternalMirror.findUnique({
       where: { id: mirrorId },
-      include: { offer: { include: { targets: true } }, installation: { select: { id: true, shopDomain: true, uninstalledAt: true } } }
+      include: { offer: { include: { targets: true, exclusions: true } }, installation: { select: { id: true, shopDomain: true, uninstalledAt: true } } }
     });
     if (!mirror) return 'GONE';
     const release = (data: Record<string, unknown>) =>

@@ -37,7 +37,23 @@ router.get('/', requirePermission('offer:view'), async (req: Request, res: Respo
   }
 });
 
-// Declared before /:id, or Express would read "options" as an offer id.
+// Declared before /:id, or Express would read "settings" or "options" as an offer id.
+router.get('/settings', requirePermission('offer:view'), async (req: Request, res: Response) => {
+  try {
+    res.json({ success: true, data: await offerService.getSettings(clientOf(req)) });
+  } catch (error) {
+    return respondWithError(res, error, { status: 500, message: 'Could not load the till rules.' });
+  }
+});
+
+router.put('/settings', requirePermission('offer:settings'), async (req: Request, res: Response) => {
+  try {
+    res.json({ success: true, data: await offerService.setSettings(clientOf(req), req.body ?? {}) });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not save the till rules.' });
+  }
+});
+
 router.get('/options', requirePermission('offer:view'), async (req: Request, res: Response) => {
   try {
     res.json({ success: true, data: await offerInsightService.options(clientOf(req)) });
@@ -84,6 +100,42 @@ router.patch('/:id', requirePermission('offer:update'), async (req: Request, res
     res.json({ success: true, data: offer });
   } catch (error) {
     return respondWithError(res, error, { status: 400, message: 'Could not save that offer.' });
+  }
+});
+
+/** A copy to start from -- always a draft, never carrying the original's codes or uses. */
+router.post('/:id/duplicate', requirePermission('offer:create'), async (req: Request, res: Response) => {
+  try {
+    const copy = await offerService.duplicate(clientOf(req), String(req.params.id), userOf(req));
+    res.status(201).json({ success: true, data: copy });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not copy that offer.' });
+  }
+});
+
+// ── Single-use codes ────────────────────────────────────────────────────────────────────────────
+
+router.get('/:id/codes', requirePermission('offer:view'), async (req: Request, res: Response) => {
+  try {
+    const data = await offerService.listCodes(clientOf(req), String(req.params.id), {
+      status: req.query.status ? String(req.query.status).toUpperCase() : undefined,
+      q: req.query.q ? String(req.query.q) : undefined,
+      take: req.query.take ? Number(req.query.take) : undefined,
+      skip: req.query.skip ? Number(req.query.skip) : undefined,
+      all: req.query.all === '1' || req.query.all === 'true'
+    });
+    res.json({ success: true, data });
+  } catch (error) {
+    return respondWithError(res, error, { status: 500, message: 'Could not load the codes.' });
+  }
+});
+
+router.post('/:id/codes', requirePermission('offer:update'), async (req: Request, res: Response) => {
+  try {
+    const data = await offerService.makeCodes(clientOf(req), String(req.params.id), String(req.body?.prefix ?? ''), Number(req.body?.count));
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    return respondWithError(res, error, { status: 400, message: 'Could not make the codes.' });
   }
 });
 

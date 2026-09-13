@@ -696,6 +696,9 @@ model Customer {
 
   notes String? @db.Text
 
+  /// Groups the customer belongs to -- VIP, STAFF, WHOLESALE. What an offer's customerTags match.
+  tags String[] @default([])
+
   salesOrders SalesOrder[]
 
   deletedAt DateTime? @map("deleted_at")
@@ -1023,6 +1026,11 @@ model SalesOrderDiscount {
   /// What the customer saw it called.
   title  String
   amount Decimal @db.Decimal(10, 2)
+
+  /// MANUAL: the user who took the money off. The reason is the title.
+  appliedBy String? @map("applied_by")
+  /// OFFER: the single-use or shared code that unlocked it, when one did.
+  code      String?
 
   allocations SalesOrderItemDiscount[]
 
@@ -1654,6 +1662,10 @@ model ClientSettings {
 
   /// ISO code. Formatting stays in the frontend; this records the intent.
   currency String @default("INR")
+
+  /// The most a person may take off by hand at the till, as a percentage of what is being
+  /// discounted, without offer:manual_discount_unlimited. Null means no limit.
+  manualDiscountMaxPercent Decimal? @map("manual_discount_max_percent") @db.Decimal(5, 2)
 
   /// The shop's logo, shown wherever the shop identifies itself to its own staff.
   ///
@@ -2439,6 +2451,23 @@ model Offer {
   /// accident.
   stackable Boolean @default(false)
 
+  /// FIXED_AMOUNT on items only: true takes the amount off every piece ("200 off each saree"),
+  /// false once off each line however many pieces are on it.
+  perPiece Boolean @default(false) @map("per_piece")
+
+  /// Only customers carrying one of these tags (VIP, STAFF...). Empty means every customer.
+  customerTags String[] @default([]) @map("customer_tags")
+
+  /// Happy hours, in the shop's own timezone: {"days":[1,2,3,4,5],"from":"16:00","to":"19:00"}.
+  /// Null means whenever the offer is running.
+  schedule Json?
+
+  /// A CODE offer unlocked by single-use codes in OfferCode rather than one shared couponCode.
+  uniqueCodes Boolean @default(false) @map("unique_codes")
+
+  exclusions OfferExclusion[]
+  codes      OfferCode[]
+
   status OfferStatus @default(DRAFT)
 
   /// The version an order records when it redeems this.
@@ -2461,6 +2490,45 @@ model Offer {
 }
 
 /// What an offer applies to, when it does not apply to everything.
+/// What an offer leaves out: "everything except bridal lehengas". Any scope but ALL, whatever the
+/// offer itself applies to.
+model OfferExclusion {
+  id      String @id @default(uuid())
+  offerId String @map("offer_id")
+  offer   Offer  @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  scope OfferScope
+  refId String     @map("ref_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([offerId, scope, refId])
+  @@index([offerId])
+  @@map("offer_exclusions")
+}
+
+/// One single-use code. Spent inside the transaction that writes the order, given back if that
+/// order is cancelled before it ships -- the same life as an offer's allowance.
+model OfferCode {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+  offerId  String @map("offer_id")
+  offer    Offer  @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  /// Stored upper-case; matched upper-case.
+  code String
+
+  salesOrderId String?   @map("sales_order_id")
+  usedAt       DateTime? @map("used_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([clientId, code])
+  @@index([offerId])
+  @@index([salesOrderId])
+  @@map("offer_codes")
+}
+
 model OfferTarget {
   id      String @id @default(uuid())
   offerId String @map("offer_id")

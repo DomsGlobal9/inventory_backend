@@ -15,4 +15,7 @@ export const customerSchema = z.object({
   billingAddress: z.string().optional().nullable(),
   shippingAddress: z.string().optional().nullable(),
   status: z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED']).optional(),
+  // Groups for offers: VIP, STAFF, WHOLESALE. Tidied and de-duplicated by the service.
+  tags: z.array(z.string().trim().min(1, 'A group needs a name').max(40, 'Keep a group name under 40 characters'))
+    .max(20, 'A customer can be in at most 20 groups').optional(),
 });

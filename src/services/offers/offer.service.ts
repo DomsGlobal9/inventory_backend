@@ -14,14 +14,18 @@ import { prisma } from '../../lib/prisma';
 import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../../utils/codeGenerator';
 import { badRequest, conflict, notFound } from '../../utils/httpError';
-import { OfferDraft, validateOffer, effectiveStatus, dedupeTargets } from './rules';
+import { OfferDraft, validateOffer, effectiveStatus, dedupeTargets, normaliseTags } from './rules';
+import { normaliseSchedule, OfferSchedule } from './schedule';
+import { generateCodes, validateCodeBatch, canonicalCode } from './codes';
+import { forgetShopSettings } from '../../lib/clientSettings';
 import { markOfferMirrorsDirty } from '../shopify-discounts/dirty';
 
 /** Which fields, when changed, mean the rule itself is different and history must be kept. */
 const RULE_FIELDS = [
   'trigger', 'couponCode', 'level', 'valueType', 'value', 'maxDiscount',
   'scope', 'minSubtotal', 'minQuantity', 'channels', 'locationIds',
-  'startsAt', 'endsAt', 'usageLimit', 'usageLimitPerCustomer', 'priority', 'stackable'
+  'startsAt', 'endsAt', 'usageLimit', 'usageLimitPerCustomer', 'priority', 'stackable',
+  'perPiece', 'customerTags', 'schedule', 'uniqueCodes'
 ] as const;
 
 export interface OfferInput extends OfferDraft {
@@ -86,6 +90,7 @@ export class OfferService {
       },
       include: {
         targets: true,
+        exclusions: true,
         // COUNTED only. A use given back by a cancelled order is history, not usage -- counting it
         // made the list say an offer had been used more times than its own allowance said, and a
         // merchant watching "first 50" saw it fill up with orders that never happened.
@@ -108,6 +113,7 @@ export class OfferService {
       where: { id, clientId },
       include: {
         targets: true,
+        exclusions: true,
         versions: { orderBy: { version: 'desc' }, take: 20 },
         _count: { select: { redemptions: true } }
       }
@@ -130,10 +136,11 @@ export class OfferService {
   }
 
   async create(clientId: string, input: OfferInput, userId?: string) {
-    input = { ...input, targets: dedupeTargets(String(input.scope ?? 'ALL'), input.targets ?? []) as any };
+    input = this.prepare(input);
     const problems = validateOffer(input);
     if (problems.length) throw badRequest(problems.join(' '));
     await this.checkReferences(clientId, input);
+    await this.checkSharedCodeFree(clientId, input.couponCode);
 
     const offerCode = await generateSequentialCode(clientId, 'OFR', 'OFFER');
 
@@ -146,7 +153,7 @@ export class OfferService {
             name: String(input.name).trim(),
             description: input.description ?? null,
             trigger: (input.trigger ?? 'AUTOMATIC') as any,
-            couponCode: input.trigger === 'CODE' ? String(input.couponCode).trim() : null,
+            couponCode: input.trigger === 'CODE' && input.couponCode ? String(input.couponCode).trim() : null,
             level: (input.level ?? 'LINE') as any,
             valueType: input.valueType as any,
             value: new Prisma.Decimal(Number(input.value)),
@@ -162,6 +169,10 @@ export class OfferService {
             usageLimitPerCustomer: input.usageLimitPerCustomer ?? null,
             priority: input.priority ?? 0,
             stackable: input.stackable ?? false,
+            perPiece: !!input.perPiece,
+            customerTags: input.customerTags ?? [],
+            schedule: (input.schedule ?? Prisma.JsonNull) as any,
+            uniqueCodes: !!input.uniqueCodes,
             // Always DRAFT. An offer becomes live by a deliberate act, never as a side effect of
             // being typed -- somebody half way through writing a 50% discount must not have it
             // running while they think about it.
@@ -169,9 +180,12 @@ export class OfferService {
             createdBy: userId ?? null,
             targets: {
               create: (input.targets ?? []).map(t => ({ scope: t.scope as any, refId: t.refId }))
+            },
+            exclusions: {
+              create: (input.exclusions ?? []).map(t => ({ scope: t.scope as any, refId: t.refId }))
             }
           },
-          include: { targets: true }
+          include: { targets: true, exclusions: true }
         });
 
         const version = await this.writeVersion(tx, offer, userId, 'Created');
@@ -192,7 +206,7 @@ export class OfferService {
    * are "changed the name" is one nobody reads, and the one entry that matters is lost in it.
    */
   async update(clientId: string, id: string, input: OfferInput, userId?: string, note?: string) {
-    const existing = await prisma.offer.findFirst({ where: { id, clientId }, include: { targets: true } });
+    const existing = await prisma.offer.findFirst({ where: { id, clientId }, include: { targets: true, exclusions: true } });
     if (!existing) throw notFound('That offer no longer exists.');
 
     if (existing.status === 'ARCHIVED') {
@@ -224,16 +238,39 @@ export class OfferService {
       usageLimitPerCustomer: input.usageLimitPerCustomer === undefined
         ? existing.usageLimitPerCustomer : input.usageLimitPerCustomer,
       priority: input.priority ?? existing.priority,
-      stackable: input.stackable ?? existing.stackable
+      stackable: input.stackable ?? existing.stackable,
+      perPiece: input.perPiece ?? existing.perPiece,
+      exclusions: input.exclusions ?? existing.exclusions.map(t => ({ scope: t.scope, refId: t.refId })),
+      customerTags: input.customerTags ?? existing.customerTags,
+      schedule: input.schedule === undefined ? existing.schedule : input.schedule,
+      uniqueCodes: input.uniqueCodes ?? existing.uniqueCodes
     };
 
-    merged.targets = dedupeTargets(String(merged.scope ?? 'ALL'), merged.targets ?? []) as any;
+    const prepared = this.prepare(merged);
+    Object.assign(merged, prepared);
     const problems = validateOffer(merged);
     if (problems.length) throw badRequest(problems.join(' '));
     await this.checkReferences(clientId, merged, {
-      targets: existing.targets.map(t => t.refId),
+      targets: [...existing.targets, ...existing.exclusions].map(t => t.refId),
       locations: existing.locationIds
     });
+    if ((merged.couponCode ?? null) !== (existing.couponCode ?? null)) {
+      await this.checkSharedCodeFree(clientId, merged.couponCode);
+    }
+
+    /*
+     * Turning single-use codes off, once codes exist.
+     *
+     * The codes are already printed on cards and in inboxes. Switching the offer to a shared code
+     * would make every one of them stop working without anyone being told. Refused; the honest way
+     * is a new offer.
+     */
+    if (existing.uniqueCodes && !merged.uniqueCodes) {
+      const made = await prisma.offerCode.count({ where: { offerId: id } });
+      if (made > 0) {
+        throw conflict(`This offer has ${made} single-use code${made === 1 ? '' : 's'} already made, and they would all stop working. Duplicate it into a new offer instead.`);
+      }
+    }
 
     /*
      * Changing a live offer that people have already used.
@@ -245,6 +282,7 @@ export class OfferService {
     try {
       const saved = await prisma.$transaction(async (tx) => {
         await tx.offerTarget.deleteMany({ where: { offerId: id } });
+        await tx.offerExclusion.deleteMany({ where: { offerId: id } });
 
         const updated = await tx.offer.update({
           where: { id },
@@ -252,7 +290,7 @@ export class OfferService {
             name: String(merged.name).trim(),
             description: merged.description ?? null,
             trigger: merged.trigger as any,
-            couponCode: merged.trigger === 'CODE' ? String(merged.couponCode).trim() : null,
+            couponCode: merged.trigger === 'CODE' && merged.couponCode ? String(merged.couponCode).trim() : null,
             level: merged.level as any,
             valueType: merged.valueType as any,
             value: new Prisma.Decimal(Number(merged.value)),
@@ -268,11 +306,18 @@ export class OfferService {
             usageLimitPerCustomer: merged.usageLimitPerCustomer ?? null,
             priority: merged.priority ?? 0,
             stackable: merged.stackable ?? false,
+            perPiece: !!merged.perPiece,
+            customerTags: merged.customerTags ?? [],
+            schedule: (merged.schedule ?? Prisma.JsonNull) as any,
+            uniqueCodes: !!merged.uniqueCodes,
             targets: {
               create: (merged.targets ?? []).map(t => ({ scope: t.scope as any, refId: t.refId }))
+            },
+            exclusions: {
+              create: (merged.exclusions ?? []).map(t => ({ scope: t.scope as any, refId: t.refId }))
             }
           },
-          include: { targets: true }
+          include: { targets: true, exclusions: true }
         });
 
         if (this.ruleChanged(existing, updated)) {
@@ -301,7 +346,7 @@ export class OfferService {
    * pressing a button instead of changing its dates.
    */
   async setStatus(clientId: string, id: string, next: 'ACTIVE' | 'PAUSED' | 'ARCHIVED', userId?: string) {
-    const offer = await prisma.offer.findFirst({ where: { id, clientId }, include: { targets: true } });
+    const offer = await prisma.offer.findFirst({ where: { id, clientId }, include: { targets: true, exclusions: true } });
     if (!offer) throw notFound('That offer no longer exists.');
 
     if (offer.status === next) return offer;
@@ -318,9 +363,14 @@ export class OfferService {
         value: Number(offer.value),
         maxDiscount: offer.maxDiscount == null ? null : Number(offer.maxDiscount),
         minSubtotal: offer.minSubtotal == null ? null : Number(offer.minSubtotal),
-        targets: offer.targets.map(t => ({ scope: t.scope, refId: t.refId }))
+        targets: offer.targets.map(t => ({ scope: t.scope, refId: t.refId })),
+        exclusions: offer.exclusions.map(t => ({ scope: t.scope, refId: t.refId }))
       } as any);
       if (problems.length) throw badRequest(problems.join(' '));
+
+      if (offer.uniqueCodes && (await prisma.offerCode.count({ where: { offerId: id, usedAt: null } })) === 0) {
+        throw badRequest('This offer has no unused codes yet. Make its codes first, then start it.');
+      }
 
       if (offer.endsAt && offer.endsAt <= new Date()) {
         throw badRequest('This offer already ended. Change its dates before starting it.');
@@ -389,6 +439,17 @@ export class OfferService {
       if (missing > 0) throw badRequest(`${missing === 1 ? 'One chosen item no longer exists' : `${missing} chosen items no longer exist`} in this shop. Remove ${missing === 1 ? 'it' : 'them'} and save again.`);
     }
 
+    // What it leaves out has to be this shop's too -- but a binned product may be left out; leaving
+    // out something that cannot sell is harmless.
+    const outProducts = (input.exclusions ?? []).filter(e => e.scope === 'PRODUCT' && !kept.targets.includes(e.refId)).map(e => e.refId);
+    const outVariants = (input.exclusions ?? []).filter(e => e.scope === 'VARIANT' && !kept.targets.includes(e.refId)).map(e => e.refId);
+    if (outProducts.length && (await prisma.product.count({ where: { clientId, id: { in: outProducts } } })) !== new Set(outProducts).size) {
+      throw badRequest('A product this offer leaves out no longer exists in this shop. Remove it and save again.');
+    }
+    if (outVariants.length && (await prisma.productVariant.count({ where: { clientId, id: { in: outVariants } } })) !== new Set(outVariants).size) {
+      throw badRequest('An item this offer leaves out no longer exists in this shop. Remove it and save again.');
+    }
+
     const locationIds = (input.locationIds ?? []).filter(id => !kept.locations.includes(id));
     if (locationIds.length) {
       const found = await prisma.stockLocation.findMany({
@@ -400,6 +461,197 @@ export class OfferService {
       const closed = found.filter(l => !l.active);
       if (closed.length) throw badRequest(`${closed.map(l => l.name).join(', ')} ${closed.length === 1 ? 'is' : 'are'} closed. Choose an open location.`);
     }
+  }
+
+  /** One shape for every save: duplicates gone, tags tidied, per-piece only where it means something. */
+  private prepare(input: OfferInput): OfferInput {
+    const scope = String(input.scope ?? 'ALL');
+    const exclusions = (input.exclusions ?? []).map(e => ({ scope: e.scope, refId: String(e.refId ?? '').trim() }));
+    const outByKey = new Map<string, { scope: string; refId: string }>();
+    for (const e of exclusions) {
+      const key = `${e.scope}:${e.scope === 'DRESS_TYPE' ? e.refId.toLowerCase() : e.refId}`;
+      if (e.refId && !outByKey.has(key)) outByKey.set(key, e);
+    }
+    const level = input.level ?? 'LINE';
+    return {
+      ...input,
+      targets: dedupeTargets(scope, input.targets ?? []) as any,
+      exclusions: [...outByKey.values()],
+      customerTags: normaliseTags(input.customerTags),
+      schedule: input.schedule == null ? null : normaliseSchedule(input.schedule as OfferSchedule),
+      // Per piece is a property of an amount off items. On a percentage or a bill it means nothing,
+      // and storing it there would make two identical offers look different in their history.
+      perPiece: input.valueType === 'FIXED_AMOUNT' && level === 'LINE' ? !!input.perPiece : false,
+      uniqueCodes: input.trigger === 'CODE' ? !!input.uniqueCodes : false,
+      couponCode: input.trigger === 'CODE' && input.uniqueCodes ? null : input.couponCode
+    };
+  }
+
+  /** A shared code must not be one of the single-use codes already printed. */
+  private async checkSharedCodeFree(clientId: string, couponCode?: string | null) {
+    if (!couponCode) return;
+    const taken = await prisma.offerCode.findFirst({ where: { clientId, code: canonicalCode(couponCode) }, select: { id: true } });
+    if (taken) throw conflict(`${canonicalCode(couponCode)} is already one of your single-use codes. Pick a different code.`);
+  }
+
+  /**
+   * A copy to start from.
+   *
+   * Last Deepavali's sale, ready to be this Deepavali's. Always a DRAFT, never used, and never
+   * carrying the original's single-use codes -- those belong to the original's customers. Dates in
+   * the past are not copied: a copy that has already ended is a copy nobody can start.
+   */
+  async duplicate(clientId: string, id: string, userId?: string) {
+    const source = await prisma.offer.findFirst({ where: { id, clientId }, include: { targets: true, exclusions: true } });
+    if (!source) throw notFound('That offer no longer exists.');
+
+    const now = new Date();
+    const startsAt = source.startsAt > now ? source.startsAt : now;
+    const endsAt = source.endsAt && source.endsAt > startsAt ? source.endsAt : null;
+
+    let couponCode: string | null = null;
+    if (source.trigger === 'CODE' && !source.uniqueCodes && source.couponCode) {
+      const base = source.couponCode.toUpperCase().replace(/-COPY\d*$/, '').slice(0, 24);
+      for (let n = 1; n < 100 && !couponCode; n++) {
+        const candidate = n === 1 ? `${base}-COPY` : `${base}-COPY${n}`;
+        const clash = await prisma.offer.findFirst({ where: { clientId, couponCode: { equals: candidate, mode: 'insensitive' } }, select: { id: true } })
+          ?? await prisma.offerCode.findFirst({ where: { clientId, code: candidate }, select: { id: true } });
+        if (!clash) couponCode = candidate;
+      }
+    }
+
+    return this.create(clientId, {
+      name: `Copy of ${source.name}`.slice(0, 120),
+      description: source.description,
+      trigger: source.trigger as any,
+      couponCode,
+      level: source.level as any,
+      valueType: source.valueType as any,
+      value: Number(source.value),
+      maxDiscount: source.maxDiscount == null ? null : Number(source.maxDiscount),
+      scope: source.scope as any,
+      targets: source.targets.map(t => ({ scope: t.scope, refId: t.refId })),
+      exclusions: source.exclusions.map(t => ({ scope: t.scope, refId: t.refId })),
+      minSubtotal: source.minSubtotal == null ? null : Number(source.minSubtotal),
+      minQuantity: source.minQuantity,
+      channels: source.channels as any,
+      // Only locations still open: a copy should not fail to save over a shop that has since closed.
+      locationIds: source.locationIds.length
+        ? (await prisma.stockLocation.findMany({ where: { clientId, id: { in: source.locationIds }, active: true }, select: { id: true } })).map(l => l.id)
+        : [],
+      startsAt,
+      endsAt,
+      usageLimit: source.usageLimit,
+      usageLimitPerCustomer: source.usageLimitPerCustomer,
+      priority: source.priority,
+      stackable: source.stackable,
+      perPiece: source.perPiece,
+      customerTags: source.customerTags,
+      schedule: source.schedule,
+      uniqueCodes: source.uniqueCodes
+    } as any, userId);
+  }
+
+  /**
+   * Make a batch of single-use codes.
+   *
+   * Written with skipDuplicates and counted afterwards, so a code another request made in the same
+   * instant is simply not ours -- and the shortfall is made up, rather than the whole batch failing.
+   */
+  async makeCodes(clientId: string, id: string, prefix: string, count: number) {
+    const offer = await prisma.offer.findFirst({ where: { id, clientId }, select: { id: true, uniqueCodes: true, status: true } });
+    if (!offer) throw notFound('That offer no longer exists.');
+    if (!offer.uniqueCodes) throw badRequest('This offer uses one shared code, not single-use codes.');
+    if (offer.status === 'ARCHIVED') throw conflict('This offer has been retired, so it cannot have new codes.');
+
+    const problems = validateCodeBatch(prefix, Number(count));
+    if (problems.length) throw badRequest(problems.join(' '));
+
+    const existingTotal = await prisma.offerCode.count({ where: { offerId: id } });
+    if (existingTotal + Number(count) > 50000) {
+      throw badRequest('An offer can have at most 50,000 codes.');
+    }
+
+    let made = 0;
+    for (let round = 0; round < 5 && made < count; round++) {
+      const batch = generateCodes(prefix, count - made);
+      // Never the same as any shared code in this shop.
+      const shared = await prisma.offer.findMany({
+        where: { clientId, couponCode: { in: batch, mode: 'insensitive' } }, select: { couponCode: true }
+      });
+      const blocked = new Set(shared.map(s => String(s.couponCode).toUpperCase()));
+      const rows = batch.filter(c => !blocked.has(c)).map(code => ({ clientId, offerId: id, code }));
+      const result = await prisma.offerCode.createMany({ data: rows, skipDuplicates: true });
+      made += result.count;
+    }
+
+    const totals = await this.codeCounts(id);
+    return { made, ...totals };
+  }
+
+  private async codeCounts(offerId: string) {
+    const [total, used] = await Promise.all([
+      prisma.offerCode.count({ where: { offerId } }),
+      prisma.offerCode.count({ where: { offerId, usedAt: { not: null } } })
+    ]);
+    return { total, used, unused: total - used };
+  }
+
+  /** The codes, a page at a time, or every unused one for copying out. */
+  async listCodes(clientId: string, id: string, opts: { status?: string; q?: string; take?: number; skip?: number; all?: boolean } = {}) {
+    const offer = await prisma.offer.findFirst({ where: { id, clientId }, select: { id: true } });
+    if (!offer) throw notFound('That offer no longer exists.');
+
+    const where: Prisma.OfferCodeWhereInput = {
+      offerId: id,
+      ...(opts.status === 'USED' ? { usedAt: { not: null } } : opts.status === 'UNUSED' ? { usedAt: null } : {}),
+      ...(opts.q ? { code: { contains: canonicalCode(opts.q) } } : {})
+    };
+    const take = opts.all ? 50000 : Math.min(Math.max(Number(opts.take) || 50, 1), 200);
+    const rows = await prisma.offerCode.findMany({
+      where, orderBy: [{ usedAt: { sort: 'desc', nulls: 'last' } }, { code: 'asc' }],
+      take, skip: opts.all ? 0 : Math.max(Number(opts.skip) || 0, 0),
+      select: { code: true, usedAt: true, salesOrderId: true, createdAt: true }
+    });
+
+    const orders = rows.some(r => r.salesOrderId)
+      ? await prisma.salesOrder.findMany({
+          where: { clientId, id: { in: rows.map(r => r.salesOrderId).filter(Boolean) as string[] } },
+          select: { id: true, orderNumber: true }
+        })
+      : [];
+    const numberOf = new Map(orders.map(o => [o.id, o.orderNumber]));
+
+    return {
+      ...(await this.codeCounts(id)),
+      matching: await prisma.offerCode.count({ where }),
+      codes: rows.map(r => ({ code: r.code, usedAt: r.usedAt, orderId: r.salesOrderId, orderNumber: r.salesOrderId ? numberOf.get(r.salesOrderId) ?? null : null }))
+    };
+  }
+
+  /** The shop-wide rule for discounts at the till. */
+  async getSettings(clientId: string) {
+    const row = await prisma.clientSettings.findUnique({ where: { clientId }, select: { manualDiscountMaxPercent: true } });
+    return { manualDiscountMaxPercent: row?.manualDiscountMaxPercent == null ? null : Number(row.manualDiscountMaxPercent) };
+  }
+
+  async setSettings(clientId: string, input: { manualDiscountMaxPercent?: number | string | null }) {
+    const raw = input.manualDiscountMaxPercent;
+    const value = raw === '' || raw == null ? null : Number(raw);
+    if (value != null && (!Number.isFinite(value) || value <= 0 || value > 100)) {
+      throw badRequest('The till limit is a percentage above 0 and up to 100. Leave it empty for no limit.');
+    }
+    if (value != null && Math.abs(value * 100 - Math.round(value * 100)) > 1e-6) {
+      throw badRequest('Give the till limit to at most two decimal places.');
+    }
+    await prisma.clientSettings.upsert({
+      where: { clientId },
+      create: { clientId, manualDiscountMaxPercent: value == null ? null : new Prisma.Decimal(value) },
+      update: { manualDiscountMaxPercent: value == null ? null : new Prisma.Decimal(value) }
+    });
+    // Seen by the very next order, not a minute later.
+    forgetShopSettings(clientId);
+    return this.getSettings(clientId);
   }
 
   /** The immutable record of what the rule said. */
@@ -434,7 +686,12 @@ export class OfferService {
           usageLimit: offer.usageLimit,
           usageLimitPerCustomer: offer.usageLimitPerCustomer,
           priority: offer.priority,
-          stackable: offer.stackable
+          stackable: offer.stackable,
+          perPiece: offer.perPiece,
+          exclusions: (offer.exclusions ?? []).map((t: any) => ({ scope: t.scope, refId: t.refId })),
+          customerTags: offer.customerTags ?? [],
+          schedule: offer.schedule ?? null,
+          uniqueCodes: offer.uniqueCodes
         }
       }
     });
@@ -449,6 +706,9 @@ export class OfferService {
         if (String(a?.valueOf?.() ?? a) !== String(b?.valueOf?.() ?? b)) return true;
       } else if (Array.isArray(a) || Array.isArray(b)) {
         if (JSON.stringify(a ?? []) !== JSON.stringify(b ?? [])) return true;
+      } else if ((a && typeof a === 'object') || (b && typeof b === 'object')) {
+        // A schedule. String() of two different objects is "[object Object]" both times.
+        if (JSON.stringify(a ?? null) !== JSON.stringify(b ?? null)) return true;
       } else if (String(a ?? '') !== String(b ?? '')) {
         return true;
       }
@@ -457,7 +717,10 @@ export class OfferService {
     const targetKey = (t: any) => `${t.scope}:${t.refId}`;
     const beforeTargets = (before.targets ?? []).map(targetKey).sort().join('|');
     const afterTargets = (after.targets ?? []).map(targetKey).sort().join('|');
-    return beforeTargets !== afterTargets;
+    if (beforeTargets !== afterTargets) return true;
+    const beforeOut = (before.exclusions ?? []).map(targetKey).sort().join('|');
+    const afterOut = (after.exclusions ?? []).map(targetKey).sort().join('|');
+    return beforeOut !== afterOut;
   }
 
   /** A duplicate coupon code, said the way a merchant would ask about it. */

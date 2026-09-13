@@ -56,6 +56,11 @@ export interface MirrorableOffer {
   usageLimit: number | null;
   usageLimitPerCustomer: number | null;
   stackable: boolean;
+  perPiece?: boolean;
+  exclusions?: { scope: string; refId: string }[];
+  customerTags?: string[];
+  schedule?: unknown;
+  uniqueCodes?: boolean;
 }
 
 export interface TranslationContext {
@@ -170,12 +175,13 @@ export function translateOffer(offer: MirrorableOffer, ctx: TranslationContext):
       value = { percentage: pct(Number(offer.value) / 100) };
     }
   } else if (offer.valueType === 'FIXED_AMOUNT') {
-    if (offer.level === 'LINE') {
-      say('Shopify takes a fixed amount off each item, or once from the whole order. This offer takes it off each line, which Shopify has no way to say. Make it an order-level offer to put it on Shopify.');
+    if (offer.level === 'LINE' && !offer.perPiece) {
+      say('Shopify takes a fixed amount off each piece, or once from the whole order. This offer takes it once off each line, which Shopify has no way to say. Take it off each piece, or off the whole bill, to put it on Shopify.');
     } else if (ctx.storeCurrency && ctx.storeCurrency !== ctx.shopCurrency) {
       say(`Your Shopify store sells in ${ctx.storeCurrency} and this shop in ${ctx.shopCurrency}. An amount off is never converted; use a percentage instead.`);
     } else {
-      value = { amount: money(offer.value), eachItem: false };
+      // Per piece is exactly Shopify's "applies on each item".
+      value = { amount: money(offer.value), eachItem: offer.level === 'LINE' };
     }
   }
 
@@ -238,7 +244,21 @@ export function translateOffer(offer: MirrorableOffer, ctx: TranslationContext):
     say(`A minimum spend in ${ctx.shopCurrency} cannot be applied to a store that sells in ${ctx.storeCurrency}.`);
   }
 
-  if (offer.trigger === 'CODE' && !offer.couponCode) say('This code offer has no code.');
+  // ── rules Shopify has no words for ────────────────────────────────────────
+  if ((offer.exclusions ?? []).length > 0) {
+    say('Shopify cannot leave items out of a discount. Choose the products it applies to instead, to put it on Shopify.');
+  }
+  if ((offer.customerTags ?? []).length > 0) {
+    say('This offer is only for some customer groups, and Shopify would give it to everyone.');
+  }
+  if (offer.schedule != null) {
+    say('Shopify cannot run a discount only at certain hours, so it would run all day there.');
+  }
+  if (offer.uniqueCodes) {
+    say('Single-use codes stay with your till and website. Use one shared code to put an offer on Shopify.');
+  } else if (offer.trigger === 'CODE' && !offer.couponCode) {
+    say('This code offer has no code.');
+  }
 
   if (reasons.length > 0 || !value || !items) {
     return { ok: false, reasons: reasons.length ? reasons : ['This offer cannot be expressed in Shopify.'] };
