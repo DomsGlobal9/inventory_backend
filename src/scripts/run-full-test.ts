@@ -47,6 +47,18 @@ async function run() {
   const api: AxiosInstance = axios.create({ baseURL: BASE, headers: { Authorization: `Bearer ${token}` }, validateStatus: () => true });
   const svcApi: AxiosInstance = axios.create({ baseURL: BASE, headers: { Authorization: `Bearer ${token}`, 'x-internal-service-key': SVC_KEY }, validateStatus: () => true });
 
+  /*
+   * Everything this run creates is removed in the finally at the bottom, whether the checks pass,
+   * fail or throw. It used to delete only its two locations (which the API refuses once they have
+   * been used), so every run left a product with stock, a supplier and a received purchase order, a
+   * customer with confirmed orders, a never-deletable "Lifecycle Product" and a "Test Count" stock
+   * count behind on demo-client -- 61 stock counts, 126 products and 121 orders by the time anyone
+   * counted.
+   */
+  const runStartedAt = new Date();
+  const stockBefore = await stockTotals(clientId);
+  try {
+
   // ── 1. AUTH ──
   console.log('\n── 1. AUTHENTICATION ──');
   await test('1.1 No token → 401', async () => { const r = await axios.get(`${BASE}/products`, { validateStatus: () => true }); assert(r.status === 401); });
@@ -135,7 +147,8 @@ async function run() {
   // ── 8. CUSTOMERS ──
   console.log('\n── 8. CUSTOMERS ──');
   await test('8.1 Create customer', async () => {
-    const r = await api.post('/customers', { name: 'Test Cust', email: `c${Date.now()}@test.com`, phone: '9123456789' });
+    // A phone of its own each run: a shop refuses a second customer with a number it already has.
+    const r = await api.post('/customers', { name: 'Test Cust', email: `c${Date.now()}@test.com`, phone: `9${String(Date.now()).slice(-9)}` });
     if (r.status === 201 || r.status === 200) { ids.cust = r.data.data?.id || r.data.id; }
     assert(r.status === 201 || r.status === 200, `got ${r.status}: ${JSON.stringify(r.data).slice(0,200)}`);
   });
@@ -325,10 +338,27 @@ async function run() {
     }
   }
 
-  // ── CLEANUP ──
-  console.log('\n── CLEANUP ──');
-  if (ids.loc1) console.log(`  Loc1: ${(await api.delete(`/locations/${ids.loc1}`)).status}`);
-  if (ids.loc2) console.log(`  Loc2: ${(await api.delete(`/locations/${ids.loc2}`)).status}`);
+  } catch (e: any) {
+    // A throw outside any single check still counts as a failure, and still reaches the cleanup.
+    console.log(`  [FAIL] the run stopped early — ${e?.message ?? e}`); failed++;
+  } finally {
+    // ── CLEANUP ──
+    console.log('\n── CLEANUP ──');
+    try {
+      await purgeRun(clientId, runStartedAt);
+    } catch (e: any) {
+      console.log(`  [FAIL] cleanup threw — ${e?.message ?? e}`); failed++;
+    }
+    await test('Everything this run created is removed', async () => {
+      const left = await leftFromRun(clientId, runStartedAt);
+      const total = Object.values(left).reduce((s, n) => s + n, 0);
+      assert(total === 0, `left behind: ${JSON.stringify(left)}`);
+    });
+    await test("The shop's stock is exactly what it was before the run", async () => {
+      const after = await stockTotals(clientId);
+      assert(JSON.stringify(after) === JSON.stringify(stockBefore), `before ${JSON.stringify(stockBefore)}, after ${JSON.stringify(after)}`);
+    });
+  }
 
   console.log('\n╔══════════════════════════════════════════════════╗');
   console.log(`║  RESULTS: ${passed} Passed | ${failed} Failed | ${skipped} Skipped`);
@@ -336,6 +366,108 @@ async function run() {
 
   await prisma.$disconnect();
   process.exit(failed > 0 ? 1 : 0);
+}
+
+/*
+ * What one run made, found by what it is rather than by the ids it happened to capture -- a check
+ * that failed half way may have created something whose id it never saw. Everything is limited to
+ * this tenant, to records created since the run started, and to the names and codes this script
+ * gives them, so a person using demo-client at the same moment is never touched.
+ */
+const TEST_USERS = ['admin@example.com', 'sales@example.com', 'warehouse@example.com'];
+
+async function madeByRun(clientId: string, since: Date) {
+  const recent = { clientId, createdAt: { gte: since } };
+  const [products, locations, suppliers, customers, counts] = await Promise.all([
+    prisma.product.findMany({
+      where: { ...recent, OR: [{ title: { startsWith: 'Test Saree ' } }, { title: { startsWith: 'Updated Saree ' } }, { title: 'Lifecycle Product' }, { title: 'RBAC Probe' }] },
+      select: { id: true, variants: { select: { id: true } } }
+    }),
+    prisma.stockLocation.findMany({
+      where: { ...recent, OR: ['TWH-', 'TST-', 'UWH-', 'RBAC-'].map(p => ({ code: { startsWith: p } })) }, select: { id: true }
+    }),
+    prisma.supplier.findMany({ where: { ...recent, OR: [{ name: { startsWith: 'Test Supplier ' } }, { name: 'Updated Supplier' }] }, select: { id: true } }),
+    prisma.customer.findMany({ where: { ...recent, name: 'Test Cust' }, select: { id: true } }),
+    prisma.stockCount.findMany({ where: { ...recent, name: { startsWith: 'Test Count ' } }, select: { id: true } })
+  ]);
+  const productIds = products.map(p => p.id);
+  const variantIds = products.flatMap(p => p.variants.map(v => v.id));
+  const customerIds = customers.map(c => c.id);
+  const supplierIds = suppliers.map(s => s.id);
+  const orders = await prisma.salesOrder.findMany({
+    where: { clientId, OR: [{ customerId: { in: customerIds } }, { items: { some: { variantId: { in: variantIds } } } }] }, select: { id: true }
+  });
+  const purchaseOrders = await prisma.purchaseOrder.findMany({
+    where: { clientId, OR: [{ supplierId: { in: supplierIds } }, { items: { some: { variantId: { in: variantIds } } } }] }, select: { id: true }
+  });
+  return {
+    productIds, variantIds, customerIds, supplierIds,
+    locationIds: locations.map(l => l.id), stockCountIds: counts.map(c => c.id),
+    orderIds: orders.map(o => o.id), purchaseOrderIds: purchaseOrders.map(p => p.id)
+  };
+}
+
+/** Units on hand and rows, per location -- what a run must leave exactly as it found. */
+async function stockTotals(clientId: string) {
+  const rows = await prisma.inventoryStock.groupBy({
+    by: ['locationId'], where: { clientId }, _sum: { quantity: true }, _count: { _all: true }, orderBy: { locationId: 'asc' }
+  });
+  return rows.map(r => [r.locationId, r._sum.quantity ?? 0, r._count._all]);
+}
+
+/** Remove a run's records, in the order the foreign keys allow. */
+async function purgeRun(clientId: string, since: Date) {
+  const m = await madeByRun(clientId, since);
+  const atThese = { OR: [{ variantId: { in: m.variantIds } }, { locationId: { in: m.locationIds } }] };
+
+  // Returns and ledger rows point at orders without cascading; orders cascade to their items,
+  // reservations, dispatches and discounts.
+  await prisma.salesReturn.deleteMany({ where: { clientId, salesOrderId: { in: m.orderIds } } });
+  await prisma.salesLedger.deleteMany({ where: { clientId, salesOrderId: { in: m.orderIds } } });
+  // Dispatch lines hold their order's lines with Restrict, so they go before the orders do.
+  await prisma.dispatchItem.deleteMany({ where: { dispatch: { clientId, salesOrderId: { in: m.orderIds } } } });
+  await prisma.dispatch.deleteMany({ where: { clientId, salesOrderId: { in: m.orderIds } } });
+  await prisma.salesOrder.deleteMany({ where: { clientId, id: { in: m.orderIds } } });
+  // Purchase orders cascade to their items, which would otherwise hold the variants.
+  await prisma.purchaseOrder.deleteMany({ where: { clientId, id: { in: m.purchaseOrderIds } } });
+  await prisma.stockCount.deleteMany({ where: { clientId, id: { in: m.stockCountIds } } });
+
+  await prisma.inventoryEvent.deleteMany({ where: atThese });
+  await prisma.inventoryAlert.deleteMany({ where: { clientId, ...atThese } });
+  await prisma.inventoryTransaction.deleteMany({ where: atThese });
+  await prisma.inventoryReservation.deleteMany({ where: atThese });
+  await prisma.inventoryStock.deleteMany({ where: atThese });
+  await prisma.variantLocationProfile.deleteMany({ where: atThese });
+  await prisma.inventoryTransfer.deleteMany({
+    where: { clientId, OR: [{ variantId: { in: m.variantIds } }, { fromLocationId: { in: m.locationIds } }, { toLocationId: { in: m.locationIds } }] }
+  });
+  await prisma.storefrontEvent.deleteMany({ where: { clientId, variantId: { in: m.variantIds } } });
+
+  // Variants, images and supplier links go with their product (onDelete: Cascade).
+  await prisma.product.deleteMany({ where: { clientId, id: { in: m.productIds } } });
+  await prisma.supplier.deleteMany({ where: { clientId, id: { in: m.supplierIds } } });
+  await prisma.stockLocation.deleteMany({ where: { clientId, id: { in: m.locationIds } } });
+  await prisma.customer.deleteMany({ where: { clientId, id: { in: m.customerIds } } });
+
+  // The audit rows the run's three users wrote while it ran. Rows about creating something carry
+  // "n/a" instead of the new record's id, so they cannot be matched by id.
+  const users = await prisma.user.findMany({ where: { clientId, email: { in: TEST_USERS } }, select: { id: true } });
+  await prisma.auditLog.deleteMany({ where: { clientId, userId: { in: users.map(u => u.id) }, createdAt: { gte: since } } });
+}
+
+async function leftFromRun(clientId: string, since: Date) {
+  const m = await madeByRun(clientId, since);
+  const users = await prisma.user.findMany({ where: { clientId, email: { in: TEST_USERS } }, select: { id: true } });
+  return {
+    products: m.productIds.length, locations: m.locationIds.length, suppliers: m.supplierIds.length,
+    customers: m.customerIds.length, stockCounts: m.stockCountIds.length, orders: m.orderIds.length,
+    purchaseOrders: m.purchaseOrderIds.length,
+    // Any stock movement at all on the tenant since the run began: this run's are on its own item,
+    // so none may survive it.
+    stockMovements: await prisma.inventoryTransaction.count({ where: { clientId, createdAt: { gte: since } } }),
+    reservations: await prisma.inventoryReservation.count({ where: { clientId, createdAt: { gte: since } } }),
+    auditRows: await prisma.auditLog.count({ where: { clientId, userId: { in: users.map(u => u.id) }, createdAt: { gte: since } } })
+  };
 }
 
 run().catch(e => { console.error(e); process.exit(1); });

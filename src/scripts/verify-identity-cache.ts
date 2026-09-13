@@ -19,8 +19,11 @@ const check = (name: string, ok: boolean, detail?: string) => {
 };
 
 async function main() {
+  // Pinned to the test shop's own admin. This switches the account off and on again to prove the
+  // cache lets go; picking "any active user with a role" could land on a real person in a live
+  // shop and lock them out for the length of the run.
   const user = await prisma.user.findFirst({
-    where: { status: 'ACTIVE', roles: { some: {} } },
+    where: { clientId: 'demo-client', email: 'admin@example.com', status: 'ACTIVE', roles: { some: {} } },
     select: { id: true, clientId: true, status: true }
   });
   if (!user) { console.log('No active user with a role to test against.'); return; }
