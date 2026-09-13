@@ -43,7 +43,17 @@ async function run() {
 
   // ---------------------------------------------------------------- setup
   let locA = '', locB = '', productId = '', variantId = '', customerId = '';
+  const orderIds: string[] = [];
   const stamp = Date.now();
+  const runStartedAt = new Date();
+
+  /*
+   * Everything this run creates is removed in the finally below, whether the checks pass, fail or
+   * throw. It used to remove only the two locations, and only when it reached the end: every run
+   * left a customer and a product behind on demo-client -- 37 of each by the time anyone counted --
+   * and later suites (stock counts among them) picked the products up as if they were real stock.
+   */
+  try {
 
   console.log('-- Location CRUD --');
   await test('create two locations', async () => {
@@ -160,6 +170,7 @@ async function run() {
     customerId = unwrap(c).id;
     const o = await api.post('/sales-orders', { customerId, locationId: locB });
     const orderId = unwrap(o).id;
+    if (orderId) orderIds.push(orderId);
     const i = await api.post(`/sales-orders/${orderId}/items`, { variantId, quantity: 1 });
     assert(i.status === 200 || i.status === 201, `add item ${i.status} ${JSON.stringify(i.data).slice(0,200)}`);
     const unitPrice = Number(unwrap(i).unitPrice);
@@ -169,6 +180,7 @@ async function run() {
   await test('a variant marked unavailable at A cannot be added to an order there', async () => {
     const o = await api.post('/sales-orders', { customerId, locationId: locA });
     const orderId = unwrap(o).id;
+    if (orderId) orderIds.push(orderId);
     const i = await api.post(`/sales-orders/${orderId}/items`, { variantId, quantity: 1 });
     assert(i.status >= 400, `expected rejection, got ${i.status}`);
   });
@@ -179,6 +191,7 @@ async function run() {
     });
     const o = await api.post('/sales-orders', { customerId, locationId: locB });
     const orderId = unwrap(o).id;
+    if (orderId) orderIds.push(orderId);
     const i = await api.post(`/sales-orders/${orderId}/items`, { variantId, quantity: 1 });
     assert(i.status === 200 || i.status === 201, `add item ${i.status}`);
     const unitPrice = Number(unwrap(i).unitPrice);
@@ -204,55 +217,153 @@ async function run() {
     }
   });
 
-  // ---------------------------------------------------------------- cleanup
-  // These locations MUST be removed. Other suites pick a location with an unordered
-  // findFirst(), so every location left behind here can silently become "the" location
-  // they run against -- an empty one collapses their setup and cascades false failures.
-  console.log('\n-- Cleanup --');
-  // StockLocation is referenced with onDelete: Restrict from sales_orders, inventory_stocks
-  // and inventory_transactions -- correct behaviour (you must not be able to delete a
-  // location out from under live orders), but it means cleanup has to unwind in dependency
-  // order. Deleting a SalesOrder cascades to its items, their reservations and dispatches.
-  const purgeLocations = async (ids: string[]) => {
-    if (ids.length === 0) return;
-    await prisma.salesOrder.deleteMany({ where: { locationId: { in: ids } } });
-    // Every stock movement also writes an outbox row for the webhook dispatcher, and that
-    // table carries its own Restrict FK back to the location.
-    await prisma.inventoryEvent.deleteMany({ where: { locationId: { in: ids } } });
-    await prisma.inventoryTransaction.deleteMany({ where: { locationId: { in: ids } } });
-    await prisma.inventoryReservation.deleteMany({ where: { locationId: { in: ids } } });
-    await prisma.inventoryStock.deleteMany({ where: { locationId: { in: ids } } });
-    await prisma.variantLocationProfile.deleteMany({ where: { locationId: { in: ids } } });
-    await prisma.stockLocation.deleteMany({ where: { id: { in: ids } } });
-  };
-
-  await test('test locations and fixtures are removed', async () => {
+  } catch (e: any) {
+    // A throw outside any single check still counts as a failure, and still reaches the cleanup.
+    console.log(`  [FAIL] the run stopped early -- ${e?.message ?? e}`); failed++;
+  } finally {
+    // ---------------------------------------------------------------- cleanup
+    // All of it MUST be removed. Other suites pick a location with an unordered findFirst(), so
+    // every location left behind here can silently become "the" location they run against -- an
+    // empty one collapses their setup and cascades false failures. A leftover product is swept
+    // into every stock count another suite starts, and a leftover customer clutters the shop.
+    console.log('\n-- Cleanup --');
     const locIds = [locA, locB].filter(Boolean);
-    await purgeLocations(locIds);
-    const leftover = await prisma.stockLocation.count({ where: { clientId, id: { in: locIds } } });
-    assert(leftover === 0, `${leftover} test locations left behind`);
-  });
-
-  // Sweep locations leaked by earlier runs of this script, before cleanup existed.
-  await test('no LocFlow locations leaked from earlier runs', async () => {
-    const stale = await prisma.stockLocation.findMany({
-      where: { clientId, OR: [{ code: { startsWith: 'LFA-' } }, { code: { startsWith: 'LFB-' } }] },
-      select: { id: true }
-    });
-    const ids = stale.map(l => l.id);
-    if (ids.length) {
-      await purgeLocations(ids);
-      console.log(`     (swept ${ids.length} leaked location(s) from earlier runs)`);
+    try {
+      await purge(clientId, {
+        locationIds: locIds, productIds: [productId].filter(Boolean), customerIds: [customerId].filter(Boolean), orderIds
+      });
+      /*
+       * The audit rows this run wrote. Ones about creating something carry "n/a" rather than the
+       * new record's id (the audit logger does not capture it), so they cannot be found by id --
+       * only as what this script's user did between the start of the run and now.
+       */
+      await prisma.auditLog.deleteMany({ where: { clientId, userId: user.id, createdAt: { gte: runStartedAt } } });
+    } catch (e: any) {
+      console.log(`  [FAIL] cleanup threw -- ${e?.message ?? e}`); failed++;
     }
-    const remaining = await prisma.stockLocation.count({
-      where: { clientId, OR: [{ code: { startsWith: 'LFA-' } }, { code: { startsWith: 'LFB-' } }] }
+
+    await test('test locations, product, customer, orders and their audit rows are removed', async () => {
+      const [locs, products, variants, customers, orders, audit] = await Promise.all([
+        prisma.stockLocation.count({ where: { clientId, id: { in: locIds } } }),
+        prisma.product.count({ where: { clientId, title: `LocFlow Product ${stamp}` } }),
+        prisma.productVariant.count({ where: { clientId, sku: `LOCFLOW-${stamp}` } }),
+        prisma.customer.count({ where: { clientId, name: `LocFlow Cust ${stamp}` } }),
+        prisma.salesOrder.count({ where: { clientId, id: { in: orderIds } } }),
+        prisma.auditLog.count({ where: { clientId, userId: user.id, createdAt: { gte: runStartedAt } } })
+      ]);
+      assert(locs + products + variants + customers + orders + audit === 0,
+        `left behind: ${locs} location(s), ${products} product(s), ${variants} item(s), ${customers} customer(s), ${orders} order(s), ${audit} audit row(s)`);
     });
-    assert(remaining === 0, `${remaining} LocFlow locations still present`);
-  });
+
+    // What earlier runs of this script leaked, before its cleanup covered everything.
+    await test('nothing leaked by earlier runs that can safely go is left', async () => {
+      const swept = await sweepEarlierRuns(clientId);
+      if (swept.removed) console.log(`     (swept ${swept.removed} left by earlier runs)`);
+      if (swept.kept) console.log(`     (kept ${swept.kept} left by earlier runs -- other records still name them)`);
+      const remaining = await prisma.stockLocation.count({
+        where: { clientId, OR: [{ code: { startsWith: 'LFA-' } }, { code: { startsWith: 'LFB-' } }] }
+      });
+      assert(remaining === 0, `${remaining} LocFlow locations still present`);
+    });
+  }
 
   console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
   await prisma.$disconnect();
   process.exit(failed > 0 ? 1 : 0);
+}
+
+/**
+ * Remove what a run created, in the order the foreign keys allow.
+ *
+ * StockLocation is referenced with onDelete: Restrict from sales_orders, inventory_stocks and
+ * inventory_transactions -- correct behaviour (you must not be able to delete a location out from
+ * under live orders) -- and ProductVariant likewise from stock, order items and transfers. So
+ * orders go first (deleting a SalesOrder cascades to its items, their reservations and
+ * dispatches), then stock rows and movements, then the things they pointed at.
+ */
+async function purge(
+  clientId: string,
+  ids: { locationIds: string[]; productIds: string[]; customerIds: string[]; orderIds: string[] }
+) {
+  const { locationIds, productIds, customerIds, orderIds } = ids;
+  const variantIds = productIds.length
+    ? (await prisma.productVariant.findMany({ where: { clientId, productId: { in: productIds } }, select: { id: true } })).map(v => v.id)
+    : [];
+  const atThese = { OR: [{ locationId: { in: locationIds } }, { variantId: { in: variantIds } }] };
+
+  await prisma.salesOrder.deleteMany({
+    where: { clientId, OR: [{ id: { in: orderIds } }, { locationId: { in: locationIds } }, { customerId: { in: customerIds } }] }
+  });
+  // Every stock movement also writes an outbox row for the webhook dispatcher, and that table
+  // carries its own Restrict FK back to the location and the item.
+  await prisma.inventoryEvent.deleteMany({ where: atThese });
+  await prisma.inventoryAlert.deleteMany({ where: { clientId, ...atThese } });
+  await prisma.inventoryTransaction.deleteMany({ where: atThese });
+  await prisma.inventoryReservation.deleteMany({ where: atThese });
+  await prisma.inventoryStock.deleteMany({ where: atThese });
+  await prisma.variantLocationProfile.deleteMany({ where: atThese });
+  await prisma.inventoryTransfer.deleteMany({
+    where: { clientId, OR: [{ variantId: { in: variantIds } }, { fromLocationId: { in: locationIds } }, { toLocationId: { in: locationIds } }] }
+  });
+  await prisma.storefrontEvent.deleteMany({ where: { clientId, variantId: { in: variantIds } } });
+  // Variants and images go with their product (onDelete: Cascade).
+  await prisma.product.deleteMany({ where: { clientId, id: { in: productIds } } });
+  await prisma.stockLocation.deleteMany({ where: { clientId, id: { in: locationIds } } });
+  await prisma.customer.deleteMany({ where: { clientId, id: { in: customerIds } } });
+  // And the audit trail of test records that no longer exist.
+  const entityIds = [...locationIds, ...productIds, ...variantIds, ...customerIds, ...orderIds];
+  if (entityIds.length) await prisma.auditLog.deleteMany({ where: { clientId, entityId: { in: entityIds } } });
+}
+
+/**
+ * What earlier runs left behind, removed only where nothing else still names it.
+ *
+ * A leftover location, customer or product from this script is fixture data. But another suite may
+ * since have made it part of something -- a stock count lists every item in the shop, and an order
+ * or a quote names a customer -- and deleting it then would quietly rewrite that record. Those are
+ * kept and counted, not forced.
+ */
+async function sweepEarlierRuns(clientId: string) {
+  const locationIds = (await prisma.stockLocation.findMany({
+    where: { clientId, OR: [{ code: { startsWith: 'LFA-' } }, { code: { startsWith: 'LFB-' } }] }, select: { id: true }
+  })).map(l => l.id);
+
+  const customers = await prisma.customer.findMany({
+    where: { clientId, name: { startsWith: 'LocFlow Cust ' } },
+    select: { id: true, _count: { select: { salesOrders: true } } }
+  });
+  const customerIds: string[] = [];
+  for (const c of customers) {
+    if (c._count.salesOrders > 0) continue;
+    const named = await prisma.pricingQuote.count({ where: { customerId: c.id } })
+      + await prisma.offerRedemption.count({ where: { customerId: c.id } });
+    if (named === 0) customerIds.push(c.id);
+  }
+
+  const products = await prisma.product.findMany({
+    where: { clientId, title: { startsWith: 'LocFlow Product ' }, variants: { every: { sku: { startsWith: 'LOCFLOW-' } } } },
+    select: { id: true, variants: { select: { id: true } } }
+  });
+  const productIds: string[] = [];
+  for (const p of products) {
+    const w = { variantId: { in: p.variants.map(v => v.id) } };
+    const named = await prisma.stockCountItem.count({ where: w }) + await prisma.purchaseOrderItem.count({ where: w })
+      + await prisma.salesOrderItem.count({ where: w }) + await prisma.inventoryTransaction.count({ where: w })
+      + await prisma.supplierProduct.count({ where: w }) + await prisma.shopifyIdMap.count({ where: w })
+      + await prisma.inventoryStock.count({ where: { ...w, quantity: { not: 0 } } });
+    if (named === 0) productIds.push(p.id);
+  }
+
+  if (locationIds.length || customerIds.length || productIds.length) {
+    await purge(clientId, { locationIds, productIds, customerIds, orderIds: [] });
+  }
+  const removed = [
+    locationIds.length && `${locationIds.length} location(s)`,
+    customerIds.length && `${customerIds.length} customer(s)`,
+    productIds.length && `${productIds.length} product(s)`
+  ].filter(Boolean).join(', ');
+  const kept = (customers.length - customerIds.length) + (products.length - productIds.length);
+  return { removed, kept };
 }
 
 run().catch(async (e) => { console.error(e); await prisma.$disconnect(); process.exit(1); });
