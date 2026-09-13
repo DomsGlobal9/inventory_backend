@@ -74,9 +74,13 @@ router.get('/targets', requirePermission('offer:view'), async (req: Request, res
 
 router.get('/:id', requirePermission('offer:view'), async (req: Request, res: Response) => {
   try {
-    const detail = await offerInsightService.detail(clientOf(req), String(req.params.id));
-    const mirrors = await offerMirrorService.summaries(clientOf(req), [detail.id]);
-    res.json({ success: true, data: { ...detail, shopify: mirrors.get(detail.id) ?? null } });
+    // Together, not one after the other: the Shopify summary needs only the id from the URL.
+    const id = String(req.params.id);
+    const [detail, mirrors] = await Promise.all([
+      offerInsightService.detail(clientOf(req), id),
+      offerMirrorService.summaries(clientOf(req), [id])
+    ]);
+    res.json({ success: true, data: { ...detail, shopify: mirrors.get(id) ?? null } });
   } catch (error) {
     return respondWithError(res, error, { status: 500, message: 'Could not load that offer.' });
   }

@@ -179,13 +179,21 @@ export class ProductRepository {
     // Exclude the raw variants array from the response to keep it clean, just send summary
     const { variants, ...productWithoutVariants } = product;
     
-    const eligibility = await this.checkHardDeleteEligibility(id);
-
-    // How many photographs it has. A count, not the rows -- the page has an Images tab that
-    // fetches those itself. Publishing needs to know whether there are any at all, and the
-    // detail response did not say, so a guard written against `product.images` would have
-    // reported every product as having none.
-    const imageCount = await prisma.productImage.count({ where: { productId: id } });
+    /*
+     * Whether it can be deleted for good -- answered from what is already loaded when it can be.
+     *
+     * The full check loads the product again with its stock, transactions, purchase-order lines and
+     * stock counts: several round trips to a database on another continent, on EVERY product page.
+     * But it can only ever say yes for a product that has sat in the bin for a week; for anything
+     * else the answer is known from the status alone. Only that case pays for the full check.
+     */
+    const weekInBin = product.status === 'TRASHED' && product.trashedAt
+      && (Date.now() - new Date(product.trashedAt).getTime()) / 86_400_000 >= 7;
+    const eligibilityQuery: Promise<{ canHardDelete: boolean; reason?: string }> = weekInBin
+      ? this.checkHardDeleteEligibility(id)
+      : Promise.resolve(product.status === 'TRASHED'
+          ? { canHardDelete: false, reason: 'Product must remain in Trash for 7 days before permanent deletion' }
+          : { canHardDelete: false, reason: 'Product must be Trashed before permanent deletion' });
 
     /*
      * How many sizes and colours have no photograph of their own.
@@ -198,13 +206,20 @@ export class ProductRepository {
      * `distinct` on variantId, so one variant with four photos counts once.
      */
     const variantIds = product.variants.map(v => v.id);
-    const photographed = variantIds.length
-      ? await prisma.productImage.findMany({
-          where: { variantId: { in: variantIds } },
-          select: { variantId: true },
-          distinct: ['variantId']
-        })
-      : [];
+    // All three at once; none depends on another.
+    const [eligibility, imageCount, photographed] = await Promise.all([
+      eligibilityQuery,
+      // How many photographs it has. A count, not the rows -- the page has an Images tab that
+      // fetches those itself. Publishing needs to know whether there are any at all.
+      prisma.productImage.count({ where: { productId: id } }),
+      variantIds.length
+        ? prisma.productImage.findMany({
+            where: { variantId: { in: variantIds } },
+            select: { variantId: true },
+            distinct: ['variantId']
+          })
+        : Promise.resolve([] as { variantId: string | null }[])
+    ]);
     const variantsWithoutImages = variantIds.length - photographed.length;
 
     return {

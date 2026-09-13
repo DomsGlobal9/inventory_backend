@@ -14,8 +14,8 @@
 
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
-import { badRequest } from '../../utils/httpError';
-import { offerService } from './offer.service';
+import { badRequest, notFound } from '../../utils/httpError';
+import { effectiveStatus } from './rules';
 import { describeChanges, Labels } from './describe';
 import { normaliseType } from '../pricing/engine';
 
@@ -179,7 +179,50 @@ export class OfferInsightService {
    * can know the second, and a number that pretends to is worse than none.
    */
   async detail(clientId: string, id: string) {
-    const offer = await offerService.getById(clientId, id);
+    /*
+     * Two rounds of queries, each in parallel.
+     *
+     * This page used to ask the database in five rounds, one after another -- the offer, its totals,
+     * its uses, their orders, their codes -- and with the database on another continent that was
+     * over three seconds before the page could draw anything. Everything that does not depend on
+     * the offer's own contents is asked for at once, joined in SQL where it can be.
+     */
+    const [offer, statRows, useRows, codeRows] = await Promise.all([
+      prisma.offer.findFirst({
+        where: { id, clientId },
+        include: { targets: true, exclusions: true, versions: { orderBy: { version: 'desc' }, take: 20 } }
+      }),
+      prisma.$queryRaw<{ used: bigint; given: Prisma.Decimal | null; released: bigint; sales: Prisma.Decimal | null; customers: bigint }[]>`
+        SELECT COUNT(*) FILTER (WHERE r.status = 'COUNTED')                     AS used,
+               COALESCE(SUM(r.amount) FILTER (WHERE r.status = 'COUNTED'), 0)   AS given,
+               COUNT(*) FILTER (WHERE r.status = 'RELEASED')                    AS released,
+               COALESCE(SUM(so.total) FILTER (WHERE r.status = 'COUNTED'), 0)   AS sales,
+               COUNT(DISTINCT r.customer_id) FILTER (WHERE r.status = 'COUNTED') AS customers
+          FROM offer_redemptions r
+          LEFT JOIN sales_orders so ON so.id = r.sales_order_id
+         WHERE r.client_id = ${clientId} AND r.offer_id = ${id}`,
+      prisma.$queryRaw<{
+        id: string; sales_order_id: string; amount: Prisma.Decimal; status: string; created_at: Date;
+        order_number: string | null; customer_name: string | null; account_name: string | null;
+        total: Prisma.Decimal | null; order_status: string | null; channel: string | null; code: string | null
+      }[]>`
+        SELECT r.id, r.sales_order_id, r.amount, r.status, r.created_at,
+               so.order_number, so.customer_name, c.name AS account_name, so.total,
+               so.status::text AS order_status, so.channel::text AS channel,
+               (SELECT d.code FROM sales_order_discounts d
+                 WHERE d.sales_order_id = r.sales_order_id AND d.offer_id = r.offer_id AND d.code IS NOT NULL
+                 LIMIT 1) AS code
+          FROM offer_redemptions r
+          LEFT JOIN sales_orders so ON so.id = r.sales_order_id
+          LEFT JOIN customers c ON c.id = so.customer_id
+         WHERE r.client_id = ${clientId} AND r.offer_id = ${id}
+         ORDER BY r.created_at DESC
+         LIMIT 25`,
+      prisma.$queryRaw<{ total: bigint; used: bigint }[]>`
+        SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE used_at IS NOT NULL) AS used
+          FROM offer_codes WHERE client_id = ${clientId} AND offer_id = ${id}`
+    ]);
+    if (!offer) throw notFound('That offer no longer exists.');
 
     // Every id any version ever named, so history can name things the offer no longer holds.
     const snapshots = offer.versions.map(v => v.snapshot as any);
@@ -190,48 +233,18 @@ export class OfferInsightService {
     ];
     const allLocations = [...new Set([...offer.locationIds, ...snapshots.flatMap(s => (s?.locationIds ?? []) as string[])])];
 
-    const [labels, uses, released, orderTotals, users, locationRows, codeRows] = await Promise.all([
+    const [labels, users, locationRows] = await Promise.all([
       this.labels(clientId, allRefs, allLocations),
-      prisma.offerRedemption.findMany({
-        where: { clientId, offerId: id },
-        orderBy: { createdAt: 'desc' },
-        take: 25,
-        select: { id: true, salesOrderId: true, customerId: true, amount: true, status: true, createdAt: true }
-      }),
-      prisma.offerRedemption.count({ where: { clientId, offerId: id, status: 'RELEASED' } }),
-      prisma.$queryRaw<{ total: Prisma.Decimal | null; customers: bigint }[]>`
-        SELECT COALESCE(SUM(so.total), 0) AS total, COUNT(DISTINCT r.customer_id) AS customers
-          FROM offer_redemptions r
-          JOIN sales_orders so ON so.id = r.sales_order_id
-         WHERE r.client_id = ${clientId} AND r.offer_id = ${id} AND r.status = 'COUNTED'`,
       prisma.user.findMany({
         where: { id: { in: [...new Set(offer.versions.map(v => v.changedBy).filter(Boolean) as string[])] } },
         select: { id: true, name: true }
       }),
-      prisma.stockLocation.findMany({ where: { clientId, id: { in: offer.locationIds } }, select: { id: true, name: true, active: true } }),
-      offer.uniqueCodes
-        ? Promise.all([
-            prisma.offerCode.count({ where: { offerId: id } }),
-            prisma.offerCode.count({ where: { offerId: id, usedAt: { not: null } } })
-          ])
-        : Promise.resolve(null)
+      offer.locationIds.length
+        ? prisma.stockLocation.findMany({ where: { clientId, id: { in: offer.locationIds } }, select: { id: true, name: true, active: true } })
+        : Promise.resolve([] as { id: string; name: string; active: boolean }[])
     ]);
 
-    const spentCodes = uses.length
-      ? await prisma.salesOrderDiscount.findMany({
-          where: { offerId: id, salesOrderId: { in: uses.map(u => u.salesOrderId) }, code: { not: null } },
-          select: { salesOrderId: true, code: true }
-        })
-      : [];
-    const codeOfOrder = new Map(spentCodes.map(c => [c.salesOrderId, c.code]));
-
-    const orders = uses.length
-      ? await prisma.salesOrder.findMany({
-          where: { clientId, id: { in: uses.map(u => u.salesOrderId) } },
-          select: { id: true, orderNumber: true, customerName: true, total: true, status: true, channel: true, customer: { select: { name: true } } }
-        })
-      : [];
-    const orderById = new Map(orders.map(o => [o.id, o]));
+    const st = statRows[0];
     const userById = new Map(users.map(u => [u.id, u.name]));
 
     // Newest first, each described against the one before it.
@@ -248,7 +261,6 @@ export class OfferInsightService {
     });
 
     const { versions: _versions, ...rest } = offer as any;
-    const totals = orderTotals[0];
     const nameOf = (t: { scope: string; refId: string }) =>
       t.scope === 'CATEGORY' ? (DEPARTMENTS.find(d => d.value === t.refId)?.label ?? t.refId)
         : t.scope === 'DRESS_TYPE' ? t.refId
@@ -270,36 +282,39 @@ export class OfferInsightService {
         label: nameOf(t as any),
         missing: (t.scope === 'PRODUCT' || t.scope === 'VARIANT') && !labels.targets.has(t.refId)
       })),
-      codes: codeRows ? { total: codeRows[0], used: codeRows[1], unused: codeRows[0] - codeRows[1] } : null,
+      codes: offer.uniqueCodes
+        ? { total: Number(codeRows[0]?.total ?? 0), used: Number(codeRows[0]?.used ?? 0), unused: Number(codeRows[0]?.total ?? 0) - Number(codeRows[0]?.used ?? 0) }
+        : null,
       locations: offer.locationIds.map(lid => {
         const row = locationRows.find(l => l.id === lid);
         return { id: lid, name: row?.name ?? 'A removed location', active: row?.active ?? false };
       }),
+      // Same shape as before: counts as numbers, money as decimals.
+      redemptionCount: Number(st?.used ?? 0),
+      totalDiscounted: st?.given ?? new Prisma.Decimal(0),
+      effectiveStatus: effectiveStatus(offer as any),
       stats: {
-        timesUsed: offer.redemptionCount,
-        givenBack: released,
-        totalDiscounted: offer.totalDiscounted,
-        salesMade: totals?.total ?? new Prisma.Decimal(0),
-        customers: Number(totals?.customers ?? 0),
+        timesUsed: Number(st?.used ?? 0),
+        givenBack: Number(st?.released ?? 0),
+        totalDiscounted: st?.given ?? new Prisma.Decimal(0),
+        salesMade: st?.sales ?? new Prisma.Decimal(0),
+        customers: Number(st?.customers ?? 0),
         usesLeft: offer.usageLimit == null ? null : Math.max(0, offer.usageLimit - offer.usageCount)
       },
-      recentUses: uses.map(u => {
-        const order = orderById.get(u.salesOrderId);
-        return {
-          id: u.id,
-          orderId: u.salesOrderId,
-          orderNumber: order?.orderNumber ?? null,
-          // The name typed on the bill if there was one, else the customer it belongs to.
-          customerName: order?.customerName || order?.customer?.name || null,
-          orderTotal: order?.total ?? null,
-          orderStatus: order?.status ?? null,
-          channel: order?.channel ?? null,
-          amount: u.amount,
-          code: codeOfOrder.get(u.salesOrderId) ?? null,
-          status: u.status,
-          createdAt: u.createdAt
-        };
-      }),
+      recentUses: useRows.map(u => ({
+        id: u.id,
+        orderId: u.sales_order_id,
+        orderNumber: u.order_number,
+        // The name typed on the bill if there was one, else the customer it belongs to.
+        customerName: u.customer_name || u.account_name || null,
+        orderTotal: u.total,
+        orderStatus: u.order_status,
+        channel: u.channel,
+        amount: u.amount,
+        code: u.code,
+        status: u.status,
+        createdAt: u.created_at
+      })),
       history
     };
   }
