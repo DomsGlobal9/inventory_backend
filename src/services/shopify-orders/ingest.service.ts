@@ -94,7 +94,7 @@ async function resolveLocation(
  * would turn a year of web sales into a customer list nobody can use, and `SalesOrder.customerId`
  * is not nullable, so there has to be somebody.
  */
-async function resolveCustomer(clientId: string, c: MappedOrder['customer']): Promise<string> {
+async function resolveCustomer(clientId: string, shopDomain: string, c: MappedOrder['customer']): Promise<string> {
   if (c.shopifyCustomerId) {
     const externalCustomerId = `shopify:${c.shopifyCustomerId}`;
     const existing = await prisma.customer.findFirst({ where: { clientId, externalCustomerId } });
@@ -105,6 +105,8 @@ async function resolveCustomer(clientId: string, c: MappedOrder['customer']): Pr
         clientId,
         customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER'),
         externalCustomerId,
+        // Which store they came from: shop/redact erases one store's customers, not every one.
+        sourceStore: shopDomain,
         name: c.name || c.email || 'Shopify customer',
         email: c.email, phone: c.phone,
         billingAddress: c.billingAddress, shippingAddress: c.shippingAddress,
@@ -121,6 +123,7 @@ async function resolveCustomer(clientId: string, c: MappedOrder['customer']): Pr
       data: {
         clientId,
         customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER'),
+        sourceStore: shopDomain,
         name: c.name || c.email,
         email: c.email, phone: c.phone,
         billingAddress: c.billingAddress, shippingAddress: c.shippingAddress,
@@ -211,7 +214,7 @@ export class ShopifyOrderIngestService {
     }
 
     try {
-      const result = await this.write(clientId, mapped.order, shopifyOrderId);
+      const result = await this.write(clientId, shopDomain, mapped.order, shopifyOrderId);
       if (result.status === 'APPLIED') {
         /*
          * The ORDER rows waiting for this order are now settled -- and only those.
@@ -234,7 +237,7 @@ export class ShopifyOrderIngestService {
   }
 
   /** The writes. Separate so `ingest` reads as the decisions and this as the consequences. */
-  private async write(clientId: string, order: MappedOrder, shopifyOrderId: string): Promise<IngestOutcome> {
+  private async write(clientId: string, shopDomain: string, order: MappedOrder, shopifyOrderId: string): Promise<IngestOutcome> {
     const existing = await prisma.salesOrder.findFirst({
       where: { clientId, externalOrderId: order.externalOrderId, sourceSystem: 'SHOPIFY' },
       select: { id: true, orderNumber: true, externalUpdatedAt: true, status: true }
@@ -252,7 +255,7 @@ export class ShopifyOrderIngestService {
       return { status: 'STALE' };
     }
 
-    const customerId = await resolveCustomer(clientId, order.customer);
+    const customerId = await resolveCustomer(clientId, shopDomain, order.customer);
 
     if (existing) {
       await this.replaceLines(clientId, existing.id, order);
@@ -263,7 +266,7 @@ export class ShopifyOrderIngestService {
 
     let created;
     try {
-      created = await this.createOrder(clientId, orderNumber, customerId, order);
+      created = await this.createOrder(clientId, shopDomain, orderNumber, customerId, order);
     } catch (error: any) {
       /*
        * Somebody else placed it first.
@@ -290,7 +293,7 @@ export class ShopifyOrderIngestService {
     return { status: 'APPLIED', salesOrderId: created.id, orderNumber };
   }
 
-  private async createOrder(clientId: string, orderNumber: string, customerId: string, order: MappedOrder) {
+  private async createOrder(clientId: string, shopDomain: string, orderNumber: string, customerId: string, order: MappedOrder) {
     return prisma.$transaction(async (tx) => {
       const so = await tx.salesOrder.create({
         data: {
@@ -301,6 +304,7 @@ export class ShopifyOrderIngestService {
           channel: 'ONLINE',
           externalOrderId: order.externalOrderId,
           sourceSystem: 'SHOPIFY',
+          sourceStore: shopDomain,
           externalUpdatedAt: order.externalUpdatedAt,
           customerName: order.customer.name,
           customerPhone: order.customer.phone,

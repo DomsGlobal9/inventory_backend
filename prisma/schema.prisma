@@ -699,6 +699,10 @@ model Customer {
   /// Groups the customer belongs to -- VIP, STAFF, WHOLESALE. What an offer's customerTags match.
   tags String[] @default([])
 
+  /// The Shopify store (shop domain) this customer arrived from, or null. shop/redact erases one
+  /// store's customers, and a workspace can connect several stores.
+  sourceStore String? @map("source_store")
+
   salesOrders SalesOrder[]
 
   deletedAt DateTime? @map("deleted_at")
@@ -708,6 +712,7 @@ model Customer {
   @@unique([clientId, customerCode])
   @@unique([clientId, externalCustomerId])
   @@index([clientId])
+  @@index([clientId, sourceStore])
   @@map("customers")
 }
 
@@ -736,6 +741,9 @@ model SalesOrder {
   /// direction. Timestamps cannot order two events in the same millisecond, which is why this
   /// only ever DISCARDS; it never decides which of two simultaneous changes wins.
   externalUpdatedAt DateTime? @map("external_updated_at")
+
+  /// The Shopify store (shop domain) that sent this order, or null. See Customer.sourceStore.
+  sourceStore String? @map("source_store")
 
   customerId String   @map("customer_id")
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -772,6 +780,7 @@ model SalesOrder {
   @@index([clientId])
   @@index([customerId])
   @@index([locationId])
+  @@index([clientId, sourceStore])
   @@map("sales_orders")
 }
 
@@ -2048,6 +2057,45 @@ model ShopifyWebhookReceipt {
   @@unique([webhookId, topic], name: "uq_shopify_webhook")
   @@index([shopDomain, createdAt])
   @@map("shopify_webhook_receipts")
+}
+
+/// A privacy request Shopify sent -- customers/data_request, customers/redact or shop/redact --
+/// and what was done about it.
+///
+/// Identifiers and counts only, never a copy of the personal data: a data request is answered by
+/// reading what is held at the moment the merchant exports it.
+model ShopifyPrivacyRequest {
+  id String @id @default(uuid())
+
+  shopDomain String  @map("shop_domain")
+  /// Null while the store is unclaimed; filled in when somebody claims it.
+  clientId   String? @map("client_id")
+  topic      String
+  webhookId  String  @map("webhook_id")
+
+  shopifyCustomerId String?  @map("shopify_customer_id")
+  /// data_request.id from the payload, for quoting back to Shopify support.
+  shopifyRequestId  String?  @map("shopify_request_id")
+  /// orders_requested / orders_to_redact.
+  shopifyOrderIds   String[] @default([]) @map("shopify_order_ids")
+
+  /// RECEIVED | WAITING_FOR_MERCHANT | COMPLETED | SKIPPED | FAILED
+  status  String
+  /// Counts of what was found or changed. No personal data.
+  summary Json?
+  detail  String? @db.Text
+
+  completedAt DateTime? @map("completed_at")
+  exportedAt  DateTime? @map("exported_at")
+  exportedBy  String?   @map("exported_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([webhookId, topic], name: "uq_privacy_request_webhook")
+  @@index([clientId, createdAt])
+  @@index([shopDomain, createdAt])
+  @@map("shopify_privacy_requests")
 }
 
 /// The last inventory value WE wrote to Shopify, per item per location.

@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { shopifyInstallationService } from '../services/shopify-installation.service';
+import { shopifyPrivacyService } from '../services/shopify-privacy';
 
 /**
  * Throwing away what has stopped meaning anything.
@@ -38,7 +39,11 @@ export class HousekeepingScheduler {
     });
     const oauthStates = await shopifyInstallationService.pruneExpiredStates();
 
-    return { unusedQuotes: quotes.count, oauthStates };
+    // Not throwing away, but the same "nobody else will ever come back for this" chore: a Shopify
+    // privacy request that failed after its webhook was acknowledged. Shopify will not resend it.
+    const privacyRequestsRetried = await shopifyPrivacyService.retryUnfinished();
+
+    return { unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried };
   }
 
   static start() {
@@ -47,6 +52,9 @@ export class HousekeepingScheduler {
     const tick = async () => {
       try {
         const removed = await this.runOnce();
+        if (removed.privacyRequestsRetried) {
+          console.log(`[Housekeeping] finished ${removed.privacyRequestsRetried} Shopify privacy request(s) that had failed`);
+        }
         if (removed.unusedQuotes || removed.oauthStates) {
           console.log(
             `[Housekeeping] removed ${removed.unusedQuotes} unbought quote(s) and ` +

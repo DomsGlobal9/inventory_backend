@@ -480,6 +480,7 @@ export class PlatformAdminService {
       // Shopify orders parked for this shop -- including ones parked before the install was
       // claimed, which carry only the shop's domain. Read by domain before the installation goes.
       `DELETE FROM shopify_order_inbox WHERE client_id = $1 OR (client_id IS NULL AND shop_domain IN (SELECT shop_domain FROM shopify_installations WHERE client_id = $1))`,
+      `DELETE FROM shopify_privacy_requests WHERE client_id = $1 OR (client_id IS NULL AND shop_domain IN (SELECT shop_domain FROM shopify_installations WHERE client_id = $1))`,
       // Offers. Listed rather than left to the sweep, because the sweep's order is whatever the
       // catalogue returns: a redemption holds its offer VERSION with ON DELETE RESTRICT, so the
       // redemptions go first, then codes, quotes and Shopify copies, then the offers themselves

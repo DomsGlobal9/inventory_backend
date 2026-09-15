@@ -9,6 +9,7 @@ import {
   ShopifyInstallError
 } from '../services/shopify-installation.service';
 import { shopifyInboxService } from '../services/shopify-orders';
+import { shopifyPrivacyService } from '../services/shopify-privacy';
 import {
   adminApiFor, activeInstallation,
   shopifyLocationPairingService, shopifyVariantMatchingService
@@ -114,6 +115,8 @@ router.post('/claim', requirePermission(PERMISSION), async (req, res, next) => {
      * with that reason, instead of sitting unowned where no panel could ever show them.
      */
     const attached = await shopifyInboxService.attachClaimed(installation.shopDomain, clientOf(req));
+    // A privacy request that arrived while the store was unclaimed is this workspace's to answer now.
+    await shopifyPrivacyService.attachClaimed(installation.shopDomain, clientOf(req));
     const replay = attached > 0 ? await shopifyInboxService.replayAll(clientOf(req), userOf(req)) : null;
 
     res.json({ success: true, data: { ...installation, waitingOrders: attached, replay } });
@@ -282,5 +285,37 @@ router.post('/inbox/:id/dismiss', requirePermission(PERMISSION), async (req, res
     respondWithError(res, error, { status: 400, message: 'Could not dismiss that order.' });
   }
 });
+
+// ── Privacy requests from Shopify ────────────────────────────────────────────────────────────
+//
+// A customer asking what the store holds about them, or to be erased, and a store's data being
+// erased after it uninstalled. Erasing happens on arrival; a data request waits for the merchant to
+// export it and send it on, because Shopify expects the store -- not the app -- to answer the
+// customer.
+
+router.get('/privacy-requests', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    res.json({ success: true, data: await shopifyPrivacyService.list(clientOf(req)) });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not load the privacy requests.' });
+  }
+});
+
+/**
+ * Everything held about the customer in one data request.
+ *
+ * Needs customer:view as well as the Shopify permission: this is a customer's name, phone and
+ * addresses, and managing the store connection is not by itself a reason to read those.
+ */
+router.get('/privacy-requests/:id/export',
+  requirePermission(PERMISSION), requirePermission('customer:view'),
+  async (req, res) => {
+    try {
+      const data = await shopifyPrivacyService.export(clientOf(req), String(req.params.id), userOf(req));
+      res.json({ success: true, data });
+    } catch (error) {
+      respondWithError(res, error, { status: 400, message: 'Could not export that request.' });
+    }
+  });
 
 export default router;

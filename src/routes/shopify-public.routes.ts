@@ -16,6 +16,7 @@ import {
   shopifyInboxService
 } from '../services/shopify-orders';
 import { offerMirrorService, discountGidFromWebhook } from '../services/shopify-discounts';
+import { shopifyPrivacyService } from '../services/shopify-privacy';
 
 /**
  * The two Shopify endpoints that CANNOT be authenticated the normal way.
@@ -174,7 +175,7 @@ router.post('/webhooks', async (req: Request, res: Response) => {
   res.status(200).json({ success: true });
 
   try {
-    const outcome = await handleWebhook(topic, shopDomain, raw);
+    const outcome = await handleWebhook(topic, shopDomain, webhookId, raw);
     await prisma.shopifyWebhookReceipt.updateMany({
       where: { webhookId, topic }, data: { processedAt: new Date(), outcome }
     });
@@ -194,7 +195,7 @@ router.post('/webhooks', async (req: Request, res: Response) => {
  * treats a non-2xx as a failure and retries for days, then removes the subscription -- so
  * refusing an unhandled topic is worse than accepting and ignoring it.
  */
-async function handleWebhook(topic: string, shopDomain: string, raw: Buffer): Promise<string> {
+async function handleWebhook(topic: string, shopDomain: string, webhookId: string, raw: Buffer): Promise<string> {
   switch (topic) {
     /*
      * The sales themselves.
@@ -301,24 +302,21 @@ async function handleWebhook(topic: string, shopDomain: string, raw: Buffer): Pr
       return 'APPLIED';
     }
 
-    // The three privacy topics Shopify requires of a distributed app. They must be subscribed
-    // and must answer 2xx before review; the substantive work has 30 days, which is why these
-    // record intent rather than deleting inline.
+    /*
+     * The three privacy topics Shopify requires of a distributed app.
+     *
+     * These used to be ignored on the grounds that no Shopify customer data was stored. Order
+     * ingestion made that untrue: a Shopify order creates a customer, copies their name, phone and
+     * addresses onto the sales order, and keeps the webhook body for replay. Each request is
+     * recorded, then worked -- see services/shopify-privacy for what each one does and does not
+     * touch. Already acknowledged by this point, so a failure is left on the request row for
+     * housekeeping to retry rather than thrown back at Shopify.
+     */
     case 'customers/data_request':
     case 'customers/redact':
-      // ScaleEzy stores no Shopify customer records: the integration reads products, inventory
-      // and locations. There is nothing to return or erase, and saying so is the correct
-      // response rather than a silent 200.
-      return 'IGNORED';
-
     case 'shop/redact': {
-      // Sent 48 hours after uninstall. Everything tying us to that shop goes: the installation
-      // row cascades its id maps, location maps and echo records.
-      const shop = normaliseShopDomain(shopDomain);
-      if (shop) {
-        await prisma.shopifyInstallation.deleteMany({ where: { shopDomain: shop } });
-      }
-      return 'APPLIED';
+      const payload = JSON.parse(raw.toString('utf8'));
+      return shopifyPrivacyService.receive(topic, shopDomain, webhookId, payload);
     }
 
     default:
