@@ -202,12 +202,12 @@ async function runTests() {
     const poItem = poWithItems!.items[0];
 
     // Receive exactly 100
-    await purchaseOrderService.receiveGoods(CLIENT_ID, po.id, [{ poItemId: poItem.id, quantityReceived: 100 }]);
+    await purchaseOrderService.receiveGoods(CLIENT_ID, po.id, { receipts: [{ poItemId: poItem.id, quantityReceived: 100 }] });
     console.log('✅ Round 27 Step 1 Passed: Received 100/100 successfully');
 
     // Attempt to receive 1 more
     try {
-      await purchaseOrderService.receiveGoods(CLIENT_ID, po.id, [{ poItemId: poItem.id, quantityReceived: 1 }]);
+      await purchaseOrderService.receiveGoods(CLIENT_ID, po.id, { receipts: [{ poItemId: poItem.id, quantityReceived: 1 }] });
       throw new Error("Over-receipt did not throw an error!");
     } catch (error: any) {
       if (error.message.includes("status RECEIVED") || error.message.includes("Cannot receive more")) {

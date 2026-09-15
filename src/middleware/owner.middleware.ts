@@ -32,7 +32,7 @@ export const requireAccountOwner: RequestHandler = (req: Request, res: Response,
     // can be granted to fix this -- the answer is always "ask the owner".
     return res.status(403).json({
       success: false,
-      message: 'Only the account owner can change the shop’s name and logo.'
+      message: 'Only the account owner can change the shop’s name, logo and letterhead.'
     });
   }
 

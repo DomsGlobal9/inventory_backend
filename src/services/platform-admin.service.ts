@@ -511,6 +511,9 @@ export class PlatformAdminService {
       `DELETE FROM sales_order_items WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
       `DELETE FROM sales_orders WHERE client_id = $1`,
       `DELETE FROM sales_ledger WHERE client_id = $1`,
+      // Goods receipts point at locations (restrict), so they go before the orders and locations.
+      `DELETE FROM purchase_receipt_items WHERE receipt_id IN (SELECT id FROM purchase_receipts WHERE client_id = $1)`,
+      `DELETE FROM purchase_receipts WHERE client_id = $1`,
       `DELETE FROM purchase_order_items WHERE po_id IN (SELECT id FROM purchase_orders WHERE client_id = $1)`,
       `DELETE FROM purchase_orders WHERE client_id = $1`,
       `DELETE FROM supplier_products WHERE client_id = $1`,

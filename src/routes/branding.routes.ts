@@ -34,6 +34,11 @@ router.put('/name', requireAccountOwner, handle(req =>
   brandingService.setName(clientOf(req), req.body?.businessName ?? null)
 ));
 
+// Address, phone, email and GSTIN: what the shop's documents print under its name.
+router.put('/details', requireAccountOwner, handle(req =>
+  brandingService.setDetails(clientOf(req), req.body)
+));
+
 // Same three-step upload as product images -- server derives the path, browser PUTs to a
 // single-use signed URL, then echoes the path back to be recorded. See image.service for
 // why the browser is never trusted with a clientId or a Supabase key.

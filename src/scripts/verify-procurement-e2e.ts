@@ -121,9 +121,9 @@ async function main() {
     const line1 = items.find((i: any) => i.variantId === v1.id);
     check('the PO carries its lines back', !!line1, `${items.length} lines`);
 
-    await purchaseOrderService.receiveGoods(CLIENT, po.id, [
+    await purchaseOrderService.receiveGoods(CLIENT, po.id, { receipts: [
       { poItemId: line1.id, quantityReceived: 4, locationId }
-    ]);
+    ] });
 
     const after1 = await stockOf(v1.id, locationId);
     check('stock rises by exactly what was received', after1 - before1 === 4, `${before1} -> ${after1}`);
@@ -138,10 +138,10 @@ async function main() {
     console.log('\nRECEIVING THE REST COMPLETES IT');
     const p2 = (partial.items ?? []).find((i: any) => i.variantId === v1.id);
     const p3 = (partial.items ?? []).find((i: any) => i.variantId === v2.id);
-    await purchaseOrderService.receiveGoods(CLIENT, po.id, [
+    await purchaseOrderService.receiveGoods(CLIENT, po.id, { receipts: [
       { poItemId: p2.id, quantityReceived: 6, locationId },
       { poItemId: p3.id, quantityReceived: 6, locationId }
-    ]);
+    ] });
 
     const done: any = await purchaseOrderService.getPOById(CLIENT, po.id);
     check('the PO reads as received', done?.status === 'RECEIVED', done?.status);

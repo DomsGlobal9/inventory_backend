@@ -17,7 +17,13 @@ export const purchaseOrderCreateSchema = z.object({
 export const purchaseOrderReceiveSchema = z.object({
   receipts: z.array(z.object({
     poItemId: z.string().min(1, "PO Item ID is required"),
-    quantityReceived: z.number().min(0, "Quantity must be >= 0"),
+    // Whole pieces. 2.5 used to pass here and then fail against the integer column as a
+    // database error, which is a 500 for what is only a typing mistake.
+    quantityReceived: z.number().int('Whole pieces only.').min(0, "Quantity must be >= 0"),
     locationId: z.string().optional().nullable()
-  })).min(1, "At least one receipt is required")
+  })).min(1, "At least one receipt is required"),
+  locationId: z.string().optional().nullable(),
+  supplierReference: z.string().trim().max(80, 'Keep the invoice or challan number under 80 characters.').optional().nullable(),
+  notes: z.string().trim().max(500, 'Keep the note under 500 characters.').optional().nullable(),
+  requestKey: z.string().trim().min(8).max(100).optional().nullable()
 });

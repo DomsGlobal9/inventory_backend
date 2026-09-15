@@ -13,6 +13,12 @@ import { getShopSettings } from '../lib/clientSettings';
  * That page is for crashes; routine rejections were burying the real faults (one such entry,
  * "Cannot receive goods for PO in status ...", was visible there in production).
  */
+/** What a goods receipt needs to print itself: its lines and where the goods went. */
+const RECEIPT_INCLUDE = {
+  items: { orderBy: { sku: 'asc' as const } },
+  location: { select: { id: true, name: true, code: true } }
+} satisfies Prisma.PurchaseReceiptInclude;
+
 export class PurchaseOrderService {
   async createPO(clientId: string, data: { supplierId: string; expectedDeliveryDate?: Date; notes?: string; items: { variantId: string; orderedQty: number; unitPrice: number; productTitle?: string; color?: string; size?: string }[] }) {
     // Generate PO- code
@@ -116,6 +122,8 @@ export class PurchaseOrderService {
       where: { id, clientId },
       include: {
         supplier: true,
+        // Every delivery, so the order page can list them and print any one again.
+        receipts: { include: RECEIPT_INCLUDE, orderBy: { receivedAt: 'asc' } },
         items: {
           include: {
             variant: {
@@ -174,116 +182,232 @@ export class PurchaseOrderService {
     });
   }
 
-  async receiveGoods(clientId: string, id: string, receipts: { poItemId: string; quantityReceived: number; locationId?: string }[]) {
-    // Wrap the entire receive logic in a transaction
-    return await prisma.$transaction(async (tx) => {
-      const po = await tx.purchaseOrder.findFirst({
-        where: { id, clientId },
-        include: { items: true }
-      });
+  /**
+   * One delivery against the order: stock in, the order's counts up, and a goods receipt note.
+   *
+   * All three happen in one transaction, so a receipt exists exactly when the stock it describes
+   * does. Before the receipt existed a delivery left no trace of itself -- no date, no person, no
+   * shop, no supplier invoice -- and two part-deliveries of one order were indistinguishable.
+   *
+   * Where the goods go, in order: a location on the lines (the older request shape), the one the
+   * screen chose, the location selected at the top of the app, then the shop called MAIN-STORE.
+   * It used to be `findFirst({ where: { clientId } })` -- whichever location the database
+   * happened to return first, inactive ones included -- because the screen never sent one.
+   */
+  async receiveGoods(
+    clientId: string,
+    id: string,
+    input: {
+      receipts: { poItemId: string; quantityReceived: number; locationId?: string | null }[];
+      locationId?: string | null;
+      supplierReference?: string | null;
+      notes?: string | null;
+      requestKey?: string | null;
+    },
+    actor: { id?: string; name?: string } = {},
+    selectedLocationId?: string
+  ) {
+    const lines = input.receipts.filter(r => r.quantityReceived > 0);
+    if (lines.length === 0) {
+      throw Object.assign(new Error('Enter how many of at least one item arrived.'), { statusCode: 400 });
+    }
 
-      if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
-      if (po.status === PurchaseOrderStatus.RECEIVED || po.status === PurchaseOrderStatus.CANCELLED) {
-        throw Object.assign(new Error(`Cannot receive goods for PO in status ${po.status}`), { statusCode: 400 });
-      }
+    const requestKey = input.requestKey?.trim() || null;
+    const existing = requestKey ? await this.receiptForRequest(clientId, id, requestKey) : null;
+    if (existing) return existing;
 
-      const itemMap = new Map(po.items.map(i => [i.id, i]));
-      const now = new Date();
+    const lineLocations = [...new Set(lines.map(l => l.locationId).filter(Boolean))] as string[];
+    if (lineLocations.length > 1) {
+      throw Object.assign(new Error('Receive into one location at a time: a receipt says where its goods went.'), { statusCode: 400 });
+    }
 
-      for (const receipt of receipts) {
-        if (receipt.quantityReceived <= 0) continue;
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const po = await tx.purchaseOrder.findFirst({
+          where: { id, clientId },
+          include: { items: true }
+        });
 
-        // itemMap is built from THIS po's items; without this check the findUnique below
-        // matched a line on any other PO in the tenant and booked the receipt -- and the
-        // resulting stock/lastPurchaseCost writes -- against that unrelated PO instead.
-        if (!itemMap.has(receipt.poItemId)) {
-          throw Object.assign(new Error(`PO Item ${receipt.poItemId} does not belong to this purchase order`), { statusCode: 400 });
+        if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
+        if (po.status === PurchaseOrderStatus.RECEIVED || po.status === PurchaseOrderStatus.CANCELLED) {
+          throw Object.assign(new Error(`Cannot receive goods for PO in status ${po.status}`), { statusCode: 400 });
         }
 
-        const currentPoItem = await tx.purchaseOrderItem.findUnique({ where: { id: receipt.poItemId } });
-        if (!currentPoItem) throw Object.assign(new Error(`PO Item ${receipt.poItemId} not found`), { statusCode: 404 });
+        const location = await this.receivingLocation(tx, clientId, lineLocations[0] || input.locationId || selectedLocationId);
 
-        if (currentPoItem.receivedQty + receipt.quantityReceived > currentPoItem.orderedQty) {
-          throw Object.assign(new Error(`Cannot receive more than remaining quantity for SKU ${currentPoItem.sku}`), { statusCode: 400 });
+        const itemMap = new Map(po.items.map(i => [i.id, i]));
+        const now = new Date();
+        const receiptLines: Prisma.PurchaseReceiptItemCreateWithoutReceiptInput[] = [];
+        const seen = new Set<string>();
+
+        for (const receipt of lines) {
+          // itemMap is built from THIS po's items; without this check the findUnique below
+          // matched a line on any other PO in the tenant and booked the receipt -- and the
+          // resulting stock/lastPurchaseCost writes -- against that unrelated PO instead.
+          if (!itemMap.has(receipt.poItemId)) {
+            throw Object.assign(new Error(`PO Item ${receipt.poItemId} does not belong to this purchase order`), { statusCode: 400 });
+          }
+          // The same line twice in one delivery would each be checked against the remaining
+          // quantity before either was added, and so could receive more than was ordered.
+          if (seen.has(receipt.poItemId)) {
+            throw Object.assign(new Error('Each item can appear once in a delivery.'), { statusCode: 400 });
+          }
+          seen.add(receipt.poItemId);
+
+          const currentPoItem = await tx.purchaseOrderItem.findUnique({ where: { id: receipt.poItemId } });
+          if (!currentPoItem) throw Object.assign(new Error(`PO Item ${receipt.poItemId} not found`), { statusCode: 404 });
+
+          if (currentPoItem.receivedQty + receipt.quantityReceived > currentPoItem.orderedQty) {
+            throw Object.assign(new Error(`Cannot receive more than remaining quantity for SKU ${currentPoItem.sku}`), { statusCode: 400 });
+          }
+
+          // 1. Update PO Item atomically
+          const poItem = await tx.purchaseOrderItem.update({
+            where: { id: receipt.poItemId },
+            data: {
+              receivedQty: { increment: receipt.quantityReceived },
+              lastReceivedAt: now
+            }
+          });
+
+          // Atomic double-check
+          if (poItem.receivedQty > poItem.orderedQty) {
+            throw Object.assign(new Error(`Cannot receive more than remaining quantity for SKU ${poItem.sku}`), { statusCode: 400 });
+          }
+
+          // 2. Adjust Inventory atomically with WAC Calculation using central mutation service
+          await inventoryMutationService.applyMovement({
+            clientId,
+            locationId: location.id,
+            variantId: poItem.variantId,
+            movementType: 'IN',
+            reason: InventoryReason.PURCHASE_RECEIPT,
+            quantityDelta: receipt.quantityReceived,
+            unitCost: Number(poItem.unitPrice),
+            referenceType: 'PO',
+            referenceId: po.poNumber,
+            notes: 'PO Receipt',
+            // Who actually counted it in. This was the string 'Admin' for every receipt ever
+            // taken, whoever took it.
+            createdBy: actor.name || actor.id || 'Unknown',
+            tx
+          });
+
+          // applyMovement above already blends this into averageCost; lastPurchaseCost is
+          // a separate, simpler field -- "what did the last PO actually charge", not a
+          // blended figure -- and was never being written anywhere despite existing on
+          // the schema and being exposed in variant API responses.
+          await tx.productVariant.update({
+            where: { id: poItem.variantId },
+            data: { lastPurchaseCost: poItem.unitPrice }
+          });
+
+          receiptLines.push({
+            poItem: { connect: { id: poItem.id } },
+            variant: { connect: { id: poItem.variantId } },
+            sku: poItem.sku,
+            variantCode: poItem.variantCode,
+            productTitle: poItem.productTitle,
+            color: poItem.color,
+            size: poItem.size,
+            orderedQty: poItem.orderedQty,
+            receivedBefore: currentPoItem.receivedQty,
+            quantity: receipt.quantityReceived,
+            unitPrice: poItem.unitPrice
+          });
         }
 
-        // 1. Update PO Item atomically
-        const poItem = await tx.purchaseOrderItem.update({
-          where: { id: receipt.poItemId },
+        // Inside the transaction, so a delivery that fails leaves no gap in the GRN numbers.
+        const receiptNumber = await generateSequentialCode(clientId, 'GRN', 'PURCHASE_RECEIPT', tx as any);
+        const receipt = await tx.purchaseReceipt.create({
           data: {
-            receivedQty: { increment: receipt.quantityReceived },
-            lastReceivedAt: now
+            clientId,
+            receiptNumber,
+            po: { connect: { id: po.id } },
+            location: { connect: { id: location.id } },
+            receivedById: actor.id ?? null,
+            receivedByName: actor.name ?? null,
+            supplierReference: input.supplierReference?.trim() || null,
+            notes: input.notes?.trim() || null,
+            requestKey,
+            receivedAt: now,
+            items: { create: receiptLines }
+          },
+          include: RECEIPT_INCLUDE
+        });
+
+        // Determine new PO Status
+        // Re-fetch items to get the most updated received quantities
+        const updatedItems = await tx.purchaseOrderItem.findMany({ where: { poId: id } });
+        const isFullyReceived = updatedItems.every(i => i.receivedQty >= i.orderedQty);
+        const isPartiallyReceived = updatedItems.some(i => i.receivedQty > 0);
+
+        let newStatus: PurchaseOrderStatus = po.status;
+        let receivedAt = po.receivedAt;
+
+        if (isFullyReceived) {
+          newStatus = PurchaseOrderStatus.RECEIVED;
+          receivedAt = now;
+        } else if (isPartiallyReceived) {
+          newStatus = PurchaseOrderStatus.PARTIALLY_RECEIVED;
+        }
+
+        const updated = await tx.purchaseOrder.update({
+          where: { id },
+          data: {
+            status: newStatus,
+            receivedAt
+          },
+          include: {
+            items: true
           }
         });
 
-        // Atomic double-check
-        if (poItem.receivedQty > poItem.orderedQty) {
-          throw Object.assign(new Error(`Cannot receive more than remaining quantity for SKU ${poItem.sku}`), { statusCode: 400 });
-        }
-
-        // 2. Adjust Inventory atomically with WAC Calculation using central mutation service
-        let targetLocationId = receipt.locationId;
-        if (!targetLocationId) {
-          const defaultLoc = await tx.stockLocation.findFirst({ where: { clientId } });
-          targetLocationId = defaultLoc?.id;
-        }
-        
-        await inventoryMutationService.applyMovement({
-          clientId,
-          locationId: targetLocationId!,
-          variantId: poItem.variantId,
-          movementType: 'IN',
-          reason: InventoryReason.PURCHASE_RECEIPT,
-          quantityDelta: receipt.quantityReceived,
-          unitCost: Number(poItem.unitPrice),
-          referenceType: 'PO',
-          referenceId: po.poNumber,
-          notes: 'PO Receipt',
-          createdBy: 'Admin',
-          tx
-        });
-
-        // applyMovement above already blends this into averageCost; lastPurchaseCost is
-        // a separate, simpler field -- "what did the last PO actually charge", not a
-        // blended figure -- and was never being written anywhere despite existing on
-        // the schema and being exposed in variant API responses.
-        await tx.productVariant.update({
-          where: { id: poItem.variantId },
-          data: { lastPurchaseCost: poItem.unitPrice }
-        });
-      }
-
-      // Determine new PO Status
-      // Re-fetch items to get the most updated received quantities
-      const updatedItems = await tx.purchaseOrderItem.findMany({ where: { poId: id } });
-      const isFullyReceived = updatedItems.every(i => i.receivedQty >= i.orderedQty);
-      const isPartiallyReceived = updatedItems.some(i => i.receivedQty > 0);
-
-      let newStatus: PurchaseOrderStatus = po.status;
-      let receivedAt = po.receivedAt;
-      
-      if (isFullyReceived) {
-        newStatus = PurchaseOrderStatus.RECEIVED;
-        receivedAt = now;
-      } else if (isPartiallyReceived) {
-        newStatus = PurchaseOrderStatus.PARTIALLY_RECEIVED;
-      }
-
-      return await tx.purchaseOrder.update({
-        where: { id },
-        data: {
-          status: newStatus,
-          receivedAt
-        },
-        include: {
-          items: true
-        }
+        return { po: updated, receipt, duplicate: false };
+      }, {
+        timeout: 30000,
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
       });
-    }, {
-      timeout: 30000,
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
-    });
+    } catch (error: any) {
+      // Two presses of the same Confirm Receipt that both got past the check above: one wins,
+      // and the other is told what the winner recorded rather than failing.
+      if (requestKey) {
+        const winner = await this.receiptForRequest(clientId, id, requestKey).catch(() => null);
+        if (winner) return winner;
+      }
+      throw error;
+    }
   }
+
+  /** The receipt a request key already produced, with the order as it stands now. */
+  private async receiptForRequest(clientId: string, poId: string, requestKey: string) {
+    const receipt = await prisma.purchaseReceipt.findUnique({
+      where: { uq_purchase_receipt_request: { clientId, requestKey } },
+      include: RECEIPT_INCLUDE
+    });
+    if (!receipt) return null;
+    if (receipt.poId !== poId) {
+      throw Object.assign(new Error('That receipt key was already used for a different purchase order.'), { statusCode: 409 });
+    }
+    const po = await prisma.purchaseOrder.findFirstOrThrow({ where: { id: poId, clientId }, include: { items: true } });
+    return { po, receipt, duplicate: true };
+  }
+
+  /** A location of this shop that can take stock in. */
+  private async receivingLocation(tx: Prisma.TransactionClient, clientId: string, wanted?: string | null) {
+    if (wanted) {
+      const location = await tx.stockLocation.findFirst({ where: { id: wanted, clientId } });
+      if (!location) throw Object.assign(new Error('That location does not belong to this shop.'), { statusCode: 400 });
+      if (!location.active) throw Object.assign(new Error(`${location.name} is switched off, so it cannot take stock in.`), { statusCode: 400 });
+      return location;
+    }
+    const location =
+      await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE', active: true } })
+      ?? await tx.stockLocation.findFirst({ where: { clientId, active: true }, orderBy: { createdAt: 'asc' } });
+    if (!location) throw Object.assign(new Error('Add a location before receiving stock.'), { statusCode: 400 });
+    return location;
+  }
+
   /**
    * Emails the order to the supplier, and only then records it as sent.
    *

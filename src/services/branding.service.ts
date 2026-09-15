@@ -1,8 +1,46 @@
+import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { supabase } from '../lib/supabase';
 import { forgetShopSettings } from '../lib/clientSettings';
 
 const BUCKET = 'inventory-images';
+
+const SHOWN = {
+  businessName: true, logoUrl: true,
+  businessAddress: true, businessPhone: true, businessEmail: true, gstNumber: true
+} as const;
+
+/**
+ * Every write answers with the whole identity, not only the field it changed. The screen puts
+ * the answer straight into its cache, and a name save that answered with name and logo alone
+ * used to wipe the address from every document until the page was reloaded.
+ */
+function shape(row: Partial<Record<keyof typeof SHOWN, string | null>> | null | undefined) {
+  return {
+    businessName: row?.businessName || null,
+    logoUrl: row?.logoUrl || null,
+    businessAddress: row?.businessAddress || null,
+    businessPhone: row?.businessPhone || null,
+    businessEmail: row?.businessEmail || null,
+    gstNumber: row?.gstNumber || null
+  };
+}
+
+const blankToNull = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? null : v);
+
+/** Indian GSTIN: 2-digit state, 10-character PAN, entity number, Z, check character. */
+const GSTIN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+
+const detailsSchema = z.object({
+  businessAddress: z.preprocess(blankToNull, z.string().trim().max(300, 'Keep the address under 300 characters.').nullable()).optional(),
+  businessPhone: z.preprocess(blankToNull, z.string().trim().max(30, 'That phone number is too long.')
+    .regex(/^[0-9+()\-\s]{6,30}$/, 'Use digits, spaces, + and - only for the phone number.').nullable()).optional(),
+  businessEmail: z.preprocess(blankToNull, z.string().trim().max(120).email('That email address does not look right.').nullable()).optional(),
+  gstNumber: z.preprocess(
+    v => (typeof v === 'string' ? (v.trim() === '' ? null : v.trim().toUpperCase()) : v),
+    z.string().regex(GSTIN, 'A GSTIN is 15 characters, like 27ABCDE1234F1Z5.').nullable()
+  ).optional()
+}).strict();
 
 /**
  * The shop's own identity: what it is called, and what it looks like.
@@ -13,20 +51,30 @@ const BUCKET = 'inventory-images';
  */
 export class BrandingService {
 
-  /** Name and logo, for anyone signed in: every screen that shows the shop needs these. */
+  /**
+   * Name, logo and letterhead details, for anyone signed in: every screen that shows the shop
+   * needs the first two, and every document it prints needs the rest.
+   */
   async get(clientId: string) {
-    const row = await prisma.clientSettings.findUnique({
-      where: { clientId },
-      select: { businessName: true, logoUrl: true }
-    });
+    const row = await prisma.clientSettings.findUnique({ where: { clientId }, select: SHOWN });
 
     // A shop that has never opened this screen has no settings row at all -- the table was
     // empty for every client when this was written. Absent is not an error; it is a shop
     // that has not told us its name yet.
-    return {
-      businessName: row?.businessName || null,
-      logoUrl: row?.logoUrl || null
-    };
+    return shape(row);
+  }
+
+  /**
+   * What a letterhead prints under the name. Each is optional, and an empty one is cleared rather
+   * than stored as an empty string, so a document never prints a blank "Phone:" line.
+   */
+  async setDetails(clientId: string, input: unknown) {
+    const parsed = detailsSchema.safeParse(input ?? {});
+    if (!parsed.success) {
+      throw { statusCode: 400, message: parsed.error.issues[0]?.message ?? 'Check the details and try again.' };
+    }
+    const saved = await this.upsert(clientId, parsed.data);
+    return shape(saved);
   }
 
   /** Creates the settings row on first write, so the owner never meets "no settings found". */
@@ -45,7 +93,7 @@ export class BrandingService {
   async setName(clientId: string, businessName: string | null) {
     const trimmed = typeof businessName === 'string' ? businessName.trim() : '';
     const saved = await this.upsert(clientId, { businessName: trimmed || null });
-    return { businessName: saved.businessName, logoUrl: saved.logoUrl };
+    return shape(saved);
   }
 
   /**
@@ -98,6 +146,7 @@ export class BrandingService {
       logoUrl: publicUrlData.publicUrl,
       logoPath: storagePath
     });
+    const result = shape(saved);
 
     // After the row is saved, never before: if this removal fails the shop still has the
     // logo it just chose, and the cost is one orphaned file rather than no logo at all.
@@ -105,7 +154,7 @@ export class BrandingService {
       await this.removeObject(existing.logoPath);
     }
 
-    return { businessName: saved.businessName, logoUrl: saved.logoUrl };
+    return result;
   }
 
   async removeLogo(clientId: string) {
@@ -117,7 +166,7 @@ export class BrandingService {
     const saved = await this.upsert(clientId, { logoUrl: null, logoPath: null });
     if (existing?.logoPath) await this.removeObject(existing.logoPath);
 
-    return { businessName: saved.businessName, logoUrl: saved.logoUrl };
+    return shape(saved);
   }
 
   /**

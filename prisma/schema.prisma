@@ -193,6 +193,7 @@ model StockLocation {
   InventoryEvent   InventoryEvent[]
   stockCounts      StockCount[]
   dailySnapshots   DailyLocationSnapshot[]
+  purchaseReceipts PurchaseReceipt[]
 
   @@unique([clientId, code])
   @@index([clientId])
@@ -318,6 +319,7 @@ model ProductVariant {
   salesOrderItems    SalesOrderItem[]
   stockCountItems    StockCountItem[]
   purchaseOrderItems PurchaseOrderItem[]
+  purchaseReceiptItems PurchaseReceiptItem[]
   stocks             InventoryStock[]
   transfers          InventoryTransfer[]
   supplierLinks      SupplierProduct[]
@@ -594,7 +596,9 @@ model PurchaseOrder {
   totalAmount Decimal? @map("total_amount")
   notes       String?
 
-  items PurchaseOrderItem[]
+  items    PurchaseOrderItem[]
+  /// One per delivery received against this order, newest last.
+  receipts PurchaseReceipt[]
 
   createdBy String? @map("created_by")
   updatedBy String? @map("updated_by")
@@ -632,12 +636,78 @@ model PurchaseOrderItem {
 
   lastReceivedAt DateTime? @map("last_received_at")
 
+  receiptItems PurchaseReceiptItem[]
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([poId])
   @@index([variantId])
   @@map("purchase_order_items")
+}
+
+/// One delivery received against a purchase order: a goods receipt note.
+///
+/// Written in the same transaction as the stock it brings in. Lines keep what they were measured
+/// against at the time, so a receipt printed later still reads as it did on the day.
+model PurchaseReceipt {
+  id            String @id @default(uuid())
+  clientId      String @map("client_id")
+  receiptNumber String @map("receipt_number")
+
+  poId String        @map("po_id")
+  po   PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+
+  locationId String        @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  receivedById      String? @map("received_by_id")
+  receivedByName    String? @map("received_by_name")
+  /// The supplier's invoice or delivery challan number.
+  supplierReference String? @map("supplier_reference")
+  notes             String?
+  /// One per press of Confirm Receipt, so a double click returns the same receipt.
+  requestKey        String? @map("request_key")
+
+  receivedAt DateTime @default(now()) @map("received_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  items PurchaseReceiptItem[]
+
+  @@unique([clientId, receiptNumber], name: "uq_purchase_receipt_number")
+  @@unique([clientId, requestKey], name: "uq_purchase_receipt_request")
+  @@index([poId])
+  @@index([clientId, receivedAt])
+  @@map("purchase_receipts")
+}
+
+model PurchaseReceiptItem {
+  id        String          @id @default(uuid())
+  receiptId String          @map("receipt_id")
+  receipt   PurchaseReceipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  poItemId String            @map("po_item_id")
+  poItem   PurchaseOrderItem @relation(fields: [poItemId], references: [id], onDelete: Cascade)
+
+  variantId String         @map("variant_id")
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  sku          String
+  variantCode  String? @map("variant_code")
+  productTitle String  @map("product_title")
+  color        String?
+  size         String?
+
+  /// On the order, and already received before this delivery.
+  orderedQty     Int @map("ordered_qty")
+  receivedBefore Int @map("received_before")
+  /// Arrived in this delivery.
+  quantity       Int
+  unitPrice      Decimal @map("unit_price")
+
+  @@index([receiptId])
+  @@index([poItemId])
+  @@map("purchase_receipt_items")
 }
 
 // ─── REPORTING & SNAPSHOTS ───
@@ -1684,6 +1754,13 @@ model ClientSettings {
   /// logo a shop has ever uploaded sitting in the bucket for ever.
   logoUrl  String? @map("logo_url")
   logoPath String? @map("logo_path")
+
+  /// The rest of a letterhead: what a purchase order or goods receipt says about who sent it.
+  /// All optional; an empty one is not printed.
+  businessAddress String? @map("business_address")
+  businessPhone   String? @map("business_phone")
+  businessEmail   String? @map("business_email")
+  gstNumber       String? @map("gst_number")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

@@ -77,8 +77,14 @@ export const receiveGoods = async (req: Request, res: Response, next: NextFuncti
     }
 
     const id = req.params.id as string;
-    const data = await purchaseOrderService.receiveGoods(clientId, id, parsed.data.receipts as any);
-    res.json({ success: true, data });
+    const user = (req as any).user;
+    const { po, receipt, duplicate } = await purchaseOrderService.receiveGoods(
+      clientId, id, parsed.data as any,
+      { id: user?.id, name: user?.name },
+      (req as any).locationId
+    );
+    // `data` is still the order, as it always was; the receipt rides beside it.
+    res.json({ success: true, data: po, receipt, duplicate });
   } catch (error) {
     next(error);
   }
