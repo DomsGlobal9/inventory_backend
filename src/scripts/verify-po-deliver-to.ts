@@ -13,6 +13,10 @@
  *      deleted, and deleting it once they are finished clears the link
  *   F  reorder suggestions per store: stock at that store only, what is on order for it counted,
  *      and drafts made from them go to that store
+ *   G  the edges: blank and malformed store ids, a shop with no store, two changes or a change and
+ *      the last delivery at the same moment, the older per-line receiving shape, drafts for a store
+ *      that is not theirs, a foreign store in the header, what "on order" does and does not count,
+ *      reorder quantities, archived items and items with no supplier, clearing an address
  *
  * Fixtures on demo-client (two stores, a supplier, a product, three people), all removed at the
  * end. Sends no email. Needs the API on :4006.
@@ -38,7 +42,7 @@ const noLeak = (r: any) => !/prisma|Invalid `|foreign key/i.test(JSON.stringify(
 
 const made = {
   users: [] as string[], locationIds: [] as string[], supplierId: '', productId: '',
-  variantIds: [] as string[], poIds: [] as string[], otherTenant: `dt-other-${STAMP}`
+  variantIds: [] as string[], poIds: [] as string[], extraProductIds: [] as string[], otherTenant: `dt-other-${STAMP}`
 };
 
 async function person(name: string, roleName: string): Promise<{ id: string; api: AxiosInstance }> {
@@ -264,6 +268,8 @@ async function main() {
   check('  ...and those finished orders are kept, with the store link cleared', (await prisma.purchaseOrder.count({ where: { id: bigger.data.data.id, locationId: null, status: 'CANCELLED' } })) === 1);
   if (deleted.status === 200) made.locationIds = made.locationIds.filter(id => id !== A.id);
 
+  await edges({ admin, sales, main, B, supplier, otherLoc, mkStore });
+
   await prisma.inventoryStock.deleteMany({ where: { clientId: other.client } });
   await prisma.productVariant.deleteMany({ where: { clientId: other.client } });
   await prisma.product.deleteMany({ where: { clientId: other.client } });
@@ -271,8 +277,193 @@ async function main() {
   await prisma.stockLocation.deleteMany({ where: { clientId: other.client } });
 }
 
+async function edges(ctx: { admin: any; sales: any; main: any; B: any; supplier: any; otherLoc: any; mkStore: (name: string, body?: any) => Promise<any> }) {
+  const { admin, sales, main, B, supplier, otherLoc, mkStore } = ctx;
+  console.log('\nG. THE EDGES');
+
+  const product = await prisma.product.create({ data: { clientId: CLIENT, productCode: `PRD-DTG-${STAMP}`, title: `DTG Saree ${STAMP}`, slug: `dtg-saree-${STAMP}`, category: 'WOMEN', basePrice: 900, status: 'ACTIVE', productType: 'READY_TO_WEAR' } });
+  made.extraProductIds.push(product.id);
+  const mkVariant = async (tag: string, extra: any = {}, productId = product.id) => {
+    const v = await prisma.productVariant.create({ data: { clientId: CLIENT, productId, sku: `DTG-${STAMP}-${tag}`, variantCode: `VC-DTG-${STAMP}-${tag}`, size: 'Free', colorName: tag, sellingPrice: 900, reorderLevel: 5, ...extra } });
+    made.variantIds.push(v.id);
+    return v;
+  };
+  const g = await mkVariant('Green');
+  await prisma.supplierProduct.create({ data: { clientId: CLIENT, supplierId: supplier.id, variantId: g.id, costPrice: 400, isPreferred: true } as any });
+  const C = (await mkStore('Vijayawada', { address: 'Eluru Road, Vijayawada' })).data;
+  const create = async (body: any, opts?: any) => {
+    const r = await admin.api.post('/purchase-orders', { supplierId: supplier.id, items: [{ variantId: g.id, orderedQty: 4, unitPrice: 400 }], ...body }, opts);
+    if (r.data?.data?.id) made.poIds.push(r.data.data.id);
+    return r;
+  };
+
+  // Malformed input
+  const blank = await create({ locationId: '' }, at(C.id));
+  check('a blank store on a new order means "none chosen", not an error (the screen sends one when a shop has no store)', blank.status === 201 && blank.data.data.locationId === C.id, brief(blank));
+  const nul = await create({ locationId: null });
+  check('a null store falls back to the main store', nul.status === 201 && nul.data.data.locationId === main.id, brief(nul));
+  for (const [label, locationId] of [['a number', 12345], ['an object', { id: C.id }], ['spaces', '   '], ['a made-up id', 'not-a-store'], ['a 5,000-character id', 'x'.repeat(5000)]] as [string, any][]) {
+    const r = await create({ locationId });
+    check(`refused on create: ${label} as the store (400, no crash)`, r.status === 400 && noLeak(r), brief(r));
+    const m = await admin.api.put(`/purchase-orders/${nul.data.data.id}/deliver-to`, { locationId });
+    check(`refused on change: ${label} as the store (400, no crash)`, m.status === 400 && noLeak(m), brief(m));
+  }
+  const otherShopsOrder = await prisma.purchaseOrder.create({ data: { clientId: made.otherTenant, poNumber: `PO-DTX-${STAMP}`, supplierId: (await prisma.supplier.findFirstOrThrow({ where: { clientId: made.otherTenant } })).id, status: 'DRAFT' } });
+  const foreignOrder = await admin.api.put(`/purchase-orders/${otherShopsOrder.id}/deliver-to`, { locationId: C.id });
+  check("refused: changing the store on another shop's order (404)", foreignOrder.status === 404, brief(foreignOrder));
+  check("  ...and that order is untouched", (await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: otherShopsOrder.id } })).locationId === null);
+  await prisma.purchaseOrder.delete({ where: { id: otherShopsOrder.id } });
+
+  // A shop with no active store at all
+  const { purchaseOrderService } = await import('../services/purchase-order.service');
+  const lone = await purchaseOrderService.createPO(made.otherTenant, { supplierId: (await prisma.supplier.findFirstOrThrow({ where: { clientId: made.otherTenant } })).id, items: [{ variantId: (await prisma.productVariant.findFirstOrThrow({ where: { clientId: made.otherTenant } })).id, orderedQty: 1, unitPrice: 1 }] }).catch((e: any) => e);
+  await prisma.stockLocation.updateMany({ where: { clientId: made.otherTenant }, data: { active: false } });
+  const none = await purchaseOrderService.createPO(made.otherTenant, { supplierId: (await prisma.supplier.findFirstOrThrow({ where: { clientId: made.otherTenant } })).id, items: [{ variantId: (await prisma.productVariant.findFirstOrThrow({ where: { clientId: made.otherTenant } })).id, orderedQty: 1, unitPrice: 1 }] }).catch((e: any) => e);
+  check('a shop whose only store is switched off can still raise an order, with no store', !(none instanceof Error) && none.locationId === null, String(none?.message || none?.locationId));
+  await prisma.purchaseOrder.deleteMany({ where: { clientId: made.otherTenant } });
+  void lone;
+
+  // Two things at once
+  const racing = (await create({ locationId: C.id })).data.data;
+  const both = await Promise.all([
+    admin.api.put(`/purchase-orders/${racing.id}/deliver-to`, { locationId: B.id }),
+    admin.api.put(`/purchase-orders/${racing.id}/deliver-to`, { locationId: B.id })
+  ]);
+  const racingNow = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: racing.id } });
+  check('the same change pressed twice at the same moment: both answer, the order ends on that store', both.every(r => r.status === 200) && racingNow.locationId === B.id, both.map(brief).join(' | '));
+  const opposite = await Promise.all([
+    admin.api.put(`/purchase-orders/${racing.id}/deliver-to`, { locationId: C.id }),
+    admin.api.put(`/purchase-orders/${racing.id}/deliver-to`, { locationId: main.id })
+  ]);
+  const oppositeNow = (await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: racing.id } })).locationId;
+  check('two different changes at the same moment: no error, and the order ends on one of them', opposite.every(r => r.status === 200) && [C.id, main.id].includes(oppositeNow!), opposite.map(brief).join(' | '));
+
+  let finishedMoved = 0;
+  for (let round = 0; round < 4; round++) {
+    const po = (await create({ locationId: C.id })).data.data;
+    await admin.api.put(`/purchase-orders/${po.id}/status`, { status: 'SENT' });
+    const itemId = (await prisma.purchaseOrderItem.findFirstOrThrow({ where: { poId: po.id } })).id;
+    const [move, receive] = await Promise.all([
+      admin.api.put(`/purchase-orders/${po.id}/deliver-to`, { locationId: B.id }),
+      admin.api.post(`/purchase-orders/${po.id}/receive`, { receipts: [{ poItemId: itemId, quantityReceived: 4 }], locationId: C.id, receivedByName: 'Race' })
+    ]);
+    let after = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: po.id }, include: { receipts: true } });
+    // Neither may crash. The delivery either goes through, or -- when the change reached the order
+    // first -- is turned back with "saved at the same moment, try again" having saved nothing, and
+    // pressing again (same key) completes it. Whatever the move answered must be what happened.
+    if (![200, 400, 409].includes(move.status) || ![200, 409].includes(receive.status)) finishedMoved += 100;
+    if (receive.status === 409) {
+      if (after.status !== 'SENT' || after.receipts.length !== 0) finishedMoved += 10;
+      const retry = await admin.api.post(`/purchase-orders/${po.id}/receive`, { receipts: [{ poItemId: itemId, quantityReceived: 4 }], locationId: C.id, receivedByName: 'Race' });
+      if (retry.status !== 200) finishedMoved += 10;
+      after = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: po.id }, include: { receipts: true } });
+    }
+    if (after.status !== 'RECEIVED' || after.receipts.length !== 1) finishedMoved += 10;
+    if (move.status === 200 && after.locationId !== B.id) finishedMoved++;
+    if (move.status !== 200 && after.locationId !== C.id) finishedMoved++;
+  }
+  check('a store change racing the last delivery: no crash, one receipt in the end, and the change\'s answer matches the order (4 rounds)', finishedMoved === 0, `bad rounds: ${finishedMoved}`);
+
+  // Receiving: the older request shape, with a store on each line
+  const lineShape = (await create({ locationId: C.id })).data.data;
+  await admin.api.put(`/purchase-orders/${lineShape.id}/status`, { status: 'SENT' });
+  const lineItem = (await prisma.purchaseOrderItem.findFirstOrThrow({ where: { poId: lineShape.id } })).id;
+  const byLine = await admin.api.post(`/purchase-orders/${lineShape.id}/receive`, { receipts: [{ poItemId: lineItem, quantityReceived: 1, locationId: B.id }], receivedByName: 'Old shape' }, at(main.id));
+  check('a store given on the lines (the older request shape) still wins over the order\'s store', byLine.status === 200 && byLine.data.receipt?.location?.id === B.id, brief(byLine));
+
+  // Sending: the store is there, but the supplier has no email -- the email reason, not the store one
+  const email = await admin.api.post(`/purchase-orders/${lineShape.id}/email`);
+  check('with a store chosen, a supplier with no email is refused for the email, not the store', email.status === 400 && /no email/i.test(email.data?.message) && !/store this order/i.test(email.data?.message), brief(email));
+
+  // Reorder drafts for a store that is not theirs, or is switched off
+  const beforeDrafts = await prisma.purchaseOrder.count({ where: { clientId: CLIENT, supplierId: supplier.id } });
+  const foreignDraft = await admin.api.post('/reorder/draft-orders', { groups: [{ supplierId: supplier.id, items: [{ variantId: g.id, orderedQty: 1, unitPrice: 400 }] }], locationId: otherLoc.id });
+  check("refused: drafts from the suggestions for another shop's store (400)", foreignDraft.status === 400 && /does not belong/i.test(foreignDraft.data?.message), brief(foreignDraft));
+  await prisma.stockLocation.update({ where: { id: C.id }, data: { active: false } });
+  const offDraft = await admin.api.post('/reorder/draft-orders', { groups: [{ supplierId: supplier.id, items: [{ variantId: g.id, orderedQty: 1, unitPrice: 400 }] }], locationId: C.id });
+  check('refused: drafts for a switched-off store, and it names the store', offDraft.status === 400 && offDraft.data?.message?.includes(C.name), brief(offDraft));
+  await prisma.stockLocation.update({ where: { id: C.id }, data: { active: true } });
+  check('  ...and neither made an order', (await prisma.purchaseOrder.count({ where: { clientId: CLIENT, supplierId: supplier.id } })) === beforeDrafts);
+
+  // The header naming another shop's store is ignored, not trusted
+  const foreignHeader = await admin.api.get('/reorder/suggestions', at(otherLoc.id));
+  check("another shop's store in the header is ignored: suggestions for all stores", foreignHeader.status === 200 && foreignHeader.data.data.location === null, brief(foreignHeader));
+  const madeUpHeader = await admin.api.get('/reorder/suggestions', at('00000000-0000-0000-0000-000000000000'));
+  check('a made-up store in the header is ignored too', madeUpHeader.status === 200 && madeUpHeader.data.data.location === null, brief(madeUpHeader));
+
+  // What "on order" counts at store D: only what is still to come, on open orders for D
+  const D = (await mkStore('Ongole')).data;
+  const w = await mkVariant('White');
+  await prisma.supplierProduct.create({ data: { clientId: CLIENT, supplierId: supplier.id, variantId: w.id, costPrice: 400, isPreferred: true } as any });
+  await prisma.inventoryStock.create({ data: { clientId: CLIENT, variantId: w.id, locationId: D.id, quantity: 0 } });
+  const orderAt = async (qty: number, status: string, received = 0, locationId = D.id) => {
+    const po = await prisma.purchaseOrder.create({ data: { clientId: CLIENT, poNumber: `PO-DTG-${STAMP}-${made.poIds.length}`, supplierId: supplier.id, locationId, status: status as any, items: { create: [{ variantId: w.id, sku: w.sku, variantCode: w.variantCode, productTitle: 'W', orderedQty: qty, receivedQty: received, unitPrice: 400 }] } } });
+    made.poIds.push(po.id);
+  };
+  await orderAt(3, 'PARTIALLY_RECEIVED', 2);   // 1 still to come
+  await orderAt(1, 'DRAFT');                   // 1
+  await orderAt(50, 'CANCELLED');              // 0
+  await orderAt(50, 'RECEIVED', 50);           // 0
+  await orderAt(50, 'SENT', 0, B.id);          // another store: 0
+  const lineOf = (res: any, id: string) => [...(res.data?.data?.suppliers || []).flatMap((x: any) => x.lines), ...(res.data?.data?.unassigned || [])].find((l: any) => l.variantId === id);
+  const atD = await admin.api.get('/reorder/suggestions', at(D.id));
+  const wl = lineOf(atD, w.id);
+  check('on order counts only what is still to come on open orders for this store (2, not 153)', wl?.onOrder === 2 && wl?.currentStock === 0 && wl?.suggestedQty === 3, JSON.stringify(wl));
+
+  // Ordering exactly what was suggested clears the suggestion, instead of asking for one more
+  await orderAt(wl?.suggestedQty ?? 3, 'DRAFT');
+  const atDCovered = await admin.api.get('/reorder/suggestions', at(D.id));
+  check('ordering exactly the suggested quantity clears the suggestion (no "one more" loop)', !lineOf(atDCovered, w.id), JSON.stringify(lineOf(atDCovered, w.id)));
+  await prisma.purchaseOrder.delete({ where: { id: made.poIds.pop()! } });
+
+  // reorderQty: what the shop buys at a time wins
+  await prisma.productVariant.update({ where: { id: w.id }, data: { reorderQty: 12 } });
+  const atD2 = await admin.api.get('/reorder/suggestions', at(D.id));
+  check('an item bought 12 at a time is suggested as 12', lineOf(atD2, w.id)?.suggestedQty === 12, JSON.stringify(lineOf(atD2, w.id)));
+
+  // Archived products and items with no supplier
+  const archived = await prisma.product.create({ data: { clientId: CLIENT, productCode: `PRD-DTA-${STAMP}`, title: `DTA ${STAMP}`, slug: `dta-${STAMP}`, category: 'WOMEN', basePrice: 900, status: 'ARCHIVED', productType: 'READY_TO_WEAR' } });
+  made.extraProductIds.push(archived.id);
+  const a = await mkVariant('Archived', {}, archived.id);
+  const orphan = await mkVariant('NoSupplier');
+  await prisma.inventoryStock.createMany({ data: [
+    { clientId: CLIENT, variantId: a.id, locationId: D.id, quantity: 0 },
+    { clientId: CLIENT, variantId: orphan.id, locationId: D.id, quantity: 1 }
+  ] });
+  const atD3 = await admin.api.get('/reorder/suggestions', at(D.id));
+  check('an archived item is not suggested at the store', !lineOf(atD3, a.id));
+  const orphanLine = (atD3.data?.data?.unassigned || []).find((l: any) => l.variantId === orphan.id);
+  check('an item with no supplier is listed as unassigned for the store, with its stock there', orphanLine?.currentStock === 1 && orphanLine?.onOrder === 0, JSON.stringify(orphanLine));
+
+  // Store address: explicit null clears, a number is refused, only-spaces clears, a rename keeps it
+  const cleared = await admin.api.put(`/locations/${C.id}`, { address: null });
+  check('an address set to null is cleared', cleared.status === 200 && cleared.data.address === null, brief(cleared));
+  await admin.api.put(`/locations/${C.id}`, { address: 'Eluru Road, Vijayawada', phone: '+91 90000 77777' });
+  const numberAddress = await admin.api.put(`/locations/${C.id}`, { address: 12345 });
+  check('refused: an address that is not text (400)', numberAddress.status === 400, brief(numberAddress));
+  const spaces = await admin.api.put(`/locations/${C.id}`, { phone: '    ' });
+  check('a phone of only spaces is cleared, the address kept', spaces.status === 200 && spaces.data.phone === null && spaces.data.address === 'Eluru Road, Vijayawada', brief(spaces));
+  const renamed = await admin.api.put(`/locations/${C.id}`, { name: `Vijayawada One ${STAMP}` });
+  check('renaming a store keeps its address', renamed.status === 200 && renamed.data.address === 'Eluru Road, Vijayawada', brief(renamed));
+  const salesEdit = await sales.api.put(`/locations/${C.id}`, { address: 'Hijacked' });
+  check('refused: Sales changing a store address (403)', salesEdit.status === 403 && (await prisma.stockLocation.findUniqueOrThrow({ where: { id: C.id } })).address === 'Eluru Road, Vijayawada', brief(salesEdit));
+
+  // A store with many orders on the way: the message lists three and says there are more
+  for (let i = 0; i < 4; i++) await create({ locationId: C.id });
+  await prisma.inventoryStock.deleteMany({ where: { locationId: C.id } });
+  const many = await admin.api.delete(`/locations/${C.id}`);
+  check('deleting a store with 4+ orders on the way names three and says "and more"', many.status === 400 && /and more/.test(many.data?.error), brief(many));
+
+  // An order whose store is gone reads back cleanly
+  const orphaned = (await create({ locationId: C.id })).data.data;
+  await prisma.purchaseOrder.update({ where: { id: orphaned.id }, data: { locationId: null } });
+  const read = await admin.api.get(`/purchase-orders/${orphaned.id}`);
+  check('an order with no store reads back with location null, not an error', read.status === 200 && read.data.data.location === null, brief(read));
+}
+
 async function cleanup() {
   await prisma.purchaseOrder.deleteMany({ where: { id: { in: made.poIds } } });
+  await prisma.purchaseOrder.deleteMany({ where: { clientId: made.otherTenant } });
   await prisma.inventoryTransaction.deleteMany({ where: { variantId: { in: made.variantIds } } });
   await prisma.inventoryAlert.deleteMany({ where: { variantId: { in: made.variantIds } } }).catch(() => undefined);
   await prisma.inventoryEvent.deleteMany({ where: { variantId: { in: made.variantIds } } }).catch(() => undefined);
@@ -280,6 +471,7 @@ async function cleanup() {
   await prisma.supplierProduct.deleteMany({ where: { variantId: { in: made.variantIds } } });
   await prisma.productVariant.deleteMany({ where: { id: { in: made.variantIds } } });
   if (made.productId) await prisma.product.deleteMany({ where: { id: made.productId } });
+  await prisma.product.deleteMany({ where: { id: { in: made.extraProductIds } } });
   if (made.supplierId) await prisma.supplier.deleteMany({ where: { id: made.supplierId } });
   for (const t of ['inventoryStock', 'productVariant', 'product', 'supplier', 'stockLocation'] as const) {
     await (prisma as any)[t].deleteMany({ where: { clientId: made.otherTenant } }).catch(() => undefined);

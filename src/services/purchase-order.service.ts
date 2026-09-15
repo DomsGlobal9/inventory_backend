@@ -195,7 +195,17 @@ export class PurchaseOrderService {
 
     const location = (await this.deliverToFor(prisma, clientId, locationId))!;
     const changed = po.locationId !== location.id;
-    if (changed) await prisma.purchaseOrder.update({ where: { id: po.id }, data: { locationId: location.id } });
+    if (changed) {
+      // The status is checked again in the write itself. The check above can pass a moment before
+      // the last delivery completes the order, and a plain update would then move a finished order.
+      const moved = await prisma.purchaseOrder.updateMany({
+        where: { id: po.id, clientId, status: { notIn: [PurchaseOrderStatus.RECEIVED, PurchaseOrderStatus.CANCELLED] } },
+        data: { locationId: location.id }
+      });
+      if (moved.count === 0) {
+        throw refuse('This order was completed or cancelled a moment ago, so the store it was for can no longer change.', 409);
+      }
+    }
 
     return {
       po: await this.getPOById(clientId, id),

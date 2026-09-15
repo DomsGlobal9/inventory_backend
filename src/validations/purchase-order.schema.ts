@@ -3,7 +3,8 @@ import { z } from 'zod';
 export const purchaseOrderCreateSchema = z.object({
   supplierId: z.string().min(1, "Supplier ID is required"),
   // The store the order is for. Optional: without one it is the store selected at the top of the app.
-  locationId: z.string().min(1).optional().nullable(),
+  // Blank is the same as not given: a shop with no store yet sends an empty picker.
+  locationId: z.preprocess(v => (v === '' ? null : v), z.string().min(1).optional().nullable()),
   expectedDeliveryDate: z.string().datetime().optional().nullable().or(z.date().optional()),
   notes: z.string().optional().nullable(),
   items: z.array(z.object({

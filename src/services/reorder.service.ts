@@ -145,8 +145,10 @@ export class ReorderService {
       // whole catalogue had run out -- 236 items at a store that had never stocked one of them.
       // Low-stock alerts draw the same line, since they only ever fire from stock moving there.
       if (location && variant.stocks.length === 0 && onOrder === 0) continue;
-      // Low now, but enough is already coming.
-      if (currentStock + onOrder > variant.reorderLevel) {
+      // Low now, but enough is already coming. Reaching the level counts once something is on
+      // order: a suggestion brings stock up to the level, so ordering exactly what was suggested
+      // must clear it -- with ">" it came straight back asking for one more, and one more after that.
+      if (currentStock + onOrder > variant.reorderLevel || (onOrder > 0 && currentStock + onOrder >= variant.reorderLevel)) {
         coveredByOpenOrders++;
         continue;
       }
