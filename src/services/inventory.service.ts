@@ -6,7 +6,9 @@ import { isLowStock, lowStockThreshold } from '../lib/lowStock';
 
 export class InventoryService {
   
-  async stockIn(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, unitCost?: number, notes?: string) {
+  // performedBy: who did it, from the session. It was the clientId -- "demo-client" on every movement
+  // a person made by hand -- so the ledger could never say which member of staff moved stock.
+  async stockIn(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, unitCost?: number, notes?: string, performedBy?: string) {
     return inventoryMutationService.applyMovement({
       clientId, 
       locationId,
@@ -18,11 +20,11 @@ export class InventoryService {
       referenceType: referenceType || 'MANUAL', 
       unitCost,
       notes,
-      createdBy: clientId // Simulating the createdBy field
+      createdBy: performedBy || clientId
     });
   }
 
-  async stockOut(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, notes?: string) {
+  async stockOut(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, notes?: string, performedBy?: string) {
     return inventoryMutationService.applyMovement({
       clientId, 
       locationId,
@@ -33,11 +35,11 @@ export class InventoryService {
       referenceId: reference,
       referenceType: referenceType || 'MANUAL', 
       notes,
-      createdBy: clientId
+      createdBy: performedBy || clientId
     });
   }
 
-  async adjustment(clientId: string, locationId: string, variantId: string, quantityChange: number, reason?: string, referenceType?: string, reference?: string, notes?: string) {
+  async adjustment(clientId: string, locationId: string, variantId: string, quantityChange: number, reason?: string, referenceType?: string, reference?: string, notes?: string, performedBy?: string) {
     // Adjustment can be positive or negative
     return inventoryMutationService.applyMovement({
       clientId, 
@@ -49,7 +51,7 @@ export class InventoryService {
       referenceId: reference, 
       referenceType: referenceType || 'MANUAL',
       notes,
-      createdBy: clientId
+      createdBy: performedBy || clientId
     });
   }
 

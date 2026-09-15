@@ -5,6 +5,9 @@ import { valuationService } from '../services/valuation.service';
 import { stockChangeSchema } from '../validations/inventory.schema';
 import { canSeeCost } from '../middleware/cost-visibility.middleware';
 
+/** Who made a movement, for the ledger: the signed-in person's name, never the shop's id. */
+const performerOf = (req: Request) => (req as any).user?.name || (req as any).user?.id;
+
 const VALID_REASONS: string[] = Object.values(InventoryReason);
 
 /**
@@ -65,7 +68,7 @@ export class InventoryController {
       }
 
       if (quantity <= 0) return res.status(400).json({ success: false, message: "Quantity must be positive" });
-      const result = await inventoryService.stockIn(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, unitCost, notes);
+      const result = await inventoryService.stockIn(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, unitCost, notes, performerOf(req));
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -93,7 +96,7 @@ export class InventoryController {
       }
 
       if (quantity <= 0) return res.status(400).json({ success: false, message: "Quantity must be positive" });
-      const result = await inventoryService.stockOut(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, notes);
+      const result = await inventoryService.stockOut(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, notes, performerOf(req));
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -126,7 +129,7 @@ export class InventoryController {
         targetLocationId = defaultLoc.id;
       }
 
-      const result = await inventoryService.adjustment(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, notes);
+      const result = await inventoryService.adjustment(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, notes, performerOf(req));
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
