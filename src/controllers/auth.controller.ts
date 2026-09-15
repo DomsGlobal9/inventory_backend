@@ -5,6 +5,7 @@ import { authCookieOptions, clearCookieOptions } from '../lib/cookies';
 import { encryptCredential } from '../lib/credentialEncryption';
 import { WILDCARD_PERMISSION, expandPermissions, holdsEverything } from '../config/permissions';
 import { respondWithError } from '../utils/respondWithError';
+import { forgetIdentity } from '../lib/identityCache';
 
 const userWithRolesInclude = {
   roles: {
@@ -159,6 +160,9 @@ export const updateMyProfile = async (req: Request, res: Response) => {
     }
 
     const updated = await prisma.user.update({ where: { id: authUser.id }, data });
+    // The session read that follows is answered from the identity cache, which still held the old
+    // name: Settings said "Profile updated" over the old name for up to its 30 seconds.
+    forgetIdentity(authUser.id);
     res.json({ success: true, data: { id: updated.id, name: updated.name, email: updated.email } });
   } catch (error: any) {
     return respondWithError(res, error, { status: 500, message: 'Failed to update profile' });
