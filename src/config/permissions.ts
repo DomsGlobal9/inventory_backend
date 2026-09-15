@@ -155,6 +155,8 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   // ── Money ─────────────────────────────────────────────────────────────────
   // The split that makes the rest of this meaningful. Before it, dashboard:view carried the
   // shop's whole financial position and every seeded role held it, including SALES.
+  // Enforced by middleware/cost-visibility, mounted in api.routes on every router that carries
+  // cost but is not itself about money.
   { key: 'cost:view',   group: 'Money', label: 'See what the business paid for its stock',
     fieldLevel: true, sensitive: true },
   { key: 'cost:manage', group: 'Money', label: 'Set and restate what stock cost',

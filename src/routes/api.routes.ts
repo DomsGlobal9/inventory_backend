@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { trackActivity } from '../middleware/activity-tracker.middleware';
 import { auditLogger } from '../middleware/audit-logger.middleware';
+import { hideCostUnlessPermitted } from '../middleware/cost-visibility.middleware';
 
 import productRoutes from './product.routes';
 import variantRoutes from './variant.routes';
@@ -98,37 +99,50 @@ router.use(trackActivity);
 // flood the table for no signal a platform admin actually wants.
 router.use(auditLogger);
 
+// What the business paid, removed from responses for anyone without cost:view. Mounted per
+// router below rather than once here: purchase orders, suppliers and the day book show cost by
+// definition (their permissions `exposesCost`, or require report:financial), and stripping it
+// there would leave a purchase order with no prices. See middleware/cost-visibility.
+const hideCost = hideCostUnlessPermitted();
+
 // Mount Business Routes
 // Mounted BEFORE /products so that /products/import is not swallowed by /products/:id.
-router.use('/products/import', productImportRoutes);
-router.use('/products', productRoutes);
-router.use('/variants', variantRoutes);
-router.use('/inventory/transactions', transactionRoutes);
-router.use('/inventory/alerts', inventoryAlertRoutes);
-router.use('/inventory', inventoryRoutes);
-router.use('/dashboard', dashboardRoutes);
+router.use('/products/import', hideCost, productImportRoutes);
+router.use('/products', hideCost, productRoutes);
+// Except a variant's suppliers: that path falls through to supplierProductRoutes below, and a
+// supplier's agreed price is shown to supplier:view by design.
+router.use('/variants', hideCostUnlessPermitted({ except: /^\/[^/]+\/suppliers\/?$/ }), variantRoutes);
+router.use('/inventory/transactions', hideCost, transactionRoutes);
+router.use('/inventory/alerts', hideCost, inventoryAlertRoutes);
+router.use('/inventory', hideCost, inventoryRoutes);
+router.use('/dashboard', hideCost, dashboardRoutes);
 // The shop's own name and logo. Readable by anyone signed in, changeable only by the owner.
 router.use('/branding', brandingRoutes);
-router.use('/catalog', catalogRoutes);
+router.use('/catalog', hideCost, catalogRoutes);
 router.use('/catalog-tryon', catalogTryOnRoutes);
-router.use('/search', searchRoutes);
-router.use('/stock-counts', stockCountRoutes);
+router.use('/search', hideCost, searchRoutes);
+router.use('/stock-counts', hideCost, stockCountRoutes);
 router.use('/suppliers', supplierRoutes);
 // Mounted at the root because it spans two nouns -- /suppliers/:id/products and
 // /variants/:id/suppliers are the same relationship read from either end.
 router.use('/', supplierProductRoutes);
 router.use('/purchase-orders', purchaseOrderRoutes);
-router.use('/reorder', reorderRoutes);
+// A reorder suggestion is a purchase order not yet raised: its prices are what the supplier
+// charges. Seen by whoever may see cost or purchase orders, hidden from the stock room otherwise.
+router.use('/reorder', hideCostUnlessPermitted({
+  alsoHide: ['unitPrice', 'lineTotal', 'estimatedTotal'],
+  alsoVisibleTo: ['purchase_order:view']
+}), reorderRoutes);
 router.use('/daybook', dayBookRoutes);
-router.use('/reports', reportRoutes);
-router.use('/customers', customerRoutes);
-router.use('/sales-orders', salesOrderRoutes);
+router.use('/reports', hideCost, reportRoutes);
+router.use('/customers', hideCost, customerRoutes);
+router.use('/sales-orders', hideCost, salesOrderRoutes);
 router.use('/offers', offerRoutes);
 router.use('/pricing', pricingRoutes);
-router.use('/dispatches', dispatchRoutes);
+router.use('/dispatches', hideCost, dispatchRoutes);
 // Roles: what a job is allowed to do, composed by the shop from the platform's catalogue.
 router.use('/roles', roleRoutes);
-router.use('/returns', returnsRoutes);
+router.use('/returns', hideCost, returnsRoutes);
 router.use('/locations', locationRoutes);
 // Managing storefront connections: the merchant's side, behind the normal session.
 router.use('/storefront-connections', storefrontConnectionRoutes);
@@ -137,7 +151,7 @@ router.use('/shopify-connect', shopifyMerchantRoutes);
 // What a merchant may see about the platform services their workspace uses. Read only, and
 // structurally unable to return a key -- see the route file.
 router.use('/services', serviceCatalogueRoutes);
-router.use('/inventory-transfers', inventoryTransferRoutes);
+router.use('/inventory-transfers', hideCost, inventoryTransferRoutes);
 router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);
 

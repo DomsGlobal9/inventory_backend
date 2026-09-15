@@ -3,6 +3,7 @@ import { InventoryReason } from '@prisma/client';
 import { inventoryService } from '../services/inventory.service';
 import { valuationService } from '../services/valuation.service';
 import { stockChangeSchema } from '../validations/inventory.schema';
+import { canSeeCost } from '../middleware/cost-visibility.middleware';
 
 const VALID_REASONS: string[] = Object.values(InventoryReason);
 
@@ -150,7 +151,13 @@ export class InventoryController {
       // view regardless of what's currently selected app-wide (e.g. the Transfers page
       // scoping the variant picker to whichever Origin was just chosen) pass this.
       const locationId = (req.query.locationId as string | undefined) || ((req as any).locationId as string | undefined);
-      const variants = await inventoryService.getVariants(clientId, req.query, locationId);
+      // Sorting by cost or stock value hands over the ranking the redacted numbers would have
+      // given -- "these ten are what the shop paid most for". Ignored for anyone without cost:view.
+      const filters: any = { ...req.query };
+      if (['averageCost', 'inventoryValue'].includes(String(filters.sortBy)) && !canSeeCost((req as any).user)) {
+        delete filters.sortBy;
+      }
+      const variants = await inventoryService.getVariants(clientId, filters, locationId);
       res.status(200).json({ success: true, data: variants });
     } catch (error) {
       next(error);
