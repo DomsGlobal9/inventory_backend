@@ -271,6 +271,8 @@ async function main() {
     !/Ravi|Anita|at the till/.test(JSON.stringify(data)));
   const afterExport = await prisma.shopifyPrivacyRequest.findUniqueOrThrow({ where: { id: drRow!.id } });
   check('exporting marks it done and records who did it', afterExport.status === 'COMPLETED' && afterExport.exportedBy === admin.id && !!afterExport.exportedAt);
+  check('the file names who holds the data in words a customer understands, never our workspace id',
+    !!data?.about?.heldBy && data.about.heldBy !== CLIENT, String(data?.about?.heldBy));
 
   const nothing = await webhook('customers/data_request', SHOP_A, { customer: { id: Number(ID(99)) }, orders_requested: [] });
   const nothingRow = await settled(nothing.id, 'customers/data_request');

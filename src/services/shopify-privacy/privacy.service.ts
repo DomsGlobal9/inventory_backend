@@ -143,7 +143,10 @@ export class ShopifyPrivacyService {
     } catch (error: any) {
       await prisma.shopifyPrivacyRequest.update({
         where: { id: request.id },
-        data: { status: 'FAILED', detail: String(error?.message ?? error).slice(0, 500) }
+        // Shown to the merchant in Settings, and nothing in a failure is theirs to act on -- so a
+        // sentence, never the error (which can be a database banner with our file paths in it).
+        // The route and housekeeping log the real error in full.
+        data: { status: 'FAILED', detail: 'Something went wrong. It will be tried again automatically.' }
       }).catch(() => undefined);
       throw error;
     }
@@ -235,7 +238,8 @@ export class ShopifyPrivacyService {
     const money = (v: unknown) => Number(v);
     return {
       about: {
-        heldBy: businessName ?? clientId,
+        // This file goes to a customer: never our internal workspace id, the store they bought from instead.
+        heldBy: businessName || request.shopDomain,
         store: request.shopDomain,
         shopifyCustomerId: request.shopifyCustomerId,
         shopifyDataRequestId: request.shopifyRequestId,
