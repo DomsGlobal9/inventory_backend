@@ -2,7 +2,7 @@
  * Receiving a purchase order: the stock, the order, and the goods receipt it leaves behind.
  *
  *   A  a part delivery into a chosen location: a GRN with what each line was measured against,
- *      who counted it, the supplier's invoice number; stock into THAT location; order part-received
+ *      the receiver as typed (not the login), the supplier's invoice number; stock into THAT location
  *   B  the same press twice, in a row and at the same moment: one receipt, stock moved once
  *   C  the rest of the order: into the location selected at the top of the app, the earlier
  *      delivery remembered on the lines, order received; the order page lists both receipts
@@ -104,13 +104,17 @@ async function main() {
   const po = await newPO([10, 6]);
   const first = await receiver.api.post(`/purchase-orders/${po.id}/receive`, {
     receipts: [{ poItemId: po.redItem, quantityReceived: 4 }, { poItemId: po.blueItem, quantityReceived: 0 }],
-    locationId: store.id, supplierReference: '  INV-2291  ', notes: 'Two boxes damp', requestKey: key(1)
+    locationId: store.id, supplierReference: '  INV-2291  ', notes: 'Two boxes damp', requestKey: key(1),
+    receivedByName: '  Lakshmi (stock room)  ', receivedByPhone: '+91 90000 33333'
   });
   const r1 = first.data?.receipt;
   check('someone who may only receive goods can receive them', first.status === 200 && !!r1, brief(first));
   check('a goods receipt comes back with a GRN number', /^GRN-\d{6}$/.test(r1?.receiptNumber ?? ''), r1?.receiptNumber);
-  check('  ...into the chosen location, counted by that person, with the invoice number trimmed',
-    r1?.location?.id === store.id && r1?.receivedByName === receiver.name && r1?.supplierReference === 'INV-2291' && r1?.notes === 'Two boxes damp', JSON.stringify(r1)?.slice(0, 300));
+  check('  ...into the chosen location, with the invoice number trimmed',
+    r1?.location?.id === store.id && r1?.supplierReference === 'INV-2291' && r1?.notes === 'Two boxes damp', JSON.stringify(r1)?.slice(0, 300));
+  check('  ...naming the receiver as typed at the door, with their phone',
+    r1?.receivedByName === 'Lakshmi (stock room)' && r1?.receivedByPhone === '+91 90000 33333', JSON.stringify({ n: r1?.receivedByName, p: r1?.receivedByPhone }));
+  check('  ...and keeping, unprinted, which login recorded it', r1?.recordedByName === receiver.name && r1?.receivedById === receiver.id, JSON.stringify({ r: r1?.recordedByName }));
   check('  ...listing only the line that arrived, with what it was measured against',
     r1?.items?.length === 1 && r1.items[0].sku === `GRN-${STAMP}-Red` && r1.items[0].orderedQty === 10 && r1.items[0].receivedBefore === 0 && r1.items[0].quantity === 4 && Number(r1.items[0].unitPrice) === 1200, JSON.stringify(r1?.items));
   check('the order is part-received and not yet marked received', first.data?.data?.status === 'PARTIALLY_RECEIVED' && !first.data?.data?.receivedAt, first.data?.data?.status);
@@ -121,13 +125,13 @@ async function main() {
   // ── B ─────────────────────────────────────────────────────────────────────────────────────
   console.log('\nB. THE SAME PRESS TWICE');
   const again = await receiver.api.post(`/purchase-orders/${po.id}/receive`, {
-    receipts: [{ poItemId: po.redItem, quantityReceived: 4 }], locationId: store.id, requestKey: key(1)
+    receipts: [{ poItemId: po.redItem, quantityReceived: 4 }], locationId: store.id, requestKey: key(1), receivedByName: 'Lakshmi (stock room)'
   });
   check('pressing Confirm again with the same key returns the same receipt', again.status === 200 && again.data?.duplicate === true && again.data?.receipt?.id === r1?.id, brief(again));
   check('  ...and moves no more stock', (await stockAt(red, store.id)) === 4 && (await prisma.purchaseReceipt.count({ where: { poId: po.id } })) === 1);
 
   const [c1, c2] = await Promise.all([1, 2].map(() => receiver.api.post(`/purchase-orders/${po.id}/receive`, {
-    receipts: [{ poItemId: po.blueItem, quantityReceived: 2 }], locationId: store.id, requestKey: key(2)
+    receipts: [{ poItemId: po.blueItem, quantityReceived: 2 }], locationId: store.id, requestKey: key(2), receivedByName: 'Lakshmi (stock room)'
   })));
   check('two presses at the same moment both answer with one receipt', c1.status === 200 && c2.status === 200 && c1.data?.receipt?.id === c2.data?.receipt?.id, `${brief(c1)} | ${brief(c2)}`);
   check('  ...and the stock moved once', (await stockAt(blue, store.id)) === 2 && (await prisma.purchaseReceipt.count({ where: { poId: po.id } })) === 2);
@@ -135,7 +139,7 @@ async function main() {
   // ── C ─────────────────────────────────────────────────────────────────────────────────────
   console.log('\nC. THE REST OF THE ORDER');
   const rest = await receiver.api.post(`/purchase-orders/${po.id}/receive`, {
-    receipts: [{ poItemId: po.redItem, quantityReceived: 6 }, { poItemId: po.blueItem, quantityReceived: 4 }], requestKey: key(3)
+    receipts: [{ poItemId: po.redItem, quantityReceived: 6 }, { poItemId: po.blueItem, quantityReceived: 4 }], requestKey: key(3), receivedByName: 'Suresh'
   }, { headers: { 'x-location-id': main.id } });
   const r3 = rest.data?.receipt;
   check('with no location chosen, the goods go to the location selected at the top of the app', rest.status === 200 && r3?.location?.id === main.id
@@ -156,7 +160,7 @@ async function main() {
   console.log('\nD. WHAT MUST BE REFUSED');
   const countNow = async () => prisma.purchaseReceipt.count({ where: { poId: { in: made.poIds } } });
   const before = await countNow();
-  const done = await receiver.api.post(`/purchase-orders/${po.id}/receive`, { receipts: [{ poItemId: po.redItem, quantityReceived: 1 }], requestKey: key(4) });
+  const done = await receiver.api.post(`/purchase-orders/${po.id}/receive`, { receipts: [{ poItemId: po.redItem, quantityReceived: 1 }], requestKey: key(4), receivedByName: 'Suresh' });
   check('receiving against a finished order is refused', done.status === 400, brief(done));
 
   const po2 = await newPO([5, 5]);
@@ -166,26 +170,29 @@ async function main() {
     ['half a piece', { receipts: [{ poItemId: po2.redItem, quantityReceived: 2.5 }] }, 400],
     ['the same line twice in one delivery', { receipts: [{ poItemId: po2.redItem, quantityReceived: 3 }, { poItemId: po2.redItem, quantityReceived: 3 }] }, 400],
     ['nothing at all', { receipts: [{ poItemId: po2.redItem, quantityReceived: 0 }] }, 400],
+    ['no receiver named', { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], receivedByName: undefined }, 400],
+    ['a receiver name of spaces', { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], receivedByName: '   ' }, 400],
+    ['a receiver phone with letters', { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], receivedByPhone: 'call me' }, 400],
     ['a line from a different order', { receipts: [{ poItemId: po.blueItem, quantityReceived: 1 }] }, 400],
     ["another shop's location", { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], locationId: (await prisma.stockLocation.findFirst({ where: { clientId: { not: CLIENT } } }))?.id ?? 'nope' }, 400],
     ['two locations in one delivery', { receipts: [{ poItemId: po2.redItem, quantityReceived: 1, locationId: main.id }, { poItemId: po2.blueItem, quantityReceived: 1, locationId: store.id }] }, 400],
     ['a key already used on another order', { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], requestKey: key(1) }, 409]
   ];
   for (const [label, body, status] of cases) {
-    const r = await receiver.api.post(`/purchase-orders/${po2.id}/receive`, body);
+    const r = await receiver.api.post(`/purchase-orders/${po2.id}/receive`, { receivedByName: 'Suresh', ...body });
     check(`refused: ${label} (${status})`, r.status === status && !/prisma|Invalid `/i.test(JSON.stringify(r.data)), brief(r));
   }
   await prisma.stockLocation.update({ where: { id: store.id }, data: { active: false } });
-  const off = await receiver.api.post(`/purchase-orders/${po2.id}/receive`, { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], locationId: store.id });
+  const off = await receiver.api.post(`/purchase-orders/${po2.id}/receive`, { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], locationId: store.id, receivedByName: 'Suresh' });
   check('refused: a switched-off location, and it says which', off.status === 400 && off.data?.message?.includes(store.name), brief(off));
   await prisma.stockLocation.update({ where: { id: store.id }, data: { active: true } });
-  const noPerm = await sales.api.post(`/purchase-orders/${po2.id}/receive`, { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }] });
+  const noPerm = await sales.api.post(`/purchase-orders/${po2.id}/receive`, { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], receivedByName: 'Suresh' });
   check('refused: someone who may not receive goods (403)', noPerm.status === 403, brief(noPerm));
   const po2Now = await prisma.purchaseOrder.findUniqueOrThrow({ where: { id: po2.id }, include: { items: true } });
   check('none of those left a receipt, a received count, a status change or stock behind',
     (await countNow()) === before && po2Now.status === 'SENT' && po2Now.items.every(i => i.receivedQty === 0) && (await stockAt(red, main.id)) === stock2);
 
-  const plain = await receiver.api.post(`/purchase-orders/${po2.id}/receive`, { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }] });
+  const plain = await receiver.api.post(`/purchase-orders/${po2.id}/receive`, { receipts: [{ poItemId: po2.redItem, quantityReceived: 1 }], receivedByName: 'Suresh' });
   check('with no location anywhere, the goods go to the main store', plain.status === 200 && plain.data?.receipt?.location?.id === main.id, brief(plain));
   check('  ...and a refused delivery before it used up no GRN number', Number(plain.data?.receipt?.receiptNumber?.slice(4)) === Number(r3?.receiptNumber?.slice(4)) + 1, `${r3?.receiptNumber} then ${plain.data?.receipt?.receiptNumber}`);
 

@@ -367,7 +367,8 @@ async function run() {
 
   await test('receive the PO -> stock, WAC and lastPurchaseCost all update', async () => {
     const r = await c.post(`/purchase-orders/${poId}/receive`, {
-      receipts: [{ poItemId, quantityReceived: 40, locationId: locMain }]
+      receipts: [{ poItemId, quantityReceived: 40, locationId: locMain }],
+      receivedByName: 'E2E Receiver'
     });
     assert(r.status === 200 || r.status === 201, `got ${r.status}: ${JSON.stringify(r.data).slice(0,250)}`);
     const stock = await prisma.inventoryStock.findFirst({ where: { variantId: v2, locationId: locMain } });
@@ -384,7 +385,8 @@ async function run() {
 
   await test('receiving more than ordered is refused', async () => {
     const r = await c.post(`/purchase-orders/${poId}/receive`, {
-      receipts: [{ poItemId, quantityReceived: 10, locationId: locMain }]
+      receipts: [{ poItemId, quantityReceived: 10, locationId: locMain }],
+      receivedByName: 'E2E Receiver'
     });
     assert(r.status >= 400, `expected rejection, got ${r.status}`);
   });

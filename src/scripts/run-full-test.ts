@@ -138,7 +138,7 @@ async function run() {
         const po = await api.get(`/purchase-orders/${ids.po}`);
         const itemId = po.data?.data?.items?.[0]?.id;
         if (!itemId) throw new Error('No PO item');
-        const r = await api.post(`/purchase-orders/${ids.po}/receive`, { receipts: [{ poItemId: itemId, quantityReceived: 10, locationId: sLocId }] });
+        const r = await api.post(`/purchase-orders/${ids.po}/receive`, { receipts: [{ poItemId: itemId, quantityReceived: 10, locationId: sLocId }], receivedByName: 'Full Test Receiver' });
         assert(r.status === 200, `got ${r.status}: ${JSON.stringify(r.data).slice(0,200)}`);
       });
     } else { await skip('7.3-7.5 (no PO)'); }

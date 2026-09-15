@@ -661,8 +661,12 @@ model PurchaseReceipt {
   locationId String        @map("location_id")
   location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
 
+  /// The account that pressed Confirm Receipt. Kept for the record; not printed.
   receivedById      String? @map("received_by_id")
+  recordedByName    String? @map("recorded_by_name")
+  /// The person who took the goods, as typed when receiving. This is who the receipt names.
   receivedByName    String? @map("received_by_name")
+  receivedByPhone   String? @map("received_by_phone")
   /// The supplier's invoice or delivery challan number.
   supplierReference String? @map("supplier_reference")
   notes             String?

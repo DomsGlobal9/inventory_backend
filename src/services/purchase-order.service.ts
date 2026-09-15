@@ -200,6 +200,8 @@ export class PurchaseOrderService {
     input: {
       receipts: { poItemId: string; quantityReceived: number; locationId?: string | null }[];
       locationId?: string | null;
+      receivedByName?: string | null;
+      receivedByPhone?: string | null;
       supplierReference?: string | null;
       notes?: string | null;
       requestKey?: string | null;
@@ -326,7 +328,11 @@ export class PurchaseOrderService {
             po: { connect: { id: po.id } },
             location: { connect: { id: location.id } },
             receivedById: actor.id ?? null,
-            receivedByName: actor.name ?? null,
+            recordedByName: actor.name ?? null,
+            // The route requires a typed receiver; a caller inside the server that has none (a
+            // script, a future integration) falls back to the account, as receipts always did.
+            receivedByName: input.receivedByName?.trim() || actor.name || null,
+            receivedByPhone: input.receivedByPhone?.trim() || null,
             supplierReference: input.supplierReference?.trim() || null,
             notes: input.notes?.trim() || null,
             requestKey,
