@@ -22,7 +22,10 @@ export interface ReorderLine {
   productTitle: string;
   size: string | null;
   colorName: string | null;
+  /** On the shelf at the store the suggestions are for (every store when none is given). */
   currentStock: number;
+  /** Still to arrive on open orders for that store, drafts included. */
+  onOrder: number;
   reorderLevel: number;
   suggestedQty: number;
   unitPrice: number;
@@ -61,13 +64,46 @@ export class ReorderService {
   }
 
   /**
-   * Everything below its reorder level, grouped by the supplier we would buy it from.
+   * Everything below its reorder level at one store, grouped by the supplier we would buy it from.
    *
    * Items with no supplier recorded are returned separately rather than dropped: they are
    * exactly the ones that would otherwise run out silently, and hiding them would make the
    * feature quietly incomplete.
+   *
+   * Per store, because low-stock alerts are per store and a delivery goes to one store. Adding
+   * every store's stock together said an item was fine while the store that had run out stayed
+   * empty -- 10 in the warehouse hides 0 on the shop floor.
+   *
+   * What is already on order for the store counts towards it. Without that, pressing "Create
+   * Draft Orders" and coming back showed the same items again, asking to order them twice.
+   * Orders with no store chosen are not counted -- where they will arrive is unknown -- but are
+   * reported so the screen can say so.
    */
-  async getSuggestions(clientId: string) {
+  async getSuggestions(clientId: string, locationId?: string | null) {
+    const location = locationId
+      ? await prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { id: true, name: true, code: true } })
+      : null;
+
+    const openLines = await prisma.purchaseOrderItem.findMany({
+      where: {
+        po: {
+          clientId,
+          status: { in: [PurchaseOrderStatus.DRAFT, PurchaseOrderStatus.SENT, PurchaseOrderStatus.PARTIALLY_RECEIVED] },
+          ...(location ? { locationId: location.id } : {})
+        }
+      },
+      select: { variantId: true, orderedQty: true, receivedQty: true }
+    });
+    const onOrderBy = new Map<string, number>();
+    for (const l of openLines) {
+      onOrderBy.set(l.variantId, (onOrderBy.get(l.variantId) ?? 0) + Math.max(l.orderedQty - l.receivedQty, 0));
+    }
+    const ordersWithoutStore = location
+      ? await prisma.purchaseOrder.count({
+          where: { clientId, locationId: null, status: { in: [PurchaseOrderStatus.DRAFT, PurchaseOrderStatus.SENT, PurchaseOrderStatus.PARTIALLY_RECEIVED] } }
+        })
+      : 0;
+
     const variants = await prisma.productVariant.findMany({
       // reorderLevel 0 means "not tracked for reordering" -- the default for a variant
       // nobody has configured. Including those would suggest ordering every item with no
@@ -77,7 +113,7 @@ export class ReorderService {
         id: true, sku: true, size: true, colorName: true,
         reorderLevel: true, reorderQty: true, averageCost: true, lastPurchaseCost: true,
         product: { select: { title: true, status: true } },
-        stocks: { select: { quantity: true } },
+        stocks: { where: location ? { locationId: location.id } : {}, select: { quantity: true } },
         supplierLinks: {
           select: {
             id: true, supplierId: true, supplierSku: true, costPrice: true,
@@ -94,6 +130,7 @@ export class ReorderService {
       estimatedTotal: number;
     }>();
     const unassigned: (ReorderLine & { productTitle: string })[] = [];
+    let coveredByOpenOrders = 0;
 
     for (const variant of variants) {
       // Trashed and archived products should not generate purchase suggestions -- nobody
@@ -102,6 +139,17 @@ export class ReorderService {
 
       const currentStock = variant.stocks.reduce((sum, s) => sum + s.quantity, 0);
       if (currentStock > variant.reorderLevel) continue;
+      const onOrder = onOrderBy.get(variant.id) ?? 0;
+      // A store is asked to reorder only what it carries: stock has been held there, or some is on
+      // order for it. Otherwise a new branch, or a warehouse that never takes saris, was told the
+      // whole catalogue had run out -- 236 items at a store that had never stocked one of them.
+      // Low-stock alerts draw the same line, since they only ever fire from stock moving there.
+      if (location && variant.stocks.length === 0 && onOrder === 0) continue;
+      // Low now, but enough is already coming.
+      if (currentStock + onOrder > variant.reorderLevel) {
+        coveredByOpenOrders++;
+        continue;
+      }
 
       // Preferred first; otherwise the only link there is. An inactive supplier is skipped
       // over rather than used, since ordering from them is exactly what "inactive" rules out.
@@ -109,7 +157,7 @@ export class ReorderService {
       const link = usable.find(l => l.isPreferred) || usable[0] || null;
 
       const { qty, raisedToMinimum } = this.suggestQty(
-        currentStock, variant.reorderLevel, variant.reorderQty, link?.minOrderQty ?? null
+        currentStock + onOrder, variant.reorderLevel, variant.reorderQty, link?.minOrderQty ?? null
       );
 
       // The supplier's agreed price is the right basis for a purchase order. averageCost is
@@ -127,6 +175,7 @@ export class ReorderService {
         size: variant.size,
         colorName: variant.colorName,
         currentStock,
+        onOrder,
         reorderLevel: variant.reorderLevel,
         suggestedQty: qty,
         unitPrice,
@@ -159,9 +208,12 @@ export class ReorderService {
     const suppliers = [...grouped.values()].sort((a, b) => b.estimatedTotal - a.estimatedTotal);
 
     return {
+      location,
       suppliers,
       unassigned,
       summary: {
+        coveredByOpenOrders,
+        ordersWithoutStore,
         supplierCount: suppliers.length,
         lineCount: suppliers.reduce((n, s) => n + s.lines.length, 0) + unassigned.length,
         unassignedCount: unassigned.length,
@@ -179,7 +231,9 @@ export class ReorderService {
    */
   async createDraftOrders(
     clientId: string,
-    groups: { supplierId: string; items: { variantId: string; orderedQty: number; unitPrice: number }[] }[]
+    groups: { supplierId: string; items: { variantId: string; orderedQty: number; unitPrice: number }[] }[],
+    locationId?: string | null,
+    selectedLocationId?: string
   ) {
     if (!groups.length) {
       throw Object.assign(new Error('Select at least one item to order.'), { statusCode: 400 });
@@ -203,15 +257,17 @@ export class ReorderService {
     for (const group of groups) {
       if (!group.items?.length) continue;
       try {
+        // For the store the suggestions were worked out for, so what arrives lands where it ran out.
         const po = await purchaseOrderService.createPO(clientId, {
           supplierId: group.supplierId,
+          locationId,
           notes: 'Created from reorder suggestions.',
           items: group.items.map(i => ({
             variantId: i.variantId,
             orderedQty: i.orderedQty,
             unitPrice: i.unitPrice
           }))
-        });
+        }, selectedLocationId);
         created.push({ poNumber: po.poNumber, id: po.id, supplierId: group.supplierId, itemCount: group.items.length });
       } catch (error: any) {
         failed.push({ supplierId: group.supplierId, message: error?.message || 'Could not create the order' });

@@ -4,9 +4,9 @@ import { prisma } from '../lib/prisma';
 /**
  * Which locations belong to a client, remembered briefly.
  *
- * A miss costs one indexed lookup; a hit costs nothing. The TTL is short because the answer
- * changes the moment somebody adds a shop, and being a minute out of date only means one
- * request falls back to the unscoped view.
+ * A miss costs one indexed lookup; a hit costs nothing. An id missing from a fresh list is
+ * checked on its own before being turned away, so a store added a moment ago is recognised
+ * straight away rather than a minute later.
  */
 const LOCATION_TTL_MS = 60_000;
 const locationCache = new Map<string, { ids: Set<string>; at: number }>();
@@ -14,7 +14,18 @@ const locationCache = new Map<string, { ids: Set<string>; at: number }>();
 async function clientOwnsLocation(clientId: string, locationId: string): Promise<boolean> {
   const cached = locationCache.get(clientId);
   if (cached && Date.now() - cached.at < LOCATION_TTL_MS) {
-    return cached.ids.has(locationId);
+    if (cached.ids.has(locationId)) return true;
+    // Not in the list is not the same as not theirs: a store added in the last minute is missing
+    // from it, and every request made with it selected fell back to the main store -- orders
+    // raised for the new branch went to MAIN-STORE instead. One lookup settles it, and a store
+    // found is remembered so the next request is free again.
+    try {
+      const owned = await prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { id: true } });
+      if (owned) cached.ids.add(locationId);
+      return !!owned;
+    } catch {
+      return false;
+    }
   }
 
   try {

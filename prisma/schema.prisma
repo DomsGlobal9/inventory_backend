@@ -194,6 +194,12 @@ model StockLocation {
   stockCounts      StockCount[]
   dailySnapshots   DailyLocationSnapshot[]
   purchaseReceipts PurchaseReceipt[]
+  /// Orders to be delivered here.
+  purchaseOrders   PurchaseOrder[]
+
+  /// Where this store is, and who to call there: the delivery address on a purchase order.
+  address String?
+  phone   String?
 
   @@unique([clientId, code])
   @@index([clientId])
@@ -588,6 +594,11 @@ model PurchaseOrder {
   supplierId String   @map("supplier_id")
   supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
 
+  /// The store this order is for: where the supplier delivers and where receiving expects the
+  /// goods. Empty only on older orders whose store could not be worked out.
+  locationId String?        @map("location_id")
+  location   StockLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
   status PurchaseOrderStatus @default(DRAFT)
 
   expectedDeliveryDate DateTime? @map("expected_delivery_date")
@@ -609,6 +620,7 @@ model PurchaseOrder {
   @@unique([clientId, poNumber], name: "uq_po_client_number")
   @@index([clientId])
   @@index([supplierId])
+  @@index([clientId, locationId])
   @@map("purchase_orders")
 }
 

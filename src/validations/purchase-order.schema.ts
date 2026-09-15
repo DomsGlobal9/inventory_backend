@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export const purchaseOrderCreateSchema = z.object({
   supplierId: z.string().min(1, "Supplier ID is required"),
+  // The store the order is for. Optional: without one it is the store selected at the top of the app.
+  locationId: z.string().min(1).optional().nullable(),
   expectedDeliveryDate: z.string().datetime().optional().nullable().or(z.date().optional()),
   notes: z.string().optional().nullable(),
   items: z.array(z.object({
@@ -12,6 +14,10 @@ export const purchaseOrderCreateSchema = z.object({
     color: z.string().optional().nullable(),
     size: z.string().optional().nullable()
   })).min(1, "At least one item is required")
+});
+
+export const purchaseOrderDeliverToSchema = z.object({
+  locationId: z.string({ required_error: 'Choose the store this order is for.' }).min(1, 'Choose the store this order is for.')
 });
 
 export const purchaseOrderReceiveSchema = z.object({

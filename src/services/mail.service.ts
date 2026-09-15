@@ -192,6 +192,8 @@ export class MailService {
     shopName: string;
     orderedByName?: string;
     expectedDeliveryDate?: Date | null;
+    /** Where the supplier delivers: the store the order is for. */
+    deliverTo?: { name: string; address?: string | null; phone?: string | null } | null;
     notes?: string | null;
     items: { title: string; sku: string; variantLabel?: string; quantity: number; unitPrice: number }[];
     total: number;
@@ -214,6 +216,7 @@ export class MailService {
       ),
       '',
       `Order total: ${money(input.total)}`,
+      ...(input.deliverTo ? ['', `Deliver to: ${[input.deliverTo.name, input.deliverTo.address, input.deliverTo.phone ? `Phone ${input.deliverTo.phone}` : null].filter(Boolean).join(', ')}`] : []),
       ...(deliverBy ? ['', `Required by: ${deliverBy}`] : []),
       ...(input.notes ? ['', `Notes: ${input.notes}`] : []),
       '',
@@ -253,6 +256,7 @@ export class MailService {
       </tr>
     </tfoot>
   </table>
+  ${input.deliverTo ? `<p><strong>Deliver to:</strong> ${escapeHtml(input.deliverTo.name)}${input.deliverTo.address ? `<br>${escapeHtml(input.deliverTo.address)}` : ''}${input.deliverTo.phone ? `<br>Phone ${escapeHtml(input.deliverTo.phone)}` : ''}</p>` : ''}
   ${deliverBy ? `<p><strong>Required by:</strong> ${escapeHtml(deliverBy)}</p>` : ''}
   ${input.notes ? `<p><strong>Notes:</strong> ${escapeHtml(input.notes)}</p>` : ''}
   <p style="color:#6b6b66;font-size:13px">

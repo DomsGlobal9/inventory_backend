@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 export const createDraftOrdersSchema = z.object({
+  // The store the suggestions were for; without one, the store selected at the top of the app.
+  locationId: z.string().min(1).optional().nullable(),
   groups: z.array(z.object({
     supplierId: z.string().uuid("A supplier must be selected"),
     items: z.array(z.object({

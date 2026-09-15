@@ -19,17 +19,39 @@ const RECEIPT_INCLUDE = {
   location: { select: { id: true, name: true, code: true } }
 } satisfies Prisma.PurchaseReceiptInclude;
 
+/** The store an order is for, with what a supplier needs to deliver there. */
+const DELIVER_TO_SELECT = { id: true, name: true, code: true, active: true, address: true, phone: true } satisfies Prisma.StockLocationSelect;
+
+const refuse = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode });
+
 export class PurchaseOrderService {
-  async createPO(clientId: string, data: { supplierId: string; expectedDeliveryDate?: Date; notes?: string; items: { variantId: string; orderedQty: number; unitPrice: number; productTitle?: string; color?: string; size?: string }[] }) {
-    // Generate PO- code
-    const poNumber = await generateSequentialCode(clientId, 'PO', 'PURCHASE_ORDER');
-    
+  /**
+   * @param selectedLocationId the store chosen at the top of the app, used when the request names none
+   */
+  async createPO(
+    clientId: string,
+    data: { supplierId: string; locationId?: string | null; expectedDeliveryDate?: Date; notes?: string; items: { variantId: string; orderedQty: number; unitPrice: number; productTitle?: string; color?: string; size?: string }[] },
+    selectedLocationId?: string
+  ) {
+    // Both looked up within this shop. Neither was: a supplier id from another shop failed only at
+    // the foreign key, and a variant id from another shop was accepted and snapshotted onto the
+    // order -- another shop's product and SKU on this shop's purchase order.
+    const supplier = await prisma.supplier.findFirst({ where: { id: data.supplierId, clientId }, select: { id: true } });
+    if (!supplier) throw refuse('That supplier could not be found.', 404);
+
+    const deliverTo = await this.deliverToFor(prisma, clientId, data.locationId, selectedLocationId);
+
     // Fetch variants to snapshot their identifiers
     const variantIds = data.items.map(i => i.variantId);
     const variants = await prisma.productVariant.findMany({
-      where: { id: { in: variantIds } },
+      where: { id: { in: variantIds }, clientId },
       include: { product: true }
     });
+    const missingVariant = variantIds.find(vid => !variants.some(v => v.id === vid));
+    if (missingVariant) throw refuse(`Variant ${missingVariant} not found`, 404);
+
+    // Numbered once the supplier and store are known to be good, so a refused order uses no number.
+    const poNumber = await generateSequentialCode(clientId, 'PO', 'PURCHASE_ORDER');
 
     const variantMap = new Map(variants.map(v => [v.id, v]));
 
@@ -49,6 +71,7 @@ export class PurchaseOrderService {
         clientId,
         poNumber,
         supplierId: data.supplierId,
+        locationId: deliverTo?.id ?? null,
         status: PurchaseOrderStatus.DRAFT,
         expectedDeliveryDate: data.expectedDeliveryDate,
         notes: data.notes,
@@ -57,7 +80,7 @@ export class PurchaseOrderService {
           create: data.items.map(item => {
             const variant = variantMap.get(item.variantId);
             if (!variant) throw Object.assign(new Error(`Variant ${item.variantId} not found`), { statusCode: 404 });
-            
+
             return {
               variantId: variant.id,
               sku: variant.sku,
@@ -75,7 +98,8 @@ export class PurchaseOrderService {
       },
       include: {
         items: true,
-        supplier: true
+        supplier: true,
+        location: { select: DELIVER_TO_SELECT }
       }
     });
 
@@ -112,6 +136,7 @@ export class PurchaseOrderService {
       orderBy: { createdAt: 'desc' },
       include: {
         supplier: { select: { name: true, supplierCode: true } },
+        location: { select: DELIVER_TO_SELECT },
         _count: { select: { items: true } }
       }
     });
@@ -122,6 +147,7 @@ export class PurchaseOrderService {
       where: { id, clientId },
       include: {
         supplier: true,
+        location: { select: DELIVER_TO_SELECT },
         // Every delivery, so the order page can list them and print any one again.
         receipts: { include: RECEIPT_INCLUDE, orderBy: { receivedAt: 'asc' } },
         items: {
@@ -146,6 +172,60 @@ export class PurchaseOrderService {
         }
       }
     });
+  }
+
+  /**
+   * Change the store an order is for.
+   *
+   * Allowed until the order is fully received or cancelled: plans change after an order goes out
+   * (a branch closes for a week, the warehouse takes it instead). Once the goods have all arrived
+   * the order is history, and rewriting where it was meant to go would only make the record
+   * disagree with itself. The answer says whether the supplier was already told another store, so
+   * the screen can remind the person to tell them.
+   */
+  async setDeliverTo(clientId: string, id: string, locationId: string) {
+    const po = await prisma.purchaseOrder.findFirst({
+      where: { id, clientId },
+      select: { id: true, status: true, locationId: true, location: { select: { name: true } } }
+    });
+    if (!po) throw refuse('Purchase Order not found', 404);
+    if (po.status === PurchaseOrderStatus.RECEIVED || po.status === PurchaseOrderStatus.CANCELLED) {
+      throw refuse(`This order is ${po.status === PurchaseOrderStatus.RECEIVED ? 'fully received' : 'cancelled'}, so the store it was for can no longer change.`);
+    }
+
+    const location = (await this.deliverToFor(prisma, clientId, locationId))!;
+    const changed = po.locationId !== location.id;
+    if (changed) await prisma.purchaseOrder.update({ where: { id: po.id }, data: { locationId: location.id } });
+
+    return {
+      po: await this.getPOById(clientId, id),
+      previous: po.location?.name ?? null,
+      changed,
+      supplierAlreadyTold: changed && !!po.locationId && po.status !== PurchaseOrderStatus.DRAFT
+    };
+  }
+
+  /**
+   * The store an order is for.
+   *
+   * A store the request names must belong to this shop and be switched on -- an order for a store
+   * that cannot take stock in could never be received there. Named none: the store chosen at the
+   * top of the app, then MAIN-STORE, then the oldest active store. Null only for a shop with no
+   * active store at all, which cannot receive anything yet either.
+   */
+  private async deliverToFor(db: Prisma.TransactionClient, clientId: string, wanted?: string | null, selected?: string | null) {
+    if (wanted) {
+      const location = await db.stockLocation.findFirst({ where: { id: wanted, clientId }, select: DELIVER_TO_SELECT });
+      if (!location) throw refuse('That store does not belong to this shop.');
+      if (!location.active) throw refuse(`${location.name} is switched off, so goods cannot be delivered there.`);
+      return location;
+    }
+    if (selected) {
+      const location = await db.stockLocation.findFirst({ where: { id: selected, clientId, active: true }, select: DELIVER_TO_SELECT });
+      if (location) return location;
+    }
+    return await db.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE', active: true }, select: DELIVER_TO_SELECT })
+      ?? await db.stockLocation.findFirst({ where: { clientId, active: true }, orderBy: { createdAt: 'asc' }, select: DELIVER_TO_SELECT });
   }
 
   async updatePOStatus(clientId: string, id: string, status: PurchaseOrderStatus) {
@@ -190,7 +270,9 @@ export class PurchaseOrderService {
    * shop, no supplier invoice -- and two part-deliveries of one order were indistinguishable.
    *
    * Where the goods go, in order: a location on the lines (the older request shape), the one the
-   * screen chose, the location selected at the top of the app, then the shop called MAIN-STORE.
+   * screen chose, the store the order is for, the location selected at the top of the app, then the
+   * shop called MAIN-STORE. The order's own store comes before the top bar because it is a
+   * statement about THIS order; the top bar is only where the person happens to be looking.
    * It used to be `findFirst({ where: { clientId } })` -- whichever location the database
    * happened to return first, inactive ones included -- because the screen never sent one.
    */
@@ -235,7 +317,7 @@ export class PurchaseOrderService {
           throw Object.assign(new Error(`Cannot receive goods for PO in status ${po.status}`), { statusCode: 400 });
         }
 
-        const location = await this.receivingLocation(tx, clientId, lineLocations[0] || input.locationId || selectedLocationId);
+        const location = await this.receivingLocation(tx, clientId, lineLocations[0] || input.locationId, [po.locationId, selectedLocationId]);
 
         const itemMap = new Map(po.items.map(i => [i.id, i]));
         const now = new Date();
@@ -399,13 +481,23 @@ export class PurchaseOrderService {
     return { po, receipt, duplicate: true };
   }
 
-  /** A location of this shop that can take stock in. */
-  private async receivingLocation(tx: Prisma.TransactionClient, clientId: string, wanted?: string | null) {
+  /**
+   * A location of this shop that can take stock in.
+   *
+   * `wanted` was asked for, so a wrong one is refused. `preferred` were not -- the order's store and
+   * the top bar -- so one that has since been switched off is passed over rather than refused.
+   */
+  private async receivingLocation(tx: Prisma.TransactionClient, clientId: string, wanted?: string | null, preferred: (string | null | undefined)[] = []) {
     if (wanted) {
       const location = await tx.stockLocation.findFirst({ where: { id: wanted, clientId } });
       if (!location) throw Object.assign(new Error('That location does not belong to this shop.'), { statusCode: 400 });
       if (!location.active) throw Object.assign(new Error(`${location.name} is switched off, so it cannot take stock in.`), { statusCode: 400 });
       return location;
+    }
+    for (const id of preferred) {
+      if (!id) continue;
+      const location = await tx.stockLocation.findFirst({ where: { id, clientId, active: true } });
+      if (location) return location;
     }
     const location =
       await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE', active: true } })
@@ -425,9 +517,14 @@ export class PurchaseOrderService {
   async emailToSupplier(clientId: string, id: string, orderedByName?: string) {
     const po = await prisma.purchaseOrder.findFirst({
       where: { id, clientId },
-      include: { supplier: true, items: true }
+      include: { supplier: true, items: true, location: { select: DELIVER_TO_SELECT } }
     });
     if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
+
+    // A supplier cannot deliver to "one of our stores". Only older orders can have none.
+    if (!po.location) {
+      throw refuse('Choose the store this order is for before sending it, so the supplier knows where to deliver.');
+    }
 
     // Said plainly, and early, because the fix is on a different screen. "Failed to send" would
     // leave the merchant retrying a button that can never work.
@@ -449,6 +546,7 @@ export class PurchaseOrderService {
     }
 
     const { businessName } = await getShopSettings(clientId);
+    const letterhead = await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessAddress: true, businessPhone: true } });
 
     const result = await mailService.sendPurchaseOrder({
       to,
@@ -457,6 +555,13 @@ export class PurchaseOrderService {
       shopName: businessName || 'Your customer',
       orderedByName,
       expectedDeliveryDate: po.expectedDeliveryDate,
+      // The store's own address when it has one; otherwise the shop's, which for a one-store shop
+      // is the same place.
+      deliverTo: {
+        name: po.location.name,
+        address: po.location.address || letterhead?.businessAddress || null,
+        phone: po.location.phone || letterhead?.businessPhone || null
+      },
       notes: po.notes,
       items: po.items.map(i => ({
         title: i.productTitle,
