@@ -166,7 +166,9 @@ async function run() {
   });
 
   await test('an order at B prices the line at the override (650), not the global 700', async () => {
-    const c = await api.post('/customers', { name: `LocFlow Cust ${stamp}` });
+    // A phone of this run's own: a customer needs one, and one number is one customer per shop.
+    const c = await api.post('/customers', { name: `LocFlow Cust ${stamp}`, phone: `8${String(stamp).slice(-9)}` });
+    assert(c.status === 201, `customer ${c.status} ${JSON.stringify(c.data).slice(0, 200)}`);
     customerId = unwrap(c).id;
     const o = await api.post('/sales-orders', { customerId, locationId: locB });
     const orderId = unwrap(o).id;

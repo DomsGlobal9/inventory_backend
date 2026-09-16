@@ -46,6 +46,10 @@ const sameCounts = (actual: unknown, expected: Record<string, number>) =>
   && Object.entries(expected).every(([k, v]) => (actual as any)[k] === v);
 
 const STAMP = Date.now();
+// Numbers of this run's own -- one customer per number per shop, and a run that stopped halfway must not
+// leave one behind that the next run then collides with.
+const runPhone = (n: number) => `+9197${String(STAMP).slice(-7)}${n}`;
+const MEERA_PHONE = runPhone(1), TILL_PHONE = runPhone(2), RAVI_PHONE = runPhone(3), ANITA_PHONE = runPhone(4);
 const SHOP_A = `privacy-a-${STAMP}.myshopify.com`;
 const SHOP_B = `privacy-b-${STAMP}.myshopify.com`;
 const SHOP_U = `privacy-unclaimed-${STAMP}.myshopify.com`;
@@ -129,10 +133,10 @@ const shopifyBody = (orderId: string, customerId: string, extra: any = {}) => ({
   financial_status: 'pending',
   total_price: '1200.00',
   email: `buyer-${customerId}@example.com`,
-  phone: '+919812345678',
-  customer: { id: Number(customerId), first_name: 'Meera', last_name: 'Shah', email: `buyer-${customerId}@example.com`, phone: '+919812345678' },
-  billing_address: { name: 'Meera Shah', address1: '12 MG Road', city: 'Pune', phone: '+919812345678' },
-  shipping_address: { name: 'Meera Shah', address1: '12 MG Road', city: 'Pune', phone: '+919812345678' },
+  phone: MEERA_PHONE,
+  customer: { id: Number(customerId), first_name: 'Meera', last_name: 'Shah', email: `buyer-${customerId}@example.com`, phone: MEERA_PHONE },
+  billing_address: { name: 'Meera Shah', address1: '12 MG Road', city: 'Pune', phone: MEERA_PHONE },
+  shipping_address: { name: 'Meera Shah', address1: '12 MG Road', city: 'Pune', phone: MEERA_PHONE },
   client_details: { browser_ip: '203.0.113.9', user_agent: 'Mozilla' },
   note: 'Please gift wrap for Meera',
   line_items: [{ id: 1, variant_id: 555, quantity: 1, price: '1200.00', name: 'Silk saree', discount_allocations: [] }],
@@ -165,29 +169,30 @@ async function main() {
   const X = ID(1);
   const meera = await customer({
     externalCustomerId: `shopify:${X}`, sourceStore: SHOP_A, name: 'Meera Shah', email: `buyer-${X}@example.com`,
-    phone: '+919812345678', billingAddress: '12 MG Road, Pune', shippingAddress: '12 MG Road, Pune',
+    phone: MEERA_PHONE, billingAddress: '12 MG Road, Pune', shippingAddress: '12 MG Road, Pune',
     notes: 'Likes silk', tags: ['VIP'], companyName: 'Shah Textiles', gstNumber: '27ABCDE1234F1Z5'
   });
-  const snapshot = { customerName: 'Meera Shah', customerPhone: '+919812345678', billingAddress: '12 MG Road, Pune', shippingAddress: '12 MG Road, Pune' };
+  const snapshot = { customerName: 'Meera Shah', customerPhone: MEERA_PHONE, billingAddress: '12 MG Road, Pune', shippingAddress: '12 MG Road, Pune' };
   const o1 = await order(meera.id, { sourceSystem: 'SHOPIFY', sourceStore: SHOP_A, externalOrderId: ID(11), ...snapshot });
   const o2 = await order(meera.id, { sourceSystem: 'SHOPIFY', sourceStore: SHOP_A, externalOrderId: ID(12), ...snapshot });
 
   // A record store A made from an email alone, for an order in the same request.
-  const byEmail = await customer({ sourceStore: SHOP_A, name: 'Meera S', email: `buyer-${X}@example.com`, phone: '+919812345678' });
+  // Without a phone: a Shopify customer whose number is already on another customer is saved without it.
+  const byEmail = await customer({ sourceStore: SHOP_A, name: 'Meera S', email: `buyer-${X}@example.com` });
   const o3 = await order(byEmail.id, { sourceSystem: 'SHOPIFY', sourceStore: SHOP_A, externalOrderId: ID(13), ...snapshot });
 
   // A customer the shop knew at the till, whose email a Shopify order matched.
-  const tillCustomer = await customer({ name: 'Meera at the till', email: `till-${STAMP}@example.com`, phone: '9876501234' });
+  const tillCustomer = await customer({ name: 'Meera at the till', email: `till-${STAMP}@example.com`, phone: TILL_PHONE });
   const o4 = await order(tillCustomer.id, { sourceSystem: 'SHOPIFY', sourceStore: SHOP_A, externalOrderId: ID(14), ...snapshot });
-  const tillSale = await order(tillCustomer.id, { channel: 'POS', customerName: 'Meera at the till', customerPhone: '9876501234' });
+  const tillSale = await order(tillCustomer.id, { channel: 'POS', customerName: 'Meera at the till', customerPhone: TILL_PHONE });
 
   // Somebody else on store A, and somebody on store B.
   const Y = ID(2);
-  const other = await customer({ externalCustomerId: `shopify:${Y}`, sourceStore: SHOP_A, name: 'Ravi Kumar', email: `ravi-${STAMP}@example.com`, phone: '+919700000001' });
-  const oY = await order(other.id, { sourceSystem: 'SHOPIFY', sourceStore: SHOP_A, externalOrderId: ID(21), customerName: 'Ravi Kumar', customerPhone: '+919700000001' });
+  const other = await customer({ externalCustomerId: `shopify:${Y}`, sourceStore: SHOP_A, name: 'Ravi Kumar', email: `ravi-${STAMP}@example.com`, phone: RAVI_PHONE });
+  const oY = await order(other.id, { sourceSystem: 'SHOPIFY', sourceStore: SHOP_A, externalOrderId: ID(21), customerName: 'Ravi Kumar', customerPhone: RAVI_PHONE });
   const Z = ID(3);
-  const storeB = await customer({ externalCustomerId: `shopify:${Z}`, sourceStore: SHOP_B, name: 'Anita B', email: `anita-${STAMP}@example.com`, phone: '+919700000002' });
-  const oZ = await order(storeB.id, { sourceSystem: 'SHOPIFY', sourceStore: SHOP_B, externalOrderId: ID(31), customerName: 'Anita B', customerPhone: '+919700000002' });
+  const storeB = await customer({ externalCustomerId: `shopify:${Z}`, sourceStore: SHOP_B, name: 'Anita B', email: `anita-${STAMP}@example.com`, phone: ANITA_PHONE });
+  const oZ = await order(storeB.id, { sourceSystem: 'SHOPIFY', sourceStore: SHOP_B, externalOrderId: ID(31), customerName: 'Anita B', customerPhone: ANITA_PHONE });
 
   // Parked bodies: one of the requested orders, one of Meera's NOT named in the request, Ravi's, store B's.
   const inbox = async (shop: string, orderId: string, customerId: string, client: string | null = CLIENT) =>
@@ -218,7 +223,7 @@ async function main() {
   // ── B. A DATA REQUEST ─────────────────────────────────────────────────────────────────────
   console.log('\nB. A CUSTOMER ASKS WHAT IS HELD');
 
-  const dataBody = { shop_domain: SHOP_A, customer: { id: Number(X), email: `buyer-${X}@example.com`, phone: '+919812345678' }, orders_requested: [Number(ID(11))], data_request: { id: 4242 } };
+  const dataBody = { shop_domain: SHOP_A, customer: { id: Number(X), email: `buyer-${X}@example.com`, phone: MEERA_PHONE }, orders_requested: [Number(ID(11))], data_request: { id: 4242 } };
   const dr = await webhook('customers/data_request', SHOP_A, dataBody);
   check('a signed data request is acknowledged', dr.res.status === 200, brief(dr.res));
   const drRow = await settled(dr.id, 'customers/data_request');
@@ -262,7 +267,7 @@ async function main() {
   const data = un(exp);
   check('the admin exports it', exp.status === 200, brief(exp));
   check('  ...with Meera\'s own record, in full', data?.customers?.length === 1 && data.customers[0].email === `buyer-${X}@example.com`
-    && data.customers[0].phone === '+919812345678' && data.customers[0].gstNumber === '27ABCDE1234F1Z5', JSON.stringify(data?.customers));
+    && data.customers[0].phone === MEERA_PHONE && data.customers[0].gstNumber === '27ABCDE1234F1Z5', JSON.stringify(data?.customers));
   check('  ...both of her orders with what was on them', data?.orders?.length === 2
     && data.orders.every((o: any) => o.nameOnOrder === 'Meera Shah' && o.items.length === 1 && o.total === 1200), JSON.stringify(data?.orders)?.slice(0, 300));
   check('  ...and the personal parts of the two bodies we kept, not the whole order', data?.shopifyMessagesHeld?.length === 2
@@ -297,7 +302,7 @@ async function main() {
   const e = await prisma.customer.findUniqueOrThrow({ where: { id: byEmail.id } });
   check('the record store A made from her email alone is erased too', e.name === ERASED_NAME && e.email === null && e.phone === null);
   const t = await prisma.customer.findUniqueOrThrow({ where: { id: tillCustomer.id } });
-  check('the customer the shop knows at the till is kept as they were', t.name === 'Meera at the till' && t.phone === '9876501234');
+  check('the customer the shop knows at the till is kept as they were', t.name === 'Meera at the till' && t.phone === TILL_PHONE);
 
   const cleared = await prisma.salesOrder.findMany({ where: { id: { in: [o1.id, o2.id, o3.id, o4.id] } } });
   check('the copies on all four Shopify orders are cleared', cleared.every(o => !o.customerName && !o.customerPhone && !o.billingAddress && !o.shippingAddress), JSON.stringify(cleared.map(o => o.customerName)));
@@ -353,7 +358,7 @@ async function main() {
   check('  ...its orders are still there, with their money', (await prisma.salesOrder.count({ where: { id: { in: [o1.id, o2.id, o3.id, o4.id, oY.id] } } })) === 5);
   check('  ...the record of what was asked and done is kept', (await prisma.shopifyPrivacyRequest.count({ where: { shopDomain: SHOP_A } })) >= 5);
   check('  ...and the till customer, who never came from Shopify, is untouched',
-    (await prisma.customer.findUniqueOrThrow({ where: { id: tillCustomer.id } })).phone === '9876501234');
+    (await prisma.customer.findUniqueOrThrow({ where: { id: tillCustomer.id } })).phone === TILL_PHONE);
   check('store B is untouched: customer, order copy, parked body, installation',
     (await prisma.customer.findUniqueOrThrow({ where: { id: storeB.id } })).name === 'Anita B'
     && (await prisma.salesOrder.findUniqueOrThrow({ where: { id: oZ.id } })).customerName === 'Anita B'

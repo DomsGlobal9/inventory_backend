@@ -12,6 +12,7 @@ import {
 } from './pricing';
 import { offerRedemptionService } from './offers';
 import { getShopSettings } from '../lib/clientSettings';
+import { phoneForOutsideCustomer } from './customer.service';
 
 export class SalesOrderService {
   async createDraftOrder(clientId: string, locationId: string, customerId: string, channel: any = 'POS') {
@@ -139,14 +140,18 @@ export class SalesOrderService {
 
     return prisma.$transaction(async (tx) => {
       let customerId = data.customer?.id;
-      
+      let phoneOnOrder: string | null = data.customer?.phone ? String(data.customer.phone).trim() || null : null;
+
       // If external customer ID provided, sync/find the customer
       if (data.customer?.externalId) {
         let existingCustomer = await tx.customer.findFirst({
           where: { clientId, externalCustomerId: data.customer.externalId }
         });
-        
+
         if (!existingCustomer) {
+          // Kept only when it is a real number nobody else in the shop has -- see phoneForOutsideCustomer.
+          const phone = await phoneForOutsideCustomer(tx, clientId, data.customer.phone);
+          phoneOnOrder = phone.onOrder;
           const customerCode = await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any);
           existingCustomer = await tx.customer.create({
             data: {
@@ -154,7 +159,7 @@ export class SalesOrderService {
               customerCode,
               externalCustomerId: data.customer.externalId,
               name: data.customer.name || 'Unknown',
-              phone: data.customer.phone || null,
+              phone: phone.onCustomer,
               email: data.customer.email || null,
               billingAddress: data.customer.billingAddress || null,
               shippingAddress: data.customer.shippingAddress || null,
@@ -177,7 +182,7 @@ export class SalesOrderService {
           externalOrderId: data.externalOrderId || null,
           sourceSystem: data.sourceSystem || null,
           customerName: data.customer?.name || null,
-          customerPhone: data.customer?.phone || null,
+          customerPhone: phoneOnOrder,
           shippingAddress: data.customer?.shippingAddress || null,
           billingAddress: data.customer?.billingAddress || null,
           status: 'DRAFT',
@@ -583,7 +588,7 @@ export class SalesOrderService {
     // Basic update for shipping, discount, tax (for Draft orders)
     const order = await prisma.salesOrder.findFirst({ where: { clientId, id } });
     if (!order) throw notFound('Order not found');
-    
+
     // We don't use state machine here because status isn't changing, but we enforce DRAFT
     if (order.status !== 'DRAFT') throw new Error('Can only update DRAFT orders');
 

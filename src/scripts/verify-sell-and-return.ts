@@ -72,7 +72,8 @@ async function main() {
     });
 
     const customer: any = await customerService.createCustomer(CLIENT, {
-      name: 'Lakshmi Devi', phone: '+919000000001', email: 'lakshmi@example.com'
+      // A number of this run's own: one customer per number per shop.
+      name: 'Lakshmi Devi', phone: `+919${String(Date.now()).slice(-9)}`, email: 'lakshmi@example.com'
     } as any);
     check('a customer can be created with a code that can be quoted', !!customer?.customerCode, String(customer?.customerCode));
 

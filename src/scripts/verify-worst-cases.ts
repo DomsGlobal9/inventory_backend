@@ -298,9 +298,12 @@ async function doubleSubmit(owner: string, ctx: { locationId: string }) {
 
   // Two identical customers, sent together.
   const email = `qa-double-${STAMP}@example.com`;
+  // A number of this run's own: one customer per number per shop, so a fixed one left by an earlier run would
+  // refuse both of these and the check would be measuring that instead of the race.
+  const phone = `9${String(STAMP).slice(-9)}`;
   const pair = await Promise.all([
-    call(owner, 'POST', '/customers', { name: 'QA Double', email, phone: '9000000001' }),
-    call(owner, 'POST', '/customers', { name: 'QA Double', email, phone: '9000000001' })
+    call(owner, 'POST', '/customers', { name: 'QA Double', email, phone }),
+    call(owner, 'POST', '/customers', { name: 'QA Double', email, phone })
   ]);
   const madeCustomers = await prisma.customer.count({ where: { clientId: CLIENT, email } });
   check('a double-submitted customer is created once',
@@ -538,7 +541,8 @@ async function sequentialCodes(owner: string) {
   const results = await Promise.all(
     Array.from({ length: N }, (_, i) =>
       call(owner, 'POST', '/customers', {
-        name: `QA Race ${i}`, phone: `98000000${String(i).padStart(2, '0')}`
+        // Ten different numbers of this run's own: the race is about customer codes, not a shared phone.
+        name: `QA Race ${i}`, phone: `98${String(STAMP).slice(-6)}${String(i).padStart(2, '0')}`
       })
     )
   );
@@ -661,7 +665,7 @@ async function main() {
   });
   const variantId = variant.body?.data?.id ?? variant.body?.id;
   const cust = await call(owner.token, 'POST', '/customers', {
-    name: 'QA Customer', phone: '9000000000', email: `cust-${STAMP}@example.com`
+    name: 'QA Customer', phone: `7${String(STAMP).slice(-9)}`, email: `cust-${STAMP}@example.com`
   });
   const customerId = cust.body?.data?.id ?? cust.body?.id;
 

@@ -770,6 +770,9 @@ model Customer {
 
   name        String
   companyName String? @map("company_name")
+  /// Stored one way, "+919848022338" (src/lib/phone.ts). One live customer per number per shop, held by the
+  /// partial unique index customers_client_id_phone_live_key (migration 20260916100000), which Prisma cannot
+  /// express. Empty only for customers from outside the shop whose number was missing or already taken.
   phone       String?
   email       String?
   gstNumber   String? @map("gst_number")

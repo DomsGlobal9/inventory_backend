@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   createCustomer,
+  getCustomerByPhone,
   getCustomers,
   getCustomerById,
   updateCustomer
@@ -17,6 +18,8 @@ router.use(tenantMiddleware);
 router.post('/', requirePermission('customer:create'), createCustomer);
 
 router.get('/', requirePermission('customer:view'), getCustomers);
+// Before /:id, which would otherwise take "by-phone" as a customer id.
+router.get('/by-phone/:phone', requirePermission('customer:view'), getCustomerByPhone);
 router.get('/:id', requirePermission('customer:view'), getCustomerById);
 router.patch('/:id', requirePermission('customer:update'), updateCustomer);
 

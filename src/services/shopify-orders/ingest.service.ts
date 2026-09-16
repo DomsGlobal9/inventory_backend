@@ -13,6 +13,8 @@
 import { prisma } from '../../lib/prisma';
 import { getShopSettings } from '../../lib/clientSettings';
 import { generateSequentialCode } from '../../utils/codeGenerator';
+import { phoneForOutsideCustomer } from '../customer.service';
+import { normalisePhone } from '../../lib/phone';
 import { reservationService } from '../reservation.service';
 import { fromMinor, toMinor } from '../pricing';
 import { mapShopifyOrder, MappedOrder, ParkReason } from './mapping';
@@ -100,36 +102,44 @@ async function resolveCustomer(clientId: string, shopDomain: string, c: MappedOr
     const existing = await prisma.customer.findFirst({ where: { clientId, externalCustomerId } });
     if (existing) return existing.id;
 
-    return (await prisma.customer.create({
-      data: {
-        clientId,
-        customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER'),
-        externalCustomerId,
-        // Which store they came from: shop/redact erases one store's customers, not every one.
-        sourceStore: shopDomain,
-        name: c.name || c.email || 'Shopify customer',
-        email: c.email, phone: c.phone,
-        billingAddress: c.billingAddress, shippingAddress: c.shippingAddress,
-        status: 'ACTIVE'
-      }
-    })).id;
+    // In a transaction for the phone's lock: see phoneForOutsideCustomer.
+    return prisma.$transaction(async tx => {
+      const phone = await phoneForOutsideCustomer(tx, clientId, c.phone);
+      return (await tx.customer.create({
+        data: {
+          clientId,
+          customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any),
+          externalCustomerId,
+          // Which store they came from: shop/redact erases one store's customers, not every one.
+          sourceStore: shopDomain,
+          name: c.name || c.email || 'Shopify customer',
+          email: c.email, phone: phone.onCustomer,
+          billingAddress: c.billingAddress, shippingAddress: c.shippingAddress,
+          status: 'ACTIVE'
+        }
+      })).id;
+    }, { maxWait: 15000, timeout: 20000 });
   }
 
   if (c.email) {
     const existing = await prisma.customer.findFirst({ where: { clientId, email: c.email, deletedAt: null } });
     if (existing) return existing.id;
 
-    return (await prisma.customer.create({
-      data: {
-        clientId,
-        customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER'),
-        sourceStore: shopDomain,
-        name: c.name || c.email,
-        email: c.email, phone: c.phone,
-        billingAddress: c.billingAddress, shippingAddress: c.shippingAddress,
-        status: 'ACTIVE'
-      }
-    })).id;
+    const email = c.email;
+    return prisma.$transaction(async tx => {
+      const phone = await phoneForOutsideCustomer(tx, clientId, c.phone);
+      return (await tx.customer.create({
+        data: {
+          clientId,
+          customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any),
+          sourceStore: shopDomain,
+          name: c.name || email,
+          email: c.email, phone: phone.onCustomer,
+          billingAddress: c.billingAddress, shippingAddress: c.shippingAddress,
+          status: 'ACTIVE'
+        }
+      })).id;
+    }, { maxWait: 15000, timeout: 20000 });
   }
 
   const GUEST = 'shopify:guest';
@@ -307,7 +317,8 @@ export class ShopifyOrderIngestService {
           sourceStore: shopDomain,
           externalUpdatedAt: order.externalUpdatedAt,
           customerName: order.customer.name,
-          customerPhone: order.customer.phone,
+          // The order's copy in the one stored form when it is a real number, as typed otherwise.
+          customerPhone: (() => { const r = normalisePhone(order.customer.phone); return r.ok ? r.value : (order.customer.phone || null); })(),
           shippingAddress: order.customer.shippingAddress,
           billingAddress: order.customer.billingAddress,
           // DRAFT first, then moved with the state machine once the lines exist -- an order with

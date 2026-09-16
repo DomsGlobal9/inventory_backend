@@ -1,8 +1,81 @@
 import { normaliseTags } from './offers/rules';
 import { prisma } from '../lib/prisma';
 import { generateSequentialCode } from '../utils/codeGenerator';
-import { CustomerStatus } from '@prisma/client';
-import { notFound } from '../utils/httpError';
+import { notFound, badRequest } from '../utils/httpError';
+import { normalisePhone, phoneSearchDigits } from '../lib/phone';
+import { CustomerStatus, Prisma } from '@prisma/client';
+
+type Tx = Prisma.TransactionClient;
+
+/**
+ * Who already has this number, locked for the rest of the transaction.
+ *
+ * The lock is keyed on the shop and the number, so two tills saving DIFFERENT people never wait for
+ * each other, and two saving the same number one after the other see each other's write.
+ */
+async function holderOf(tx: Tx, clientId: string, phone: string, exceptId?: string) {
+  const key = `customer:${clientId}:${phone}`;
+  // $executeRaw, not $queryRaw: pg_advisory_xact_lock returns void, and Prisma cannot
+  // deserialise a void column -- $queryRaw fails the whole request with a message about
+  // Unsupported types that has nothing to do with what went wrong.
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+  return tx.customer.findFirst({
+    where: { clientId, phone, deletedAt: null, ...(exceptId ? { id: { not: exceptId } } : {}) },
+    select: { id: true, name: true, customerCode: true }
+  });
+}
+
+/**
+ * The number in its stored form, or a 400 saying why not. The route's schema has normally done this
+ * already; it is repeated here because scripts, imports and other services call the service directly,
+ * and a raw "98480 22338" stored by one of them would never match the same person typed at the till.
+ */
+function storedPhone(raw: unknown): string {
+  const result = normalisePhone(raw);
+  if (!result.ok) throw badRequest(result.reason);
+  return result.value;
+}
+
+/** "Priya Sharma (CUS-000041) is already saved with that number", carrying who, for a link. */
+function takenBy(holder: { id: string; name: string; customerCode: string }) {
+  return Object.assign(
+    new Error(`${holder.name} (${holder.customerCode}) is already saved with that number.`),
+    { statusCode: 409, existingCustomerId: holder.id, existingCustomerName: holder.name, existingCustomerCode: holder.customerCode }
+  );
+}
+
+/**
+ * The database's own refusal of a second customer on one number, said the same way. The lock above
+ * means it should not happen through this service; it is here for writes that do not go through it,
+ * so the person still reads a sentence rather than a constraint name.
+ */
+async function explainDuplicate(error: any, clientId: string, phone?: string | null) {
+  if (error?.code === 'P2002' && phone && String(error?.meta?.target ?? '').includes('phone')) {
+    const holder = await prisma.customer.findFirst({ where: { clientId, phone, deletedAt: null }, select: { id: true, name: true, customerCode: true } });
+    if (holder) return takenBy(holder);
+  }
+  return error;
+}
+
+/**
+ * The phone for a customer arriving from outside the shop -- a website checkout, a Shopify order.
+ *
+ * Not required: an online checkout may carry none. Stored in its one form when it is a real number.
+ * But when that number already belongs to another customer, the new one is saved WITHOUT it: a
+ * number typed at somebody else's checkout is not proof of who they are, and matching on it would
+ * put a stranger's web orders on a regular's page. The number still travels on the order itself.
+ *
+ * Must run inside a transaction: the lock it takes is what stops two orders arriving together from
+ * both claiming the same free number.
+ */
+export async function phoneForOutsideCustomer(tx: Tx, clientId: string, raw: unknown): Promise<{ onCustomer: string | null; onOrder: string | null }> {
+  const typed = raw === null || raw === undefined ? '' : String(raw).trim();
+  if (!typed) return { onCustomer: null, onOrder: null };
+  const result = normalisePhone(typed);
+  if (!result.ok) return { onCustomer: null, onOrder: typed };
+  const holder = await holderOf(tx, clientId, result.value);
+  return { onCustomer: holder ? null : result.value, onOrder: result.value };
+}
 
 export class CustomerService {
   /**
@@ -20,46 +93,21 @@ export class CustomerService {
    * tenant and the number, so two people adding DIFFERENT customers never wait for each other.
    * The same reasoning as the FOR UPDATE in inventory-mutation.service.ts.
    *
-   * A unique index would be stronger still, and is the right thing eventually -- but tenants
-   * already hold duplicates created before this existed, so that migration needs a clean-up
-   * first and cannot be slipped in underneath a running shop.
+   * Behind it, a unique index on (client_id, phone) for live customers is the last word: the lock
+   * gives the person a sentence naming who has the number, the index makes sure no path that
+   * skips this service can store a second one.
    */
   async createCustomer(clientId: string, data: any) {
-    // Phone first: it is what a shop actually recognises somebody by. Email only when there is
-    // no number. Neither present means we have nothing to match on, and two walk-ins called
-    // "Priya" are genuinely two customers.
-    const identity: string | null =
-      (data.phone && String(data.phone).trim()) || (data.email && String(data.email).trim()) || null;
+    // The phone arrives already in its one stored form (validations/customer.schema), and it is the
+    // identity: one number, one customer. Email is not -- a family shares one far more often than a
+    // mobile -- so two people on one email address are two customers.
+    const phone = storedPhone(data.phone);
 
     return prisma.$transaction(async tx => {
-      if (identity) {
-        const key = `customer:${clientId}:${identity.toLowerCase()}`;
-        // $executeRaw, not $queryRaw: pg_advisory_xact_lock returns void, and Prisma cannot
-        // deserialise a void column -- $queryRaw fails the whole request with a message about
-        // Unsupported types that has nothing to do with what went wrong.
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
-
-        const existing = await tx.customer.findFirst({
-          where: {
-            clientId,
-            deletedAt: null,
-            OR: [
-              ...(data.phone ? [{ phone: String(data.phone).trim() }] : []),
-              ...(data.email ? [{ email: String(data.email).trim() }] : [])
-            ]
-          },
-          select: { id: true, name: true, customerCode: true, phone: true, email: true }
-        });
-
-        if (existing) {
-          // Says who it already is, so the person at the counter can go straight to them
-          // instead of guessing what they typed wrong.
-          throw Object.assign(
-            new Error(`${existing.name} (${existing.customerCode}) is already saved with that ${data.phone ? 'number' : 'email address'}.`),
-            { statusCode: 409, existingCustomerId: existing.id }
-          );
-        }
-      }
+      const holder = await holderOf(tx, clientId, phone);
+      // Says who it already is, so the person at the counter can go straight to them instead of
+      // guessing what they typed wrong.
+      if (holder) throw takenBy(holder);
 
       // `tx` threaded through deliberately. Called on the base client it would open a SECOND
       // connection while this transaction still holds one -- which is both the pool deadlock
@@ -74,7 +122,7 @@ export class CustomerService {
           customerCode,
           name: String(data.name).trim(),
           companyName: data.companyName,
-          phone: data.phone,
+          phone,
           email: data.email,
           gstNumber: data.gstNumber,
           billingAddress: data.billingAddress,
@@ -99,21 +147,40 @@ export class CustomerService {
       // that does not save at all.
       maxWait: 15000,
       timeout: 20000
+    }).catch(async error => { throw await explainDuplicate(error, clientId, phone); });
+  }
+
+  /**
+   * The customer with exactly this number, for the counter's lookup. The number arrives in its
+   * stored form; null when nobody has it, which at a counter just means "new customer".
+   */
+  async findByPhone(clientId: string, phone: string) {
+    return prisma.customer.findFirst({
+      where: { clientId, phone, deletedAt: null },
+      select: {
+        id: true, customerCode: true, name: true, phone: true, email: true, tags: true, status: true,
+        salesOrders: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true, orderNumber: true } }
+      }
     });
   }
 
   async getCustomers(clientId: string, filters: any = {}) {
     const where: any = { clientId, deletedAt: null };
-    
+
     if (filters.search) {
+      const search = String(filters.search).trim();
+      // Numbers are stored as "+919848022338", so the digits typed are what to look for: "98480
+      // 22338" and "098480-22338" both have to find her, and neither is a substring as typed.
+      const digits = phoneSearchDigits(search);
       where.OR = [
-        { name: { contains: filters.search, mode: 'insensitive' } },
-        { customerCode: { contains: filters.search, mode: 'insensitive' } },
-        { phone: { contains: filters.search, mode: 'insensitive' } },
-        { email: { contains: filters.search, mode: 'insensitive' } }
+        { name: { contains: search, mode: 'insensitive' } },
+        { customerCode: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+        ...(digits ? [{ phone: { contains: digits } }] : []),
+        { email: { contains: search, mode: 'insensitive' } }
       ];
     }
-    
+
     if (filters.status) {
       where.status = filters.status;
     }
@@ -152,9 +219,28 @@ export class CustomerService {
     const existing = await prisma.customer.findFirst({ where: { clientId, id } });
     if (!existing) throw notFound('Customer not found');
 
-    return prisma.customer.update({
-      where: { id },
-      data: {
+    // A new number is checked against everybody else under the same lock a new customer takes, so
+    // an edit cannot quietly give this customer somebody else's number.
+    if (data.phone !== undefined) {
+      if (data.phone === null || String(data.phone).trim() === '') {
+        throw badRequest('A customer needs a phone number. Enter the new one instead of clearing it.');
+      }
+      data = { ...data, phone: storedPhone(data.phone) };
+    }
+    if (data.phone !== undefined && data.phone !== existing.phone) {
+      return prisma.$transaction(async tx => {
+        const holder = await holderOf(tx, clientId, data.phone, id);
+        if (holder) throw takenBy(holder);
+        return tx.customer.update({ where: { id }, data: this.editable(data) });
+      }, { maxWait: 15000, timeout: 20000 })
+        .catch(async error => { throw await explainDuplicate(error, clientId, data.phone); });
+    }
+
+    return prisma.customer.update({ where: { id }, data: this.editable(data) });
+  }
+
+  private editable(data: any) {
+    return {
         name: data.name,
         companyName: data.companyName,
         phone: data.phone,
@@ -164,8 +250,7 @@ export class CustomerService {
         shippingAddress: data.shippingAddress,
         status: data.status,
         ...(data.tags !== undefined ? { tags: normaliseTags(data.tags) } : {}),
-      }
-    });
+    };
   }
 }
 
