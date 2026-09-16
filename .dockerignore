@@ -1,0 +1,29 @@
+# Everything the image does not need, and above all everything that must never be inside one.
+# An image is copied to registries and servers; a secret baked into a layer stays there even if a
+# later layer deletes it.
+
+# Secrets and real data
+.env
+.env.*
+dev-keys/
+*.pem
+*.key
+test-creds.json
+login-creds.txt
+backups/
+
+# Built on the host, rebuilt inside
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Not part of the running service
+.git/
+.gitignore
+docs/
+logs/
+*.log
+src/scripts/
+src/tests/
+Dockerfile
+.dockerignore
