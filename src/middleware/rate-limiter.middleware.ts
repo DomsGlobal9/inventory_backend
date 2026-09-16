@@ -11,7 +11,10 @@ import rateLimit from 'express-rate-limit';
 // closes both of those — it can't be forged the same way.
 export const tenantRateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 100, // Limit each IP to 100 requests per `window`
+  // 100 per address per minute unless RATE_LIMIT_MAX says otherwise. Settable so a test server can run
+  // suites that make more than 100 calls a minute, and so production can be raised without a code
+  // change if several tills behind one shop's router share an address.
+  max: Number(process.env.RATE_LIMIT_MAX) > 0 ? Number(process.env.RATE_LIMIT_MAX) : 100,
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
   message: {
