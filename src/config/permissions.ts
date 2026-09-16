@@ -111,6 +111,11 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'sales_order:update',  group: 'Selling', label: "Change an order's lines",             implies: ['sales_order:view'] },
   { key: 'sales_order:confirm', group: 'Selling', label: 'Confirm an order and hold its stock', implies: ['sales_order:view'] },
   { key: 'sales_order:cancel',  group: 'Selling', label: 'Cancel an order and release its stock', implies: ['sales_order:view'] },
+  // The whole sale at the counter in one step: the customer, the order, the goods going out and the
+  // money coming in. It takes stock off without dispatch:create because the goods are already in
+  // the customer's hand -- there is nothing left for a stock room to send.
+  { key: 'sales_order:counter_sale', group: 'Selling', label: 'Sell at the counter and take payment',
+    implies: ['sales_order:create', 'customer:create', 'customer:view', 'product:view'] },
 
   // There is no dispatch:view. Dispatches have no read endpoint -- one is created, and then
   // seen through its sales order -- so the key would guard nothing while looking like it did.

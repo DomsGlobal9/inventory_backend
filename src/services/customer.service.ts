@@ -1,6 +1,6 @@
 import { normaliseTags } from './offers/rules';
 import { prisma } from '../lib/prisma';
-import { generateSequentialCode } from '../utils/codeGenerator';
+import { generateSequentialCode, generateFreeSequentialCode } from '../utils/codeGenerator';
 import { notFound, badRequest } from '../utils/httpError';
 import { normalisePhone, phoneSearchDigits } from '../lib/phone';
 import { CustomerStatus, Prisma } from '@prisma/client';
@@ -40,7 +40,11 @@ function storedPhone(raw: unknown): string {
 function takenBy(holder: { id: string; name: string; customerCode: string }) {
   return Object.assign(
     new Error(`${holder.name} (${holder.customerCode}) is already saved with that number.`),
-    { statusCode: 409, existingCustomerId: holder.id, existingCustomerName: holder.name, existingCustomerCode: holder.customerCode }
+    {
+      statusCode: 409, existingCustomerId: holder.id, existingCustomerName: holder.name, existingCustomerCode: holder.customerCode,
+      // The same, in the shape respondWithError passes on, for routes that answer through it.
+      details: { code: 'PHONE_TAKEN', existingCustomerId: holder.id, existingCustomerName: holder.name, existingCustomerCode: holder.customerCode }
+    }
   );
 }
 
@@ -75,6 +79,51 @@ export async function phoneForOutsideCustomer(tx: Tx, clientId: string, raw: unk
   if (!result.ok) return { onCustomer: null, onOrder: typed };
   const holder = await holderOf(tx, clientId, result.value);
   return { onCustomer: holder ? null : result.value, onOrder: result.value };
+}
+
+/**
+ * The customer at the counter: the one chosen, the one saved with this number, or a new one.
+ *
+ * Inside the sale's transaction, so a sale that fails leaves no customer behind, and under the
+ * number's lock, so two tills ringing up the same new person at once make one customer, not two.
+ * A number already saved is that customer -- the screen looked them up a moment ago, and if another
+ * till saved them in between, it is still the same person standing there.
+ *
+ * A customer chosen by id who was saved before phones were required gets the number now, if the
+ * screen sent one; a counter sale is how a shop finds people, so it does not go ahead without one.
+ */
+export async function counterCustomer(
+  tx: Tx, clientId: string, input: { id?: string | null; phone?: unknown; name?: unknown; email?: unknown }
+) {
+  const select = { id: true, name: true, phone: true } as const;
+
+  if (input.id) {
+    const chosen = await tx.customer.findFirst({ where: { id: input.id, clientId, deletedAt: null }, select });
+    if (!chosen) throw notFound('That customer was not found.');
+    if (chosen.phone) return chosen;
+
+    const typed = input.phone === null || input.phone === undefined ? '' : String(input.phone).trim();
+    if (!typed) {
+      throw Object.assign(badRequest(`Add a phone number for ${chosen.name} to sell to them.`), {
+        details: { code: 'CUSTOMER_NEEDS_PHONE', customerId: chosen.id }
+      });
+    }
+    const phone = storedPhone(typed);
+    const holder = await holderOf(tx, clientId, phone, chosen.id);
+    if (holder) throw takenBy(holder);
+    return tx.customer.update({ where: { id: chosen.id }, data: { phone }, select });
+  }
+
+  const phone = storedPhone(input.phone);
+  const holder = await holderOf(tx, clientId, phone);
+  if (holder) return tx.customer.findFirstOrThrow({ where: { id: holder.id }, select });
+
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  if (!name) throw badRequest("Add the customer's name.");
+  const email = typeof input.email === 'string' && input.email.trim() ? input.email.trim() : null;
+  const customerCode = await generateFreeSequentialCode(clientId, 'CUS', 'CUSTOMER', tx,
+    async (code) => !!(await tx.customer.findFirst({ where: { clientId, customerCode: code }, select: { id: true } })));
+  return tx.customer.create({ data: { clientId, customerCode, name, phone, email, status: 'ACTIVE' }, select });
 }
 
 export class CustomerService {

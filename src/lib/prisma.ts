@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env';
+import { holdAfterCommitWork } from './afterCommit';
 
 /**
  * How many database connections this process may hold.
@@ -160,9 +161,10 @@ function announceConnection(url: string | undefined) {
 const prismaClientSingleton = () => {
   const url = tunedDatabaseUrl();
   announceConnection(url);
-  return url
+  // Work queued with afterCommit() inside a transaction runs once it commits -- see lib/afterCommit.
+  return holdAfterCommitWork(url
     ? new PrismaClient({ datasources: { db: { url } } })
-    : new PrismaClient();
+    : new PrismaClient());
 };
 
 declare global {

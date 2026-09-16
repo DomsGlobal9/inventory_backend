@@ -2,16 +2,19 @@ import { prisma } from '../lib/prisma';
 import { TransactionType, InventoryReason, Prisma } from '@prisma/client';
 import { InventoryAlertService } from './inventory-alert.service';
 import { storefrontEventService } from './storefront-event.service';
+import { afterCommit } from '../lib/afterCommit';
 
 /**
- * Fire-and-forget, on purpose.
+ * Fire-and-forget, on purpose, and only once the transaction has committed.
  *
- * The caller's transaction has committed by the time this runs, so nothing here can roll the
- * movement back, and nothing here is allowed to reject into it. Failures are logged inside
- * storefrontEventService and recovered by the storefront's own incremental sync.
+ * afterCommit rather than setImmediate: inside a caller's transaction -- a dispatch, a counter
+ * sale -- the next tick came before the commit, so the storefront read the stock as it was before
+ * the sale or heard about a change that was then rolled back (see lib/afterCommit). Nothing here is
+ * allowed to reject into the movement. Failures are logged inside storefrontEventService and
+ * recovered by the storefront's own incremental sync.
  */
 function queueStorefrontNotification(clientId: string, variantId: string, previousQuantity: number) {
-  setImmediate(() => {
+  afterCommit(() => {
     void storefrontEventService.stockUpdated(clientId, variantId, previousQuantity)
       .catch(err => console.error('[StorefrontEvents] stockUpdated failed', err));
   });

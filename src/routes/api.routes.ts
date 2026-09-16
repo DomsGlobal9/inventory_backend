@@ -18,6 +18,7 @@ import purchaseOrderRoutes from './purchase-order.routes';
 import reportRoutes from './report.routes';
 import customerRoutes from './customer.routes';
 import salesOrderRoutes from './sales-order.routes';
+import counterSaleRoutes from './counter-sale.routes';
 import offerRoutes from './offer.routes';
 import pricingRoutes from './pricing.routes';
 import dispatchRoutes from './dispatch.routes';
@@ -137,6 +138,8 @@ router.use('/daybook', dayBookRoutes);
 router.use('/reports', hideCost, reportRoutes);
 router.use('/customers', hideCost, customerRoutes);
 router.use('/sales-orders', hideCost, salesOrderRoutes);
+// Selling at the counter. hideCost as a second guard: nothing here selects cost, and nothing should.
+router.use('/counter-sales', hideCost, counterSaleRoutes);
 router.use('/offers', offerRoutes);
 router.use('/pricing', pricingRoutes);
 router.use('/dispatches', hideCost, dispatchRoutes);

@@ -83,6 +83,9 @@ export function respondWithError(
   return res.status(status).json({
     success: false,
     message,
+    // What a screen needs to act on a refusal without parsing its sentence -- which item was short
+    // and how many are left, the new total after a price moved. Only on errors raised on purpose.
+    ...(deliberate && error.details && typeof error.details === 'object' ? { details: error.details } : {}),
     // Kept alongside `message` only because a few older screens still read this key. New code
     // should read `message`, which is what the rest of the API and the frontend both use.
     error: message

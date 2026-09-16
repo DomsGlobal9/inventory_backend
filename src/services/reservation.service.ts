@@ -2,18 +2,34 @@ import { prisma } from '../lib/prisma';
 import { ReservationStatus } from '@prisma/client';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { storefrontEventService } from './storefront-event.service';
-import { notFound } from '../utils/httpError';
+import { afterCommit } from '../lib/afterCommit';
+import { notFound, conflict } from '../utils/httpError';
+
+/** "Silk saree (SKU-1)" for a message a person reads, rather than a variant id. */
+async function describeVariant(tx: any, clientId: string, variantId: string, locationId: string) {
+  const [variant, store] = await Promise.all([
+    tx.productVariant.findFirst({
+      where: { id: variantId, clientId },
+      select: { sku: true, colorName: true, size: true, product: { select: { title: true } } }
+    }),
+    tx.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { name: true } })
+  ]);
+  const detail = [variant?.colorName, variant?.size].filter(Boolean).join(', ');
+  const item = variant ? `${variant.product.title}${detail ? ` (${detail})` : ''} [${variant.sku}]` : 'That item';
+  return { item, store: store?.name ?? 'this store' };
+}
 
 /**
  * Reserving or releasing changes what is AVAILABLE without changing what is physically held,
  * so it never produced a stock movement and therefore never produced an event. The result was
  * that a website order taking the last unit left every storefront still advertising it.
  *
- * Fire-and-forget, and after the transaction: the reservation is the real work, and a
- * notification must not be able to fail it or hold its transaction open.
+ * Fire-and-forget, and after the transaction has committed (lib/afterCommit): the reservation is
+ * the real work, a notification must not be able to fail it or hold its transaction open, and one
+ * sent from inside a caller's transaction must not describe stock that has not been saved yet.
  */
 function notifyStorefrontsOfAvailability(clientId: string, variantIds: string[]) {
-  setImmediate(() => {
+  afterCommit(() => {
     for (const variantId of [...new Set(variantIds)]) {
       void storefrontEventService.stockUpdated(clientId, variantId)
         .catch(err => console.error('[StorefrontEvents] reservation change failed', err));
@@ -29,8 +45,11 @@ export class ReservationService {
   async reserveStock(clientId: string, locationId: string, items: { variantId: string; salesOrderItemId: string; quantity: number }[], txClient?: any) {
     const execute = async (tx: any) => {
       const reservations = [];
-      
-      for (const item of items) {
+
+      // Locked in one fixed order. Two tills holding the same two items, scanned in opposite
+      // orders, each locked one row and waited for the other -- a deadlock the database resolves
+      // by failing one of the sales.
+      for (const item of [...items].sort((a, b) => a.variantId.localeCompare(b.variantId))) {
         // Find variant and lock it for update to prevent concurrent race conditions
         const stocks = await tx.$queryRaw<any[]>`
           SELECT id, quantity, reserved_qty as "reservedQty"
@@ -39,15 +58,22 @@ export class ReservationService {
           FOR UPDATE
         `;
 
+        // Said with the item's name and the store's. A cashier could do nothing with two ids.
         if (stocks.length === 0) {
-          throw notFound(`Stock for variant ${item.variantId} not found in location ${locationId}`);
+          const { item: label, store } = await describeVariant(tx, clientId, item.variantId, locationId);
+          throw Object.assign(conflict(`Insufficient stock: ${label} is not stocked at ${store}.`),
+            { details: { code: 'OUT_OF_STOCK', variantId: item.variantId, available: 0 } });
         }
 
         const stock = stocks[0];
-        const availableQty = stock.quantity - stock.reservedQty;
+        const availableQty = Math.max(0, stock.quantity - stock.reservedQty);
 
         if (item.quantity > availableQty) {
-          throw new Error(`Insufficient stock for variant ${item.variantId} in location ${locationId}. Requested: ${item.quantity}, Available: ${availableQty}`);
+          const { item: label, store } = await describeVariant(tx, clientId, item.variantId, locationId);
+          throw Object.assign(
+            conflict(`Insufficient stock: only ${availableQty} of ${label} free at ${store}, and ${item.quantity} ${item.quantity === 1 ? 'is' : 'are'} needed.`),
+            { details: { code: 'OUT_OF_STOCK', variantId: item.variantId, available: availableQty } }
+          );
         }
 
         // Create reservation record
@@ -72,7 +98,7 @@ export class ReservationService {
 
         reservations.push(reservation);
       }
-      
+
       return reservations;
     };
 
@@ -90,8 +116,8 @@ export class ReservationService {
   /**
    * Releases an active reservation. Used when an order is cancelled.
    */
-  async releaseReservation(clientId: string, salesOrderItemId: string) {
-    const released = await prisma.$transaction(async (tx) => {
+  async releaseReservation(clientId: string, salesOrderItemId: string, txClient?: any) {
+    const execute = async (tx: any) => {
       // PARTIALLY_FULFILLED counts too: cancelling an order that was partly dispatched
       // must still release the un-shipped remainder. Matching only 'ACTIVE' meant that
       // remainder stayed reserved forever -- invisible stock that no future order could
@@ -106,9 +132,16 @@ export class ReservationService {
       // that belongs to no live order is invisible -- it never appears as missing, it simply
       // stops being sellable. Releasing every live row costs one extra query and cannot strand
       // anything, including rows left behind by an older build.
-      const reservations = await tx.inventoryReservation.findMany({
-        where: { clientId, salesOrderItemId, status: { in: ['ACTIVE', 'PARTIALLY_FULFILLED'] } }
-      });
+      //
+      // Locked, like dispatchReservation locks them. Read without a lock, a dispatch landing at the
+      // same moment could consume units this then released again from the stale figures -- the
+      // reserved count dropping twice for the same pieces.
+      const reservations = await tx.$queryRaw`
+        SELECT id, variant_id AS "variantId", location_id AS "locationId", reserved_qty AS "reservedQty", dispatched_qty AS "dispatchedQty"
+        FROM inventory_reservations
+        WHERE sales_order_item_id = ${salesOrderItemId} AND client_id = ${clientId} AND status IN ('ACTIVE', 'PARTIALLY_FULFILLED')
+        FOR UPDATE
+      ` as { id: string; variantId: string; locationId: string | null; reservedQty: number; dispatchedQty: number }[];
 
       if (reservations.length === 0) {
         return null;
@@ -131,7 +164,9 @@ export class ReservationService {
       }
 
       return updatedReservation;
-    });
+    };
+
+    const released = txClient ? await execute(txClient) : await prisma.$transaction(execute);
 
     // Cancelling puts the units back on sale. Without this the storefront keeps showing them
     // as unavailable until something else moves that variant. Null when there was no active

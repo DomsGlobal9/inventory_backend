@@ -9,7 +9,7 @@ import { grants, holdsEverything } from '../config/permissions';
 export const createOrder = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
-    
+
     const parsed = createOrderSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
@@ -34,7 +34,7 @@ export const createOrder = async (req: Request, res: Response) => {
 export const createFullOrder = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
-    
+
     /*
      * Taking money off by hand needs its own permission -- checked BEFORE validation.
      *
@@ -76,6 +76,8 @@ export const createFullOrder = async (req: Request, res: Response) => {
         holdsEverything(user?.permissions, user?.roles) ||
         grants(user?.permissions ?? [], 'offer:manual_discount_unlimited')
     });
+    res.locals.auditAction = 'CREATED';
+    res.locals.auditEntityId = order.id;
     res.status(201).json(order);
   } catch (error: any) {
     return respondWithError(res, error, { status: 400 });
@@ -85,7 +87,8 @@ export const createFullOrder = async (req: Request, res: Response) => {
 export const getOrders = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
-    const filters = { status: req.query.status };
+    const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+    const filters = { status: text(req.query.status), search: text(req.query.search), source: text(req.query.source) };
     const orders = await salesOrderService.getOrders(clientId, filters);
     res.json(orders);
   } catch (error: any) {

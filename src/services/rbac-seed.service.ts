@@ -18,6 +18,7 @@ export const RBAC_DATA = {
       description: 'Administrator',
       permissions: [
         'sales_order:view', 'sales_order:create', 'sales_order:update', 'sales_order:confirm', 'sales_order:cancel',
+        'sales_order:counter_sale',
         'dispatch:create',
         'return:create', 'return:receive', 'return:inspect', 'return:complete',
         'inventory:receive', 'inventory:adjust', 'inventory:transfer',
@@ -39,6 +40,7 @@ export const RBAC_DATA = {
       description: 'Sales Representative',
       permissions: [
         'sales_order:create', 'sales_order:update', 'sales_order:confirm',
+        'sales_order:counter_sale',
         'customer:create', 'customer:update',
         'product:view',
         'dashboard:view',

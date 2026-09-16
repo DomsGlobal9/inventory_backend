@@ -4,7 +4,9 @@ import { conflict } from './httpError';
 const transitions: Record<SalesOrderStatus, SalesOrderStatus[]> = {
   DRAFT: ['CONFIRMED', 'CANCELLED'],
   CONFIRMED: ['CANCELLED', 'PARTIALLY_DISPATCHED', 'DISPATCHED'],
-  PARTIALLY_DISPATCHED: ['DISPATCHED', 'CANCELLED'],
+  // Not CANCELLED: part of it has gone to the customer and is a sale. What is left is closed short
+  // (salesOrderService.cancelOrder), which ends as DISPATCHED so the part that went out stays counted.
+  PARTIALLY_DISPATCHED: ['DISPATCHED'],
   DISPATCHED: [],
   CANCELLED: [],
 };

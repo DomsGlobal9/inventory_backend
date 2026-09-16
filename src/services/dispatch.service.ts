@@ -3,37 +3,60 @@ import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { reservationService } from './reservation.service';
 import { inventoryMutationService } from './inventory-mutation.service';
-import { notFound } from '../utils/httpError';
+import { notFound, badRequest, conflict } from '../utils/httpError';
 import { toMinor, minorToNumber, portionOf } from './pricing';
 
 export class DispatchService {
+  /**
+   * Send out part or all of an order, in its own transaction.
+   *
+   * The work is dispatchInTransaction below; this is the door a person's Dispatch button and
+   * Shopify fulfilment come through. Serializable, because a dispatch reads what is still reserved
+   * and writes against it.
+   */
   async createDispatch(clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number }[]) {
+    return prisma.$transaction(
+      (tx) => this.dispatchInTransaction(tx, clientId, salesOrderId, items),
+      { timeout: 30000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+  }
+
+  /**
+   * Send out part or all of an order inside a transaction the caller already holds.
+   *
+   * Split out so a counter sale can create the order, hold its stock and send it out as ONE
+   * transaction -- all of it saved or none of it. createDispatch opened its own transaction and
+   * read the order before it began, so it could not be part of anything larger; and a dispatch
+   * racing a cancel read an order that was no longer what it checked.
+   */
+  async dispatchInTransaction(tx: any, clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number }[]) {
     if (!Array.isArray(items) || items.length === 0) {
-      throw new Error('At least one item is required to create a dispatch');
+      throw badRequest('Choose at least one item to send out.');
+    }
+    const seen = new Set<string>();
+    for (const item of items) {
+      // The same line twice would be checked against what is reserved before either was taken off,
+      // and could send out more than is held.
+      if (seen.has(item.salesOrderItemId)) throw badRequest('Each item can appear once in a dispatch.');
+      seen.add(item.salesOrderItemId);
+      if (!Number.isInteger(item.quantity) || item.quantity <= 0) throw badRequest('Send out whole pieces, at least one.');
     }
 
-    // 1. Validate Order
-    const order = await prisma.salesOrder.findFirst({
+    // Read inside the transaction: see above.
+    const order = await tx.salesOrder.findFirst({
       where: { id: salesOrderId, clientId, deletedAt: null },
       include: { items: true }
     });
 
     if (!order) throw notFound("Order not found");
     if (order.status !== 'CONFIRMED' && order.status !== 'PARTIALLY_DISPATCHED') {
-      throw new Error(`Cannot dispatch order in ${order.status} state`);
+      throw conflict(`This order is ${String(order.status).toLowerCase().replace('_', ' ')}, so nothing can be sent out against it.`);
+    }
+    for (const item of items) {
+      if (!order.items.some((oi: any) => oi.id === item.salesOrderItemId)) throw notFound('That item is not on this order.');
     }
 
-    // Everything below — the dispatch NUMBER, the Dispatch record, reservation consumption,
-    // physical stock movement, ledger entry, and the order status update — runs as one
-    // transaction. Previously each step committed independently, so a failure partway through
-    // (e.g. an over-dispatch on item 2 of 3) left a Dispatch row and partial reservation/stock
-    // changes behind with no order status update.
-    //
-    // The number was still being taken outside it, which is the same bug one level down: a
-    // dispatch rejected for a bad line had already consumed DSP-000001, so the first dispatch
-    // this shop ever completed was numbered DSP-000002 and nothing accounted for the one
-    // before it. Inside the transaction, a rejected dispatch gives its number back.
-    return prisma.$transaction(async (tx) => {
+    {
       const dispatchCode = await generateSequentialCode(clientId, 'DSP', 'DISPATCH', tx as any);
 
       const dispatch = await (tx as any).dispatch.create({
@@ -150,10 +173,7 @@ export class DispatchService {
       });
 
       return dispatch;
-    }, {
-      timeout: 30000,
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
-    });
+    }
   }
 }
 

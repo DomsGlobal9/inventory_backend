@@ -380,12 +380,14 @@ export class PlatformAdminService {
    * anyone has to notice they are looking at the wrong tenant.
    */
   async previewClientDeletion(clientId: string) {
-    const [users, products, variants, orders, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting] =
+    const [users, products, variants, orders, payments, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting] =
       await Promise.all([
         prisma.user.count({ where: { clientId } }),
         prisma.product.count({ where: { clientId } }),
         prisma.productVariant.count({ where: { clientId } }),
         prisma.salesOrder.count({ where: { clientId } }),
+        // Money recorded against those orders goes with them.
+        prisma.salesOrderPayment.count({ where: { clientId } }),
         prisma.purchaseOrder.count({ where: { clientId } }),
         prisma.stockLocation.count({ where: { clientId } }),
         prisma.supplier.count({ where: { clientId } }),
@@ -396,7 +398,7 @@ export class PlatformAdminService {
         prisma.shopifyOrderInbox.count({ where: { clientId, resolvedAt: null } })
       ]);
 
-    return { clientId, users, products, variants, orders, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting };
+    return { clientId, users, products, variants, orders, payments, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting };
   }
 
   /**
@@ -508,6 +510,8 @@ export class PlatformAdminService {
       `DELETE FROM sales_returns WHERE client_id = $1`,
       `DELETE FROM dispatch_items WHERE dispatch_id IN (SELECT d.id FROM dispatches d JOIN sales_orders so ON so.id = d.sales_order_id WHERE so.client_id = $1)`,
       `DELETE FROM dispatches WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
+      // Payments point at stores (restrict) and returns, so they go before both.
+      `DELETE FROM sales_order_payments WHERE client_id = $1`,
       `DELETE FROM sales_order_items WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
       `DELETE FROM sales_orders WHERE client_id = $1`,
       `DELETE FROM sales_ledger WHERE client_id = $1`,

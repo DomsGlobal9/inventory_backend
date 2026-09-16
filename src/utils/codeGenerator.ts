@@ -85,3 +85,26 @@ export const generateSequentialCode = async (
   return `${prefix}-${paddedValue}`;
 };
 
+
+/**
+ * The next number in the sequence that nothing is already using.
+ *
+ * The sequence and the rows can disagree: a customer imported with its own code, or saved by hand,
+ * uses a number the sequence has not reached. The sequence then hands out that same number, the
+ * database refuses the row, and -- inside a counter sale's single transaction -- the whole sale fails
+ * with it, and every sale after it too, until someone notices. Skipping a taken number costs one
+ * look-up per code; a gap in the numbering is explained by the row that already holds the number.
+ */
+export const generateFreeSequentialCode = async (
+  clientId: string,
+  prefix: string,
+  entityType: string,
+  tx: any,
+  isTaken: (code: string) => Promise<boolean>
+): Promise<string> => {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const code = await generateSequentialCode(clientId, prefix, entityType, tx);
+    if (!(await isTaken(code))) return code;
+  }
+  throw Object.assign(new Error(`Could not find a free ${prefix} number. The numbering needs looking at.`), { statusCode: 409 });
+};

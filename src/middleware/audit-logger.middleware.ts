@@ -77,7 +77,12 @@ export const auditLogger = (req: Request, res: Response, next: NextFunction) => 
     const user = (req as any).user;
     if (!user?.clientId) return;
 
-    const { action, entityType, entityId } = inferActionAndEntity(method, path);
+    const inferred = inferActionAndEntity(method, path);
+    // A route whose path holds no id -- POST /sales-orders/full -- says what it made, or the feed
+    // records the word "full" as the order's id.
+    const action = res.locals.auditAction ?? inferred.action;
+    const entityType = inferred.entityType;
+    const entityId = res.locals.auditEntityId ?? inferred.entityId;
 
     prisma.auditLog.create({
       data: { clientId: user.clientId, userId: user.id, action, entityType, entityId, ipAddress: req.ip }

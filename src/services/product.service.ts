@@ -1,4 +1,5 @@
 import { productRepository } from '../repositories/product.repository';
+import { afterCommit } from '../lib/afterCommit';
 import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { prisma } from '../lib/prisma';
@@ -17,7 +18,8 @@ import { validateProductTransition, isLive } from '../utils/product-state-machin
  * connection, which is most of them.
  */
 function notifyStorefronts(clientId: string, productId: string, type: keyof typeof StorefrontEventType) {
-  setImmediate(() => {
+  // After the commit when called inside a transaction (lib/afterCommit); the next tick otherwise.
+  afterCommit(() => {
     void storefrontEventService.productChanged(clientId, productId, StorefrontEventType[type])
       .catch(err => console.error(`[StorefrontEvents] ${type} failed`, err));
   });

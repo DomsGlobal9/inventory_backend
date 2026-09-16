@@ -7,7 +7,7 @@ const BUCKET = 'inventory-images';
 
 const SHOWN = {
   businessName: true, logoUrl: true,
-  businessAddress: true, businessPhone: true, businessEmail: true, gstNumber: true
+  businessAddress: true, businessPhone: true, businessEmail: true, gstNumber: true, receiptFooter: true
 } as const;
 
 /**
@@ -22,7 +22,8 @@ function shape(row: Partial<Record<keyof typeof SHOWN, string | null>> | null | 
     businessAddress: row?.businessAddress || null,
     businessPhone: row?.businessPhone || null,
     businessEmail: row?.businessEmail || null,
-    gstNumber: row?.gstNumber || null
+    gstNumber: row?.gstNumber || null,
+    receiptFooter: row?.receiptFooter || null
   };
 }
 
@@ -39,7 +40,9 @@ const detailsSchema = z.object({
   gstNumber: z.preprocess(
     v => (typeof v === 'string' ? (v.trim() === '' ? null : v.trim().toUpperCase()) : v),
     z.string().regex(GSTIN, 'A GSTIN is 15 characters, like 27ABCDE1234F1Z5.').nullable()
-  ).optional()
+  ).optional(),
+  // The line at the bottom of a counter receipt. Short: an 80 mm roll fits about 42 characters a line.
+  receiptFooter: z.preprocess(blankToNull, z.string().trim().max(160, 'Keep the receipt footer under 160 characters.').nullable()).optional()
 }).strict();
 
 /**

@@ -26,6 +26,7 @@ export const ROLE_TEMPLATES: readonly RoleTemplate[] = [
     description: 'Sells to customers. Cannot see what the shop paid or what it makes.',
     permissions: [
       'sales_order:create', 'sales_order:update', 'sales_order:confirm',
+      'sales_order:counter_sale',
       'customer:create', 'customer:update',
       'product:view', 'inventory:view', 'dashboard:view'
     ]
@@ -59,6 +60,7 @@ export const ROLE_TEMPLATES: readonly RoleTemplate[] = [
     description: 'Runs the shop day to day, including the team. Everything except owner-only settings.',
     permissions: [
       'sales_order:create', 'sales_order:update', 'sales_order:confirm', 'sales_order:cancel',
+      'sales_order:counter_sale',
       'dispatch:create', 'customer:create', 'customer:update',
       'return:create', 'return:receive', 'return:inspect', 'return:complete',
       'inventory:receive', 'inventory:adjust', 'inventory:transfer',

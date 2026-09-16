@@ -36,6 +36,25 @@ enum SalesChannel {
   MARKETPLACE
 }
 
+/// How a counter order leaves the shop. Null for orders that did not start at the counter.
+enum SalesOrderHandover {
+  /// Paid and carried out at the counter.
+  TAKEN_NOW
+  /// Held at the store for the customer to collect, or to be delivered.
+  KEEP_FOR_CUSTOMER
+}
+
+enum PaymentKind {
+  PAYMENT
+  REFUND
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  CARD
+}
+
 enum TransferStatus {
   REQUESTED
   APPROVED
@@ -196,6 +215,8 @@ model StockLocation {
   purchaseReceipts PurchaseReceipt[]
   /// Orders to be delivered here.
   purchaseOrders   PurchaseOrder[]
+  /// Money taken or paid back at this store.
+  payments         SalesOrderPayment[]
 
   /// Where this store is, and who to call there: the delivery address on a purchase order.
   address String?
@@ -837,6 +858,13 @@ model SalesOrder {
   customerId String   @map("customer_id")
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
+  /// The person who rang it up. Null for orders a system wrote (Shopify), and kept if they leave.
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation("SalesOrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  /// Counter orders only: whether the goods went with the customer or are kept for them.
+  handover SalesOrderHandover?
+
   // Customer Snapshot Fields
   customerName    String? @map("customer_name")
   customerPhone   String? @map("customer_phone")
@@ -859,6 +887,7 @@ model SalesOrder {
   dispatches Dispatch[]
   returns    SalesReturn[]
   discounts  SalesOrderDiscount[]
+  payments   SalesOrderPayment[]
 
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -870,6 +899,7 @@ model SalesOrder {
   @@index([customerId])
   @@index([locationId])
   @@index([clientId, sourceStore])
+  @@index([createdById])
   @@map("sales_orders")
 }
 
@@ -1064,6 +1094,9 @@ model SalesReturn {
   @@unique([clientId, returnNumber])
   @@index([salesOrderId])
   @@index([clientId, status])
+  /// Refunds paid for this return.
+  refunds SalesOrderPayment[]
+
   @@map("sales_returns")
 }
 
@@ -1232,6 +1265,11 @@ model User {
   receiveDailyReport Boolean @default(false) @map("receive_daily_report")
 
   dailyReportDeliveries DailyReportDelivery[]
+
+  /// Orders this person rang up.
+  salesOrdersCreated SalesOrder[] @relation("SalesOrderCreatedBy")
+  /// Money this person took or paid back.
+  paymentsReceived   SalesOrderPayment[] @relation("PaymentReceivedBy")
 
   lastLoginAt  DateTime? @map("last_login_at")
   // Bumped on every authenticated business-API request (see activity-tracker.middleware.ts),
@@ -1781,10 +1819,58 @@ model ClientSettings {
   businessEmail   String? @map("business_email")
   gstNumber       String? @map("gst_number")
 
+  /// Printed at the bottom of a counter receipt: "Exchange within 7 days".
+  receiptFooter String? @map("receipt_footer")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("client_settings")
+}
+
+/// Money taken for an order, or paid back. One row per method: a split payment is several rows.
+///
+/// "Paid", "X due" and "Refunded" are worked out from these rows and never stored a second time,
+/// so the two can never disagree. Amounts are exact to the paisa, like every price here.
+///
+/// `reference` is what a person needs to find the payment again -- a UPI transaction id, the last
+/// four digits of a card or its approval code. Never a card number: the service refuses one.
+model SalesOrderPayment {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  salesOrderId String     @map("sales_order_id")
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+
+  locationId String        @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  kind   PaymentKind   @default(PAYMENT)
+  method PaymentMethod
+
+  /// What went against the order. For cash, what was kept -- not what was handed over.
+  amount       Decimal  @db.Decimal(10, 2)
+  /// Cash only: the note(s) handed over, and what was given back.
+  cashReceived Decimal? @map("cash_received") @db.Decimal(10, 2)
+  changeGiven  Decimal? @map("change_given") @db.Decimal(10, 2)
+  reference    String?
+
+  /// For a refund, the return it pays back.
+  salesReturnId String?      @map("sales_return_id")
+  salesReturn   SalesReturn? @relation(fields: [salesReturnId], references: [id], onDelete: SetNull)
+
+  receivedById String? @map("received_by_id")
+  receivedBy   User?   @relation("PaymentReceivedBy", fields: [receivedById], references: [id], onDelete: SetNull)
+
+  receivedAt DateTime @default(now()) @map("received_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, receivedAt])
+  @@index([salesOrderId])
+  @@index([locationId, receivedAt])
+  @@index([salesReturnId])
+  @@index([receivedById])
+  @@map("sales_order_payments")
 }
 
 /// End-of-day stock per LOCATION, alongside the company-wide DailyInventorySnapshot.

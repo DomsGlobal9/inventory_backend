@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { generateSequentialCode } from '../utils/codeGenerator';
+import { generateSequentialCode, generateFreeSequentialCode } from '../utils/codeGenerator';
 import { validateTransition } from '../utils/sales-order-state-machine';
 import { reservationService } from './reservation.service';
 import { resolveVariantForLocation } from '../utils/variant-location';
@@ -13,6 +13,11 @@ import {
 import { offerRedemptionService } from './offers';
 import { getShopSettings } from '../lib/clientSettings';
 import { phoneForOutsideCustomer } from './customer.service';
+import { phoneSearchDigits } from '../lib/phone';
+import { paymentSummary } from './payments/payment-rules';
+
+/** Kept here as well as in counter-sale, which imports this service: one string, no import cycle. */
+const COUNTER_SOURCE = 'SCALEEZY_COUNTER';
 
 export class SalesOrderService {
   async createDraftOrder(clientId: string, locationId: string, customerId: string, channel: any = 'POS') {
@@ -78,15 +83,25 @@ export class SalesOrderService {
       );
     }
 
-    const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
-
     try {
       const { manualDiscountMaxPercent } = await getShopSettings(clientId);
       const manualLimit = caller && !caller.mayExceedManualLimit ? manualDiscountMaxPercent : null;
-      return await this.writeFullOrder(
-        clientId, locationId, data, channel, orderNumber, orderManual,
-        { userId: caller?.userId ?? null, manualLimitPercent: manualLimit }
+      return await prisma.$transaction(
+        (tx) => this.writeFullOrderInTransaction(
+          tx, clientId, locationId, data, channel, orderManual,
+          {
+            userId: caller?.userId ?? null,
+            manualLimitPercent: manualLimit,
+            // A person below a manager may not name their own price; a system passing on what it
+            // charged (no caller) may.
+            mayOverridePrices: !caller || !!caller.mayExceedManualLimit
+          }
+        ),
+        { timeout: 30000 }
       );
+      // No custom timeout previously -- Prisma's 5000ms default was too short for the per-item
+      // loop (2 round-trips per item) under this environment's DB latency, and failed with
+      // "Transaction not found" once the connection was reclaimed mid-transaction.
     } catch (error: any) {
       /*
        * The same order, sent twice at the same moment.
@@ -115,10 +130,18 @@ export class SalesOrderService {
     }
   }
 
-  private async writeFullOrder(
-    clientId: string, locationId: string, data: any, channel: any,
-    orderNumber: string, orderManual: ManualDiscount | null,
-    who: { userId: string | null; manualLimitPercent: number | null } = { userId: null, manualLimitPercent: null }
+  /**
+   * Write an order -- customer, lines, prices, discounts, and its stock held if CONFIRMED -- inside a
+   * transaction the caller holds.
+   *
+   * A counter sale does this and then sends the goods out and takes the money, and all of that has
+   * to be one thing: a sale whose payment failed to save must not leave a confirmed order holding
+   * stock. So the work is here and the transaction is the caller's.
+   */
+  async writeFullOrderInTransaction(
+    tx: any, clientId: string, locationId: string, data: any, channel: any,
+    orderManual: ManualDiscount | null,
+    who: { userId: string | null; manualLimitPercent: number | null; mayOverridePrices?: boolean; lean?: boolean } = { userId: null, manualLimitPercent: null }
   ) {
     /*
      * The till limit.
@@ -132,13 +155,52 @@ export class SalesOrderService {
       if (amountMinor * 100 > ofMinor * who.manualLimitPercent + 1e-6) {
         const pct = Math.round((amountMinor / ofMinor) * 1000) / 10;
         throw forbidden(
-          `Taking ${amountMinor / 100} off ${label} is ${pct}% -- more than the ${who.manualLimitPercent}% ` +
+          `Taking ${amountMinor / 100} off ${label} is ${pct}% — more than the ${who.manualLimitPercent}% ` +
           `the till may take off by hand. A manager has to take this one off.`
         );
       }
     };
 
-    return prisma.$transaction(async (tx) => {
+    {
+      /*
+       * The store, checked here. The route only asked that an id was sent; an id from another shop,
+       * or a store that has been closed, was written straight onto the order -- and its stock was
+       * then held and taken from a store this shop cannot even see.
+       */
+      const store = await tx.stockLocation.findFirst({
+        where: { id: locationId, clientId },
+        select: { id: true, active: true, name: true }
+      });
+      if (!store) throw notFound('That store was not found.');
+      if (!store.active) throw badRequest(`${store.name} is closed, so it cannot take orders.`);
+
+      /*
+       * The order number, taken inside the transaction. Taken before it, an order refused for a
+       * bad line had already used SO-000041, and the next sale was SO-000042 with nothing to
+       * account for the gap -- the kind of gap an auditor asks about.
+       */
+      const orderNumber = await generateFreeSequentialCode(clientId, 'SO', 'SALES_ORDER', tx,
+        async (code) => !!(await tx.salesOrder.findFirst({ where: { clientId, orderNumber: code }, select: { id: true } })));
+
+      // Only a person of this shop is recorded. A platform admin acting for the shop has no row in
+      // its users, and naming them would refuse the order on the foreign key.
+      const createdById = who.userId
+        ? (await tx.user.findFirst({ where: { id: who.userId, clientId }, select: { id: true } }))?.id ?? null
+        : null;
+
+      /*
+       * A price a person typed, rather than one the shop set.
+       *
+       * The till limit and the reason rule apply to money taken off by hand -- and were walked round
+       * by simply sending a lower unitPrice, or a discountAmount, which this route accepts because a
+       * website or Shopify passes on what it already charged. A person who is not a manager is held
+       * to the catalogue: a lower price is refused, and money off goes through manualDiscount, with a
+       * reason, under the limit.
+       */
+      if (who.mayOverridePrices === false && Number(data.discountAmount ?? 0) > 0) {
+        throw forbidden('Taking money off the bill needs a reason: use a discount by hand, or ask a manager.');
+      }
+
       let customerId = data.customer?.id;
       let phoneOnOrder: string | null = data.customer?.phone ? String(data.customer.phone).trim() || null : null;
 
@@ -169,7 +231,14 @@ export class SalesOrderService {
         }
         customerId = existingCustomer.id;
       } else if (!customerId) {
-        throw new Error('Customer information or external ID is required');
+        throw badRequest('Choose the customer for this order.');
+      } else {
+        // Theirs, and not deleted. An id from another shop used to be accepted as it came.
+        const known = await tx.customer.findFirst({
+          where: { id: customerId, clientId, deletedAt: null },
+          select: { id: true }
+        });
+        if (!known) throw notFound('That customer was not found.');
       }
 
       const order = await tx.salesOrder.create({
@@ -181,6 +250,11 @@ export class SalesOrderService {
           customerId,
           externalOrderId: data.externalOrderId || null,
           sourceSystem: data.sourceSystem || null,
+          // Who rang it up. Null for an order a system wrote (Shopify).
+          createdById,
+          // Set only by the counter sale, which calls this directly; the /full route's schema has no
+          // such field, so an outside caller cannot claim an order was carried out of a shop.
+          handover: data.handover ?? null,
           customerName: data.customer?.name || null,
           customerPhone: phoneOnOrder,
           shippingAddress: data.customer?.shippingAddress || null,
@@ -289,6 +363,12 @@ export class SalesOrderService {
             item,
             variant.sku
           );
+          if (who.mayOverridePrices === false && priced.totalPriceMinor < toMinor(locationConfig.price || 0) * item.quantity) {
+            throw forbidden(
+              `${variant.sku} sells for ${toMinor(locationConfig.price || 0) / 100} here. Selling it for less needs a ` +
+              `discount by hand with a reason, or a manager.`
+            );
+          }
         }
 
         if (manual) {
@@ -522,7 +602,9 @@ export class SalesOrderService {
           total: fromMinor(totals.totalMinor),
           status: data.status === 'CONFIRMED' ? 'CONFIRMED' : 'DRAFT'
         },
-        include: { items: true, customer: true, discounts: true }
+        // A counter sale needs only the lines to send out; every relation included is another
+        // round trip to the database inside a transaction a cashier is waiting on.
+        include: who.lean ? { items: true } : { items: true, customer: true, discounts: true }
       });
 
       if (data.status === 'CONFIRMED' && reservationItems.length > 0) {
@@ -530,28 +612,57 @@ export class SalesOrderService {
       }
 
       return updatedOrder;
-    }, { timeout: 30000 });
-    // No custom timeout previously — Prisma's 5000ms default was too short for the
-    // per-item loop above (2 round-trips per item) under this environment's DB
-    // latency, and failed with "Transaction not found" once the connection was
-    // reclaimed mid-transaction. Same fix already applied to the other multi-step
-    // transactions in inventory-mutation.service.ts / purchase-order.service.ts / etc.
+    }
   }
 
   async getOrders(clientId: string, filters: any = {}) {
     const where: any = { clientId, deletedAt: null };
     if (filters.status) where.status = filters.status;
 
-    return prisma.salesOrder.findMany({
+    // Where it came from, as a shop says it: the counter, Shopify, or anything else.
+    if (filters.source === 'COUNTER') where.sourceSystem = COUNTER_SOURCE;
+    else if (filters.source === 'SHOPIFY') where.sourceSystem = 'SHOPIFY';
+    else if (filters.source === 'OTHER') where.OR = [{ sourceSystem: null }, { sourceSystem: { notIn: [COUNTER_SOURCE, 'SHOPIFY'] } }];
+
+    /*
+     * An order number, a phone number or a name -- what a customer at the counter actually says.
+     * A number is matched however it was typed, against the order's copy and the customer's own.
+     */
+    if (filters.search) {
+      const text = String(filters.search).slice(0, 80);
+      const digits = phoneSearchDigits(text);
+      const or: any[] = [
+        { orderNumber: { contains: text, mode: 'insensitive' } },
+        { customerName: { contains: text, mode: 'insensitive' } },
+        { customer: { name: { contains: text, mode: 'insensitive' } } }
+      ];
+      if (digits) {
+        or.push({ customerPhone: { contains: digits } }, { customer: { phone: { contains: digits } } });
+      }
+      where.AND = [...(where.AND ?? []), { OR: or }];
+    }
+
+    const orders = await prisma.salesOrder.findMany({
       where,
       include: {
         customer: {
-          select: { name: true, companyName: true, email: true }
+          select: { name: true, companyName: true, email: true, phone: true }
         },
-        items: true
+        items: true,
+        createdBy: { select: { id: true, name: true } },
+        location: { select: { id: true, name: true } },
+        payments: { select: { kind: true, amount: true } }
       },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
+      // A shop with years of orders must still open this page. Search reaches the rest.
+      take: 500
     });
+
+    return orders.map(({ payments, ...order }) => ({
+      ...order,
+      atCounter: order.sourceSystem === COUNTER_SOURCE,
+      payment: paymentSummary(toMinor(order.total), payments)
+    }));
   }
 
   async getOrderById(clientId: string, id: string) {
@@ -577,11 +688,24 @@ export class SalesOrderService {
         discounts: {
           include: { allocations: true },
           orderBy: { createdAt: 'asc' }
+        },
+        createdBy: { select: { id: true, name: true } },
+        location: { select: { id: true, name: true } },
+        payments: {
+          orderBy: { receivedAt: 'asc' },
+          select: {
+            id: true, kind: true, method: true, amount: true, cashReceived: true, changeGiven: true,
+            reference: true, receivedAt: true, receivedBy: { select: { name: true } }
+          }
         }
       }
     });
     if (!order) throw notFound('Order not found');
-    return order;
+    return {
+      ...order,
+      atCounter: order.sourceSystem === COUNTER_SOURCE,
+      payment: paymentSummary(toMinor(order.total), order.payments)
+    };
   }
 
   async updateOrder(clientId: string, id: string, data: any) {
@@ -877,54 +1001,63 @@ export class SalesOrderService {
     }, { timeout: 30000 });
   }
 
+  /**
+   * Cancel an order -- or, once part of it has gone out, close the rest.
+   *
+   * One transaction, status first. The reservations used to be released BEFORE the transaction
+   * that checked the order could still be cancelled, so a cancel that lost a race with a dispatch or
+   * another cancel had already freed the stock and left an order "confirmed" with nothing held.
+   * Now the order is claimed (a compare-and-set on the status it was read with), and only the
+   * transaction that wins it releases anything; the loser changes nothing.
+   *
+   * Part-sent orders are not cancelled. The pieces that went out are a sale -- the day book counts
+   * dispatches of orders that are not CANCELLED, so cancelling one made real revenue disappear from
+   * the reports. Instead the rest is closed short: what is still held is released back to stock and
+   * the order ends as DISPATCHED, which is what it now is -- everything that will go out, has.
+   */
   async cancelOrder(clientId: string, id: string) {
-    const order = await prisma.salesOrder.findFirst({
-      where: { clientId, id, deletedAt: null },
-      include: { items: true }
-    });
-
-    if (!order) throw notFound("Order not found");
-    validateTransition(order.status, 'CANCELLED');
-
-    // If it was confirmed, we need to release reservations
-    if (order.status === 'CONFIRMED' || order.status === 'PARTIALLY_DISPATCHED') {
-      for (const item of order.items) {
-        await reservationService.releaseReservation(clientId, item.id);
-      }
-    }
-
-    /*
-     * Give the offers' allowances back -- but only if nothing has shipped.
-     *
-     * An order cancelled before dispatch was never a sale, so a "first 50 customers" offer
-     * should not have lost one of its fifty to it. An order that shipped and then had its
-     * remainder cancelled DID sell; keeping its allowance spent is what stops an offer being
-     * used, part-refunded and used again. The same asymmetry Shopify applies, and the reason
-     * returns never restore an allowance either.
-     */
-    const restoresAllowance = order.status === 'DRAFT' || order.status === 'CONFIRMED';
-
     return prisma.$transaction(async (tx) => {
-      /*
-       * Only if it is still what it was a moment ago. The status above was read outside this
-       * transaction, so a second cancel -- or a dispatch -- could have landed in between; without
-       * the check an order that shipped meanwhile would have its allowance and codes handed back.
-       */
-      const flipped = await tx.salesOrder.updateMany({
-        where: { id, clientId, status: order.status, deletedAt: null },
-        data: { status: 'CANCELLED' }
+      const order = await tx.salesOrder.findFirst({
+        where: { clientId, id, deletedAt: null },
+        include: { items: true }
       });
-      if (flipped.count === 0) {
+      if (!order) throw notFound("Order not found");
+
+      const closingShort = order.status === 'PARTIALLY_DISPATCHED';
+      const target = closingShort ? 'DISPATCHED' : 'CANCELLED';
+      validateTransition(order.status, target);
+
+      const claimed = await tx.salesOrder.updateMany({
+        where: { id, clientId, status: order.status, deletedAt: null },
+        data: { status: target }
+      });
+      if (claimed.count === 0) {
         throw conflict('This order changed while it was being cancelled. Open it again and check.');
       }
 
-      if (restoresAllowance) {
+      if (order.status === 'CONFIRMED' || closingShort) {
+        for (const item of order.items) {
+          await reservationService.releaseReservation(clientId, item.id, tx);
+        }
+      }
+
+      /*
+       * Give the offers' allowances back -- but only if nothing has shipped.
+       *
+       * An order cancelled before dispatch was never a sale, so a "first 50 customers" offer
+       * should not have lost one of its fifty to it. An order that shipped and then had its
+       * remainder closed DID sell; keeping its allowance spent is what stops an offer being
+       * used, part-refunded and used again. The same asymmetry Shopify applies, and the reason
+       * returns never restore an allowance either.
+       */
+      if (!closingShort) {
         await offerRedemptionService.release(tx, clientId, id, `Order ${order.orderNumber} cancelled`);
       }
 
       return tx.salesOrder.findFirstOrThrow({ where: { id, clientId } });
     }, { timeout: 30000 });
   }
+
 }
 
 export const salesOrderService = new SalesOrderService();
