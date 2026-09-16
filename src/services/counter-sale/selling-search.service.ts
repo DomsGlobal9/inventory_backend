@@ -93,6 +93,9 @@ export async function searchSellableItems(clientId: string, locationId: string |
     take: 2
   });
   if (exact.length === 1) return { exact: true, items: [shape(exact[0], locationId)] };
+  // One item's barcode is another's SKU: both are shown to pick from. The word search below does not
+  // look at barcodes, so falling through to it answered "nothing here matches".
+  if (exact.length > 1) return { exact: false, items: exact.map(v => shape(v, locationId)) };
 
   // Every word has to match something: "red silk m" narrows, rather than widening to everything red.
   const words = q.split(/\s+/).filter(Boolean).slice(0, 5);

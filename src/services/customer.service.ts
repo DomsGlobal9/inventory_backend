@@ -247,12 +247,27 @@ export class CustomerService {
       include: {
         salesOrders: {
           orderBy: { createdAt: 'desc' },
-          take: 10,
+          // Returns are started from this page, so an order that is not listed cannot be returned.
+          // Ten meant a regular's eleventh-latest sale could never come back.
+          take: 100,
           // The Dispatches tab derives its list from customer.salesOrders[i].dispatches,
           // and the "Create Return Request" flow then reads dispatch.items to work out
           // what's still returnable -- both were undefined before, so the tab showed
           // "No dispatches" for everyone and the return button threw on .filter().
-          include: { dispatches: { include: { items: true } } }
+          include: {
+            dispatches: {
+              include: {
+                items: {
+                  include: {
+                    // What each line IS, so a return can say "Cotton Blouse, Green, M" instead of Item 2.
+                    salesOrderItem: { select: { variant: { select: { sku: true, colorName: true, size: true, product: { select: { title: true } } } } } },
+                    // Pieces already on a return that is still open, so the screen does not offer them twice.
+                    returnItems: { where: { salesReturn: { status: { in: ['REQUESTED', 'RECEIVED', 'INSPECTED'] } } }, select: { quantity: true } }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     });
@@ -261,12 +276,22 @@ export class CustomerService {
       throw notFound(`Customer ${id} not found`);
     }
 
+    for (const order of customer.salesOrders as any[]) {
+      for (const dispatch of order.dispatches) {
+        for (const item of dispatch.items) {
+          item.openReturnQty = item.returnItems.reduce((sum: number, r: any) => sum + r.quantity, 0);
+          delete item.returnItems;
+        }
+      }
+    }
+
     return customer;
   }
 
   async updateCustomer(clientId: string, id: string, data: any) {
     // Ensure customer belongs to client
-    const existing = await prisma.customer.findFirst({ where: { clientId, id } });
+    // Not a deleted one: an edit brought a deleted customer's number back into use under them.
+    const existing = await prisma.customer.findFirst({ where: { clientId, id, deletedAt: null } });
     if (!existing) throw notFound('Customer not found');
 
     // A new number is checked against everybody else under the same lock a new customer takes, so

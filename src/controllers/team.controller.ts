@@ -56,7 +56,7 @@ export const inviteMember = async (req: Request, res: Response) => {
     }
 
     const result = await teamService.inviteMember({
-      clientId: user.clientId, name, email, roleId, customPassword, requesterIsSuperAdmin: isSuperAdmin(req)
+      clientId: user.clientId, name, email, roleId, customPassword, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
     });
     res.status(201).json({ success: true, data: result });
   } catch (error: any) {
@@ -71,7 +71,7 @@ export const updateMemberRole = async (req: Request, res: Response) => {
     if (!roleId) return res.status(400).json({ success: false, message: 'roleId is required' });
 
     const result = await teamService.updateMemberRole({
-      clientId: user.clientId, userId: req.params.id as string, roleId, requesterIsSuperAdmin: isSuperAdmin(req)
+      clientId: user.clientId, userId: req.params.id as string, roleId, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
     });
     res.json({ success: true, data: result });
   } catch (error: any) {
@@ -88,7 +88,7 @@ export const setMemberStatus = async (req: Request, res: Response) => {
     }
 
     const result = await teamService.setMemberStatus({
-      clientId: user.clientId, userId: req.params.id as string, status, requesterUserId: user.id, requesterIsSuperAdmin: isSuperAdmin(req)
+      clientId: user.clientId, userId: req.params.id as string, status, requesterUserId: user.id, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
     });
     res.json({ success: true, data: result });
   } catch (error: any) {
@@ -125,7 +125,7 @@ export const viewMemberPassword = async (req: Request, res: Response) => {
   let result;
   try {
     result = await teamService.viewMemberPassword({
-      clientId: user.clientId, userId: targetUserId, requesterIsSuperAdmin: isSuperAdmin(req)
+      clientId: user.clientId, userId: targetUserId, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
     });
   } catch (error: any) {
     // The refusal is the interesting event. Recorded on a best-effort basis: the request is
@@ -155,7 +155,7 @@ export const setMemberPassword = async (req: Request, res: Response) => {
     const user = (req as any).user;
     const { customPassword } = req.body;
     const result = await teamService.setMemberPassword({
-      clientId: user.clientId, userId: req.params.id as string, customPassword, requesterIsSuperAdmin: isSuperAdmin(req)
+      clientId: user.clientId, userId: req.params.id as string, customPassword, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
     });
     res.json({ success: true, data: result });
   } catch (error: any) {
@@ -174,7 +174,7 @@ export const resendMemberCredentials = async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
     const result = await teamService.resendCredentials({
-      clientId: user.clientId, userId: req.params.id as string, requesterIsSuperAdmin: isSuperAdmin(req)
+      clientId: user.clientId, userId: req.params.id as string, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
     });
     res.json({ success: true, data: result });
   } catch (error: any) {

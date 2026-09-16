@@ -99,7 +99,7 @@ export class InventoryMutationService {
       const stock = await tx.inventoryStock.findUnique({
         where: { variantId_locationId: { variantId, locationId } }
       });
-      
+
       const oldLocationQty = stock ? stock.quantity : 0;
       const newLocationQty = oldLocationQty + quantityDelta;
 
@@ -107,6 +107,27 @@ export class InventoryMutationService {
         throw Object.assign(
           new Error("Insufficient stock in this location to complete the transaction."),
           { statusCode: 400 }
+        );
+      }
+
+      /*
+       * Stock held for orders is not free to take.
+       *
+       * Only "never below zero" was checked, so with 5 on the shelf and all 5 held for a confirmed
+       * order, a transfer, a damage write-off or a manual stock-out of 5 went through: available
+       * showed -5 and the order then failed at dispatch with nothing to send. A reduction may take
+       * only what is not held.
+       *
+       * Not for a sale -- the dispatch releases the hold on the same pieces first -- and not for an
+       * audit correction: a count is what is physically there, and refusing it would leave the
+       * books wrong on purpose. When held pieces are found missing, the order is what has to change.
+       */
+      const held = stock?.reservedQty ?? 0;
+      if (quantityDelta < 0 && held > 0 && newLocationQty < held && reason !== 'SALE' && reason !== 'AUDIT_CORRECTION') {
+        const free = Math.max(0, oldLocationQty - held);
+        throw Object.assign(
+          new Error(`Only ${free} of this item ${free === 1 ? 'is' : 'are'} free here: ${held} ${held === 1 ? 'is' : 'are'} held for orders. Cancel or send out those orders first.`),
+          { statusCode: 409 }
         );
       }
 
@@ -142,7 +163,7 @@ export class InventoryMutationService {
         const currentGlobalValue = Number(variant.inventoryValue) > 0
           ? Number(variant.inventoryValue)
           : globalQty * knownUnitCost;
-        
+
         // Stock we have never known the cost of is UNVALUED, not free.
         //
         // Weighted average is the right formula, and the arithmetic below is what every
@@ -164,7 +185,7 @@ export class InventoryMutationService {
         newAverageCost = knownUnitCost === 0
           ? unitCost
           : (currentGlobalValue + incomingValue) / newGlobalQty;
-        
+
         await tx.productVariant.update({
           where: { id: variantId },
           data: {

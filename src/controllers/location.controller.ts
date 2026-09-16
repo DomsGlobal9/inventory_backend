@@ -83,6 +83,25 @@ export const updateLocation = async (req: Request, res: Response) => {
     const contact = contactFields(req.body);
     if ('error' in contact) return res.status(400).json({ error: contact.error });
 
+    /*
+     * Switching a store off hides it from selling, receiving and reordering. Deleting one that still
+     * held stock or had orders coming was already refused; switching it off was not, and stranded
+     * both -- stock nobody could sell or move, and deliveries addressed to a store that no longer
+     * shows anywhere. Same rule as delete.
+     */
+    if (active === false) {
+      const [held, incoming] = await Promise.all([
+        prisma.inventoryStock.aggregate({ where: { clientId, locationId: id }, _sum: { quantity: true } }),
+        prisma.purchaseOrder.count({ where: { clientId, locationId: id, status: { in: ['DRAFT', 'SENT', 'PARTIALLY_RECEIVED'] } } })
+      ]);
+      const pieces = held._sum.quantity ?? 0;
+      if (pieces > 0 || incoming > 0) {
+        return res.status(409).json({
+          error: `This store still has ${pieces > 0 ? `${pieces} pieces in stock` : ''}${pieces > 0 && incoming > 0 ? ' and ' : ''}${incoming > 0 ? `${incoming} open purchase order${incoming === 1 ? '' : 's'}` : ''}. Move the stock and finish or move the orders before switching it off.`
+        });
+      }
+    }
+
     // updateMany + a scoped where clause is the safe way to enforce tenant
     // ownership on an update — `update({ where: { id } })` alone ignores clientId
     // entirely and would let a caller mutate another tenant's location by id.

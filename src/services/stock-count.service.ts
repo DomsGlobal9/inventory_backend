@@ -3,7 +3,7 @@ import { StockCountStatus, TransactionType, InventoryReason, Prisma } from '@pri
 import { inventoryMutationService } from './inventory-mutation.service';
 import { inventoryRepository } from '../repositories/inventory.repository';
 import { notFound } from '../utils/httpError';
-import { conflict } from '../utils/httpError';
+import { conflict, badRequest } from '../utils/httpError';
 
 export class StockCountService {
   async getCounts(clientId: string) {
@@ -58,11 +58,22 @@ export class StockCountService {
   }
 
   async createCount(clientId: string, name: string, locationId: string, categoryId?: string, createdBy?: string) {
-    // Determine variants to snapshot for this specific location
+    // The store is this shop's and still open. An id from another shop created an audit that could
+    // only fail when it was completed, after somebody had counted a whole store for it.
+    const store = await prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { active: true, name: true } });
+    if (!store) throw notFound('That store was not found.');
+    if (!store.active) throw badRequest(`${store.name} is switched off, so it cannot be counted.`);
+
+    // Determine variants to snapshot for this specific location. Retired and binned products are
+    // left out: nobody should be asked to count what the shop no longer sells.
     const variants = await prisma.productVariant.findMany({
-      where: { 
+      where: {
         clientId,
-        ...(categoryId ? { product: { category: categoryId as any } } : {})
+        product: {
+          trashedAt: null,
+          status: { notIn: ['ARCHIVED', 'TRASHED'] },
+          ...(categoryId ? { category: categoryId as any } : {})
+        }
       },
       include: {
         stocks: {
@@ -123,7 +134,7 @@ export class StockCountService {
 
     return prisma.stockCount.update({
       where: { id },
-      data: { 
+      data: {
         status: StockCountStatus.IN_PROGRESS,
         startedAt: new Date()
       }
@@ -137,10 +148,28 @@ export class StockCountService {
     if (count.status === StockCountStatus.COMPLETED) {
       throw conflict('This audit has already been completed. Start a new one to count again.');
     }
-    
+
+    /*
+     * What the system held at the moment this line was counted.
+     *
+     * The expected figure used to be the one taken when the audit was CREATED, and completion
+     * adjusted by counted minus that. A count takes hours while the shop keeps selling: 10 expected,
+     * 3 sold during the count, 7 counted -- and completion took off another 3, leaving 4 on the
+     * books for 7 on the shelf. Recording the system figure as each line is counted makes the
+     * correction counted minus what the books said at that moment, so sales before AND after the
+     * count are both left alone.
+     */
+    const item = await prisma.stockCountItem.findFirst({ where: { id: itemId, stockCountId: id }, select: { variantId: true } });
+    if (!item) throw notFound('That line is not on this audit.');
+    let expectedNow: number | undefined;
+    if (countedQty !== null && count.locationId) {
+      const stock = await prisma.inventoryStock.findFirst({ where: { variantId: item.variantId, locationId: count.locationId }, select: { quantity: true } });
+      expectedNow = stock?.quantity ?? 0;
+    }
+
     return prisma.stockCountItem.update({
       where: { id: itemId, stockCountId: id },
-      data: { countedQty }
+      data: { countedQty, ...(expectedNow !== undefined ? { expectedQty: expectedNow } : {}) }
     });
   }
 
@@ -165,7 +194,7 @@ export class StockCountService {
     const adjustedItems = itemsWithDifferences.length;
     const matchedItems = count.items.filter(item => item.countedQty !== null && item.countedQty === item.expectedQty).length;
     const itemsWithoutCount = totalItems - (adjustedItems + matchedItems);
-    
+
     // Calculate accuracy (only based on counted items)
     const itemsCounted = matchedItems + adjustedItems;
     const accuracy = itemsCounted > 0 ? (matchedItems / itemsCounted) * 100 : null;

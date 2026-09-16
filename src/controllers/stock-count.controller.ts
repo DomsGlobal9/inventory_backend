@@ -3,7 +3,7 @@ import { stockCountService } from '../services/stock-count.service';
 import { stockCountCreateSchema, stockCountUpdateItemSchema } from '../validations/stock-count.schema';
 
 export class StockCountController {
-  
+
   async getCounts(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
@@ -35,7 +35,9 @@ export class StockCountController {
         return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
       }
 
-      const { name, locationId, categoryId, createdBy } = parsed.data;
+      const { name, locationId, categoryId } = parsed.data;
+      // From the login. Taken from the request, anyone could write anyone's name on an audit.
+      const createdBy = (req as any).user?.name || (req as any).user?.email || (req as any).user?.id;
 
       const count = await stockCountService.createCount(clientId, name, locationId, categoryId as string, createdBy as string);
       res.status(201).json({ success: true, data: count });
@@ -48,7 +50,7 @@ export class StockCountController {
     try {
       const clientId = (req as any).clientId as string;
       const id = req.params.id as string;
-      
+
       const result = await stockCountService.startCount(clientId, id);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
@@ -61,7 +63,7 @@ export class StockCountController {
       const clientId = (req as any).clientId as string;
       const id = req.params.id as string;
       const itemId = req.params.itemId as string;
-      
+
       const parsed = stockCountUpdateItemSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
@@ -78,7 +80,7 @@ export class StockCountController {
     try {
       const clientId = (req as any).clientId as string;
       const id = req.params.id as string;
-      const { completedBy } = req.body;
+      const completedBy = (req as any).user?.name || (req as any).user?.email || (req as any).user?.id;
 
       const result = await stockCountService.completeCount(clientId, id, completedBy);
       res.status(200).json({ success: true, data: result });

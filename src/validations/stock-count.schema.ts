@@ -11,5 +11,5 @@ export const stockCountUpdateItemSchema = z.object({
   // Nullable: countedQty null means "not yet counted" (see stock-count.service.ts's
   // completeCount, which already treats null specially) -- clearing a previously-entered
   // count back to that state is a real, meaningful action, not just "no value sent".
-  countedQty: z.number().min(0, "Counted quantity must be >= 0").nullable()
+  countedQty: z.number().int('Count whole pieces.').min(0, "Counted quantity must be >= 0").nullable()
 });

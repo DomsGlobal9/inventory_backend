@@ -39,7 +39,9 @@ function fail(res: any, error: any) {
     return res.status(400).json({ success: false, message: 'That return could not be saved. Check the lines and try again.' });
   }
 
-  return res.status(400).json({ success: false, message: error?.message || 'That return could not be saved' });
+  // The status a refusal was raised with -- 404 not found, 409 already done -- rather than 400 for all.
+  const status = typeof error?.statusCode === 'number' && error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 400;
+  return res.status(status).json({ success: false, message: error?.message || 'That return could not be saved' });
 }
 
 returnsRoutes.get('/', requirePermission('return:view'), async (req, res) => {

@@ -69,9 +69,28 @@ export class ReturnService {
           throw badRequest('That shipped item belongs to a different order.');
         }
 
-        const availableToReturn = dispatchItem.quantity - dispatchItem.returnedQty;
+        /*
+         * Open returns count too. The returned count only moves when a return is COMPLETED, so a
+         * second press of Return made another return for the same pieces -- worth nothing, and
+         * impossible to complete later. Pieces already on a return that is still open are not
+         * available to return again.
+         */
+        const open = await tx.salesReturnItem.aggregate({
+          // Other returns only: this one's own lines were written just above, in this transaction.
+          where: { dispatchItemId: item.dispatchItemId, salesReturnId: { not: salesReturn.id }, salesReturn: { clientId, status: { in: ['REQUESTED', 'RECEIVED', 'INSPECTED'] } } },
+          _sum: { quantity: true }
+        });
+        const openQty = open._sum.quantity ?? 0;
+        const availableToReturn = dispatchItem.quantity - dispatchItem.returnedQty - openQty;
+        if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+          throw badRequest('Return whole pieces, at least one.');
+        }
         if (item.quantity > availableToReturn) {
-          throw new Error(`Cannot return ${item.quantity} units for dispatch item ${item.dispatchItemId}. Only ${availableToReturn} available to return.`);
+          throw Object.assign(new Error(
+            availableToReturn <= 0
+              ? 'Those pieces are already returned, or on a return that is still open.'
+              : `Only ${availableToReturn} of that item can still come back${openQty > 0 ? ` (${openQty} already on an open return)` : ''}.`
+          ), { statusCode: 409 });
         }
       }
 
@@ -170,8 +189,11 @@ export class ReturnService {
       });
 
       if (!salesReturn) throw notFound('Return not found');
-      if (salesReturn.status !== 'RECEIVED' && salesReturn.status !== 'REQUESTED') {
-        throw new Error(`Cannot transition from ${salesReturn.status} to INSPECTED`);
+      // INSPECTED as well: a piece marked scrap that is fine must be correctable before completion.
+      // Refusing it left completing the wrong decision, or turning the whole return down, as the
+      // only ways out.
+      if (!['REQUESTED', 'RECEIVED', 'INSPECTED'].includes(salesReturn.status)) {
+        throw Object.assign(new Error(`This return is ${salesReturn.status.toLowerCase()}, so it cannot be inspected now.`), { statusCode: 409 });
       }
 
       // Every item must get a real disposition in this one call. Previously the UI's
@@ -202,7 +224,7 @@ export class ReturnService {
 
       // We also update the main reason if provided, but the user requested ReturnReason at the top level
       // We'll leave it as an option
-      
+
       return tx.salesReturn.update({
         where: { id },
         data: { status: 'INSPECTED' },
@@ -218,14 +240,14 @@ export class ReturnService {
     return prisma.$transaction(async (tx) => {
       const salesReturn = await tx.salesReturn.findFirst({
         where: { id, clientId },
-        include: { 
+        include: {
           items: {
             include: {
               dispatchItem: {
                 include: { salesOrderItem: { include: { salesOrder: true } } }
               }
             }
-          } 
+          }
         }
       });
 
@@ -297,7 +319,7 @@ export class ReturnService {
     if (!salesReturn) throw notFound('Return not found');
 
     if (salesReturn.status === 'COMPLETED' || salesReturn.status === 'REJECTED') {
-      throw new Error(`Return is already in terminal state: ${salesReturn.status}`);
+      throw Object.assign(new Error(`This return is already ${salesReturn.status.toLowerCase()}.`), { statusCode: 409 });
     }
 
     // Nothing is owed on a return that was turned down, and it no longer counts against the line --
@@ -329,7 +351,7 @@ export class ReturnService {
     const ret = await prisma.salesReturn.findFirst({
       where: { clientId, id },
       include: {
-        salesOrder: { 
+        salesOrder: {
           include: { customer: true }
         },
         items: {

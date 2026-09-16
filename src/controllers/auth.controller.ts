@@ -173,7 +173,7 @@ export const session = async (req: Request, res: Response) => {
   try {
     // Expecting requireAuth middleware to have populated req.user
     const user = (req as any).user;
-    
+
     if (!user) {
       return res.status(401).json({ success: false, authenticated: false });
     }
@@ -249,7 +249,9 @@ export const changeMyPassword = async (req: Request, res: Response) => {
 
     const matches = await AuthService.comparePassword(currentPassword, user.password);
     if (!matches) {
-      return res.status(401).json({ success: false, message: 'That is not your current password' });
+      // 400, not 401: the app treats every 401 as "your session has ended" and signs the person out
+      // -- so mistyping your current password logged you out of the account you were securing.
+      return res.status(400).json({ success: false, message: 'That is not your current password' });
     }
     if (currentPassword === newPassword) {
       return res.status(400).json({ success: false, message: 'The new password is the same as the current one' });

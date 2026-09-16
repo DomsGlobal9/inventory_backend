@@ -108,7 +108,11 @@ app.get('/ready', async (req, res) => {
 });
 
 // Apply rate limiting to all /api routes
-app.use('/api', tenantRateLimiter);
+// Not Shopify's webhooks or a storefront's API. Shopify sends bursts from a handful of addresses and
+// gives up on a store whose webhooks keep failing; every one is HMAC-verified before anything is
+// read. A storefront has its own, higher limit per connection (storefront-public.routes).
+app.use('/api', (req, res, next) =>
+  /^\/v1\/(shopify|storefront)\//.test(req.path) ? next() : tenantRateLimiter(req, res, next));
 
 // Every response here is per-authenticated-user data (never a static public asset),
 // and Express auto-generates an ETag on JSON bodies by default. Without an explicit

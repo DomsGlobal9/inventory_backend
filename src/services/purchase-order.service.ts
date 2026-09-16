@@ -246,6 +246,26 @@ export class PurchaseOrderService {
       const po = await tx.purchaseOrder.findFirst({ where: { id, clientId }, select: { supplierId: true, status: true } });
       if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
 
+      /*
+       * Which changes this route may make. RECEIVED and PARTIALLY_RECEIVED come only from receiving
+       * goods; setting them here said goods had arrived when none had, and closed the order to
+       * further receiving. A received order is finished, and a cancelled one stays cancelled.
+       * A part-received order may be cancelled -- that is closing it short; what arrived stays.
+       */
+      const ALLOWED: Record<string, string[]> = {
+        DRAFT: ['SENT', 'CANCELLED'],
+        SENT: ['SENT', 'CANCELLED'],
+        PARTIALLY_RECEIVED: ['CANCELLED'],
+        RECEIVED: [],
+        CANCELLED: []
+      };
+      if (!Object.values(PurchaseOrderStatus).includes(status)) {
+        throw Object.assign(new Error('That is not a purchase order status.'), { statusCode: 400 });
+      }
+      if (!(ALLOWED[po.status] ?? []).includes(status)) {
+        throw Object.assign(new Error(`This order is ${po.status.toLowerCase().replace('_', ' ')}, so it cannot be marked ${status.toLowerCase().replace('_', ' ')}.`), { statusCode: 409 });
+      }
+
       // Count the supplier once, when the order is actually placed -- not every time something
       // sets the status to SENT. Pressing "Mark as Sent" twice, or emailing a copy of an order
       // the supplier mislaid, used to add another order to their lifetime total each time.

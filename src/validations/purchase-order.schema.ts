@@ -9,12 +9,15 @@ export const purchaseOrderCreateSchema = z.object({
   notes: z.string().optional().nullable(),
   items: z.array(z.object({
     variantId: z.string().min(1, "Variant ID is required"),
-    orderedQty: z.number().positive("Quantity must be positive"),
+    orderedQty: z.number().int('Order whole pieces.').positive("Quantity must be positive"),
     unitPrice: z.number().min(0, "Unit price must be >= 0"),
     productTitle: z.string().optional().nullable(),
     color: z.string().optional().nullable(),
     size: z.string().optional().nullable()
   })).min(1, "At least one item is required")
+    .refine(items => new Set(items.map(i => i.variantId)).size === items.length, {
+      message: 'The same item is on the order twice. Change its quantity instead.'
+    })
 });
 
 export const purchaseOrderDeliverToSchema = z.object({
