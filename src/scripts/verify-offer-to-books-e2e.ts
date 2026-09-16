@@ -249,7 +249,9 @@ async function main() {
   check('a rejected return owes nothing', num(rejected.refundTotal) === 0 && rejected.refundStatus === 'NONE', `${rejected.refundTotal} ${rejected.refundStatus}`);
 
   // Three blouses sold for 2,000 less 10% offer... sold here as a line whose total does not divide evenly.
-  const odd = un(await sales.post('/sales-orders/full', {
+  // Placed by the owner: a price below the catalogue sent by a salesperson is refused since the till
+  // limit was extended to /full (verify-counter-sale F). This step is about refund rounding.
+  const odd = un(await owner.post('/sales-orders/full', {
     customer: { id: customer.id }, locationId: shop.id, status: 'CONFIRMED',
     items: [{ variantId: blouse.id, quantity: 3, listUnitPrice: 1000, lineDiscount: 1000 }]
   }));
