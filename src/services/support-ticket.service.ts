@@ -40,9 +40,10 @@ export class SupportTicketService {
     });
   }
 
-  async listTicketsForClient(clientId: string) {
+  /** A shop's tickets; only one person's when `createdByUserId` is given. */
+  async listTicketsForClient(clientId: string, createdByUserId?: string) {
     return prisma.supportTicket.findMany({
-      where: { clientId },
+      where: { clientId, ...(createdByUserId ? { createdByUserId } : {}) },
       orderBy: { updatedAt: 'desc' },
       include: { _count: { select: { messages: true } } }
     });

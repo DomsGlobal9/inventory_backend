@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import { inventoryValueFor, inventoryValueByClient, valuationCaveatFor } from '../lib/inventoryValuation';
-import { forgetClientIdentities } from '../lib/identityCache';
+import { forgetIdentity, forgetClientIdentities } from '../lib/identityCache';
 import { AuthService } from './auth.service';
 import { seedRolesForClient } from './rbac-seed.service';
 import { seedCatalogDefaultsForClient } from './catalog-seed.service';
@@ -345,7 +345,8 @@ export class PlatformAdminService {
     const status = suspended ? 'INACTIVE' : 'ACTIVE';
 
     const [users, connections] = await prisma.$transaction([
-      prisma.user.updateMany({ where: { clientId }, data: { status } }),
+      // Suspending ends every sign-in for good, so reinstating does not revive one copied meanwhile.
+      prisma.user.updateMany({ where: { clientId }, data: suspended ? { status, sessionVersion: { increment: 1 } } : { status } }),
       suspended
         ? prisma.storefrontConnection.updateMany({
             where: { clientId, status: 'ACTIVE' }, data: { status: 'DISABLED' }
@@ -730,7 +731,7 @@ export class PlatformAdminService {
 
     return prisma.platformAdmin.update({
       where: { id: params.adminId },
-      data: { status: params.status },
+      data: { status: params.status, ...(params.status !== 'ACTIVE' ? { sessionVersion: { increment: 1 } } : {}) },
       select: { id: true, name: true, email: true, status: true }
     });
   }
@@ -753,7 +754,7 @@ export class PlatformAdminService {
     const password = params.customPassword || crypto.randomBytes(15).toString('base64url');
     await prisma.platformAdmin.update({
       where: { id: params.adminId },
-      data: { password: await AuthService.hashPassword(password) }
+      data: { password: await AuthService.hashPassword(password), sessionVersion: { increment: 1 } }
     });
 
     const delivery = await mailService.sendCredentials({
@@ -824,7 +825,9 @@ export class PlatformAdminService {
       AuthService.hashPassword(finalPassword),
       Promise.resolve(encryptCredential(finalPassword))
     ]);
-    await prisma.user.update({ where: { id: userId }, data: { password: hashed, passwordEncrypted } });
+    // Both copies, and every existing sign-in of this user ends.
+    await prisma.user.update({ where: { id: userId }, data: { password: hashed, passwordEncrypted, sessionVersion: { increment: 1 } } });
+    forgetIdentity(userId);
 
     return { id: user.id, name: user.name, email: user.email, password: finalPassword };
   }

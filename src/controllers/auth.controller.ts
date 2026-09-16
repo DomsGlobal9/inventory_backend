@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { lockedFor, recordFailure, clearFailures, loginKey, tooManyMessage } from '../lib/loginThrottle';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { authCookieOptions, clearCookieOptions } from '../lib/cookies';
@@ -27,6 +28,14 @@ export const login = async (req: Request, res: Response) => {
 
     if (!email || !password) {
       return res.status(400).json({ success: false, message: 'Missing credentials' });
+    }
+
+    // Guessing: see lib/loginThrottle. Checked before any password is compared.
+    const throttleKey = loginKey('shop', email);
+    const wait = lockedFor(throttleKey);
+    if (wait > 0) {
+      res.setHeader('Retry-After', String(Math.ceil(wait / 1000)));
+      return res.status(429).json({ success: false, message: tooManyMessage(wait) });
     }
 
     let user;
@@ -71,14 +80,17 @@ export const login = async (req: Request, res: Response) => {
     }
 
     if (!user || user.status !== 'ACTIVE') {
+      recordFailure(throttleKey);
       return res.status(401).json({ success: false, message: 'Invalid credentials or inactive user' });
     }
 
     const isValidPassword = await AuthService.comparePassword(password, user.password);
 
     if (!isValidPassword) {
+      recordFailure(throttleKey);
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
+    clearFailures(throttleKey);
 
     // Role names, and everything those roles actually confer.
     //
@@ -107,7 +119,8 @@ export const login = async (req: Request, res: Response) => {
 
     const token = AuthService.generateToken({
       userId: user.id,
-      clientId: user.clientId
+      clientId: user.clientId,
+      sessionVersion: user.sessionVersion
     });
 
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date(), lastActiveAt: new Date() } });
@@ -138,8 +151,27 @@ export const login = async (req: Request, res: Response) => {
 
 export const logout = async (req: Request, res: Response) => {
   // Must match the attributes the cookie was set with, or the browser keeps it.
+  //
+  // Signing out does not end the account's other sign-ins: a shop that shares one login across tills
+  // would have every till thrown out whenever one cashier signed out. That is logoutOtherDevices.
   res.clearCookie('token', clearCookieOptions);
   res.json({ success: true, message: 'Logged out successfully' });
+};
+
+/**
+ * Sign out everywhere else: a lost phone, a till left signed in, a login used somewhere it should not
+ * be. Every other sign-in of this account stops working at once; this device is given a new one.
+ */
+export const logoutOtherDevices = async (req: Request, res: Response) => {
+  try {
+    const authUser = (req as any).user;
+    const updated = await prisma.user.update({ where: { id: authUser.id }, data: { sessionVersion: { increment: 1 } } });
+    forgetIdentity(updated.id);
+    res.cookie('token', AuthService.generateToken({ userId: updated.id, clientId: updated.clientId, sessionVersion: updated.sessionVersion }), authCookieOptions);
+    res.json({ success: true, message: 'Signed out of every other device.' });
+  } catch (error: any) {
+    return respondWithError(res, error, { status: 500, message: 'Could not sign out the other devices' });
+  }
 };
 
 // Self-service, name only. Deliberately NOT password, role, or status -- passwords for a
@@ -257,13 +289,20 @@ export const changeMyPassword = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'The new password is the same as the current one' });
     }
 
-    await prisma.user.update({
+    // Both copies: the hash signs people in, and the encrypted copy is what Team & Users and the
+    // platform console show. The session number goes up, ending every other sign-in of this account --
+    // the reason people change a password is usually that someone else may know it.
+    const changed = await prisma.user.update({
       where: { id: user.id },
       data: {
         password: await AuthService.hashPassword(newPassword),
-        passwordEncrypted: encryptCredential(newPassword)
+        passwordEncrypted: encryptCredential(newPassword),
+        sessionVersion: { increment: 1 }
       }
     });
+    forgetIdentity(user.id);
+    // This device stays signed in, on a token carrying the new number.
+    res.cookie('token', AuthService.generateToken({ userId: changed.id, clientId: changed.clientId, sessionVersion: changed.sessionVersion }), authCookieOptions);
 
     // Not emailed. The person who changed it is the person holding it, and mailing a password
     // to someone who just typed it adds a copy in an inbox for no benefit.

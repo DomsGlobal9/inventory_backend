@@ -22,6 +22,20 @@ const COUNTER_SOURCE = 'SCALEEZY_COUNTER';
 
 export class SalesOrderService {
   async createDraftOrder(clientId: string, locationId: string, customerId: string, channel: any = 'POS') {
+    /*
+     * The customer and the store belong to this shop. Neither was checked: an owner of one shop could
+     * create a draft in their own shop naming another shop's customer and store, and then read that
+     * customer's name back through their own order list -- and the order held the other shop's store
+     * in place, so that shop could no longer delete it.
+     */
+    const [store, customer] = await Promise.all([
+      prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { active: true, name: true } }),
+      prisma.customer.findFirst({ where: { id: customerId, clientId, deletedAt: null }, select: { id: true } })
+    ]);
+    if (!store) throw notFound('That store was not found.');
+    if (!store.active) throw badRequest(`${store.name} is closed, so it cannot take orders.`);
+    if (!customer) throw notFound('That customer was not found.');
+
     const orderNumber = await generateSequentialCode(clientId, 'SO', 'SALES_ORDER');
     return prisma.salesOrder.create({
       data: {

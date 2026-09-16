@@ -69,7 +69,18 @@ app.use(cookieParser());
 // Base64-encoded garment photos (up to 3-4 per generate-catalog call) comfortably
 // exceed the default 100kb JSON limit -- raise it only for this path, ahead of the
 // global parser below, so every other endpoint keeps the smaller DoS-safe default.
-app.use('/api/v1/catalog-tryon', express.json({ limit: '30mb' }));
+/*
+ * The two routes that accept large bodies read them only from a caller carrying a login. The body is
+ * parsed before authentication runs, so without this an anonymous caller could make the server read
+ * 30 MB and only then be told to sign in. Presence only -- the login itself is still checked by the
+ * route as before.
+ */
+const carriesLogin = (req: express.Request, res: express.Response, next: express.NextFunction) =>
+  (typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')) || req.cookies?.token
+    ? next()
+    : res.status(401).json({ success: false, message: 'Unauthorized: Missing session token' });
+
+app.use('/api/v1/catalog-tryon', carriesLogin, express.json({ limit: '30mb' }));
 // Shopify signs its webhooks over the RAW BYTES of the body. express.json() would parse them
 // away, and a re-serialised copy has different key order and whitespace, so the signature
 // would never verify again -- the single most common way a Shopify integration fails. Mounted
@@ -87,9 +98,31 @@ app.use('/api/v1/shopify/webhooks', express.raw({ type: '*/*', limit: '5mb' }));
  * Mounted before the default below, and scoped to the import routes only, so nothing else
  * gains a larger attack surface.
  */
-app.use('/api/v1/products/import', express.json({ limit: '10mb' }));
+app.use('/api/v1/products/import', carriesLogin, express.json({ limit: '10mb' }));
 
 app.use(express.json());
+
+/*
+ * The NUL character (\u0000) in any text a request carries.
+ *
+ * Postgres refuses it in every text column and every comparison, so a search box sent "\u0000" -- or
+ * a name containing one -- came back as a 500 from every search in the app, filling the console's
+ * error log on demand. It has no meaning in anything a shop types; it is taken out before a route
+ * sees the request.
+ */
+const stripNul = (value: any, depth = 0): any => {
+  if (typeof value === 'string') return value.includes('\u0000') ? value.split('\u0000').join('') : value;
+  if (depth > 20 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) { for (let i = 0; i < value.length; i++) value[i] = stripNul(value[i], depth + 1); return value; }
+  for (const key of Object.keys(value)) value[key] = stripNul(value[key], depth + 1);
+  return value;
+};
+app.use((req, _res, next) => {
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) stripNul(req.body);
+  if (req.query && typeof req.query === 'object') stripNul(req.query);
+  next();
+});
+
 app.use(requestLogger);
 
 // Health Check

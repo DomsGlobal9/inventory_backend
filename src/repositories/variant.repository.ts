@@ -2,7 +2,7 @@ import { prisma } from '../lib/prisma';
 import { Prisma, ProductVariant } from '@prisma/client';
 
 export class VariantRepository {
-  
+
   async create(data: Prisma.ProductVariantUncheckedCreateInput): Promise<ProductVariant> {
     return prisma.productVariant.create({
       data
@@ -48,7 +48,7 @@ export class VariantRepository {
 
   async updateSafe(id: string, clientId: string, data: Prisma.ProductVariantUpdateInput): Promise<ProductVariant> {
     const existing = await this.findById(id, clientId);
-    if (!existing) throw new Error("Variant not found");
+    if (!existing) throw Object.assign(new Error("Variant not found"), { statusCode: 404 });
 
     return prisma.productVariant.update({
       where: { id },
@@ -58,7 +58,7 @@ export class VariantRepository {
 
   async delete(id: string, clientId: string): Promise<ProductVariant> {
     const existing = await this.findById(id, clientId);
-    if (!existing) throw new Error("Variant not found");
+    if (!existing) throw Object.assign(new Error("Variant not found"), { statusCode: 404 });
 
     // Check for blocking historical records before attempting deletion
     const [poItemCount, transactionCount, stockCountItemCount] = await Promise.all([
@@ -79,7 +79,7 @@ export class VariantRepository {
     const stocks = await prisma.inventoryStock.findMany({
       where: { variantId: id }
     });
-    
+
     const hasStock = stocks.some(s => s.quantity > 0);
 
     if (hasStock) {
@@ -114,7 +114,7 @@ export class VariantRepository {
           { sku: q }
         ]
       };
-      
+
       // Same includes as the fuzzy branch below. Without `stocks` the caller sums an
       // undefined relation to 0, so an exact hit -- scanning a barcode, or pasting a whole
       // SKU, which is how a purchase order line is usually added -- reported "Stock: 0" and

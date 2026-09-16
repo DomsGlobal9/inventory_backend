@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { lockedFor, recordFailure, clearFailures, loginKey, tooManyMessage } from '../lib/loginThrottle';
 import { offersHealthService } from '../services/platform-health';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
@@ -17,17 +18,28 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Missing credentials' });
     }
 
+    // The console can delete a shop: guessing its passwords is throttled the same way (lib/loginThrottle).
+    const throttleKey = loginKey('admin', email);
+    const wait = lockedFor(throttleKey);
+    if (wait > 0) {
+      res.setHeader('Retry-After', String(Math.ceil(wait / 1000)));
+      return res.status(429).json({ success: false, message: tooManyMessage(wait) });
+    }
+
     const admin = await prisma.platformAdmin.findUnique({ where: { email } });
     if (!admin || admin.status !== 'ACTIVE') {
+      recordFailure(throttleKey);
       return res.status(401).json({ success: false, message: 'Invalid credentials or inactive admin' });
     }
 
     const isValid = await AuthService.comparePassword(password, admin.password);
     if (!isValid) {
+      recordFailure(throttleKey);
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
+    clearFailures(throttleKey);
 
-    const token = AuthService.generatePlatformAdminToken({ platformAdminId: admin.id });
+    const token = AuthService.generatePlatformAdminToken({ platformAdminId: admin.id, sessionVersion: admin.sessionVersion });
     res.cookie('platform_admin_token', token, cookieOptions);
 
     res.json({ success: true, data: { admin: { id: admin.id, name: admin.name, email: admin.email } } });
@@ -149,7 +161,7 @@ export const assumeClient = async (req: Request, res: Response) => {
 
     const session = await platformAdminService.assumeClient(platformAdminId, clientId);
 
-    const clientToken = AuthService.generateToken({ userId: assumedUser.id, clientId });
+    const clientToken = AuthService.generateToken({ userId: assumedUser.id, clientId, sessionVersion: assumedUser.sessionVersion });
     res.cookie('token', clientToken, authCookieOptions);
 
     res.json({

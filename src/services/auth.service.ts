@@ -20,10 +20,12 @@ export class AuthService {
     return bcrypt.compare(password, hash);
   }
 
-  static generateToken(payload: { userId: string; clientId: string }): string {
+  static generateToken(payload: { userId: string; clientId: string; sessionVersion?: number }): string {
     const jwtPayload = {
       sub: payload.userId,
       clientId: payload.clientId,
+      // The account's session number when this was issued; see User.sessionVersion.
+      sv: payload.sessionVersion ?? 0,
       iss: 'scal_easy_auth',
       aud: 'scal_easy_inventory',
     };
@@ -40,9 +42,10 @@ export class AuthService {
   // Platform Admin tokens are deliberately a distinct iss/aud pair so a leaked/misused
   // client token can never be mistaken for (or replayed as) a platform-admin one, and
   // vice versa -- verifyToken() above will reject a platform admin token outright.
-  static generatePlatformAdminToken(payload: { platformAdminId: string }): string {
+  static generatePlatformAdminToken(payload: { platformAdminId: string; sessionVersion?: number }): string {
     const jwtPayload = {
       sub: payload.platformAdminId,
+      sv: payload.sessionVersion ?? 0,
       iss: 'scal_easy_platform_admin',
       aud: 'scal_easy_platform_console',
     };

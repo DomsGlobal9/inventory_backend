@@ -24,8 +24,8 @@ export const verifyLocalAssertion = async (req: Request, res: Response, next: Ne
 
     // Local Auth Mode (Phase 1 & 2.5)
     let token = req.cookies?.token;
-    
-    // Explicit Fallback for CLI, internal API clients, and automated testing ONLY. 
+
+    // Explicit Fallback for CLI, internal API clients, and automated testing ONLY.
     // The browser frontend should never use this fallback.
     if (!token && req.headers.authorization?.startsWith('Bearer ')) {
       token = req.headers.authorization.split(' ')[1];
@@ -36,7 +36,7 @@ export const verifyLocalAssertion = async (req: Request, res: Response, next: Ne
     }
 
     const decoded = AuthService.verifyToken(token);
-    
+
     // 3. Dynamic Identity Verification & RBAC Loading
     //
     // Still verified against stored state on every request rather than trusted from the token
@@ -47,6 +47,12 @@ export const verifyLocalAssertion = async (req: Request, res: Response, next: Ne
 
     if (!user || user.status !== 'ACTIVE' || user.clientId !== decoded.clientId) {
       return res.status(401).json({ success: false, message: 'Unauthorized: Invalid identity or inactive user' });
+    }
+
+    // Issued before the password changed, the account was switched off, or "sign out of other devices".
+    // A token from before session numbers existed carries none, and is read as 0.
+    if ((typeof decoded.sv === 'number' ? decoded.sv : 0) !== user.sessionVersion) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: This sign-in has ended. Sign in again.' });
     }
 
     const { roles, permissions } = user;
@@ -61,7 +67,7 @@ export const verifyLocalAssertion = async (req: Request, res: Response, next: Ne
       permissions: permissions
     };
     (req as any).user = normalizedUser;
-    
+
     next();
   } catch (error) {
     return res.status(401).json({ success: false, message: 'Unauthorized: Invalid or expired token' });

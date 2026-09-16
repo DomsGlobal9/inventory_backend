@@ -1243,6 +1243,11 @@ model User {
   id       String @id @default(uuid())
   clientId String @map("client_id")
 
+  /// Raised whenever every existing sign-in of this person must stop working: a password change or
+  /// reset, being switched off, or "sign out of other devices". Every token carries the number it was
+  /// issued with, and one that no longer matches is refused.
+  sessionVersion Int @default(0) @map("session_version")
+
   name              String
   email             String
   password          String
@@ -1323,6 +1328,8 @@ model PlatformAdmin {
   password String
   name     String
   status   UserStatus @default(ACTIVE)
+  /// Same as User.sessionVersion, for the platform console.
+  sessionVersion Int @default(0) @map("session_version")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

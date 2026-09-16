@@ -214,7 +214,12 @@ export class TeamService {
       }
     }
 
-    const updated = await prisma.user.update({ where: { id: params.userId }, data: { status: params.status } });
+    // Switched off, their sign-ins end for good: switching them back on later must not revive a token
+    // somebody copied in the meantime.
+    const updated = await prisma.user.update({
+      where: { id: params.userId },
+      data: { status: params.status, ...(params.status !== 'ACTIVE' ? { sessionVersion: { increment: 1 } } : {}) }
+    });
     // Deactivating someone has to take effect on their very next request, not when a cache
     // entry happens to expire.
     forgetIdentity(params.userId);
@@ -302,7 +307,9 @@ export class TeamService {
       AuthService.hashPassword(finalPassword),
       Promise.resolve(encryptCredential(finalPassword))
     ]);
-    await prisma.user.update({ where: { id: params.userId }, data: { password: hashed, passwordEncrypted } });
+    // Both copies (sign-in hash and the viewable one), and every existing sign-in of theirs ends.
+    await prisma.user.update({ where: { id: params.userId }, data: { password: hashed, passwordEncrypted, sessionVersion: { increment: 1 } } });
+    forgetIdentity(params.userId);
 
     // The password just changed, so the holder cannot sign in until they are told the new one.
     // Same contract as above: reported, never fatal.

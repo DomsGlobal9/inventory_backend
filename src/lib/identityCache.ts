@@ -31,6 +31,7 @@ export type Identity = {
   name: string | null;
   email: string;
   status: string;
+  sessionVersion: number;
   roles: string[];
   permissions: string[];
 };
@@ -62,6 +63,7 @@ export async function loadIdentity(userId: string): Promise<Identity | null> {
         name: user.name,
         email: user.email,
         status: user.status,
+        sessionVersion: (user as any).sessionVersion ?? 0,
         roles: user.roles.map((ur: any) => ur.role.name),
         permissions: Array.from(
           new Set(user.roles.flatMap((ur: any) => ur.role.permissions.map((rp: any) => rp.permission.key)))

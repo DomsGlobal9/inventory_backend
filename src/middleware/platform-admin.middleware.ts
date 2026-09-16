@@ -26,6 +26,9 @@ export const verifyPlatformAdmin = async (req: Request, res: Response, next: Nex
     if (!admin || admin.status !== 'ACTIVE') {
       return res.status(401).json({ success: false, message: 'Unauthorized: Invalid or inactive platform admin' });
     }
+    if ((typeof decoded.sv === 'number' ? decoded.sv : 0) !== admin.sessionVersion) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: This sign-in has ended. Sign in again.' });
+    }
 
     (req as any).platformAdmin = { id: admin.id, name: admin.name, email: admin.email } as PlatformAdminIdentity;
     next();
