@@ -109,6 +109,21 @@ export const getOrderById = async (req: Request, res: Response) => {
 export const updateOrder = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
+    /*
+     * Money off a draft, typed straight into the order. The same walk-round the /full route had: a
+     * salesperson makes a draft at the catalogue price and then edits the discount to anything, with
+     * no reason and no till limit. Only a manager may set it this way; everyone else takes money off
+     * by hand, with a reason, when the sale is made.
+     */
+    const user = (req as any).user;
+    const mayOverride = holdsEverything(user?.permissions, user?.roles) || grants(user?.permissions ?? [], 'offer:manual_discount_unlimited');
+    if (!mayOverride && req.body && Number(req.body.discountAmount ?? 0) > 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'Taking money off an order needs a reason: use a discount by hand, or ask a manager.',
+        requiredPermission: 'offer:manual_discount_unlimited'
+      });
+    }
     const order = await salesOrderService.updateOrder(clientId, req.params.id as string, req.body);
     res.json(order);
   } catch (error: any) {

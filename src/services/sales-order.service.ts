@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { literal } from '../utils/likeText';
 import { generateSequentialCode, generateFreeSequentialCode } from '../utils/codeGenerator';
 import { validateTransition } from '../utils/sales-order-state-machine';
 import { reservationService } from './reservation.service';
@@ -632,9 +633,9 @@ export class SalesOrderService {
       const text = String(filters.search).slice(0, 80);
       const digits = phoneSearchDigits(text);
       const or: any[] = [
-        { orderNumber: { contains: text, mode: 'insensitive' } },
-        { customerName: { contains: text, mode: 'insensitive' } },
-        { customer: { name: { contains: text, mode: 'insensitive' } } }
+        { orderNumber: { contains: literal(text), mode: 'insensitive' } },
+        { customerName: { contains: literal(text), mode: 'insensitive' } },
+        { customer: { name: { contains: literal(text), mode: 'insensitive' } } }
       ];
       if (digits) {
         or.push({ customerPhone: { contains: digits } }, { customer: { phone: { contains: digits } } });

@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma';
+import { literal } from '../../utils/likeText';
 import { badRequest, notFound } from '../../utils/httpError';
 import { resolveVariantForLocation } from '../../utils/variant-location';
 
@@ -76,15 +77,16 @@ export async function searchSellableItems(clientId: string, locationId: string |
   const q = typeof rawQuery === 'string' ? rawQuery.trim().slice(0, 80) : '';
   if (!q) return { exact: false, items: [] };
 
-  // A scanned or typed code: one item, straight into the basket.
+  // A scanned or typed code: one item, straight into the basket. Escaped even for `equals`: Prisma
+  // compares ignoring case with ILIKE, so a bare % there matched every SKU.
   const exact = await prisma.productVariant.findMany({
     where: {
       clientId,
       product: sellable,
       OR: [
         { barcode: q },
-        { sku: { equals: q, mode: 'insensitive' } },
-        { variantCode: { equals: q, mode: 'insensitive' } }
+        { sku: { equals: literal(q), mode: 'insensitive' } },
+        { variantCode: { equals: literal(q), mode: 'insensitive' } }
       ]
     },
     select: variantSelect(locationId),
@@ -100,12 +102,12 @@ export async function searchSellableItems(clientId: string, locationId: string |
       product: sellable,
       AND: words.map(word => ({
         OR: [
-          { product: { title: { contains: word, mode: 'insensitive' as const } } },
-          { product: { productCode: { contains: word, mode: 'insensitive' as const } } },
-          { sku: { contains: word, mode: 'insensitive' as const } },
-          { variantCode: { contains: word, mode: 'insensitive' as const } },
-          { colorName: { contains: word, mode: 'insensitive' as const } },
-          { size: { equals: word, mode: 'insensitive' as const } }
+          { product: { title: { contains: literal(word), mode: 'insensitive' as const } } },
+          { product: { productCode: { contains: literal(word), mode: 'insensitive' as const } } },
+          { sku: { contains: literal(word), mode: 'insensitive' as const } },
+          { variantCode: { contains: literal(word), mode: 'insensitive' as const } },
+          { colorName: { contains: literal(word), mode: 'insensitive' as const } },
+          { size: { equals: literal(word), mode: 'insensitive' as const } }
         ]
       }))
     },

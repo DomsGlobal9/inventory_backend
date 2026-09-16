@@ -65,7 +65,29 @@ export class CounterSaleService {
 
     // Checked before a transaction opens: "na" is not a reason, and that needs no database.
     const orderManual = normaliseManualDiscount(input.manualDiscount, 'this bill');
-    const { manualDiscountMaxPercent } = await getShopSettings(clientId);
+    const [{ manualDiscountMaxPercent }, variants] = await Promise.all([
+      getShopSettings(clientId),
+      prisma.productVariant.findMany({
+        where: { id: { in: input.items.map(i => i.variantId) }, clientId },
+        select: { id: true, product: { select: { title: true, status: true, trashedAt: true } } }
+      })
+    ]);
+
+    /*
+     * A product retired, or moved to the bin, while it sat in an open basket. The quote was worked out
+     * before that and would still price it; an order from Shopify for such a product must still be
+     * recorded, so the order code does not refuse it. At the counter the shop has decided not to sell
+     * it any more, and the cashier can take it off the bill.
+     */
+    for (const item of input.items) {
+      const variant = variants.find(v => v.id === item.variantId);
+      if (!variant) throw notFound('An item on this bill was not found. Take it off and scan it again.');
+      if (variant.product.trashedAt || variant.product.status === 'ARCHIVED' || variant.product.status === 'TRASHED') {
+        throw Object.assign(conflict(`${variant.product.title} is no longer sold. Take it off the bill.`), {
+          details: { code: 'ITEM_RETIRED', variantId: variant.id }
+        });
+      }
+    }
 
     try {
       const orderId = await prisma.$transaction(async (tx) => {

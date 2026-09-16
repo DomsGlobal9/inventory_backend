@@ -1,4 +1,5 @@
 import { normaliseTags } from './offers/rules';
+import { literal } from '../utils/likeText';
 import { prisma } from '../lib/prisma';
 import { generateSequentialCode, generateFreeSequentialCode } from '../utils/codeGenerator';
 import { notFound, badRequest } from '../utils/httpError';
@@ -222,11 +223,11 @@ export class CustomerService {
       // 22338" and "098480-22338" both have to find her, and neither is a substring as typed.
       const digits = phoneSearchDigits(search);
       where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { customerCode: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } },
+        { name: { contains: literal(search), mode: 'insensitive' } },
+        { customerCode: { contains: literal(search), mode: 'insensitive' } },
+        { phone: { contains: literal(search), mode: 'insensitive' } },
         ...(digits ? [{ phone: { contains: digits } }] : []),
-        { email: { contains: search, mode: 'insensitive' } }
+        { email: { contains: literal(search), mode: 'insensitive' } }
       ];
     }
 
