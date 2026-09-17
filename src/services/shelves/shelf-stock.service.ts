@@ -327,12 +327,19 @@ export const shelfStockService = {
    * For "taken from these shelves" on an order or a receipt.
    */
   async byReference(clientId: string, referenceType: unknown, referenceIds: unknown) {
-    const TYPES = ['DISPATCH', 'TRANSFER', 'MANUAL', 'SHELF_COUNT', 'PURCHASE_RECEIPT', 'RETURN'];
+    const TYPES = ['ORDER', 'DISPATCH', 'TRANSFER', 'MANUAL', 'SHELF_COUNT', 'PURCHASE_RECEIPT', 'RETURN'];
     if (typeof referenceType !== 'string' || !TYPES.includes(referenceType)) throw badRequest('Say what the movements were for.');
-    const ids = (typeof referenceIds === 'string' ? referenceIds.split(',') : []).map(s => s.trim()).filter(Boolean).slice(0, 100);
+    let ids = (typeof referenceIds === 'string' ? referenceIds.split(',') : []).map(s => s.trim()).filter(Boolean).slice(0, 100);
     if (ids.length === 0) return [];
+    if (referenceType === 'ORDER') {
+      // An order's pieces left in its dispatches; only this shop's orders are looked at.
+      const dispatches = await prisma.dispatch.findMany({ where: { salesOrder: { id: { in: ids }, clientId } }, select: { id: true } });
+      ids = dispatches.map(d => d.id);
+      if (ids.length === 0) return [];
+    }
+    const type = referenceType === 'ORDER' ? 'DISPATCH' : referenceType;
     const transactions = await prisma.inventoryTransaction.findMany({
-      where: { clientId, referenceType, referenceId: { in: ids }, spotLegs: { some: {} } },
+      where: { clientId, referenceType: type, referenceId: { in: ids }, spotLegs: { some: {} } },
       orderBy: { createdAt: 'asc' },
       select: {
         referenceId: true, variantId: true, quantity: true, reason: true, sku: true, productTitle: true, createdAt: true, locationId: true,
