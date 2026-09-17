@@ -210,11 +210,22 @@ export const session = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, authenticated: false });
     }
 
+    // Read straight from the account rather than the cached identity: it changes once in a
+    // person's life, and a stale "never seen the tour" would show it to them a second time.
+    //
+    // Never at the cost of signing in: between a deploy and its migration the column may not be
+    // there yet, and "could not check the tour" must not become "could not sign in". Unknown is
+    // treated as "already seen", because showing a tour twice is worse than not showing it.
+    const own = await prisma.user
+      .findUnique({ where: { id: user.id }, select: { tourSeenAt: true } })
+      .catch(() => ({ tourSeenAt: new Date(0) }));
+
     res.json({
       success: true,
       authenticated: true,
       user: {
         id: user.id,
+        tourSeenAt: own?.tourSeenAt ?? null,
         name: user.name,
         email: user.email,
         roles: user.roles, // from normalized req.user (UserWithRoles.roles is the array field — there is no singular `role`)
@@ -309,5 +320,26 @@ export const changeMyPassword = async (req: Request, res: Response) => {
     res.json({ success: true, data: { changed: true } });
   } catch (error: any) {
     return respondWithError(res, error, { status: 500, message: 'Failed to change the password' });
+  }
+};
+
+/**
+ * "I have seen the tour."
+ *
+ * Written once and never unset: the tour is for somebody's first visit, and a second one would be
+ * an interruption. Saying it twice is harmless, so a lost answer or a double press costs nothing.
+ */
+export const markTourSeen = async (req: Request, res: Response) => {
+  try {
+    const authUser = (req as any).user;
+    if (!authUser) return res.status(401).json({ success: false, message: 'Sign in first.' });
+
+    const existing = await prisma.user.findUnique({ where: { id: authUser.id }, select: { tourSeenAt: true } });
+    const tourSeenAt = existing?.tourSeenAt
+      ?? (await prisma.user.update({ where: { id: authUser.id }, data: { tourSeenAt: new Date() }, select: { tourSeenAt: true } })).tourSeenAt;
+
+    res.json({ success: true, data: { tourSeenAt } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Could not save that. It is only the tour, so carry on.' });
   }
 };

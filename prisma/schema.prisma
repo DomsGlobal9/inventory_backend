@@ -1475,6 +1475,11 @@ model User {
   phone              String?
   receiveDailyReport Boolean @default(false) @map("receive_daily_report")
 
+  /// When this person finished (or skipped) the short tour of the app. Null means they have never
+  /// seen it, which is what makes them "new". Kept on the account, not in the browser, so it does
+  /// not come back on their phone, on a second computer, or after clearing the browser.
+  tourSeenAt DateTime? @map("tour_seen_at")
+
   dailyReportDeliveries DailyReportDelivery[]
 
   /// Orders this person rang up.

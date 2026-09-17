@@ -362,13 +362,16 @@ export const shelfStockService = {
       take: 100,
       select: {
         quantity: true, source: true, address: true, createdAt: true,
-        transaction: { select: { reason: true, notes: true, referenceType: true, referenceId: true, createdBy: true, sku: true, productTitle: true } }
+        // The colour and size as well as the title: one shelf often holds the red and the maroon
+        // of the same saree, and 'Kanchipuram Silk Saree +6' cannot tell you which one moved.
+        transaction: { select: { reason: true, notes: true, referenceType: true, referenceId: true, createdBy: true, sku: true, productTitle: true, variant: { select: { colorName: true, size: true } } } }
       }
     });
     return legs.map(l => ({
       at: l.createdAt, quantity: l.quantity, source: l.source, address: l.address,
       reason: l.transaction.reason, notes: l.transaction.notes, reference: l.transaction.referenceType ? { type: l.transaction.referenceType, id: l.transaction.referenceId } : null,
-      by: l.transaction.createdBy, sku: l.transaction.sku, title: l.transaction.productTitle
+      by: l.transaction.createdBy, sku: l.transaction.sku, title: l.transaction.productTitle,
+      colour: l.transaction.variant?.colorName ?? null, size: l.transaction.variant?.size ?? null
     }));
   }
 };
