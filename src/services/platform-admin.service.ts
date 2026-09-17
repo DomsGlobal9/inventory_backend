@@ -526,6 +526,16 @@ export class PlatformAdminService {
       `DELETE FROM inventory_stock_count_items WHERE stock_count_id IN (SELECT id FROM inventory_stock_counts WHERE client_id = $1)`,
       `DELETE FROM inventory_stock_counts WHERE client_id = $1`,
       `DELETE FROM inventory_transfers WHERE client_id = $1`,
+      // Racks and shelves. Issues and legs point at spots and transactions; stock on a shelf holds its
+      // spot, variant and location (restrict); the tree holds its parent (restrict), so deepest first.
+      `DELETE FROM shelf_issues WHERE client_id = $1`,
+      `DELETE FROM inventory_transaction_spots WHERE client_id = $1`,
+      `DELETE FROM spot_stocks WHERE client_id = $1`,
+      `DELETE FROM storage_spot_address_changes WHERE client_id = $1`,
+      `DELETE FROM storage_spots WHERE client_id = $1 AND depth = 4`,
+      `DELETE FROM storage_spots WHERE client_id = $1 AND depth = 3`,
+      `DELETE FROM storage_spots WHERE client_id = $1 AND depth = 2`,
+      `DELETE FROM storage_spots WHERE client_id = $1`,
       `DELETE FROM inventory_transactions WHERE client_id = $1`,
       `DELETE FROM inventory_events WHERE client_id = $1`,
       `DELETE FROM inventory_stocks WHERE client_id = $1`,

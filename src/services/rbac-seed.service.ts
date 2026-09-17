@@ -27,6 +27,7 @@ export const RBAC_DATA = {
         'supplier:create', 'supplier:update', 'supplier:delete',
         'purchase_order:create', 'purchase_order:update', 'purchase_order:receive',
         'stock_count:create', 'stock_count:update', 'stock_count:complete',
+        'shelf:view', 'shelf:putaway', 'shelf:manage',
         'offer:view', 'offer:create', 'offer:update', 'offer:archive', 'offer:manual_discount',
         'offer:publish_external', 'offer:manual_discount_unlimited', 'offer:settings',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
@@ -44,6 +45,8 @@ export const RBAC_DATA = {
         'customer:create', 'customer:update',
         'product:view',
         'dashboard:view',
+        // Where an item is kept, so they can fetch it for a customer. Not moving it.
+        'shelf:view',
         // The person at the counter. They see which offers are running so they can tell a
         // customer, and they may take money off by hand -- but only with a reason, which is kept
         // on the order. A system that forbids this gets worked around by editing the product's
@@ -62,6 +65,7 @@ export const RBAC_DATA = {
         'product:view',
         'purchase_order:receive',
         'stock_count:create', 'stock_count:update', 'stock_count:complete',
+        'shelf:view', 'shelf:putaway',
         'dashboard:view', 'report:view',
         // So a packer can see why an order went out at a price below the tag.
         'offer:view'
@@ -77,6 +81,7 @@ export const RBAC_DATA = {
         'supplier:create', 'supplier:update',
         'purchase_order:create', 'purchase_order:update', 'purchase_order:receive',
         'stock_count:create', 'stock_count:update', 'stock_count:complete',
+        'shelf:view', 'shelf:putaway', 'shelf:manage',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
         'admin:locations', 'admin:catalog',
         // A buyer planning stock needs to know a sale is coming.

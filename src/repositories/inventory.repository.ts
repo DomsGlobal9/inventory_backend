@@ -96,7 +96,8 @@ export class InventoryRepository {
     const { variantId, page = 1, limit = 50 } = filters;
     const skip = (page - 1) * limit;
 
-    const where: any = { clientId };
+    // Moves between shelves are quantity-0 rows with their own history on each shelf.
+    const where: any = { clientId, reason: { not: 'SHELF_MOVE' } };
     if (variantId) where.variantId = variantId;
 
     const [transactions, total] = await Promise.all([

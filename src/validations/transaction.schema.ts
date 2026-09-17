@@ -4,7 +4,8 @@ import { TransactionType, InventoryReason } from '@prisma/client';
 export const createTransactionSchema = z.object({
   variantId: z.string().uuid("Invalid variant ID"),
   type: z.nativeEnum(TransactionType),
-  reason: z.nativeEnum(InventoryReason),
+  // SHELF_MOVE is written only by the shelves service, as legs of a quantity-0 movement.
+  reason: z.nativeEnum(InventoryReason).refine(r => r !== 'SHELF_MOVE', { message: 'Use Put away or Move to move stock between shelves.' }),
   quantity: z.number().int().refine(val => val !== 0, { message: "Quantity cannot be zero" }),
   notes: z.string().optional(),
   referenceType: z.string().optional(),

@@ -3,6 +3,7 @@ import { TransactionType, InventoryReason, Prisma } from '@prisma/client';
 import { InventoryAlertService } from './inventory-alert.service';
 import { storefrontEventService } from './storefront-event.service';
 import { afterCommit } from '../lib/afterCommit';
+import { applyShelfLegs } from './shelves/legs';
 
 /**
  * Fire-and-forget, on purpose, and only once the transaction has committed.
@@ -38,14 +39,25 @@ interface MovementInput {
   // pooled Postgres (observed in practice as "Unable to start a transaction in the
   // given time") — always thread the outer `tx` through instead of nesting.
   tx?: Prisma.TransactionClient;
+  /**
+   * Shelves a person named for this movement: a put-away, a move, a pick. Positive puts pieces on a
+   * shelf, negative takes them off. Leave it out and the shelf rule decides (services/shelves/plan.ts).
+   */
+  spots?: { spotId: string; quantity: number }[];
 }
 
 export class InventoryMutationService {
   async applyMovement(input: MovementInput) {
     const {
       clientId, variantId, locationId, movementType, reason, quantityDelta,
-      unitCost, notes, referenceType, referenceId, createdBy, tx: externalTx
+      unitCost, notes, referenceType, referenceId, createdBy, tx: externalTx, spots
     } = input;
+
+    // A move between shelves changes where pieces are, never how many the location holds.
+    const shelfMove = reason === 'SHELF_MOVE';
+    if (shelfMove && quantityDelta !== 0) {
+      throw Object.assign(new Error('Moving stock between shelves does not change how much the location holds.'), { statusCode: 400 });
+    }
 
     const run = async (tx: Prisma.TransactionClient) => {
       // 0. Serialize every movement for this VARIANT before reading anything else.
@@ -145,7 +157,10 @@ export class InventoryMutationService {
 
       // 3. Update financial metrics on ProductVariant if it's an IN movement with cost
       let newAverageCost = Number(variant.averageCost);
-      if (quantityDelta > 0 && unitCost !== undefined && unitCost !== null) {
+      if (shelfMove) {
+        // Nothing about the item's value or age changed: lastMovementAt feeds slow-stock reports, and a
+        // tidy-up of the storeroom is not a sale.
+      } else if (quantityDelta > 0 && unitCost !== undefined && unitCost !== null) {
         const incomingValue = quantityDelta * unitCost;
         const newGlobalQty = globalQty + quantityDelta;
 
@@ -208,7 +223,7 @@ export class InventoryMutationService {
       }
 
       // 4. Create the transaction record
-      await tx.inventoryTransaction.create({
+      const transaction = await tx.inventoryTransaction.create({
         data: {
           clientId,
           variantId,
@@ -228,8 +243,34 @@ export class InventoryMutationService {
           productTitle: variant.product?.title ?? null,
           variantCode: variant.variantCode,
           barcode: variant.barcode
-        }
+        },
+        select: { id: true }
       });
+
+      // 4b. Which shelves this touched, as legs of the row above -- not a second ledger. Inside the
+      // variant lock, so the shelf total and the location quantity move together or not at all.
+      const shelves = await applyShelfLegs(tx, {
+        clientId,
+        variantId,
+        locationId,
+        reason,
+        delta: quantityDelta,
+        officialBefore: oldLocationQty,
+        officialAfter: newLocationQty,
+        transactionId: transaction.id,
+        scanned: spots,
+        itemName: variant.product?.title ? `${variant.product.title} (${variant.sku})` : variant.sku
+      });
+
+      if (shelfMove) {
+        // The location holds what it held: no alert to re-evaluate, nothing for a storefront to hear.
+        return {
+          quantity: newLocationQty,
+          globalQuantity: globalQty,
+          averageCost: newAverageCost,
+          shelves
+        };
+      }
 
       // 5. Evaluate Operational Alerts
       await InventoryAlertService.evaluateStockAlert(
@@ -260,7 +301,8 @@ export class InventoryMutationService {
       return {
         quantity: newLocationQty,
         globalQuantity: globalQty + quantityDelta,
-        averageCost: newAverageCost
+        averageCost: newAverageCost,
+        shelves
       };
     };
 

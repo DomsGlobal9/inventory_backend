@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { legsTakenFrom } from '../services/shelves/from-spots';
 import { inventoryTransferService } from '../services/inventory-transfer.service';
 import { respondWithError } from '../utils/respondWithError';
 
@@ -21,12 +22,14 @@ export const transferStock = async (req: Request, res: Response) => {
     if (new Set(items.map((i: any) => i.variantId)).size !== items.length) {
       return res.status(400).json({ success: false, message: 'The same item is listed twice. Change its quantity instead.' });
     }
+    // Shelves at the origin each item comes off, when chosen; checked for shape here, for truth in the move.
+    const withShelves = items.map((i: any) => ({ variantId: i.variantId, quantity: i.quantity, spots: legsTakenFrom(i.fromSpots, i.quantity) }));
 
     const result = await inventoryTransferService.transferStock(
       clientId,
       originLocationId,
       destinationLocationId,
-      items,
+      withShelves,
       notes,
       createdBy
     );

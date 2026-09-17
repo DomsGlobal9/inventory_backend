@@ -188,6 +188,8 @@ export class DayBookService {
     const movementWhere = {
       clientId,
       createdAt: { gte: start, lt: end },
+      // A move between shelves is a ledger row with quantity 0: nothing came in or went out that day.
+      reason: { not: 'SHELF_MOVE' as const },
       ...(locationId ? { locationId } : {})
     };
 

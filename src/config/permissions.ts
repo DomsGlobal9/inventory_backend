@@ -92,6 +92,12 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'stock_count:update',   group: 'Stock', label: 'Enter counted quantities',              implies: ['stock_count:view'] },
   { key: 'stock_count:complete', group: 'Stock', label: 'Finish a count and post its corrections', implies: ['stock_count:update'] },
 
+  // Racks and shelves. Seeing where something is belongs to anyone who sells or handles stock; putting
+  // away and moving to whoever handles stock; changing the rack tree to whoever manages locations.
+  { key: 'shelf:view',    group: 'Stock', label: 'See where stock is kept' },
+  { key: 'shelf:putaway', group: 'Stock', label: 'Put stock away and move it between shelves', implies: ['shelf:view'] },
+  { key: 'shelf:manage',  group: 'Stock', label: 'Set up racks and shelves, print labels',     implies: ['shelf:view'] },
+
   // ── Buying ────────────────────────────────────────────────────────────────
   // A purchase order IS what you pay. There is nothing left of one with the prices removed,
   // so these carry cost rather than hiding it.

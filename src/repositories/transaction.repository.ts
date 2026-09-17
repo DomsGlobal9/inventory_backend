@@ -93,6 +93,10 @@ export class TransactionRepository {
 
     if (filters.reason) {
       where.reason = filters.reason;
+    } else {
+      // Moves between shelves are quantity-0 rows; they have their own history on each shelf. Shown
+      // here only when asked for by reason.
+      where.reason = { not: 'SHELF_MOVE' };
     }
 
     if (filters.from || filters.to) {

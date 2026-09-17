@@ -24,8 +24,9 @@ export class InventoryService {
     });
   }
 
-  async stockOut(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, notes?: string, performedBy?: string) {
+  async stockOut(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, notes?: string, performedBy?: string, spots?: { spotId: string; quantity: number }[]) {
     return inventoryMutationService.applyMovement({
+      spots,
       clientId, 
       locationId,
       variantId, 
@@ -261,7 +262,8 @@ export class InventoryService {
 
   async getMetadata() {
     return {
-      inventoryReasons: Object.values(InventoryReason),
+      // Reasons a person can pick. SHELF_MOVE is recorded by the shelves service, never chosen by hand.
+      inventoryReasons: Object.values(InventoryReason).filter(r => r !== 'SHELF_MOVE'),
       transactionTypes: Object.values(TransactionType)
     };
   }

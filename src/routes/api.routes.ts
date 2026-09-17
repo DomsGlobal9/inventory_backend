@@ -19,6 +19,7 @@ import reportRoutes from './report.routes';
 import customerRoutes from './customer.routes';
 import salesOrderRoutes from './sales-order.routes';
 import counterSaleRoutes from './counter-sale.routes';
+import shelvesRoutes from './shelves.routes';
 import offerRoutes from './offer.routes';
 import pricingRoutes from './pricing.routes';
 import dispatchRoutes from './dispatch.routes';
@@ -155,6 +156,8 @@ router.use('/shopify-connect', shopifyMerchantRoutes);
 // structurally unable to return a key -- see the route file.
 router.use('/services', serviceCatalogueRoutes);
 router.use('/inventory-transfers', hideCost, inventoryTransferRoutes);
+// Racks and shelves: where inside a location the pieces are. Quantities only, never cost.
+router.use('/shelves', hideCost, shelvesRoutes);
 router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);
 

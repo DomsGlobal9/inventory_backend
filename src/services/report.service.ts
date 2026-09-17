@@ -377,6 +377,8 @@ export class ReportService {
       where: {
         clientId,
         createdAt: { gte: startDate },
+        // Moves between shelves carry quantity 0 and would only inflate the count of movements.
+        reason: { not: 'SHELF_MOVE' },
         ...(locationId ? { locationId } : {})
       },
       _sum: {
@@ -396,7 +398,8 @@ export class ReportService {
 
   async getRecentTransactions(clientId: string, limit: number = 10, locationId?: string) {
     const txs = await prisma.inventoryTransaction.findMany({
-      where: { clientId, ...(locationId ? { locationId } : {}) },
+      // Stock that came in or went out; tidying shelves would push real movements off the list.
+      where: { clientId, reason: { not: 'SHELF_MOVE' }, ...(locationId ? { locationId } : {}) },
       orderBy: { createdAt: 'desc' },
       take: limit,
       include: {

@@ -36,7 +36,9 @@ const variantSelect = (locationId: string) => ({
   },
   images: { orderBy: [{ isPrimary: 'desc' as const }, { orderIndex: 'asc' as const }], take: 1, select: { url: true } },
   locationProfiles: { where: { locationId } },
-  stocks: { where: { locationId }, select: { quantity: true, reservedQty: true } }
+  stocks: { where: { locationId }, select: { quantity: true, reservedQty: true } },
+  // Where it is kept here, so the person at the counter can fetch it. Addresses only, never cost.
+  spotStocks: { where: { locationId }, select: { quantity: true, spot: { select: { address: true, isShopFloor: true } } } }
 });
 
 /** Products a shop has retired are not for sale, wherever they are typed. */
@@ -64,7 +66,11 @@ function shape(variant: any, locationId: string) {
     sellableHere: at.isAvailable && at.price !== null,
     onShelf,
     held,
-    available: Math.max(0, onShelf - held)
+    available: Math.max(0, onShelf - held),
+    shelves: (variant.spotStocks ?? [])
+      .map((s: any) => ({ address: s.spot.address, isShopFloor: s.spot.isShopFloor, quantity: s.quantity }))
+      .sort((a: any, b: any) => Number(b.isShopFloor) - Number(a.isShopFloor) || b.quantity - a.quantity || (a.address < b.address ? -1 : 1))
+      .slice(0, 3)
   };
 }
 

@@ -176,9 +176,16 @@ export const deleteLocation = async (req: Request, res: Response) => {
       });
     }
 
-    await prisma.stockLocation.delete({
-      where: { id }
-    });
+    // Its racks and shelves go with it. They hold nothing (the stock check above), but the tree holds
+    // its parents and the location, so it is removed deepest first, in the same transaction.
+    await prisma.$transaction(async tx => {
+      await tx.shelfIssue.deleteMany({ where: { clientId, locationId: id } });
+      await tx.spotStock.deleteMany({ where: { clientId, locationId: id } });
+      for (const depth of [4, 3, 2, 1]) {
+        await tx.storageSpot.deleteMany({ where: { clientId, locationId: id, depth } });
+      }
+      await tx.stockLocation.delete({ where: { id } });
+    }, { maxWait: 20000, timeout: 60000 });
 
     res.json({ success: true });
   } catch (error: any) {

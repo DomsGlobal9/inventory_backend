@@ -13,7 +13,7 @@ export class InventoryTransferService {
     clientId: string,
     originLocationId: string,
     destinationLocationId: string,
-    items: { variantId: string; quantity: number }[],
+    items: { variantId: string; quantity: number; spots?: { spotId: string; quantity: number }[] }[],
     notes?: string,
     createdBy?: string
   ) {
@@ -38,10 +38,11 @@ export class InventoryTransferService {
           notes: notes ? `Transfer OUT to ${destinationLocationId}: ${notes}` : `Transfer OUT to ${destinationLocationId}`,
           referenceType: 'TRANSFER',
           createdBy,
+          spots: item.spots,
           tx
         });
 
-        // Add to destination
+        // Add to destination -- Not shelved there, waiting to be put away.
         await inventoryMutationService.applyMovement({
           clientId,
           locationId: destinationLocationId,

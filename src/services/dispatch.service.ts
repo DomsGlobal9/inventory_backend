@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { legsTakenFrom } from './shelves/from-spots';
 import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { reservationService } from './reservation.service';
@@ -14,7 +15,7 @@ export class DispatchService {
    * Shopify fulfilment come through. Serializable, because a dispatch reads what is still reserved
    * and writes against it.
    */
-  async createDispatch(clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number }[]) {
+  async createDispatch(clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[]) {
     return prisma.$transaction(
       (tx) => this.dispatchInTransaction(tx, clientId, salesOrderId, items),
       { timeout: 30000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
@@ -29,7 +30,7 @@ export class DispatchService {
    * read the order before it began, so it could not be part of anything larger; and a dispatch
    * racing a cancel read an order that was no longer what it checked.
    */
-  async dispatchInTransaction(tx: any, clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number }[]) {
+  async dispatchInTransaction(tx: any, clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[]) {
     if (!Array.isArray(items) || items.length === 0) {
       throw badRequest('Choose at least one item to send out.');
     }
@@ -41,6 +42,8 @@ export class DispatchService {
       seen.add(item.salesOrderItemId);
       if (!Number.isInteger(item.quantity) || item.quantity <= 0) throw badRequest('Send out whole pieces, at least one.');
     }
+    // Shelves each item was picked from, when a pick list named them. Otherwise the shelf rule decides.
+    const pickedFrom = new Map(items.map(i => [i.salesOrderItemId, legsTakenFrom(i.fromSpots, i.quantity)]));
 
     // Read inside the transaction: see above.
     const order = await tx.salesOrder.findFirst({
@@ -118,6 +121,7 @@ export class DispatchService {
           quantityDelta: -dItem.quantity, // Negative for OUT
           referenceType: 'DISPATCH',
           referenceId: dispatch.id,
+          spots: pickedFrom.get(dItem.salesOrderItemId),
           tx
         });
 

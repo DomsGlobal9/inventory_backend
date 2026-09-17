@@ -39,7 +39,8 @@ export class DashboardService {
         _sum: { quantity: true }
       }),
       prisma.inventoryTransaction.findMany({
-        where: { variant: { clientId }, ...(locationId ? { locationId } : {}) },
+        // Moves between shelves change nothing a dashboard reports, and would crowd out what did.
+        where: { variant: { clientId }, reason: { not: 'SHELF_MOVE' }, ...(locationId ? { locationId } : {}) },
         orderBy: { createdAt: 'desc' },
         take: 5,
         include: {

@@ -3,6 +3,7 @@ import { InventoryReason } from '@prisma/client';
 import { inventoryService } from '../services/inventory.service';
 import { valuationService } from '../services/valuation.service';
 import { stockChangeSchema } from '../validations/inventory.schema';
+import { legsTakenFrom } from '../services/shelves/from-spots';
 import { canSeeCost } from '../middleware/cost-visibility.middleware';
 
 /** Who made a movement, for the ledger: the signed-in person's name, never the shop's id. */
@@ -96,7 +97,9 @@ export class InventoryController {
       }
 
       if (quantity <= 0) return res.status(400).json({ success: false, message: "Quantity must be positive" });
-      const result = await inventoryService.stockOut(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, notes, performerOf(req));
+      // Which shelves the pieces came off, when the person said so. Otherwise the shelf rule decides.
+      const spots = legsTakenFrom(req.body?.fromSpots, quantity);
+      const result = await inventoryService.stockOut(clientId, targetLocationId, variantId, quantity, reason, referenceType, reference, notes, performerOf(req), spots);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);

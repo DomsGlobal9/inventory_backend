@@ -117,6 +117,49 @@ enum InventoryReason {
   MANUAL_CORRECTION
   AUDIT_CORRECTION
   PURCHASE_RECEIPT
+  /// Pieces moved from one shelf to another inside the same location. The location's quantity does not
+  /// change, so the row carries quantity 0; where they went is in its shelf legs.
+  SHELF_MOVE
+}
+
+/// What a storage spot is, for its label and icon. Not a rule: any kind can sit at any depth.
+enum StorageSpotKind {
+  AREA
+  RACK
+  CUPBOARD
+  SHELF
+  BOX
+  STACK
+  BUNDLE
+  RAIL
+  RAIL_SECTION
+  COUNTER
+  DRAWER
+  DISPLAY
+  TRUNK
+  OTHER
+}
+
+/// Whether a person named the shelf (a scan, or a choice on screen) or the deduction rule chose it.
+enum SpotLegSource {
+  SCANNED
+  AUTO
+}
+
+enum ShelfIssueKind {
+  /// A till sale found nothing on the shop floor or unshelved, and took pieces from a back-room shelf.
+  SOLD_FROM_BACK_ROOM
+  /// A reduction other than a sale named no shelf, and unshelved stock could not cover it.
+  AUTO_TAKEN_FROM_SHELF
+  /// A location-level count found fewer pieces than the shelves said they held.
+  COUNT_BELOW_SHELVES
+  /// Someone went to a shelf and the pieces were not there.
+  NOT_FOUND_ON_SHELF
+}
+
+enum ShelfIssueStatus {
+  OPEN
+  RESOLVED
 }
 
 enum ReservationStatus {
@@ -217,6 +260,10 @@ model StockLocation {
   purchaseOrders   PurchaseOrder[]
   /// Money taken or paid back at this store.
   payments         SalesOrderPayment[]
+  /// Its racks, shelves and boxes.
+  storageSpots     StorageSpot[]
+  spotStocks       SpotStock[]
+  shelfIssues      ShelfIssue[]
 
   /// Where this store is, and who to call there: the delivery address on a purchase order.
   address String?
@@ -246,6 +293,159 @@ model InventoryStock {
   @@unique([variantId, locationId])
   @@index([clientId, locationId])
   @@map("inventory_stocks")
+}
+
+// ─── RACKS AND SHELVES ───
+//
+// Where inside a location the pieces are. The location's InventoryStock.quantity stays the official
+// number; shelves divide it. Not shelved is never stored: it is that quantity minus the shelf total,
+// and the database refuses any commit where the shelf total is larger (migration
+// 20260917120000_racks_and_shelves).
+
+/// A point in a location's rack tree: an area, a rack or cupboard, a shelf, a box. Up to 4 deep, and each
+/// branch as deep as that shop needs. Stock sits only on a spot with nothing under it.
+model StorageSpot {
+  id         String @id @default(uuid())
+  clientId   String @map("client_id")
+  locationId String @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  parentId String?       @map("parent_id")
+  parent   StorageSpot?  @relation("StorageSpotTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children StorageSpot[] @relation("StorageSpotTree")
+
+  kind StorageSpotKind
+  /// This spot's own part of the address: C2, 1, A.
+  code String
+  /// The whole address, upper case, unique in the location: FLOOR-C2-1-A.
+  address String
+  /// What the shop calls it, free to change: "Silk sarees, blue box".
+  name  String?
+  depth Int
+
+  /// Position in the walk through the shop, among its siblings.
+  walkOrder   Int     @default(0) @map("walk_order")
+  /// Set on an area and carried by everything under it. Till sales take from these first.
+  isShopFloor Boolean @default(false) @map("is_shop_floor")
+  /// Printed in the QR label. Never changes, so a label survives a new address.
+  labelCode   String  @map("label_code")
+
+  colour      String?
+  /// Roughly how many pieces fit. A warning, never a refusal.
+  capacity    Int?
+  isTemporary Boolean @default(false) @map("is_temporary")
+  active      Boolean @default(true)
+
+  createdBy String?  @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stocks         SpotStock[]
+  legs           InventoryTransactionSpot[]
+  issues         ShelfIssue[]
+  addressChanges StorageSpotAddressChange[]
+
+  @@unique([locationId, address])
+  @@unique([clientId, labelCode])
+  @@index([clientId, locationId])
+  @@index([parentId])
+  @@map("storage_spots")
+}
+
+/// Pieces of one variant on one spot. A row reaching 0 is deleted.
+model SpotStock {
+  id         String @id @default(uuid())
+  clientId   String @map("client_id")
+  locationId String @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  spotId     String @map("spot_id")
+  spot       StorageSpot @relation(fields: [spotId], references: [id], onDelete: Restrict)
+  variantId  String @map("variant_id")
+  variant    ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  quantity Int
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([spotId, variantId])
+  @@index([variantId, locationId])
+  @@index([clientId, locationId])
+  @@map("spot_stocks")
+}
+
+/// One shelf's part of a stock movement: a sale that took 4 from A-03-2 and 1 from B-01-1 is one
+/// inventory_transactions row with two of these.
+model InventoryTransactionSpot {
+  id            String @id @default(uuid())
+  clientId      String @map("client_id")
+  transactionId String @map("transaction_id")
+  transaction   InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  /// Null once the spot is deleted; the address is kept.
+  spotId  String?      @map("spot_id")
+  spot    StorageSpot? @relation(fields: [spotId], references: [id], onDelete: SetNull)
+  address String
+
+  variantId  String @map("variant_id")
+  locationId String @map("location_id")
+  quantity   Int
+  source     SpotLegSource
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([transactionId])
+  @@index([spotId, createdAt])
+  @@index([variantId, locationId, createdAt])
+  @@map("inventory_transaction_spots")
+}
+
+/// Something about the shelves that did not add up, shown to the shop instead of being corrected quietly.
+model ShelfIssue {
+  id         String @id @default(uuid())
+  clientId   String @map("client_id")
+  locationId String @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  variantId  String @map("variant_id")
+  variant    ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  spotId  String?      @map("spot_id")
+  spot    StorageSpot? @relation(fields: [spotId], references: [id], onDelete: SetNull)
+  address String?
+
+  transactionId String?               @map("transaction_id")
+  transaction   InventoryTransaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  kind     ShelfIssueKind
+  quantity Int
+  message  String @db.Text
+
+  status         ShelfIssueStatus @default(OPEN)
+  resolvedBy     String?          @map("resolved_by")
+  resolvedAt     DateTime?        @map("resolved_at")
+  resolutionNote String?          @map("resolution_note") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId, status, createdAt])
+  @@index([locationId, status])
+  @@index([variantId])
+  @@map("shelf_issues")
+}
+
+/// A spot's address before and after a change. Kept here rather than in audit_logs, which prunes.
+model StorageSpotAddressChange {
+  id         String @id @default(uuid())
+  clientId   String @map("client_id")
+  spotId     String @map("spot_id")
+  spot       StorageSpot @relation(fields: [spotId], references: [id], onDelete: Cascade)
+  oldAddress String @map("old_address")
+  newAddress String @map("new_address")
+  changedBy  String? @map("changed_by")
+  changedAt  DateTime @default(now()) @map("changed_at")
+
+  @@index([spotId, changedAt])
+  @@map("storage_spot_address_changes")
 }
 
 // 1. PRODUCT
@@ -356,6 +556,8 @@ model ProductVariant {
   locationProfiles VariantLocationProfile[]
   InventoryAlert   InventoryAlert[]
   InventoryEvent   InventoryEvent[]
+  spotStocks       SpotStock[]
+  shelfIssues      ShelfIssue[]
 
   @@unique([clientId, variantCode], name: "uq_variant_client_code")
   @@unique([clientId, sku])
@@ -456,6 +658,10 @@ model InventoryTransaction {
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Which shelves this movement touched. Not a second ledger: the legs belong to this row.
+  spotLegs    InventoryTransactionSpot[]
+  shelfIssues ShelfIssue[]
 
   @@index([clientId, createdAt])
   @@index([variantId, createdAt])
