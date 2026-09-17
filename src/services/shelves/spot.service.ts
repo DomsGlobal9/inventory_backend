@@ -339,6 +339,13 @@ export const spotService = {
     if (address && locationId) {
       const spot = await prisma.storageSpot.findFirst({ where: { clientId, locationId, address } });
       if (spot) return spot;
+      // The same address typed while standing in the wrong store: "no shelf matches that" sends
+      // someone looking for a label that is fine. Name the store it belongs to instead.
+      const elsewhere = await prisma.storageSpot.findFirst({
+        where: { clientId, address },
+        include: { location: { select: { name: true } } }
+      });
+      if (elsewhere) throw notFound(`${elsewhere.address} is in ${elsewhere.location?.name ?? 'another store'}, not here.`);
     }
     throw notFound('No shelf matches that label or address.');
   },

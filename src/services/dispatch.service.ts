@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { runTransaction } from '../lib/txRetry';
 import { legsTakenFrom } from './shelves/from-spots';
 import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
@@ -16,9 +17,13 @@ export class DispatchService {
    * and writes against it.
    */
   async createDispatch(clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[]) {
-    return prisma.$transaction(
+    return runTransaction(
       (tx) => this.dispatchInTransaction(tx, clientId, salesOrderId, items),
-      { timeout: 30000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      {
+        label: 'send an order out',
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        tooSlowMessage: 'Sending this order out took too long, so nothing was recorded. Try again.'
+      }
     );
   }
 

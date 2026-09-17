@@ -1,5 +1,6 @@
 import { PurchaseOrderStatus, InventoryReason, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { runTransaction } from '../lib/txRetry';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { mailService } from './mail.service';
@@ -335,8 +336,7 @@ export class PurchaseOrderService {
       throw Object.assign(new Error('Receive into one location at a time: a receipt says where its goods went.'), { statusCode: 400 });
     }
 
-    try {
-      return await prisma.$transaction(async (tx) => {
+    return await runTransaction(async (tx) => {
         const po = await tx.purchaseOrder.findFirst({
           where: { id, clientId },
           include: { items: true }
@@ -483,18 +483,17 @@ export class PurchaseOrderService {
 
         return { po: updated, receipt, duplicate: false };
       }, {
-        timeout: 30000,
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        label: 'receive delivery',
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        // Every line costs several round trips to the database, and a delivery can have many
+        // lines, so this budget is for the whole receipt, not for one row.
+        timeout: 120000,
+        // Two presses of the same Confirm Receipt that both got past the check above: one wins,
+        // and the other is told what the winner recorded rather than failing. The same answer
+        // is what makes a retry safe if an attempt committed but the answer was lost.
+        alreadyDone: requestKey ? () => this.receiptForRequest(clientId, id, requestKey) : undefined,
+        tooSlowMessage: 'Saving this delivery took too long, so nothing was recorded. Check the order and try again.'
       });
-    } catch (error: any) {
-      // Two presses of the same Confirm Receipt that both got past the check above: one wins,
-      // and the other is told what the winner recorded rather than failing.
-      if (requestKey) {
-        const winner = await this.receiptForRequest(clientId, id, requestKey).catch(() => null);
-        if (winner) return winner;
-      }
-      throw error;
-    }
   }
 
   /** The receipt a request key already produced, with the order as it stands now. */

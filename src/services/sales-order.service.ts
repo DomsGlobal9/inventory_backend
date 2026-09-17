@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { runTransaction } from '../lib/txRetry';
 import { literal } from '../utils/likeText';
 import { generateSequentialCode, generateFreeSequentialCode } from '../utils/codeGenerator';
 import { validateTransition } from '../utils/sales-order-state-machine';
@@ -101,7 +102,7 @@ export class SalesOrderService {
     try {
       const { manualDiscountMaxPercent } = await getShopSettings(clientId);
       const manualLimit = caller && !caller.mayExceedManualLimit ? manualDiscountMaxPercent : null;
-      return await prisma.$transaction(
+      return await runTransaction(
         (tx) => this.writeFullOrderInTransaction(
           tx, clientId, locationId, data, channel, orderManual,
           {
@@ -112,7 +113,10 @@ export class SalesOrderService {
             mayOverridePrices: !caller || !!caller.mayExceedManualLimit
           }
         ),
-        { timeout: 30000 }
+        {
+          label: 'save an order',
+          tooSlowMessage: 'Saving this order took too long, so nothing was saved. Try again.'
+        }
       );
       // No custom timeout previously -- Prisma's 5000ms default was too short for the per-item
       // loop (2 round-trips per item) under this environment's DB latency, and failed with

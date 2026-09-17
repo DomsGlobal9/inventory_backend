@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { runTransaction } from '../lib/txRetry';
 import { Prisma, ReturnReason } from '@prisma/client';
 import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
@@ -237,7 +238,7 @@ export class ReturnService {
    * Finalizes the return.
    */
   async completeReturn(clientId: string, id: string) {
-    return prisma.$transaction(async (tx) => {
+    return runTransaction(async (tx) => {
       const salesReturn = await tx.salesReturn.findFirst({
         where: { id, clientId },
         include: {
@@ -305,7 +306,11 @@ export class ReturnService {
           completedAt: new Date()
         }
       });
-    }, { timeout: 30000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, {
+      label: 'complete a return',
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      tooSlowMessage: 'Finishing this return took too long, so nothing was recorded. Try again.'
+    });
   }
 
   /**

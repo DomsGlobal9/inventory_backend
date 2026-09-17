@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { runTransaction } from '../lib/txRetry';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { TransactionType, InventoryReason, Prisma } from '@prisma/client';
 
@@ -21,7 +22,7 @@ export class InventoryTransferService {
       throw new Error("Origin and destination locations must be different");
     }
 
-    return prisma.$transaction(async (tx) => {
+    return runTransaction(async (tx) => {
       for (const item of items) {
         if (item.quantity <= 0) {
           throw new Error(`Transfer quantity for variant ${item.variantId} must be greater than 0`);
@@ -59,8 +60,9 @@ export class InventoryTransferService {
 
       return { success: true, transferredItems: items.length };
     }, {
-      timeout: 30000,
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+      label: 'move stock between stores',
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      tooSlowMessage: 'Moving this stock took too long, so nothing was moved. Try again.'
     });
   }
 }
