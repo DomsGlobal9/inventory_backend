@@ -32,6 +32,8 @@ export class FakeEngine {
   /** Called when a send is accepted (tests use it to emit engine events). */
   onSend: ((s: RecordedSend) => void | Promise<void>) | null = null;
   calls: string[] = [];
+  /** The production fault: logout and delete answer SUCCESS and change nothing. */
+  zombieLogout = false;
 
   get url(): string {
     return `http://127.0.0.1:${this.port}`;
@@ -107,6 +109,7 @@ export class FakeEngine {
     if (m && req.method === 'DELETE') {
       const name = decodeURIComponent(m[2]!);
       if (!this.states.has(name)) return err(404, 'instance does not exist');
+      if (this.zombieLogout) return send(200, { status: 'SUCCESS' });
       if (m[1] === 'delete') this.states.delete(name);
       else this.setState(name, 'close', null, 401);
       return send(200, { status: 'SUCCESS' });

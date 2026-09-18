@@ -24,7 +24,7 @@ Background and decisions: `SPEC.md` (this repo) and `PLAN-whatsapp.md` in the In
 
 | Path | What |
 |---|---|
-| `engine/` | Our engine image: Evolution API 2.3.7 (pinned by digest) + `patch-pairing.cjs`, the QR-linking fix. The build **fails** if the patch no longer fits. `docker-compose.local.yml` runs engine + Postgres + Redis on this PC. |
+| `engine/` | Our engine image: Evolution API 2.3.7 (pinned by digest) + three build-time patches: `patch-pairing.cjs` (QR linking), `patch-quiet-keys.cjs` (no keys in logs), `patch-logout.cjs` (Unlink waits for WhatsApp's answer, so the phone really drops the device). The build **fails** if a patch no longer fits. `docker-compose.local.yml` runs engine + Postgres + Redis on this PC. |
 | `service/` | The WhatsApp Service (Node 22, TypeScript, Express, Prisma/Postgres). |
 | `render.yaml` | Render Blueprint for all four pieces (not deployed yet). |
 | `../.github/workflows/whatsapp-ci.yml` | Every push that touches `whatsapp-service/`: typecheck, all tests, build, and build **both** Docker images. (At the repo root, where GitHub reads it.) |

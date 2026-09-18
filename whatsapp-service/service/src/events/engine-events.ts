@@ -55,6 +55,10 @@ async function onConnectionUpdate(ctx: Ctx, instance: string, data: Record<strin
     return;
   }
   if (to === 'LOGGED_OUT') {
+    // A number being linked afresh has no link to lose. The 401 is the engine finishing with the
+    // old instance (removed at the start of the re-link) and can arrive late; recording it would
+    // make the next QR poll wipe the new instance, and the QR would never settle.
+    if (account.status === 'LINKING' && account.linkedAt === null) return;
     await setAccountStatus(ctx, account.id, 'LOGGED_OUT', 'engine-event');
     return;
   }

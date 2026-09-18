@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
+import { runHealthWatch } from '../../src/health/watch';
 import { hasTestDb, listen, makeEnv, resetDb, seedClient, seedModule, seedScaleezy, type TestEnv } from '../helpers/setup';
 
 // The HTTP API end to end (real Express app, real database, fake engine).
@@ -221,6 +222,83 @@ describe.skipIf(!hasTestDb)('API', () => {
     await seedClient(env, 'shop3', 'CONNECTED', '919000000004');
     const again = await (await post('/v1/accounts/client/shop3/link', { method: 'qr' }, inventory.key)).json() as any;
     expect(again).toEqual({ status: 'CONNECTED' });
+  });
+
+  it('link, unlink, link again: unlink removes the engine instance, and the second link is a brand-new one', async () => {
+    // Seen in production: the engine's logout left the session alive (the next Link came back
+    // CONNECTED with no scan), and a QR drawn on a logged-out instance gave "Couldn't link device".
+    const inst = 'client_shop1';
+    env.engine.calls.length = 0;
+    const d = await (await post('/v1/accounts/client/shop1/disconnect', {}, inventory.key)).json() as any;
+    expect(d.status).toBe('LOGGED_OUT');
+    expect(env.engine.states.has(inst)).toBe(false); // nothing left to come back by itself
+    const out = env.engine.calls.findIndex((c) => c.includes('/instance/logout/' + inst));
+    expect(out).toBeGreaterThanOrEqual(0);
+    expect(env.engine.calls.findIndex((c) => c.includes('/instance/delete/' + inst))).toBeGreaterThan(out);
+
+    env.engine.calls.length = 0;
+    const again = await (await post('/v1/accounts/client/shop1/link', { method: 'qr' }, inventory.key)).json() as any;
+    expect(again.status).toBe('LINKING');
+    expect(again.qr).toMatch(/^data:image\/png;base64,/);
+    expect(env.engine.calls.some((c) => c.includes('/instance/create'))).toBe(true);
+    let row = await env.db.account.findUniqueOrThrow({ where: { clientId: 'shop1' } });
+    expect(row.status).toBe('LINKING');
+    expect(row.linkedAt).toBeNull();
+
+    // The engine's goodbye for the old instance arrives late: it must not undo the new link.
+    const late = await post('/engine/events/test-webhook-secret-0123456789', { event: 'connection.update', instance: inst, data: { state: 'close', statusReason: 401 } });
+    expect(late.status).toBeLessThan(300);
+    // The health watch sees "connecting" and the QR events keep coming: still LINKING, not a drop.
+    await post('/engine/events/test-webhook-secret-0123456789', { event: 'qrcode.updated', instance: inst, data: {} });
+    await runHealthWatch(env.ctx, { confirmDelayMs: 0 });
+    row = await env.db.account.findUniqueOrThrow({ where: { clientId: 'shop1' } });
+    expect(row.status).toBe('LINKING');
+
+    // The screen asks again every 18 s: the QR on show is kept, the instance is not wiped again.
+    env.engine.calls.length = 0;
+    const poll = await (await post('/v1/accounts/client/shop1/link', { method: 'qr' }, inventory.key)).json() as any;
+    expect(poll.status).toBe('LINKING');
+    expect(env.engine.calls.some((c) => c.includes('/instance/delete/'))).toBe(false);
+
+    // The phone scans: connected again, counted as newly linked.
+    env.engine.setState(inst, 'open', '919000000002');
+    await post('/engine/events/test-webhook-secret-0123456789', { event: 'connection.update', instance: inst, data: { state: 'open', wuid: '919000000002@s.whatsapp.net' } });
+    row = await env.db.account.findUniqueOrThrow({ where: { clientId: 'shop1' } });
+    expect(row.status).toBe('CONNECTED');
+    expect(row.linkedAt).not.toBeNull();
+  });
+
+  it('unlink says so only when it is true: an engine that keeps the session gets an error, not "Unlinked"', async () => {
+    env.engine.zombieLogout = true;
+    try {
+      const r = await post('/v1/accounts/client/shop1/disconnect', {}, inventory.key);
+      expect(r.status).toBe(503);
+      expect(((await r.json()) as any).error.message).toMatch(/try again/i);
+      const row = await env.db.account.findUniqueOrThrow({ where: { clientId: 'shop1' } });
+      expect(row.status).toBe('CONNECTED'); // still the truth
+    } finally {
+      env.engine.zombieLogout = false;
+    }
+  }, 30_000);
+
+  it('removed on the phone (401): the next link wipes the used-up instance and starts a new one', async () => {
+    const inst = 'client_shop1';
+    env.engine.setState(inst, 'close', null, 401);
+    await post('/engine/events/test-webhook-secret-0123456789', { event: 'connection.update', instance: inst, data: { state: 'close', statusReason: 401 } });
+    expect((await env.db.account.findUniqueOrThrow({ where: { clientId: 'shop1' } })).status).toBe('LOGGED_OUT');
+    env.engine.calls.length = 0;
+    const again = await (await post('/v1/accounts/client/shop1/link', { method: 'qr' }, inventory.key)).json() as any;
+    expect(again.status).toBe('LINKING');
+    const del = env.engine.calls.findIndex((c) => c.includes('/instance/delete/' + inst));
+    expect(del).toBeGreaterThanOrEqual(0);
+    expect(env.engine.calls.findIndex((c) => c.includes('/instance/create'))).toBeGreaterThan(del);
+  });
+
+  it('a number that only dropped keeps its engine instance when Link is pressed', async () => {
+    await seedClient(env, 'shop5', 'DISCONNECTED', '919000000005');
+    env.engine.calls.length = 0;
+    await post('/v1/accounts/client/shop5/link', { method: 'qr' }, inventory.key);
+    expect(env.engine.calls.some((c) => c.includes('/instance/delete/'))).toBe(false);
   });
 
   it('admin links the ScaleEzy number: admin key only, QR or code, never re-links a connected one', async () => {

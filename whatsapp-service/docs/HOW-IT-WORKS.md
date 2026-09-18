@@ -70,7 +70,9 @@ Things the shop should know (the Help Center page says this too):
 - A newly linked number sends at most **40 messages a day for its first 14 days**, then
   **200 a day**. Sudden volume from a new link is what gets numbers banned, so the service holds
   the rest until the next day instead of risking the shop's number.
-- **Unlink** any time in Settings → WhatsApp (or from the phone's Linked devices list).
+- **Unlink** any time in Settings → WhatsApp (or from the phone's Linked devices list). Unlink
+  tells WhatsApp to remove the device, deletes everything the engine held for the number, and
+  only says "unlinked" once the engine confirms it is gone. Linking again is always a fresh scan.
 
 ## Journey 3: a client's customer or supplier receiving a document
 

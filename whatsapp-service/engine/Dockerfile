@@ -9,3 +9,7 @@ RUN node /tmp/patch-pairing.cjs && rm /tmp/patch-pairing.cjs
 # The encryption library logs whole session objects, keys included. Keep the logs, drop the keys.
 COPY patch-quiet-keys.cjs /tmp/patch-quiet-keys.cjs
 RUN node /tmp/patch-quiet-keys.cjs && rm /tmp/patch-quiet-keys.cjs
+
+# Unlink must reach WhatsApp: wait for its answer before closing the socket.
+COPY patch-logout.cjs /tmp/patch-logout.cjs
+RUN node /tmp/patch-logout.cjs && rm /tmp/patch-logout.cjs
