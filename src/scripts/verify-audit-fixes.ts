@@ -1,5 +1,5 @@
 /**
- * Targeted verification for the audit fixes. run-full-test.ts covers the happy paths;
+ * Targeted verification for the audit fixes. (The older run-full-test.ts, since removed, covered the happy paths;)
  * this covers the specific broken behaviours that were fixed, so a regression in any of
  * them fails loudly rather than silently coming back.
  */
