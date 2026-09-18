@@ -46,7 +46,8 @@ Background and decisions: `SPEC.md` (this repo) and `PLAN-whatsapp.md` in the In
 
 ## API (JSON, `/v1`)
 
-**Adding WhatsApp to another module (CRM, Marketing, Billing): read [docs/USING-FROM-A-MODULE.md](docs/USING-FROM-A-MODULE.md).**
+**How it works (ScaleEzy's number, shops' numbers, what customers see): [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).**
+**Adding WhatsApp to another module (CRM, Marketing, Billing), step by step: [docs/USING-FROM-A-MODULE.md](docs/USING-FROM-A-MODULE.md).**
 
 Module calls carry `x-module-key`; the platform console uses `x-admin-key`. Every error is
 `{ "error": { "code", "message" } }` with a plain-English message; never a stack trace.
