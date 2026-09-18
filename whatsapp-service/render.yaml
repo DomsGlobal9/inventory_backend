@@ -1,0 +1,181 @@
+# Render Blueprint for the ScaleEzy WhatsApp Service: four pieces. NOT deployed yet.
+#
+# REGION: every piece must be in the SAME region and workspace as the Inventory backend, so they
+# share Render's private network. `singapore` is a placeholder until that is confirmed in the
+# Render dashboard (PLAN-whatsapp.md section 8, item 1). Change all four together.
+#
+# One-time steps after the first Blueprint sync (details in README.md, "Deploying to Render"):
+#   1. CREATE DATABASE evolution;  (on whatsapp-db, as its user) - the engine's own database
+#   2. Set the `sync: false` values below in the dashboard (engine DB URL, webhook URL,
+#      ENCRYPTION_KEY).
+#   3. Link the ScaleEzy number to the `scaleezy` instance (platform console / README).
+
+envVarGroups:
+  - name: whatsapp-shared
+    envVars:
+      # The engine's API key. The engine reads AUTHENTICATION_API_KEY; the service accepts the
+      # same name, so one value serves both.
+      - key: AUTHENTICATION_API_KEY
+        generateValue: true
+      # The secret in the webhook path the engine calls on the service.
+      - key: ENGINE_WEBHOOK_SECRET
+        generateValue: true
+
+services:
+  # The WhatsApp engine: Evolution API 2.3.7 + the QR-linking patch (engine/Dockerfile).
+  # Private: nothing on the internet can reach it, only our services on the private network.
+  - type: pserv
+    name: whatsapp-engine
+    runtime: docker
+    region: singapore # must equal the Inventory backend's region (to confirm)
+    plan: standard # 2 GB RAM
+    dockerContext: ./engine
+    dockerfilePath: ./engine/Dockerfile
+    # No disk: WhatsApp sessions are stored in Postgres, so links survive restarts and deploys.
+    envVars:
+      - fromGroup: whatsapp-shared
+      - key: SERVER_TYPE
+        value: http
+      - key: SERVER_PORT
+        value: "8080"
+      - key: SERVER_URL
+        value: http://whatsapp-engine:8080
+      - key: AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES
+        value: "false"
+      - key: CORS_ORIGIN
+        value: "*"
+      - key: DEL_INSTANCE
+        value: "false"
+      - key: DATABASE_PROVIDER
+        value: postgresql
+      # Internal URL of whatsapp-db, database `evolution`, with ?schema=evolution_api
+      - key: DATABASE_CONNECTION_URI
+        sync: false
+      - key: DATABASE_CONNECTION_CLIENT_NAME
+        value: scaleezy_render
+      - key: DATABASE_SAVE_DATA_INSTANCE
+        value: "true"
+      # No copies of people's chats: only what linking needs. Ticks are recorded by our service.
+      - key: DATABASE_SAVE_DATA_NEW_MESSAGE
+        value: "false"
+      - key: DATABASE_SAVE_MESSAGE_UPDATE
+        value: "false"
+      - key: DATABASE_SAVE_DATA_CONTACTS
+        value: "false"
+      - key: DATABASE_SAVE_DATA_CHATS
+        value: "false"
+      - key: DATABASE_SAVE_DATA_LABELS
+        value: "false"
+      - key: DATABASE_SAVE_DATA_HISTORIC
+        value: "false"
+      - key: CACHE_REDIS_ENABLED
+        value: "true"
+      - key: CACHE_REDIS_URI
+        fromService:
+          type: keyvalue
+          name: whatsapp-cache
+          property: connectionString
+      - key: CACHE_REDIS_PREFIX_KEY
+        value: evolution
+      - key: CACHE_REDIS_SAVE_INSTANCES
+        value: "false"
+      - key: CACHE_LOCAL_ENABLED
+        value: "false"
+      - key: CONFIG_SESSION_PHONE_CLIENT
+        value: ScaleEzy
+      - key: CONFIG_SESSION_PHONE_NAME
+        value: Chrome
+      - key: QRCODE_LIMIT
+        value: "30"
+      - key: LOG_LEVEL
+        value: ERROR,WARN,INFO
+      - key: LOG_BAILEYS
+        value: error
+      - key: LANGUAGE
+        value: en
+      # Events to our service over the private network:
+      #   http://<whatsapp-service internal host>:10000/engine/events/<ENGINE_WEBHOOK_SECRET>
+      - key: WEBHOOK_GLOBAL_ENABLED
+        value: "true"
+      - key: WEBHOOK_GLOBAL_URL
+        sync: false
+      - key: WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS
+        value: "false"
+      - key: WEBHOOK_EVENTS_CONNECTION_UPDATE
+        value: "true"
+      - key: WEBHOOK_EVENTS_QRCODE_UPDATED
+        value: "true"
+      - key: WEBHOOK_EVENTS_MESSAGES_UPDATE
+        value: "true"
+      - key: WEBHOOK_EVENTS_SEND_MESSAGE
+        value: "true"
+      - key: WEBHOOK_EVENTS_MESSAGES_UPSERT
+        value: "true"
+      - key: WEBHOOK_RETRY_MAX_ATTEMPTS
+        value: "3"
+      - key: WEBHOOK_RETRY_INITIAL_DELAY_SECONDS
+        value: "2"
+      - key: WEBHOOK_REQUEST_TIMEOUT_MS
+        value: "10000"
+
+  # Our ScaleEzy WhatsApp Service (service/Dockerfile). Public HTTPS, every call needs a key.
+  - type: web
+    name: whatsapp-service
+    runtime: docker
+    region: singapore # must equal the Inventory backend's region (to confirm)
+    plan: starter
+    dockerContext: ./service
+    dockerfilePath: ./service/Dockerfile
+    healthCheckPath: /ready
+    # SIGTERM -> the send in progress finishes before the old instance stops.
+    maxShutdownDelaySeconds: 60
+    numInstances: 1
+    envVars:
+      - fromGroup: whatsapp-shared
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: whatsapp-db
+          property: connectionString
+      - key: ENGINE_URL
+        fromService:
+          type: pserv
+          name: whatsapp-engine
+          property: hostport
+      - key: ADMIN_KEY
+        generateValue: true
+      # 32 random bytes, base64 (README). Never change it once modules exist.
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: SCALEEZY_INSTANCE
+        value: scaleezy
+      - key: SCALEEZY_DAILY_CAP
+        value: "150"
+      - key: MESSAGE_RETENTION_DAYS
+        value: "30" # finished messages are deleted after this; STOPs are kept for good
+      - key: CANARY_ENABLED
+        value: "false" # switch on once the ScaleEzy number is linked on Render
+      - key: CANARY_HOUR_IST
+        value: "9"
+      - key: LOG_LEVEL
+        value: info
+
+  # Redis for the engine's cache. Internal only.
+  - type: keyvalue
+    name: whatsapp-cache
+    region: singapore # must equal the Inventory backend's region (to confirm)
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: [] # no access from outside Render
+
+databases:
+  # One Postgres server, two databases: `whatsapp` (ours, created here) and `evolution` (the
+  # engine's, created once by hand: CREATE DATABASE evolution;).
+  - name: whatsapp-db
+    region: singapore # must equal the Inventory backend's region (to confirm)
+    plan: basic-1gb
+    databaseName: whatsapp
+    user: whatsapp
+    postgresMajorVersion: "16"
+    ipAllowList: [] # no access from outside Render

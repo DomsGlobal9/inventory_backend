@@ -1,0 +1,96 @@
+﻿# Phase 0: the WhatsApp engine (Evolution API) on this PC, to prove linking and sending
+# before anything goes to Render. Every port is bound to 127.0.0.1, so nothing on the
+# network can fetch a QR code or send through it.
+#   docker compose -f docker-compose.local.yml --env-file .env.local up -d
+name: scaleezy-whatsapp-local
+
+services:
+  engine:
+    # Our image: Evolution 2.3.7 (last stable; 2.4 is a release candidate with a licence
+    # activation step) plus the QR-linking fix. See Dockerfile and patch-pairing.cjs.
+    build: .
+    image: scaleezy/whatsapp-engine:2.3.7-pairfix
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18080:8080"
+    environment:
+      SERVER_TYPE: http
+      SERVER_PORT: 8080
+      SERVER_URL: http://localhost:18080
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
+      # The engine's CORS check refuses server-to-server calls that carry no Origin at all, so it is
+      # left open. What protects it is the API key and the fact that it is never exposed publicly.
+      CORS_ORIGIN: "*"
+      DEL_INSTANCE: "false"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:${POSTGRES_PASSWORD}@db:5432/evolution?schema=evolution_api
+      DATABASE_CONNECTION_CLIENT_NAME: scaleezy_local
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      # We keep no copies of people's chats: only what linking and delivery ticks need.
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "false"
+      # Off on purpose: with NEW_MESSAGE off, 2.3.7 tries to store each tick against a message row
+      # that does not exist, throws, and can drop the other ticks in the same batch. Our service
+      # records ticks itself from the webhook below.
+      DATABASE_SAVE_MESSAGE_UPDATE: "false"
+      DATABASE_SAVE_DATA_CONTACTS: "false"
+      DATABASE_SAVE_DATA_CHATS: "false"
+      DATABASE_SAVE_DATA_LABELS: "false"
+      DATABASE_SAVE_DATA_HISTORIC: "false"
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://cache:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_REDIS_SAVE_INSTANCES: "false"
+      CACHE_LOCAL_ENABLED: "false"
+      CONFIG_SESSION_PHONE_CLIENT: ScaleEzy
+      CONFIG_SESSION_PHONE_NAME: Chrome
+      QRCODE_LIMIT: 30
+      LOG_LEVEL: ERROR,WARN,INFO
+      LOG_BAILEYS: error
+      LANGUAGE: en
+      # Every engine event goes to our WhatsApp Service (running on this PC, port 18081). The
+      # secret in the path is the only thing that lets the service trust the call.
+      WEBHOOK_GLOBAL_ENABLED: "true"
+      WEBHOOK_GLOBAL_URL: http://host.docker.internal:18081/engine/events/${ENGINE_WEBHOOK_SECRET}
+      WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: "false"
+      WEBHOOK_EVENTS_CONNECTION_UPDATE: "true"
+      WEBHOOK_EVENTS_QRCODE_UPDATED: "true"
+      WEBHOOK_EVENTS_MESSAGES_UPDATE: "true"
+      WEBHOOK_EVENTS_SEND_MESSAGE: "true"
+      WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
+      # A service that is briefly down must not make the engine queue retries for minutes;
+      # the health watch catches anything missed.
+      WEBHOOK_RETRY_MAX_ATTEMPTS: "3"
+      WEBHOOK_RETRY_INITIAL_DELAY_SECONDS: "2"
+      WEBHOOK_REQUEST_TIMEOUT_MS: "10000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - db
+      - cache
+
+  db:
+    # Pinned by version and digest so nothing changes underneath us.
+    image: postgres:16.15-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    restart: unless-stopped
+    # Local only: lets the WhatsApp Service (run with npm on this PC) reach its `whatsapp`
+    # database on the same server. Bound to 127.0.0.1, never the network.
+    ports:
+      - "127.0.0.1:15432:5432"
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: evolution
+    volumes:
+      - wa_db:/var/lib/postgresql/data
+
+  cache:
+    image: redis:7.4.11-alpine@sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - wa_cache:/data
+
+volumes:
+  wa_db:
+  wa_cache:

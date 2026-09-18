@@ -1,0 +1,150 @@
+import pino, { type Logger } from 'pino';
+
+// Logs never contain message text, document contents, keys or full phone numbers. Instead of
+// trusting every call site, every finished log line passes through a scrubber on its way out:
+// sensitive fields are dropped or masked by name, and any long run of digits anywhere (a phone
+// number inside an error message, a JID, a URL) is masked to its last 4 digits.
+
+const DROP_KEYS = new Set(
+  [
+    'text',
+    'caption',
+    'body',
+    'document',
+    'base64',
+    'media',
+    'content',
+    'conversation',
+    'message',
+    'apikey',
+    'apiKey',
+    'key',
+    'secret',
+    'token',
+    'password',
+    'authorization',
+    'x-module-key',
+    'x-admin-key',
+    'x-signature',
+    'webhookSecret',
+    'webhookSecretEncrypted',
+    'qr',
+    'qrcode',
+    'code',
+    'pairingCode',
+    'cookie',
+    'headers',
+  ].map((k) => k.toLowerCase()),
+);
+
+// `msg` is pino's own message field and is scrubbed, not dropped. `err` keeps its type and
+// message (scrubbed) but its stack is shortened below.
+const KEEP_KEYS = new Set(['msg', 'level', 'time', 'pid', 'hostname', 'name', 'module', 'type', 'stack']);
+
+// 7+ digits in a row (phone numbers, JIDs), or a number written in groups such as
+// "+91 98765 43210" / "98765-43210" (10+ digits in total). Dates like 2026-09-18 are neither.
+const DIGIT_RUN = /\+?\d{7,}/g;
+const GROUPED = /\+?\d{1,5}(?:[ -]\d{2,6}){1,4}/g;
+// Message and account ids are UUIDs; one can contain an all-digit group. They are protected so
+// they stay searchable in logs.
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+export function maskDigits(s: string): string {
+  const uuids: string[] = [];
+  let out = s.replace(UUID, (m) => {
+    uuids.push(m);
+    return `\u0000${uuids.length - 1}\u0000`;
+  });
+  out = out
+    .replace(GROUPED, (m) => {
+      const digits = m.replace(/\D/g, '');
+      return digits.length >= 10 ? `***${digits.slice(-4)}` : m;
+    })
+    .replace(DIGIT_RUN, (m) => `***${m.replace(/\D/g, '').slice(-4)}`);
+  return out.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => uuids[Number(i)] ?? '');
+}
+
+export function scrubValue(value: unknown, depth = 0): unknown {
+  if (depth > 8) return '[deep]';
+  if (typeof value === 'string') return maskDigits(value);
+  if (typeof value === 'number') {
+    // A phone number sent as a JSON number is still a phone number.
+    const len = String(Math.abs(Math.trunc(value))).length;
+    return Number.isInteger(value) && len >= 8 && len <= 15 && !isLikelyTimestamp(value) ? maskDigits(String(value)) : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => scrubValue(v, depth + 1));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const lk = k.toLowerCase();
+      if (k === 'err' && v && typeof v === 'object') {
+        // Errors keep their message (digits masked) so failures can be diagnosed.
+        const e = v as Record<string, unknown>;
+        out[k] = {
+          type: scrubValue(e.type, depth + 1),
+          code: scrubValue(e.code, depth + 1),
+          message: typeof e.message === 'string' ? maskDigits(e.message).slice(0, 500) : undefined,
+          stack: typeof e.stack === 'string' ? maskDigits(e.stack) : undefined,
+        };
+        continue;
+      }
+      if (k === 'time' || k === 'level' || k === 'pid') {
+        out[k] = v;
+        continue;
+      }
+      if (!KEEP_KEYS.has(k) && DROP_KEYS.has(lk)) {
+        out[k] = '[redacted]';
+        continue;
+      }
+      out[k] = scrubValue(v, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+function isLikelyTimestamp(n: number): boolean {
+  // Epoch milliseconds (13 digits, 2001-2286) or seconds (10 digits) are not phone numbers.
+  return (n > 1e12 && n < 1e13) || (n > 1e9 && n < 1e10 && n > 1.5e9);
+}
+
+export function scrubLine(line: string): string {
+  try {
+    const obj = JSON.parse(line) as Record<string, unknown>;
+    return `${JSON.stringify(scrubValue(obj))}\n`;
+  } catch {
+    // Not JSON (should not happen with pino): mask digits and cut it short.
+    return `${maskDigits(line).slice(0, 2000)}\n`;
+  }
+}
+
+export interface LineSink {
+  write(line: string): unknown;
+}
+
+export function createLogger(level: string, sink: LineSink = process.stdout): Logger {
+  const scrubbing = { write: (chunk: string) => sink.write(scrubLine(chunk)) };
+  return pino(
+    {
+      level,
+      base: { name: 'whatsapp-service' },
+      timestamp: pino.stdTimeFunctions.isoTime,
+      serializers: {
+        err: (e: unknown) => {
+          const err = e as { name?: string; message?: string; code?: string; stack?: string };
+          return {
+            type: err?.name,
+            message: err?.message,
+            code: err?.code,
+            // First frames only: enough to find the line, without dumping payloads.
+            stack: typeof err?.stack === 'string' ? err.stack.split('\n').slice(0, 6).join('\n') : undefined,
+          };
+        },
+      },
+    },
+    scrubbing,
+  );
+}
+
+// The process-wide logger. Level can be changed once config is loaded.
+export const log: Logger = createLogger(process.env.LOG_LEVEL || 'info');

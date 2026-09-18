@@ -1,0 +1,100 @@
+# Weekly: has Evolution API released something new, or has Baileys released the
+# companion_reg_refresh fix (Baileys#2765 / evolution PR #2727)? If anything differs from
+# .github/upstream-baseline.json, an issue is opened, so the patch is removed and upgrades are
+# made deliberately (staging engine first, see README), never by surprise.
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: '0 3 * * 1' # Mondays 03:00 UTC (08:30 IST)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const base = JSON.parse(fs.readFileSync('.github/upstream-baseline.json', 'utf8'));
+            const [evoOwner, evoRepo] = base.evolutionRepo.split('/');
+            const [bOwner, bRepo] = base.baileysRepo.split('/');
+            const findings = [];
+
+            // (a) Evolution API releases
+            const evoReleases = (await github.rest.repos.listReleases({ owner: evoOwner, repo: evoRepo, per_page: 10 })).data;
+            const evoLatest = evoReleases[0]?.tag_name;
+            const evoStable = evoReleases.find((r) => !r.prerelease && !r.draft)?.tag_name;
+            if (evoLatest && evoLatest !== base.evolutionLatestTag) {
+              findings.push(`New Evolution API release: **${evoLatest}** (baseline ${base.evolutionLatestTag}). ${evoReleases[0].html_url}`);
+            }
+            if (evoStable && evoStable !== base.evolutionLatestStable) {
+              findings.push(`New **stable** Evolution API release: **${evoStable}** (we run ${base.evolutionLatestStable} + patch).`);
+            }
+            const pr2727 = (await github.rest.pulls.get({ owner: evoOwner, repo: evoRepo, pull_number: 2727 })).data;
+            const pr2727State = pr2727.merged ? 'merged' : pr2727.state;
+            if (pr2727State !== base.evolutionPr2727State) {
+              findings.push(`Evolution PR #2727 (Baileys pairing fix) is now **${pr2727State}**. ${pr2727.html_url}`);
+            }
+
+            // (b) Baileys: is the companion_reg_refresh fix in a release?
+            // Releases, newest first (tag names are not ordered sensibly, e.g. rc.9 vs rc14).
+            const bTags = (await github.rest.repos.listReleases({ owner: bOwner, repo: bRepo, per_page: 20 })).data.filter((r) => !r.draft).map((r) => r.tag_name);
+            const bLatest = bTags[0];
+            if (bLatest && bLatest !== base.baileysLatestTag) {
+              findings.push(`New Baileys release: **${bLatest}** (baseline ${base.baileysLatestTag}).`);
+            }
+            const pr2765 = (await github.rest.pulls.get({ owner: bOwner, repo: bRepo, pull_number: 2765 })).data;
+            const pr2765State = pr2765.merged ? 'merged' : pr2765.state;
+            if (pr2765State !== base.baileysPr2765State) {
+              findings.push(`Baileys PR #2765 (companion_reg_refresh fix) is now **${pr2765State}**. ${pr2765.html_url}`);
+            }
+            let fixReleased = false;
+            if (pr2765.merged && pr2765.merge_commit_sha) {
+              for (const tag of bTags.slice(0, 10)) {
+                try {
+                  const cmp = (await github.rest.repos.compareCommits({ owner: bOwner, repo: bRepo, base: pr2765.merge_commit_sha, head: tag })).data;
+                  if (cmp.status === 'ahead' || cmp.status === 'identical') {
+                    fixReleased = true;
+                    findings.push(`Baileys **${tag}** contains the fix. When an Evolution release ships it, remove engine/patch-pairing.cjs (staging first).`);
+                    break;
+                  }
+                } catch (e) {
+                  core.warning(`compare ${tag}: ${e.message}`);
+                }
+              }
+            }
+            if (fixReleased !== base.baileysFixReleased && !fixReleased) {
+              findings.push('Baseline says the Baileys fix was released, but no recent tag contains it. Check the baseline.');
+            }
+
+            if (findings.length === 0) {
+              core.info('Nothing new upstream.');
+              return;
+            }
+            const title = `Upstream changed: WhatsApp engine (Evolution / Baileys) ${new Date().toISOString().slice(0, 10)}`;
+            const body = [
+              'The weekly upstream watch found changes that need a deliberate decision:',
+              '',
+              ...findings.map((f) => `- ${f}`),
+              '',
+              'What to do (README → "Upgrading the engine"):',
+              '1. Try the new version on the **staging** engine: build, link a test number, send a test, check ticks.',
+              '2. If Baileys ships the fix: drop `engine/patch-pairing.cjs` from the Dockerfile (the build fails anyway once the patched code moves).',
+              '3. Update `.github/upstream-baseline.json` to the reviewed values so this stops reporting.',
+            ].join('\n');
+            const open = (await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'upstream-watch', per_page: 50 })).data;
+            const same = open.find((i) => i.body === body);
+            if (same) {
+              core.info(`Already reported in #${same.number}.`);
+              return;
+            }
+            await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['upstream-watch'] });
+            core.info('Issue opened.');
