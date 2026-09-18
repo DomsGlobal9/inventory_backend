@@ -117,7 +117,81 @@ Phone numbers are shown and logged as the last four digits only (`••••46
 | Daily limit reached | "Today's WhatsApp limit for this number is used up, to keep it safe from being blocked. It goes after midnight." | Sends it just after midnight (Indian time) |
 | The service or engine restarts | Nothing | Picks up exactly where it stopped; never sends a message twice |
 | Engine or network down briefly | A short wait | Retries after 30 s, 2 min, 8 min |
-| ScaleEzy's number itself drops | ScaleEzy's daily test fails; admin sees it | Day Books wait until it is relinked (`npm run link:scaleezy`) |
+| ScaleEzy's number itself drops | ScaleEzy's daily test fails; admin sees it | Day Books wait until it is relinked: see *Reconnecting a number that logged out* below |
+
+## Reconnecting a number that logged out
+
+A number logs out when its device is removed on the phone (WhatsApp → Linked devices), WhatsApp
+is reinstalled or moved to another phone, the phone has no internet for about 14 days, or
+WhatsApp itself ends the link. Nothing is lost: messages wait in the queue and go once the
+number is linked again, if that is within a day.
+
+### A shop's own number (the shop does this)
+
+How they know: **Settings → WhatsApp** says it is not connected, **Send on WhatsApp** buttons say
+"The shop's WhatsApp is not connected", and the owner gets an email and a WhatsApp from ScaleEzy.
+
+1. Sign in as the owner (or anyone whose role has **WhatsApp → Manage**).
+2. **Settings → WhatsApp → Link by scanning a QR code**.
+3. On the shop's phone: WhatsApp → **Linked devices** → **Link a device** → scan.
+   (No camera? **Link with a code instead**, type the shop's number, then on the phone choose
+   **Link with phone number instead** and type the 8-letter code.)
+4. The screen says **Connected**. Waiting messages start going by themselves.
+
+### ScaleEzy's own number, 8142424642 (ScaleEzy staff do this)
+
+How you know: shops see **"ScaleEzy's WhatsApp number is not connected right now"** when they
+press *Send me today's now*, Day Books stop arriving, the 9 am daily test fails
+(`/admin/canary`), and the smoke test says `FAIL  ScaleEzy number connected`.
+
+You need: the ScaleEzy phone (with internet), this repo on a PC with Node, and the service's
+`ADMIN_KEY` (Render → whatsapp-service → Environment, or the password manager).
+
+In PowerShell:
+
+```powershell
+cd D:\villy\inventory\backend\whatsapp-service\service
+$env:ADMIN_KEY = "<paste the ADMIN_KEY>"
+npm run link:scaleezy -- --base https://whatsapp-service-gv88.onrender.com
+```
+
+1. A page with a QR code opens in the browser (it is the file `scaleezy-qr.html`; it refreshes
+   by itself).
+2. On the ScaleEzy phone: WhatsApp → **Linked devices** → **Link a device** → scan.
+3. If the phone says *Couldn't link device*, wait a few seconds for the page to show the next
+   code and scan again.
+4. The command prints **The ScaleEzy number is linked.** Then check everything:
+
+```powershell
+npm run smoke -- --base https://whatsapp-service-gv88.onrender.com
+```
+
+   It must end with **Smoke test passed.**
+
+No camera, or the QR will not scan? Use a code instead:
+
+```powershell
+npm run link:scaleezy -- --base https://whatsapp-service-gv88.onrender.com --code 918142424642
+```
+
+It prints an 8-letter code. On the phone: Linked devices → Link a device → **Link with phone
+number instead** → type the code.
+
+If it does not work:
+
+| What you see | What to do |
+|---|---|
+| `HTTP 401` | The `ADMIN_KEY` is wrong or has a space at the end. Copy it again |
+| `HTTP 503` / "not reachable" | Render → check **whatsapp-engine** and **whatsapp-service** are both **Live**, then run it again |
+| `Not linked after 10 minutes` | Nobody scanned in time. Run the command again |
+| `already linked. Nothing to do.` | It is connected. Run the smoke test to be sure |
+
+Keep it linked:
+
+- **On the ScaleEzy phone, never remove "ScaleEzy (Chrome)" from Linked devices.** That entry
+  *is* the live link. (This is what logged the number out on 18 Sep 2026.)
+- Keep that phone charged and online; open WhatsApp on it at least once a week.
+- Run the smoke test after every deploy of the engine or the service.
 
 ## Where things are
 

@@ -8,6 +8,7 @@
 //
 // Safe to run again: a number that is already connected is left alone.
 
+import { exec } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadDotEnv } from '../src/lib/dotenv';
@@ -61,7 +62,12 @@ async function main(): Promise<void> {
 <body style="font-family:system-ui;text-align:center;padding:30px"><h2>Scan with the ScaleEzy phone</h2>
 <p>WhatsApp &gt; Linked devices &gt; Link a device</p><img src="${out.qr}" width="300" height="300"></body>`,
     );
-    if (i === 0) console.log(`Open ${file} in a browser and scan the code. It refreshes by itself; this waits until the phone is linked.`);
+    if (i === 0) {
+      // Open the page for the person; if that fails they can still open the file themselves.
+      const opener = process.platform === 'win32' ? `start "" "${file}"` : process.platform === 'darwin' ? `open "${file}"` : `xdg-open "${file}"`;
+      exec(opener, () => undefined);
+      console.log(`The QR page is opening in your browser (${file}). Scan it; it refreshes by itself, and this waits until the phone is linked.`);
+    }
     await sleep(15_000);
   }
   throw new Error('Not linked after 10 minutes. Run it again.');
