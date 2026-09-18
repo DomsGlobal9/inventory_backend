@@ -303,6 +303,18 @@ async function main() {
     await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null }));
     check('ScaleEzy\'s own number dropping tells no shop owner', seen.filter(s => s.body?.kind === 'S4').length === n3 + 1);
 
+    console.log('\nH. HANDLED EVENTS ARE NOT KEPT FOR EVER');
+    const { HousekeepingScheduler } = require('../jobs/housekeeping.scheduler');
+    const oldId = `verify-old-${STAMP}`, newId = `verify-new-${STAMP}`;
+    await prisma.whatsAppEventSeen.createMany({ data: [
+      { id: oldId, receivedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+      { id: newId, receivedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000) }
+    ] });
+    await HousekeepingScheduler.runOnce();
+    check('an event id older than a week is forgotten', !(await prisma.whatsAppEventSeen.findUnique({ where: { id: oldId } })));
+    check('a recent one is still remembered (a repeat is still recognised)', !!(await prisma.whatsAppEventSeen.findUnique({ where: { id: newId } })));
+    await prisma.whatsAppEventSeen.deleteMany({ where: { id: newId } });
+
     console.log(`\n================ RESULT: ${passed} passed | ${failed} failed ================`);
     if (failures.length) { console.log('\nFailed:'); failures.forEach(x => console.log('  - ' + x)); process.exitCode = 1; }
   } finally {

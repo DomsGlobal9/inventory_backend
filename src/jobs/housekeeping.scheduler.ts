@@ -12,6 +12,9 @@ import { shopifyPrivacyService } from '../services/shopify-privacy';
  *                         and most are never bought.
  *   shopify_oauth_states  a row every time somebody starts connecting Shopify. The service had a
  *                         prune method; nothing called it.
+ *   whatsapp_events_seen  one id per event from the WhatsApp Service, kept only to recognise a
+ *                         repeat. The service gives up retrying an event within about a minute,
+ *                         so a week is far more than enough.
  *
  * What is NOT deleted matters more than what is:
  *
@@ -30,6 +33,9 @@ export class HousekeepingScheduler {
   /** How long an unbought quote is kept after it stopped being valid. */
   static readonly UNUSED_QUOTE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
+  /** How long a handled WhatsApp event's id is remembered. */
+  static readonly WHATSAPP_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
   /** Exposed so it can be run, and verified, without waiting for the clock. */
   static async runOnce(now = new Date()) {
     const cutoff = new Date(now.getTime() - this.UNUSED_QUOTE_RETENTION_MS);
@@ -38,12 +44,15 @@ export class HousekeepingScheduler {
       where: { consumedAt: null, expiresAt: { lt: cutoff } }
     });
     const oauthStates = await shopifyInstallationService.pruneExpiredStates();
+    const whatsappEvents = await prisma.whatsAppEventSeen.deleteMany({
+      where: { receivedAt: { lt: new Date(now.getTime() - this.WHATSAPP_EVENT_RETENTION_MS) } }
+    });
 
     // Not throwing away, but the same "nobody else will ever come back for this" chore: a Shopify
     // privacy request that failed after its webhook was acknowledged. Shopify will not resend it.
     const privacyRequestsRetried = await shopifyPrivacyService.retryUnfinished();
 
-    return { unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried };
+    return { unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried, whatsappEvents: whatsappEvents.count };
   }
 
   static start() {
