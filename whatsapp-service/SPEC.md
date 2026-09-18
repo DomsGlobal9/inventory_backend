@@ -20,7 +20,7 @@ One service that owns every WhatsApp number ScaleEzy uses and sends through the 
 - Never log message text, phone numbers (mask to last 4), document contents, or keys.
 - Plain English in every error a person may see ("This shop's WhatsApp is not linked. Link it in Settings → WhatsApp.").
 - Code style: TypeScript strict, small modules, comments explain why. Separate module per concern.
-- `git init` this folder (no remote yet); commit your work locally with clear messages, no Co-Authored-By line. Do not push.
+- (Built as its own repo; since 18 Sep 2026 it lives in the inventory_backend repo as `whatsapp-service/`, deployed separately.)
 
 ## Stack
 Node 20 + TypeScript + Express, Prisma + Postgres (its own database `whatsapp`, alongside the engine's `evolution` DB in the same Postgres server locally and on Render), zod validation, pino logging with redaction, vitest for tests. Dockerfile for the service. `render.yaml` blueprint for all four Render pieces.

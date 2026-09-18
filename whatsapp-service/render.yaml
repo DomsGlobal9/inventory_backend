@@ -1,3 +1,7 @@
+# Lives in the inventory_backend repo, in whatsapp-service/, and is deployed SEPARATELY from the
+# Inventory backend: create a Render Blueprint from this repo with Blueprint path
+# `whatsapp-service/render.yaml`. The Inventory backend's own Render service should ignore
+# `whatsapp-service/**` (its Build Filters > Ignored paths), so a WhatsApp change never redeploys it.
 # Render Blueprint for the ScaleEzy WhatsApp Service: four pieces. NOT deployed yet.
 #
 # REGION: every piece must be in the SAME region and workspace as the Inventory backend, so they
@@ -29,8 +33,12 @@ services:
     runtime: docker
     region: singapore # must equal the Inventory backend's region (to confirm)
     plan: standard # 2 GB RAM
-    dockerContext: ./engine
-    dockerfilePath: ./engine/Dockerfile
+    dockerContext: ./whatsapp-service/engine
+    dockerfilePath: ./whatsapp-service/engine/Dockerfile
+    # Only its own folder redeploys it: an Inventory push never rebuilds WhatsApp.
+    buildFilter:
+      paths:
+        - whatsapp-service/engine/**
     # No disk: WhatsApp sessions are stored in Postgres, so links survive restarts and deploys.
     envVars:
       - fromGroup: whatsapp-shared
@@ -124,8 +132,12 @@ services:
     runtime: docker
     region: singapore # must equal the Inventory backend's region (to confirm)
     plan: starter
-    dockerContext: ./service
-    dockerfilePath: ./service/Dockerfile
+    dockerContext: ./whatsapp-service/service
+    dockerfilePath: ./whatsapp-service/service/Dockerfile
+    # Only its own folder redeploys it: an Inventory push never rebuilds WhatsApp.
+    buildFilter:
+      paths:
+        - whatsapp-service/service/**
     healthCheckPath: /ready
     # SIGTERM -> the send in progress finishes before the old instance stops.
     maxShutdownDelaySeconds: 60

@@ -1,5 +1,7 @@
 # ScaleEzy WhatsApp Service
 
+> Lives in the **inventory_backend** repo as `whatsapp-service/`, and is **deployed separately** on Render (Blueprint path `whatsapp-service/render.yaml`). It shares no code, settings or database with the Inventory backend.
+
 One service owns every WhatsApp number ScaleEzy uses and sends through the WhatsApp engine
 (Evolution API). Modules (Inventory now; CRM and Marketing later) never talk to the engine; they
 call this service with their own key.
@@ -25,8 +27,8 @@ Background and decisions: `SPEC.md` (this repo) and `PLAN-whatsapp.md` in the In
 | `engine/` | Our engine image: Evolution API 2.3.7 (pinned by digest) + `patch-pairing.cjs`, the QR-linking fix. The build **fails** if the patch no longer fits. `docker-compose.local.yml` runs engine + Postgres + Redis on this PC. |
 | `service/` | The WhatsApp Service (Node 22, TypeScript, Express, Prisma/Postgres). |
 | `render.yaml` | Render Blueprint for all four pieces (not deployed yet). |
-| `.github/workflows/ci.yml` | Every push: typecheck, all tests, build, and build **both** Docker images. |
-| `.github/workflows/upstream-watch.yml` | Weekly: opens an issue when Evolution or Baileys release something (incl. the pairing fix). |
+| `../.github/workflows/whatsapp-ci.yml` | Every push that touches `whatsapp-service/`: typecheck, all tests, build, and build **both** Docker images. (At the repo root, where GitHub reads it.) |
+| `../.github/workflows/whatsapp-upstream-watch.yml` | Weekly: opens an issue when Evolution or Baileys release something (incl. the pairing fix). |
 
 ### Service layout (`service/src`)
 
@@ -216,7 +218,7 @@ Every engine change goes **staging → test → production**:
 5. **Remove the patch** when an Evolution release ships a Baileys containing the
    `companion_reg_refresh` fix (Baileys#2765, evolution PR #2727): delete `patch-pairing.cjs`
    and its two Dockerfile lines, go through steps 3-4. The weekly `upstream-watch` workflow opens
-   an issue when that happens; update `.github/upstream-baseline.json` once handled.
+   an issue when that happens; update `.github/whatsapp-upstream-baseline.json` (repo root) once handled.
 
 **Rollback** = the previous image: in Render, *Rollback* to the previous deploy of
 `whatsapp-engine` (or revert the Dockerfile commit). Sessions live in Postgres, so a rollback

@@ -2,11 +2,14 @@
 # BOTH Docker images. The engine image applies patch-pairing.cjs, which fails if the code it
 # patches has moved, so a patch that no longer fits breaks CI here, never production.
 # Actions are pinned by commit SHA (tag in the comment).
-name: ci
+name: whatsapp-ci
 
+# Only when the WhatsApp Service (or this file) changes: an Inventory-only push is not slowed down.
 on:
   push:
+    paths: ['whatsapp-service/**', '.github/workflows/whatsapp-ci.yml']
   pull_request:
+    paths: ['whatsapp-service/**', '.github/workflows/whatsapp-ci.yml']
 
 permissions:
   contents: read
@@ -17,7 +20,7 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: service
+        working-directory: whatsapp-service/service
     services:
       postgres:
         image: postgres:16.15-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
@@ -38,9 +41,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version-file: service/.nvmrc
+          node-version-file: whatsapp-service/service/.nvmrc
           cache: npm
-          cache-dependency-path: service/package-lock.json
+          cache-dependency-path: whatsapp-service/service/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npx prisma generate
       - name: Typecheck (strict, includes tests and scripts)
@@ -56,11 +59,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build engine image (fails if the pairing patch no longer fits)
-        run: docker build -t scaleezy/whatsapp-engine:ci engine
+        run: docker build -t scaleezy/whatsapp-engine:ci whatsapp-service/engine
       - name: Engine image starts its code with the patch in place
         run: docker run --rm --entrypoint sh scaleezy/whatsapp-engine:ci -c "grep -q 'refreshPairingQR' /evolution/node_modules/baileys/lib/Socket/socket.js"
       - name: Build service image
-        run: docker build -t scaleezy/whatsapp-service:ci service
+        run: docker build -t scaleezy/whatsapp-service:ci whatsapp-service/service
       - name: Service image refuses to start without its settings
         run: |
           set +e

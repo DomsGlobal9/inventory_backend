@@ -1,8 +1,8 @@
 # Using the WhatsApp Service from a ScaleEzy module
 
 For the CRM, Marketing, Billing, or any new module. Inventory is the worked example:
-`inventory/backend/src/services/whatsapp/` (`client.ts` is the only file that calls this service,
-`service.ts` holds the rules, `routes/whatsapp.routes.ts` receives the events).
+`src/services/whatsapp/` in this same repo (`client.ts` is the only file that calls this service,
+`service.ts` holds the rules, `src/routes/whatsapp.routes.ts` receives the events).
 
 ## What the service does, and what your module must not do
 
@@ -112,7 +112,7 @@ the module that sent the message.
 - Which modules may act for which shops is `service/src/auth/allow.ts`. Today every active module
   may act for every client; **add the real rule when a second module joins** (e.g. only shops
   subscribed to that module).
-- Test against a fake service first (Inventory's `backend/src/scripts/verify-whatsapp.ts` starts
+- Test against a fake service first (Inventory's `src/scripts/verify-whatsapp.ts` starts
   one in-process), then against the local engine sending **only to your own test numbers**.
 - Screens: fall back to the old click-to-chat (`wa.me`) when the shop is not linked, show the
   status and `waitingReason` next to the button, and one press = one send.

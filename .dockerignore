@@ -18,6 +18,8 @@ dist/
 *.tsbuildinfo
 
 # Not part of the running service
+# The WhatsApp Service: its own images, built and deployed separately (whatsapp-service/render.yaml).
+whatsapp-service/
 .git/
 .gitignore
 docs/

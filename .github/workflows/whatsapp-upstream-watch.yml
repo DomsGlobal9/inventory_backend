@@ -1,8 +1,8 @@
 # Weekly: has Evolution API released something new, or has Baileys released the
 # companion_reg_refresh fix (Baileys#2765 / evolution PR #2727)? If anything differs from
-# .github/upstream-baseline.json, an issue is opened, so the patch is removed and upgrades are
+# .github/whatsapp-upstream-baseline.json, an issue is opened, so the patch is removed and upgrades are
 # made deliberately (staging engine first, see README), never by surprise.
-name: upstream-watch
+name: whatsapp-upstream-watch
 
 on:
   schedule:
@@ -23,7 +23,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const base = JSON.parse(fs.readFileSync('.github/upstream-baseline.json', 'utf8'));
+            const base = JSON.parse(fs.readFileSync('.github/whatsapp-upstream-baseline.json', 'utf8'));
             const [evoOwner, evoRepo] = base.evolutionRepo.split('/');
             const [bOwner, bRepo] = base.baileysRepo.split('/');
             const findings = [];
@@ -88,7 +88,7 @@ jobs:
               'What to do (README → "Upgrading the engine"):',
               '1. Try the new version on the **staging** engine: build, link a test number, send a test, check ticks.',
               '2. If Baileys ships the fix: drop `engine/patch-pairing.cjs` from the Dockerfile (the build fails anyway once the patched code moves).',
-              '3. Update `.github/upstream-baseline.json` to the reviewed values so this stops reporting.',
+              '3. Update `.github/whatsapp-upstream-baseline.json` to the reviewed values so this stops reporting.',
             ].join('\n');
             const open = (await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'upstream-watch', per_page: 50 })).data;
             const same = open.find((i) => i.body === body);
