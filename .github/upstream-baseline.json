@@ -1,0 +1,11 @@
+{
+  "_comment": "What we last reviewed upstream. upstream-watch.yml opens an issue when anything differs. After handling it (e.g. testing a new Evolution release on the staging engine, or removing engine/patch-pairing.cjs once Baileys ships the fix), update these values in the same commit.",
+  "evolutionRepo": "evolution-foundation/evolution-api",
+  "evolutionLatestTag": "2.4.0-rc2",
+  "evolutionLatestStable": "2.3.7",
+  "evolutionPr2727State": "open",
+  "baileysRepo": "WhiskeySockets/Baileys",
+  "baileysLatestTag": "v7.0.0-rc14",
+  "baileysPr2765State": "open",
+  "baileysFixReleased": false
+}

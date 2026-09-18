@@ -49,7 +49,19 @@ export async function startCanary(ctx: Ctx): Promise<CanaryRun> {
 export async function settleCanaries(ctx: Ctx, now = new Date()): Promise<void> {
   const pending = await ctx.db.canaryRun.findMany({ where: { outcome: 'PENDING' } });
   for (const run of pending) {
-    const m = run.messageId ? await ctx.db.message.findUnique({ where: { id: run.messageId } }) : null;
+    const m = run.messageId ? await ctx.db.message.findUnique({ where: { id: run.messageId }, include: { account: { select: { phone: true } } } }) : null;
+    // WhatsApp never sends a delivered tick for a message to one's own number (checked on the real
+    // engine: only the server tick arrives). A canary to itself therefore passes on the server
+    // tick; a canary to a second phone (CANARY_TO) passes only on the delivered tick.
+    const toSelf = Boolean(m && m.account.phone && m.toDigits === m.account.phone);
+    if (m && toSelf && m.serverAckAt && m.status !== 'FAILED' && m.status !== 'EXPIRED') {
+      const secs = Math.round((m.serverAckAt.getTime() - m.queuedAt.getTime()) / 1000);
+      await ctx.db.canaryRun.update({
+        where: { id: run.id },
+        data: { outcome: 'OK', detail: `Sent to itself; WhatsApp's server confirmed it in ${secs} s. (No delivered tick exists for messages to yourself; set CANARY_TO to a second phone to check delivery too.)` },
+      });
+      continue;
+    }
     if (m && (m.status === 'DELIVERED' || m.status === 'READ')) {
       const secs = m.deliveredAt ? Math.round((m.deliveredAt.getTime() - m.queuedAt.getTime()) / 1000) : null;
       await ctx.db.canaryRun.update({ where: { id: run.id }, data: { outcome: 'OK', detail: `Delivered${secs !== null ? ` in ${secs} s` : ''}.` } });
@@ -62,7 +74,12 @@ export async function settleCanaries(ctx: Ctx, now = new Date()): Promise<void> 
     if (now.getTime() - run.at.getTime() > CANARY_DEADLINE_MS) {
       await ctx.db.canaryRun.update({
         where: { id: run.id },
-        data: { outcome: 'FAILED', detail: `Not delivered within 10 minutes (last status ${m?.status ?? 'unknown'}).` },
+        data: {
+          outcome: 'FAILED',
+          detail: toSelf
+            ? `WhatsApp's server did not confirm it within 10 minutes (last status ${m?.status ?? 'unknown'}).`
+            : `Not delivered within 10 minutes (last status ${m?.status ?? 'unknown'}).`,
+        },
       });
       ctx.log.error({ canaryId: run.id, status: m?.status }, 'canary failed');
     }

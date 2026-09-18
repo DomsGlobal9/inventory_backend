@@ -1,5 +1,5 @@
 import type { Ctx } from '../context';
-import { mapConnectionState, mapEngineMessageStatus, advanceStatus } from '../domain/status';
+import { mapConnectionState, mapEngineMessageStatus, advanceStatus, isServerTick } from '../domain/status';
 import { digitsFromJid } from '../lib/phone';
 import { applyMessageStatus, recordSent } from '../messages/status-apply';
 import { setAccountStatus } from '../accounts/service';
@@ -82,7 +82,7 @@ async function onMessagesUpdate(ctx: Ctx, updates: Record<string, unknown>[]): P
     if (!status) continue;
     const msg = await ctx.db.message.findUnique({ where: { engineMessageId: keyId }, select: { id: true } });
     if (msg) {
-      await applyMessageStatus(ctx, msg.id, status, status === 'FAILED' ? { failReason: 'WhatsApp could not deliver this message.' } : {});
+      await applyMessageStatus(ctx, msg.id, status, status === 'FAILED' ? { failReason: 'WhatsApp could not deliver this message.' } : { serverAck: isServerTick(u.status) });
       continue;
     }
     // Tick for a message whose send call has not returned yet: keep it, the worker applies it.
@@ -127,7 +127,7 @@ async function onSendMessage(ctx: Ctx, instance: string, data: Record<string, un
   });
   if (!candidate) return;
   await recordSent(ctx, candidate.id, keyId);
-  ctx.log.info({ messageId: candidate.id }, 'engine confirmed a send (matched by send event)');
+  ctx.log.debug({ messageId: candidate.id }, 'send event matched a message being sent');
 }
 
 async function onMessagesUpsert(ctx: Ctx, instance: string, data: Record<string, unknown>): Promise<void> {

@@ -15,7 +15,10 @@ export interface RunnerOptions {
   housekeepingEveryMs?: number;
   healthConfirmDelayMs?: number;
   rand?: () => number;
+  notReadyWaitMs?: number;
 }
+
+const STUCK_TASK_MS = 5 * 60 * 1000;
 
 interface Task {
   name: string;
@@ -23,6 +26,7 @@ interface Task {
   run: () => Promise<unknown>;
   running: boolean;
   lastRun: number;
+  startedAt: number;
 }
 
 export class Runner {
@@ -40,7 +44,7 @@ export class Runner {
     private readonly opts: RunnerOptions = {},
   ) {
     this.lock = new LeaderLock(ctx.config.DATABASE_URL, ctx.log, opts.lockKey);
-    this.sender = new Sender(ctx, opts.rand);
+    this.sender = new Sender(ctx, { ...(opts.rand ? { rand: opts.rand } : {}), ...(opts.notReadyWaitMs !== undefined ? { notReadyWaitMs: opts.notReadyWaitMs } : {}) });
     const c = ctx.config;
     this.addTask('send', c.WORKER_TICK_MS, () => this.sender.tick());
     this.addTask('dispatch-webhooks', opts.dispatchEveryMs ?? 2000, () => dispatchDueEvents(ctx));
@@ -59,7 +63,7 @@ export class Runner {
   }
 
   private addTask(name: string, everyMs: number, run: () => Promise<unknown>): void {
-    this.tasks.push({ name, everyMs, run, running: false, lastRun: 0 });
+    this.tasks.push({ name, everyMs, run, running: false, lastRun: 0, startedAt: 0 });
   }
 
   start(): void {
@@ -95,8 +99,15 @@ export class Runner {
     }
     for (const t of this.tasks) {
       if (this.stopping || !this.lock.isHeld) return;
+      if (t.running && now - t.startedAt > STUCK_TASK_MS) {
+        // Every call inside has its own time limit, so this should never happen; if it does,
+        // a stuck task must not stop sending for good.
+        this.ctx.log.error({ task: t.name }, "background task stuck for 5 minutes; starting a new run");
+        t.running = false;
+      }
       if (t.running || now - t.lastRun < t.everyMs) continue;
       t.lastRun = now;
+      t.startedAt = now;
       t.running = true;
       // Tasks run side by side; one slow task (a dead module webhook) never holds up sending.
       void t

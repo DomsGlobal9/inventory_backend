@@ -1,0 +1,72 @@
+# Every push: typecheck, all tests (unit + resilience against a real Postgres), build, and build
+# BOTH Docker images. The engine image applies patch-pairing.cjs, which fails if the code it
+# patches has moved, so a patch that no longer fits breaks CI here, never production.
+# Actions are pinned by commit SHA (tag in the comment).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  service:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: service
+    services:
+      postgres:
+        image: postgres:16.15-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: whatsapp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d whatsapp_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/whatsapp_test?schema=public
+      # prisma generate reads the schema's datasource; no connection is made.
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/whatsapp_test?schema=public
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: service/.nvmrc
+          cache: npm
+          cache-dependency-path: service/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx prisma generate
+      - name: Typecheck (strict, includes tests and scripts)
+        run: npm run typecheck
+      - name: Unit and resilience tests
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build engine image (fails if the pairing patch no longer fits)
+        run: docker build -t scaleezy/whatsapp-engine:ci engine
+      - name: Engine image starts its code with the patch in place
+        run: docker run --rm --entrypoint sh scaleezy/whatsapp-engine:ci -c "grep -q 'refreshPairingQR' /evolution/node_modules/baileys/lib/Socket/socket.js"
+      - name: Build service image
+        run: docker build -t scaleezy/whatsapp-service:ci service
+      - name: Service image refuses to start without its settings
+        run: |
+          set +e
+          out=$(docker run --rm --entrypoint node scaleezy/whatsapp-service:ci dist/src/main.js 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          test "$code" -eq 1
+          echo "$out" | grep -q "cannot start"

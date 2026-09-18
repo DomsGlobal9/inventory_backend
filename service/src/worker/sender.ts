@@ -12,6 +12,11 @@ const NOT_ON_WHATSAPP = 'This number is not on WhatsApp.';
 const GAVE_UP = 'WhatsApp could not send this after 3 tries. Please try again later.';
 const REFUSED = 'WhatsApp refused this message.';
 
+export interface SenderOptions {
+  rand?: () => number;
+  notReadyWaitMs?: number;
+}
+
 export class Sender {
   /** accountId -> earliest time the next message from that number may go. */
   private readonly nextAllowedAt = new Map<string, number>();
@@ -21,10 +26,17 @@ export class Sender {
   private stopping = false;
   private capLogged = new Set<string>();
 
+  private readonly rand: () => number;
+  /** How long to wait before looking again at a number that is not connected / an engine that is down. */
+  private readonly notReadyWaitMs: number;
+
   constructor(
     private readonly ctx: Ctx,
-    private readonly rand: () => number = Math.random,
-  ) {}
+    opts: SenderOptions = {},
+  ) {
+    this.rand = opts.rand ?? Math.random;
+    this.notReadyWaitMs = opts.notReadyWaitMs ?? 15_000;
+  }
 
   /** No new work after this; in-flight sends finish. */
   stop(): void {
@@ -120,7 +132,7 @@ export class Sender {
 
     // Not connected: leave everything queued and look again shortly.
     if (account.status !== 'CONNECTED') {
-      this.pause(account.id, 15_000);
+      this.pause(account.id, this.notReadyWaitMs);
       return;
     }
 
@@ -230,8 +242,8 @@ export class Sender {
       case 'unauthorized':
         // Nothing was sent. Wait without using up a try; the 24 h expiry is the limit.
         this.ctx.log.warn({ messageId: m.id, accountId: account.id, reason: e.kind }, 'engine not ready; message stays queued');
-        await requeue({ countTry: false, waitMs: 15_000 });
-        this.pause(account.id, 15_000);
+        await requeue({ countTry: false, waitMs: this.notReadyWaitMs });
+        this.pause(account.id, this.notReadyWaitMs);
         return;
       case 'timeout':
       case 'server': {

@@ -128,7 +128,7 @@ export class EvolutionEngine implements Engine {
       readMessages: false,
       readStatus: false,
       syncFullHistory: false,
-    }, 30_000)) as { instance?: { status?: string }; qrcode?: Record<string, unknown> };
+    }, 45_000)) as { instance?: { status?: string }; qrcode?: Record<string, unknown> };
     return toLinkInfo(body?.instance?.status ?? 'connecting', body?.qrcode);
   }
 

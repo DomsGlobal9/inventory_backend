@@ -40,7 +40,6 @@ function isPrismaConnectionError(err: unknown): boolean {
 
 export function errorHandler(log: Logger) {
   // Express recognises an error handler by its four parameters.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   return (err: unknown, req: Request, res: Response, _next: NextFunction) => {
     const appErr = toAppError(err);
     if (appErr.status >= 500) log.error({ err, path: req.route?.path ?? 'unknown', method: req.method }, 'request failed');

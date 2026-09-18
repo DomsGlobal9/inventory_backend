@@ -70,7 +70,11 @@ export type Config = z.infer<typeof schema> & { canaryTo: string | null };
 export class ConfigError extends Error {}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = schema.safeParse(env);
+  // On Render the engine and the service share one env group, where the engine's key has the
+  // engine's own name. Accept it under that name too.
+  const input = { ...env };
+  if (!input.ENGINE_API_KEY && input.AUTHENTICATION_API_KEY) input.ENGINE_API_KEY = input.AUTHENTICATION_API_KEY;
+  const parsed = schema.safeParse(input);
   if (!parsed.success) {
     const lines = parsed.error.issues.map((i) => `  ${i.path.join('.') || '(env)'}: ${i.message}`);
     throw new ConfigError(`The WhatsApp service cannot start: some settings are missing or wrong.\n${lines.join('\n')}`);

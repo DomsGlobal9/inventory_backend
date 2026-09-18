@@ -16,20 +16,22 @@
     "test:integration": "tsx test/integration/run.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "module:create": "tsx scripts/create-module.ts",
-    "db:migrate": "prisma migrate deploy"
+    "db:migrate": "prisma migrate deploy",
+    "smoke": "tsx scripts/smoke.ts",
+    "test:unit": "vitest run test/unit"
   },
   "dependencies": {
     "@prisma/client": "6.19.3",
     "express": "4.22.3",
     "pg": "8.23.0",
     "pino": "9.14.0",
+    "prisma": "6.19.3",
     "zod": "3.25.76"
   },
   "devDependencies": {
     "@types/express": "4.17.25",
     "@types/node": "20.19.43",
     "@types/pg": "8.23.1",
-    "prisma": "6.19.3",
     "tsx": "4.23.13",
     "typescript": "5.9.3",
     "vitest": "2.1.9"

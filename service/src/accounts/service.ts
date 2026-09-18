@@ -124,25 +124,41 @@ export async function linkClient(ctx: Ctx, clientId: string, method: 'qr' | 'cod
     return { status: 'CONNECTED' };
   }
 
-  let link: LinkInfo;
-  if (!info) {
-    link = await engineCall(() => ctx.engine.createInstance(account!.instanceName, method === 'code' ? phone ?? undefined : undefined));
-  } else if (method === 'code') {
+  const inst = account.instanceName;
+  const number = method === 'code' ? phone ?? undefined : undefined;
+  let link: LinkInfo | null = null;
+  if (info && method === 'code') {
     // A pairing code is only issued when the connection starts with the phone number, so an
-    // unlinked instance is recreated for it. Safe: it is not linked to anything.
-    await engineCall(() => ctx.engine.deleteInstance(account!.instanceName)).catch(() => undefined);
-    link = await engineCall(() => ctx.engine.createInstance(account!.instanceName, phone ?? undefined));
-  } else {
-    link = await engineCall(() => ctx.engine.connect(account!.instanceName));
+    // unlinked instance is recreated for it. Safe: it is not linked to anything. The engine
+    // finishes removing it in the background, so wait until it is really gone.
+    await ctx.engine.deleteInstance(inst).catch(() => undefined);
+    for (let i = 0; i < 20; i++) {
+      if (!(await engineCall(() => ctx.engine.connectionInfo(inst)))) break;
+      await sleep(500);
+    }
+  }
+  try {
+    if (!info || method === 'code') link = await ctx.engine.createInstance(inst, number);
+    else link = await ctx.engine.connect(inst);
+  } catch (e) {
+    // The engine can take longer than our call to start a connection (seen with pairing codes).
+    // It carries on anyway, so keep asking below instead of failing the person's click.
+    if (!(e instanceof EngineError) || e.kind !== 'timeout') throw toFriendly(e);
   }
 
   // The engine produces the QR / code a moment after the connection starts.
-  for (let i = 0; i < 8 && link.state !== 'open'; i++) {
-    const ready = method === 'code' ? Boolean(link.pairingCode) : Boolean(link.qr);
+  for (let i = 0; i < 20; i++) {
+    if (link?.state === 'open') break;
+    const ready = method === 'code' ? Boolean(link?.pairingCode) : Boolean(link?.qr);
     if (ready) break;
     await sleep(1500);
-    link = await engineCall(() => ctx.engine.connect(account!.instanceName, method === 'code' ? phone ?? undefined : undefined));
+    try {
+      link = await ctx.engine.connect(inst, number);
+    } catch (e) {
+      if (!(e instanceof EngineError) || (e.kind !== 'timeout' && e.kind !== 'not_found')) throw toFriendly(e);
+    }
   }
+  if (!link) throw Errors.engineUnavailable();
 
   if (link.state === 'open') {
     await setAccountStatus(ctx, account.id, 'CONNECTED', 'link');
@@ -192,11 +208,13 @@ async function engineCall<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (e) {
-    if (e instanceof EngineError) {
-      if (e.transient || e.kind === 'unauthorized') throw Errors.engineUnavailable();
-    }
-    throw e;
+    throw toFriendly(e);
   }
+}
+
+function toFriendly(e: unknown): unknown {
+  if (e instanceof EngineError && (e.transient || e.kind === 'unauthorized')) return Errors.engineUnavailable();
+  return e;
 }
 
 function sleep(ms: number): Promise<void> {

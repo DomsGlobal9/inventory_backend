@@ -135,6 +135,9 @@ model Message {
   queuedAt        DateTime      @default(now())
   sendingAt       DateTime?
   sentAt          DateTime?
+  /// When WhatsApp's server confirmed it (engine SERVER_ACK). Messages to one's own number never
+  /// get a delivered tick, so this is the strongest proof available for them.
+  serverAckAt     DateTime?
   deliveredAt     DateTime?
   readAt          DateTime?
   failedAt        DateTime?

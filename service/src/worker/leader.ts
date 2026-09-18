@@ -27,7 +27,14 @@ export class LeaderLock {
     if (this.held) return true;
     try {
       if (!this.client) {
-        const c = new Client({ connectionString: this.databaseUrl, application_name: 'whatsapp-service-leader' });
+        const c = new Client({
+          connectionString: this.databaseUrl,
+          application_name: 'whatsapp-service-leader',
+          // A dead connection must be noticed, not waited on: it is what proves leadership.
+          keepAlive: true,
+          connectionTimeoutMillis: 10_000,
+          query_timeout: 10_000,
+        });
         c.on('error', () => this.lost('lock connection error'));
         c.on('end', () => this.lost('lock connection ended'));
         await c.connect();
