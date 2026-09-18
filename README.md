@@ -23,7 +23,7 @@ Background and decisions: `SPEC.md` (this repo) and `PLAN-whatsapp.md` in the In
 | Path | What |
 |---|---|
 | `engine/` | Our engine image: Evolution API 2.3.7 (pinned by digest) + `patch-pairing.cjs`, the QR-linking fix. The build **fails** if the patch no longer fits. `docker-compose.local.yml` runs engine + Postgres + Redis on this PC. |
-| `service/` | The WhatsApp Service (Node 20, TypeScript, Express, Prisma/Postgres). |
+| `service/` | The WhatsApp Service (Node 22, TypeScript, Express, Prisma/Postgres). |
 | `render.yaml` | Render Blueprint for all four pieces (not deployed yet). |
 | `.github/workflows/ci.yml` | Every push: typecheck, all tests, build, and build **both** Docker images. |
 | `.github/workflows/upstream-watch.yml` | Weekly: opens an issue when Evolution or Baileys release something (incl. the pairing fix). |
@@ -43,6 +43,8 @@ Background and decisions: `SPEC.md` (this repo) and `PLAN-whatsapp.md` in the In
 | `lib/` | Phone numbers, crypto, PDF check, log scrubbing. |
 
 ## API (JSON, `/v1`)
+
+**Adding WhatsApp to another module (CRM, Marketing, Billing): read [docs/USING-FROM-A-MODULE.md](docs/USING-FROM-A-MODULE.md).**
 
 Module calls carry `x-module-key`; the platform console uses `x-admin-key`. Every error is
 `{ "error": { "code", "message" } }` with a plain-English message; never a stack trace.
@@ -89,7 +91,7 @@ when sent to the ScaleEzy number itself, passes once it is sent and confirmed by
 
 ## Running locally
 
-Needs Docker Desktop and Node 20 (`.nvmrc`; Node 22 also works for development).
+Needs Docker Desktop and Node 22 (`.nvmrc`).
 
 ```powershell
 # 1. Engine + Postgres + Redis (keeps the linked ScaleEzy session: it lives in Postgres)

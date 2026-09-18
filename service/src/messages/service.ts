@@ -1,6 +1,6 @@
 import { Prisma, type Account, type Message, type MessageKind, type ModuleClient } from '@prisma/client';
 import type { Ctx } from '../context';
-import { contentHash, isWithinDuplicateWindow, DUPLICATE_WINDOW_MS } from '../domain/rules';
+import { contentHash, isWithinDuplicateWindow, DUPLICATE_WINDOW_MS, dailyCapFor, isOverCap, istDayStart } from '../domain/rules';
 import { Errors } from '../lib/errors';
 import { decodePdf } from '../lib/pdf';
 import { normalisePhone } from '../lib/phone';
@@ -130,4 +130,34 @@ export function publicMessageView(m: Message) {
     readAt: m.readAt,
     failedAt: m.failedAt,
   };
+}
+
+export type WaitingFor = 'link' | 'daily_limit' | null;
+
+/**
+ * Why a queued message has not gone yet, in words a shop can act on. Only asked about QUEUED
+ * messages: the number is not connected (it goes once it is linked again, within a day), or the
+ * number has sent today's allowance (it goes after midnight, India time).
+ */
+export async function waitingFor(ctx: Ctx, m: Message): Promise<{ waitingFor: WaitingFor; waitingReason: string | null }> {
+  if (m.status !== 'QUEUED') return { waitingFor: null, waitingReason: null };
+  const account = await ctx.db.account.findUnique({ where: { id: m.accountId } });
+  if (!account) return { waitingFor: null, waitingReason: null };
+  if (account.status !== 'CONNECTED') {
+    return {
+      waitingFor: 'link',
+      waitingReason: account.kind === 'SCALEEZY'
+        ? "ScaleEzy's WhatsApp is reconnecting. It goes as soon as it is back, if that is within a day."
+        : "The shop's WhatsApp is not connected. It goes once it is linked again in Settings > WhatsApp, if that is within a day."
+    };
+  }
+  const now = new Date();
+  const sentToday = await ctx.db.message.count({ where: { accountId: account.id, sentAt: { gte: istDayStart(now) } } });
+  if (isOverCap(sentToday, dailyCapFor(account, now, ctx.config.SCALEEZY_DAILY_CAP))) {
+    return {
+      waitingFor: 'daily_limit',
+      waitingReason: "Today's WhatsApp limit for this number is used up, to keep it safe from being blocked. It goes after midnight."
+    };
+  }
+  return { waitingFor: null, waitingReason: null };
 }

@@ -3,7 +3,7 @@ import type { Ctx } from '../context';
 import { requireModule } from '../auth/middleware';
 import { mayModuleUseClient } from '../auth/allow';
 import { disconnectClient, linkClient, publicAccountView } from '../accounts/service';
-import { createMessage, publicMessageView, resolveSender } from '../messages/service';
+import { createMessage, publicMessageView, resolveSender, waitingFor } from '../messages/service';
 import { isOnWhatsApp } from '../numbers/service';
 import { Errors } from '../lib/errors';
 import { normalisePhone } from '../lib/phone';
@@ -74,7 +74,7 @@ export function v1Routes(ctx: Ctx): Router {
       const id = String(req.params.id ?? '');
       const m = /^[0-9a-f-]{36}$/i.test(id) ? await ctx.db.message.findFirst({ where: { id, moduleId: req.module!.id } }) : null;
       if (!m) throw Errors.notFound('No such message.');
-      res.json(publicMessageView(m));
+      res.json({ ...publicMessageView(m), ...(await waitingFor(ctx, m)) });
     }),
   );
 

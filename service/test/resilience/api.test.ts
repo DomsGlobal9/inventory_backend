@@ -164,6 +164,31 @@ describe.skipIf(!hasTestDb)('API', () => {
     expect(theirs.status).toBe(404);
   });
 
+  it('a waiting message says why: not connected, or today\'s limit used up, or nothing', async () => {
+    const read = async (id: string) => (await (await get(`/v1/messages/${id}`, { 'x-module-key': inventory.key })).json()) as any;
+    const a = (await (await post('/v1/messages', msg(), inventory.key)).json()) as any;
+    // Connected, under the limit: waiting only for its turn.
+    let r = await read(a.id);
+    expect(r.status).toBe('QUEUED');
+    expect(r.waitingFor).toBeNull();
+    // The shop's number drops: it waits for the link, and says so.
+    await env.db.account.update({ where: { clientId: 'shop1' }, data: { status: 'DISCONNECTED' } });
+    r = await read(a.id);
+    expect(r.waitingFor).toBe('link');
+    expect(r.waitingReason).toMatch(/not connected.*Settings > WhatsApp/);
+    // Back, but today's allowance is spent (a cap of 1, one already sent today).
+    const account = await env.db.account.update({ where: { clientId: 'shop1' }, data: { status: 'CONNECTED', dailyCap: 1 } });
+    await env.db.message.create({ data: { accountId: account.id, toDigits: '919876500000', kind: 'C1', idempotencyKey: `sent-${Math.random()}`, contentHash: 'x', status: 'SENT', sentAt: new Date() } });
+    r = await read(a.id);
+    expect(r.waitingFor).toBe('daily_limit');
+    expect(r.waitingReason).toMatch(/limit.*after midnight/);
+    // A message that is not waiting says nothing about waiting.
+    await env.db.message.update({ where: { id: a.id }, data: { status: 'SENT', sentAt: new Date() } });
+    r = await read(a.id);
+    expect(r.waitingFor).toBeNull();
+    expect(r.waitingReason).toBeNull();
+  });
+
   it('bad JSON and unknown routes get plain JSON errors', async () => {
     const r = await post('/v1/messages', '{not json', inventory.key);
     expect(r.status).toBe(400);
