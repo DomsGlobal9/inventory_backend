@@ -95,6 +95,11 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
   const { Document, Page, Text, View, StyleSheet, renderToBuffer } = await lib();
   const styles = buildStyles(StyleSheet);
   const d = input.day || {};
+  // A range reads the same way as one day, in its own words, with a row for each day.
+  const isRange = Boolean(d.range);
+  const span = isRange ? 'these days' : 'this day';
+  const period = isRange ? `${d.range.from} to ${d.range.to}` : (d.date || '');
+  const shortDate = (key: string) => new Date(`${key}T12:00:00Z`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
   const printedAt = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: input.timeZone });
 
   const Table = ({ head, rows, widths, align = [] }: { head: string[]; rows: string[][]; widths: string[]; align?: string[] }) => {
@@ -124,7 +129,7 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
       h(Text, { style: styles.statLabel }, label),
       h(Text, { style: styles.statValue }, value));
 
-  const doc = h(Document, { title: `Day Book ${d.date || ''}`, author: input.businessName || 'Inventory', subject: `End of day report for ${d.date || ''}` },
+  const doc = h(Document, { title: `Day Book ${period}`, author: input.businessName || 'Inventory', subject: `${isRange ? 'Report' : 'End of day report'} for ${period}` },
     h(Page, { size: 'A4', style: styles.page },
       h(View, { style: styles.header },
         h(View, { style: styles.headerRow },
@@ -135,7 +140,7 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
             h(Text, { style: styles.meta }, input.businessName || ''),
             h(Text, { style: styles.meta }, input.locationName ? `Location: ${input.locationName}` : 'All locations'),
             h(Text, { style: styles.meta }, `Business day in ${d.timezone || 'local time'}`))),
-        d.inProgress ? h(Text, { style: styles.running }, 'STILL RUNNING - this day is not finished, figures will change') : null),
+        d.inProgress ? h(Text, { style: styles.running }, isRange ? 'STILL RUNNING - the last day is not finished, figures will change' : 'STILL RUNNING - this day is not finished, figures will change') : null),
 
       d.opening && d.closing ? h(View, { style: styles.balanceBox },
         h(View, { style: styles.balanceRow },
@@ -147,12 +152,12 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
           h(Text, { style: styles.operator }, '='),
           Figure({ label: 'Closing stock', units: d.closing.units, value: d.closing.value, bold: true })),
         h(Text, { style: [styles.verdict, d.balanced === false ? styles.bad : styles.ok] },
-          d.balanced === true ? 'The books balance for this day.'
+          d.balanced === true ? `The books balance for ${span}.`
             : d.balanced === false ? 'These figures do not add up - treat them as unreliable and tell support.'
-              : 'No independent record exists for this day, so the totals are shown without a balance check.')) : null,
+              : `No independent record exists for ${span}, so the totals are shown without a balance check.`)) : null,
 
       d.quiet ? h(Text, { style: styles.empty },
-        `Nothing moved this day. No stock came in or went out${d.inProgress ? ' so far' : ''}, and nothing was dispatched.`) : null,
+        `Nothing moved ${span}. No stock came in or went out${d.inProgress ? ' so far' : ''}, and nothing was dispatched.`) : null,
 
       d.sales?.dispatchCount > 0 ? Section({ title: 'Sales dispatched', subtitle: 'Counted when the goods actually left, not when the order was written.' },
         h(View, { style: styles.statRow },
@@ -161,11 +166,26 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
           stat('Revenue', money(d.sales.revenue)),
           stat('What it cost you', money(d.sales.costOfGoods)),
           stat('Profit', money(d.sales.grossProfit))),
-        Table({
+        // A month of dispatches is pages of rows; a range shows its days instead (below).
+        isRange ? null : Table({
           head: ['Dispatch', 'Order', 'Customer', 'Units', 'Value'],
           widths: ['20%', '20%', '30%', '12%', '18%'],
           align: ['left', 'left', 'left', 'right', 'right'],
           rows: (d.sales.orders || []).map((o: any) => [o.dispatchNumber, o.orderNumber, o.customer || '-', num(o.units), money(o.value)])
+        })) : null,
+
+      isRange && d.days?.length > 0 ? h(View, { style: styles.section },
+        h(Text, { style: styles.sectionTitle }, 'Day by day'),
+        h(Text, { style: styles.sectionSub }, 'Closing is the stock count at the end of that day. Sales are counted on the day the goods left.'),
+        Table({
+          head: ['Day', 'In', 'Out', 'Closing', 'Dispatches', 'Revenue', 'Profit'],
+          widths: ['22%', '10%', '10%', '13%', '13%', '16%', '16%'],
+          align: ['left', 'right', 'right', 'right', 'right', 'right', 'right'],
+          rows: d.days.map((r: any) => [
+            shortDate(r.date), r.unitsIn ? `+${num(r.unitsIn)}` : '-', r.unitsOut ? `-${num(r.unitsOut)}` : '-',
+            r.closingUnits === null ? '-' : num(r.closingUnits),
+            r.dispatchCount ? num(r.dispatchCount) : '-', r.dispatchCount ? money(r.revenue) : '-', r.dispatchCount ? money(r.grossProfit) : '-'
+          ])
         })) : null,
 
       Section({ title: 'Stock that came in', subtitle: `${num(d.stockIn?.totalUnits)} units, ${money(d.stockIn?.totalValue)}` },
@@ -196,9 +216,10 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
 
       d.adjustments?.length > 0 ? Section({ title: 'Manual corrections', subtitle: 'Changes somebody made by hand, rather than from an order or a delivery.' },
         Table({ head: ['Item', 'Change', 'Reason', 'By'], widths: ['38%', '14%', '26%', '22%'], align: ['left', 'right', 'left', 'left'],
-          rows: d.adjustments.map((a: any) => [`${a.title || ''} ${a.sku || ''}`.trim() || '-', signed(a.units), a.reason, a.by || '-']) })) : null,
+          rows: d.adjustments.slice(0, 40).map((a: any) => [`${a.title || ''} ${a.sku || ''}`.trim() || '-', signed(a.units), a.reason, a.by || '-']) }),
+        d.adjustments.length > 40 ? h(Text, { style: styles.sectionSub }, `and ${num(d.adjustments.length - 40)} more - see them in the app`) : null) : null,
 
-      d.alsoToday ? Section({ title: 'Also on this day' },
+      d.alsoToday ? Section({ title: isRange ? 'Also in these days' : 'Also on this day' },
         h(View, { style: styles.statRow },
           stat('Purchase orders raised', num(d.alsoToday.purchaseOrdersRaised), '33%'),
           stat('Purchase orders received', num(d.alsoToday.purchaseOrdersReceived), '33%'),

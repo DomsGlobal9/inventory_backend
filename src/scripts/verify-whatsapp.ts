@@ -246,26 +246,26 @@ async function main() {
     const at = (hhmm: string) => new Date(`${istDay}T${hhmm}:00+05:30`);
     const dayBookSends = () => seen.filter(s => s.path === '/v1/messages' && s.body?.kind === 'S6');
     const n0 = dayBookSends().length;
-    await wa.runDayBookTick(at('21:59'));
+    await wa.runDayBookTick(at('21:59'), { onlyClients: [SHOP] });
     check('before 22:00 in the shop\'s time zone, nothing is sent', dayBookSends().length === n0);
     // (runDayBookTick reads "today" from the real clock; these checks only run on the same IST day.)
-    await wa.runDayBookTick(at('22:05'));
+    await wa.runDayBookTick(at('22:05'), { onlyClients: [SHOP] });
     const first = dayBookSends().at(-1)?.body;
     check('after 22:00 the Day Book goes, from the ScaleEzy number, to the owner', dayBookSends().length === n0 + 1 && first?.from === 'scaleezy' && first?.to === '918142424642', first);
     check('it carries a real Day Book PDF', Buffer.from(first?.document?.base64 ?? '', 'base64').subarray(0, 5).toString() === '%PDF-' && first?.document?.fileName === `day-book-${istDay}.pdf`);
     check('its key is the shop and the day', first?.idempotencyKey === `DAY_BOOK:${SHOP}:${istDay}`, first?.idempotencyKey);
-    await wa.runDayBookTick(at('22:10'));
-    await Promise.all([wa.runDayBookTick(at('22:15')), wa.runDayBookTick(at('22:15'))]);
+    await wa.runDayBookTick(at('22:10'), { onlyClients: [SHOP] });
+    await Promise.all([wa.runDayBookTick(at('22:15'), { onlyClients: [SHOP] }), wa.runDayBookTick(at('22:15'), { onlyClients: [SHOP] })]);
     check('later ticks, even two at once, send nothing more that night', dayBookSends().length === n0 + 1);
 
     await prisma.whatsAppSettings.update({ where: { clientId: SHOP }, data: { dayBookLastSentFor: null } });
     mode = 'down';
     const n1 = dayBookSends().length;
-    const down = await wa.runDayBookTick(at('22:20'));
+    const down = await wa.runDayBookTick(at('22:20'), { onlyClients: [SHOP] });
     const s1 = await prisma.whatsAppSettings.findUnique({ where: { clientId: SHOP } });
     check('with the service down, the night is handed back for the next tick', down.failed >= 1 && s1?.dayBookLastSentFor === null, { down, last: s1?.dayBookLastSentFor });
     mode = 'ok';
-    await wa.runDayBookTick(at('22:25'));
+    await wa.runDayBookTick(at('22:25'), { onlyClients: [SHOP] });
     check('and the next tick sends it', dayBookSends().length === n1 + 2 /* the failed attempt reached the stub too */ || dayBookSends().length === n1 + 1);
     const now1 = await wa.sendDayBookNow(owner, nonce());
     const nowCall = dayBookSends().at(-1)?.body;
@@ -275,8 +275,136 @@ async function main() {
     await wa.saveDayBookSettings(owner, { enabled: false, time: '22:00', to: '8142424642' });
     await prisma.whatsAppSettings.update({ where: { clientId: SHOP }, data: { dayBookLastSentFor: null } });
     const n2 = dayBookSends().length;
-    await wa.runDayBookTick(at('22:30'));
+    await wa.runDayBookTick(at('22:30'), { onlyClients: [SHOP] });
     check('switched off, nothing is sent', dayBookSends().length === n2);
+
+    console.log('\nE2. THE DAY BOOK PAGE: SEND ANY DAY, OR A RANGE OF DAYS');
+    {
+      const { dayBookService, MAX_RANGE_DAYS } = require('../services/daybook.service');
+      const keyBack = (n: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() - n * 86400000));
+      const [k3, k2, k1, k0] = [3, 2, 1, 0].map(keyBack);
+      const noon = (k: string) => new Date(`${k}T12:00:00+05:30`);
+      const product = await prisma.product.create({ data: { clientId: SHOP, productCode: `DB-${STAMP}`, slug: `db-${STAMP}`, title: 'Range Saree', status: 'DRAFT', category: 'WOMEN', productType: 'READY_TO_WEAR', basePrice: 0 }, select: { id: true } });
+      const variant = await prisma.productVariant.create({ data: { clientId: SHOP, productId: product.id, variantCode: `DBV-${STAMP}`, sku: `DB-${STAMP}-A`, barcode: `DB${STAMP}`, size: 'M', colorName: 'Red' }, select: { id: true } });
+      const move = (k: string, quantity: number, reason: string, before: number) => ({
+        clientId: SHOP, variantId: variant.id, locationId: store.id, type: quantity > 0 ? 'IN' : 'OUT', reason, quantity, unitCost: 100,
+        balanceBefore: before, balanceAfter: before + quantity, createdBy: 'range-test', createdAt: noon(k)
+      });
+      await prisma.inventoryTransaction.createMany({ data: [move(k3, 20, 'PURCHASE', 0), move(k2, -5, 'DAMAGE', 20), move(k0, 3, 'PURCHASE', 15)] });
+
+      // The range is the same arithmetic as its days, over a longer window.
+      const [r, first, last] = await Promise.all([dayBookService.getRange(SHOP, k3, k0), dayBookService.getDay(SHOP, k3), dayBookService.getDay(SHOP, k0)]);
+      check('a range covers its days, first and last included, with a row for each', r.range?.from === k3 && r.range?.to === k0 && r.range?.dayCount === 4 && r.days?.map((d: any) => d.date).join() === [k3, k2, k1, k0].join(), r.range);
+      check('its opening is the first day\'s opening and its closing is the last day\'s closing', r.opening?.units === first.opening?.units && r.closing?.units === last.closing?.units, { r: [r.opening?.units, r.closing?.units], first: first.opening?.units, last: last.closing?.units });
+      check('what came in and went out is the days added up', r.stockIn.totalUnits === 23 && r.stockOut.totalUnits === 5
+        && r.days.reduce((a: number, d: any) => a + d.unitsIn, 0) === r.stockIn.totalUnits && r.days.reduce((a: number, d: any) => a + d.unitsOut, 0) === r.stockOut.totalUnits, { in: r.stockIn.totalUnits, out: r.stockOut.totalUnits });
+      const rowOf = (k: string) => r.days.find((d: any) => d.date === k);
+      check('each row lands on its own day; a day with nothing carries the count forward', rowOf(k3).unitsIn === 20 && rowOf(k2).unitsOut === 5 && rowOf(k1).unitsIn === 0 && rowOf(k1).unitsOut === 0
+        && rowOf(k1).closingUnits === rowOf(k2).closingUnits && rowOf(k0).closingUnits === r.closing?.units, r.days);
+      check('the range still checks its closing against the shelves', r.balanced !== undefined && r.measuredClosing !== undefined);
+      const oneDay = await dayBookService.getDay(SHOP, k2);
+      check('one day is unchanged: no range, no rows', oneDay.range === null && oneDay.days === null && oneDay.date === k2 && oneDay.stockOut.totalUnits === 5, { range: oneDay.range });
+      const forStore = await dayBookService.getRange(SHOP, k3, k0, store.id);
+      check('a range for one location counts that location', forStore.stockIn.totalUnits === 23 && forStore.range?.dayCount === 4);
+      const monthBack = keyBack(MAX_RANGE_DAYS - 1);
+      check(`${MAX_RANGE_DAYS} days is allowed`, (await dayBookService.getRange(SHOP, monthBack, k0)).range?.dayCount === MAX_RANGE_DAYS);
+      for (const [name, run, pattern] of [
+        ['one day more is refused', () => dayBookService.getRange(SHOP, keyBack(MAX_RANGE_DAYS), k0), /31 days or fewer/],
+        ['a backwards range is refused', () => dayBookService.getRange(SHOP, k0, k3), /must not be after/],
+        ['a range into the future is refused', () => dayBookService.getRange(SHOP, k1, keyBack(-2)), /cannot be after today/],
+      ] as const) {
+        const out = await said(run());
+        check(name, !out.ok && out.status === 400 && pattern.test(out.message), out);
+      }
+
+      // The page's Send button.
+      const holds = (a: any) => a.permissions.includes('*') || a.permissions.includes('report:financial');
+      const reader = [admin, manager, warehouse, sales].find(holds)!;
+      const stranger = [sales, warehouse, manager].find(a => !holds(a))!;
+      check('setup: one role may see money reports and one may not', Boolean(reader) && Boolean(stranger), { reader: reader?.name, stranger: stranger?.name });
+
+      const info = await wa.getDayBookSending(reader);
+      check('the button knows where it sends (masked), and how many are left today', info.configured === true && info.to === '••••4642' && info.limit === 10 && info.sentToday === 1 && info.isOwner === false, info);
+
+      const past = await wa.sendDayBookFromPage(reader, { date: k2, nonce: nonce() });
+      const pastCall = dayBookSends().at(-1)?.body;
+      check('a finished day goes from the ScaleEzy number to the owner\'s saved number', past.to === '••••4642' && pastCall?.from === 'scaleezy' && pastCall?.to === '918142424642' && pastCall?.kind === 'S6', pastCall && { from: pastCall.from, to: pastCall.to });
+      check('as that day\'s real PDF, named for the day, with no "up to" time', Buffer.from(pastCall?.document?.base64 ?? '', 'base64').subarray(0, 5).toString() === '%PDF-'
+        && pastCall?.document?.fileName === `day-book-${k2}.pdf` && !/up to/.test(pastCall?.text) && pastCall?.reference === `DAY_BOOK:${k2}`, pastCall?.text);
+      check('with a key of its own per press', pastCall?.idempotencyKey?.startsWith(`DAY_BOOK_PAGE:${SHOP}:`), pastCall?.idempotencyKey);
+
+      await wa.sendDayBookFromPage(owner, { date: k0, nonce: nonce() });
+      check('today says how far it has got ("up to ...")', /up to \d\d:\d\d/.test(dayBookSends().at(-1)?.body?.text), dayBookSends().at(-1)?.body?.text);
+
+      const ranged = await wa.sendDayBookFromPage(reader, { from: k3, to: k0, nonce: nonce() });
+      const rangeCall = dayBookSends().at(-1)?.body;
+      check('a range goes as one PDF named for both ends, saying so in words', rangeCall?.document?.fileName === `day-book-${k3}-to-${k0}.pdf` && rangeCall?.reference === `DAY_BOOK:${k3}..${k0}`
+        && / to /.test(rangeCall?.text) && Buffer.from(rangeCall?.document?.base64 ?? '', 'base64').subarray(0, 5).toString() === '%PDF-', rangeCall?.text);
+      const chip = await wa.dayBookMessage(reader, ranged.id);
+      check('the chip beside the button can follow it', chip?.status === 'QUEUED' && chip?.to === '••••4642' && chip?.referenceId === `${k3}..${k0}`, chip);
+      const otherOwner = { id: crypto.randomUUID(), clientId: OTHER, name: 'Other Owner', roles: ['SUPER_ADMIN'], permissions: ['*'] };
+      check('another shop cannot follow it', (await wa.dayBookMessage(otherOwner, ranged.id)) === null);
+
+      await wa.sendDayBookFromPage(reader, { date: k2, locationId: store.id, nonce: nonce() });
+      check('for one location, the message names it', /\(Main Store\)/.test(dayBookSends().at(-1)?.body?.text), dayBookSends().at(-1)?.body?.text);
+
+      const press = nonce();
+      await wa.sendDayBookFromPage(reader, { date: k1, nonce: press });
+      const keyA = dayBookSends().at(-1)?.body?.idempotencyKey;
+      await wa.sendDayBookFromPage(reader, { date: k1, nonce: press });
+      check('the same press retried carries the same key (the service sends it once)', keyA && dayBookSends().at(-1)?.body?.idempotencyKey === keyA, keyA);
+
+      const smuggle = await wa.sendDayBookFromPage(reader, { date: k2, phone: '919999999999', number: '919999999999', nonce: nonce() } as any);
+      check('a number from the browser is ignored: it still goes to the saved one', smuggle.to === '••••4642' && dayBookSends().at(-1)?.body?.to === '918142424642');
+
+      for (const [name, run, status, pattern] of [
+        ['someone who may not see money reports cannot send it', () => wa.sendDayBookFromPage(stranger, { date: k2, nonce: nonce() }), 403, /permission/i],
+        ['nor learn where it goes', () => wa.getDayBookSending(stranger), 403, /permission/i],
+        ['no day at all', () => wa.sendDayBookFromPage(reader, { nonce: nonce() }), 400, /which day/i],
+        ['a date that does not exist', () => wa.sendDayBookFromPage(reader, { date: '2026-02-31', nonce: nonce() }), 400, /which day/i],
+        ['half a range', () => wa.sendDayBookFromPage(reader, { from: k3, nonce: nonce() }), 400, /which day/i],
+        ['a day that has not come yet', () => wa.sendDayBookFromPage(reader, { date: keyBack(-1), nonce: nonce() }), 400, /not come yet/],
+        ['a range that is too long', () => wa.sendDayBookFromPage(reader, { from: keyBack(40), to: k0, nonce: nonce() }), 400, /31 days or fewer/],
+        ['a backwards range', () => wa.sendDayBookFromPage(reader, { from: k0, to: k3, nonce: nonce() }), 400, /must not be after/],
+        ['another shop\'s location', () => wa.sendDayBookFromPage(reader, { date: k2, locationId: otherStore.id, nonce: nonce() }), 404, /location was not found/],
+        ['a location that is not an id', () => wa.sendDayBookFromPage(reader, { date: k2, locationId: "x' OR 1=1", nonce: nonce() }), 400, /location was not found/],
+        ['a message id that is not an id', () => wa.dayBookMessage(reader, 'nope'), 400, /which message/i],
+      ] as const) {
+        const before = dayBookSends().length;
+        const out = await said(run());
+        check(name, !out.ok && out.status === status && pattern.test(out.message) && dayBookSends().length === before, out);
+      }
+
+      mode = 'down';
+      const downOut = await said(wa.sendDayBookFromPage(reader, { date: k2, nonce: nonce() }));
+      mode = 'ok';
+      check('with the service down: one plain sentence, not a crash', !downOut.ok && downOut.status === 503 && /try again/i.test(downOut.message), downOut);
+
+      await prisma.whatsAppSettings.update({ where: { clientId: SHOP }, data: { dayBookTo: null } });
+      const noNumberOwner = await said(wa.sendDayBookFromPage(owner, { date: k2, nonce: nonce() }));
+      const noNumberReader = await said(wa.sendDayBookFromPage(reader, { date: k2, nonce: nonce() }));
+      check('no number saved: the owner is told to save one', !noNumberOwner.ok && noNumberOwner.status === 400 && /Save the WhatsApp number/.test(noNumberOwner.message), noNumberOwner);
+      check('and anyone else is told to ask the owner', !noNumberReader.ok && noNumberReader.status === 400 && /shop owner has not saved/.test(noNumberReader.message), noNumberReader);
+      check('the button then shows no number', (await wa.getDayBookSending(reader)).to === null);
+      await prisma.whatsAppSettings.update({ where: { clientId: SHOP }, data: { dayBookTo: '918142424642' } });
+
+      // Ten on request a day; the nightly one is apart from that.
+      const askedSoFar = (await wa.getDayBookSending(reader)).sentToday;
+      for (let i = askedSoFar; i < 10; i++) await wa.sendDayBookFromPage(reader, { date: k2, nonce: nonce() });
+      const beforeLimit = dayBookSends().length;
+      const eleventh = await said(wa.sendDayBookFromPage(reader, { date: k2, nonce: nonce() }));
+      check('the eleventh Day Book asked for in a day is refused, in words', !eleventh.ok && eleventh.status === 429 && /limit/.test(eleventh.message) && dayBookSends().length === beforeLimit, eleventh);
+      const nowAtLimit = await said(wa.sendDayBookNow(owner, nonce()));
+      check('"send it now" in Settings counts towards the same ten', !nowAtLimit.ok && nowAtLimit.status === 429, nowAtLimit);
+      check('the button says none are left', (await wa.getDayBookSending(reader)).sentToday === 10);
+      await wa.saveDayBookSettings(owner, { enabled: true, time: '22:00', to: '8142424642' });
+      await prisma.whatsAppSettings.update({ where: { clientId: SHOP }, data: { dayBookLastSentFor: null } });
+      await wa.runDayBookTick(at('22:40'), { onlyClients: [SHOP] });
+      check('the nightly Day Book still goes: it is not one of the ten', dayBookSends().length === beforeLimit + 1 && dayBookSends().at(-1)?.body?.idempotencyKey === `DAY_BOOK:${SHOP}:${istDay}`, dayBookSends().at(-1)?.body?.idempotencyKey);
+      await wa.saveDayBookSettings(owner, { enabled: false, time: '22:00', to: '8142424642' });
+      await prisma.whatsAppMessage.updateMany({ where: { clientId: SHOP, kind: 'DAY_BOOK', sentBy: { not: null } }, data: { createdAt: new Date(Date.now() - 2 * 86400000) } });
+      check('tomorrow the ten start again', (await wa.getDayBookSending(reader)).sentToday === 0);
+    }
 
     console.log('\nF. THE SERVICE DOWN OR REFUSING');
     for (const m of ['down', 'unreachable', 'notLinked', 'optedOut'] as const) {

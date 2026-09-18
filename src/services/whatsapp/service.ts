@@ -29,7 +29,7 @@ import { normalisePhone } from '../../lib/phone';
 import { getShopSettings } from '../../lib/clientSettings';
 import { sendMail } from '../../lib/mailer';
 import { grants, holdsEverything, getPermission } from '../../config/permissions';
-import { todayKey } from '../../utils/businessDay';
+import { todayKey, isValidDayKey, startOfLocalDay } from '../../utils/businessDay';
 import { dayBookService } from '../daybook.service';
 import { purchaseOrderService } from '../purchase-order.service';
 import { COUNTER_SOURCE } from '../counter-sale/counter-sale.service';
@@ -318,7 +318,8 @@ export async function sendDayBookNow(actor: Actor, nonce: unknown) {
   if (!settings?.dayBookTo) throw fail(400, 'Save the WhatsApp number the Day Book should go to first.');
   const { timezone } = await getShopSettings(actor.clientId);
   const dayKey = todayKey(timezone);
-  const sent = await sendDayBook(actor.clientId, dayKey, settings.dayBookTo, `DAY_BOOK_NOW:${actor.clientId}:${pressId(nonce)}`);
+  await requireDayBookAllowance(actor.clientId, timezone);
+  const sent = await sendDayBook(actor.clientId, dayKey, settings.dayBookTo, `DAY_BOOK_NOW:${actor.clientId}:${pressId(nonce)}`, { sentBy: actor.id });
   return { status: sent.status, to: maskPhone(settings.dayBookTo) };
 }
 
@@ -333,22 +334,128 @@ function localClock(now: Date, timeZone: string): string {
  * Builds one shop's Day Book for one day and hands it to the WhatsApp Service, from the ScaleEzy
  * number. Its key is the shop and the day: however often this runs, one Day Book per night.
  */
-export async function sendDayBook(clientId: string, dayKey: string, to: string, idempotencyKey = `DAY_BOOK:${clientId}:${dayKey}`) {
-  const [day, shop] = await Promise.all([dayBookService.getDay(clientId, dayKey), getShopSettings(clientId)]);
-  const heading = new Date(`${dayKey}T12:00:00Z`).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  const pdf = await renderDayBookPdf({ day, heading, businessName: shop.businessName || '', timeZone: shop.timezone });
-  const upTo = localClock(new Date(), shop.timezone);
+export async function sendDayBook(
+  clientId: string, dayKey: string, to: string, idempotencyKey = `DAY_BOOK:${clientId}:${dayKey}`,
+  opts: { fromKey?: string | null; locationId?: string | null; sentBy?: string | null } = {}
+) {
+  // A range runs from fromKey to dayKey; one day is a range of itself.
+  const fromKey = opts.fromKey && opts.fromKey !== dayKey ? opts.fromKey : null;
+  const locationId = opts.locationId || undefined;
+  const [day, shop, location] = await Promise.all([
+    fromKey ? dayBookService.getRange(clientId, fromKey, dayKey, locationId) : dayBookService.getDay(clientId, dayKey, locationId),
+    getShopSettings(clientId),
+    locationId ? prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { name: true } }) : null
+  ]);
+  if (locationId && !location) throw fail(404, 'That location was not found.');
+  const heading = dayBookHeading(fromKey, dayKey);
+  const pdf = await renderDayBookPdf({ day, heading, businessName: shop.businessName || '', locationName: location?.name, timeZone: shop.timezone });
+  // "up to 9:40 pm" only means something for a day that is still running.
+  const upTo = day.inProgress ? `, up to ${localClock(new Date(), shop.timezone)}` : '';
+  const where = location ? ` (${location.name})` : '';
+  const span = fromKey ? `${fromKey}..${dayKey}` : dayKey;
   const sent = await whatsappClient.send({
     from: 'scaleezy',
     to,
-    text: `Day Book for ${shop.businessName || 'your shop'} - ${heading}, up to ${upTo}.\n\nFrom ScaleEzy. Change or stop this in Settings > WhatsApp.`,
-    document: { fileName: `day-book-${dayKey}.pdf`, mimeType: 'application/pdf', base64: pdf.toString('base64') },
+    text: `Day Book for ${shop.businessName || 'your shop'}${where} - ${heading}${upTo}.\n\nFrom ScaleEzy. Change or stop this in Settings > WhatsApp.`,
+    document: { fileName: `day-book-${fromKey ? `${fromKey}-to-${dayKey}` : dayKey}.pdf`, mimeType: 'application/pdf', base64: pdf.toString('base64') },
     kind: SERVICE_KIND.DAY_BOOK,
-    reference: `DAY_BOOK:${dayKey}`,
+    reference: `DAY_BOOK:${span}`,
     idempotencyKey
   });
-  await record(clientId, 'DAY_BOOK', dayKey, to, null, sent);
+  await record(clientId, 'DAY_BOOK', span, to, opts.sentBy ?? null, sent);
   return sent;
+}
+
+/** "Friday, 18 September 2026", or "1 Sep 2026 to 18 Sep 2026". The Day Book page prints the same. */
+export function dayBookHeading(fromKey: string | null, dayKey: string): string {
+  const at = (k: string) => new Date(`${k}T12:00:00Z`);
+  if (!fromKey) return at(dayKey).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const short = (k: string) => at(k).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  return `${short(fromKey)} to ${short(dayKey)}`;
+}
+
+// ── The Day Book page's own Send button ────────────────────────────────────────────────────
+
+/**
+ * Day Books a shop may ask for in one day, the nightly one apart. They all leave from ScaleEzy's
+ * one number, whose daily allowance every shop shares: without this, one shop pressing Send all
+ * afternoon would use up the night's Day Books for everybody else.
+ */
+export const DAY_BOOKS_ON_REQUEST_PER_DAY = 10;
+const DAY_BOOK_PERMISSION = 'report:financial';
+
+async function dayBooksAskedForToday(clientId: string, timezone: string): Promise<number> {
+  return prisma.whatsAppMessage.count({
+    where: { clientId, kind: 'DAY_BOOK', sentBy: { not: null }, createdAt: { gte: startOfLocalDay(todayKey(timezone), timezone) } }
+  });
+}
+
+async function requireDayBookAllowance(clientId: string, timezone: string) {
+  if (await dayBooksAskedForToday(clientId, timezone) >= DAY_BOOKS_ON_REQUEST_PER_DAY) {
+    throw fail(429, `This shop has already had ${DAY_BOOKS_ON_REQUEST_PER_DAY} Day Books sent today, which is the limit. Download the PDF instead, or send it tomorrow.`);
+  }
+}
+
+/** What the Day Book page needs to draw its button: can it send, to whom, how many are left. */
+export async function getDayBookSending(actor: Actor) {
+  requireMay(actor, DAY_BOOK_PERMISSION);
+  const [settings, shop] = await Promise.all([
+    prisma.whatsAppSettings.findUnique({ where: { clientId: actor.clientId } }),
+    getShopSettings(actor.clientId)
+  ]);
+  const sentToday = await dayBooksAskedForToday(actor.clientId, shop.timezone);
+  return {
+    configured: whatsappConfigured(),
+    to: settings?.dayBookTo ? maskPhone(settings.dayBookTo) : null,
+    isOwner: isOwner(actor),
+    sentToday,
+    limit: DAY_BOOKS_ON_REQUEST_PER_DAY
+  };
+}
+
+/**
+ * The Day Book page's Send on WhatsApp: the day on the screen, or the range, for the location on
+ * the screen. It always goes to the number the owner saved for the Day Book, never to one from
+ * the browser -- these are the shop's profit figures.
+ */
+export async function sendDayBookFromPage(actor: Actor, input: { date?: unknown; from?: unknown; to?: unknown; locationId?: unknown; nonce?: unknown }) {
+  requireMay(actor, DAY_BOOK_PERMISSION);
+  const key = (v: unknown) => (typeof v === 'string' && isValidDayKey(v) ? v : null);
+  const date = key(input.date), from = key(input.from), to = key(input.to);
+  if (!date && !(from && to)) throw fail(400, 'Which day, or which days, to send is missing.');
+  const lastKey = (date ?? to)!;
+  const fromKey = date ? null : from;
+  const locationId = typeof input.locationId === 'string' && /^[0-9a-f-]{36}$/i.test(input.locationId) ? input.locationId : null;
+  if (input.locationId && !locationId) throw fail(400, 'That location was not found.');
+
+  const [settings, shop] = await Promise.all([
+    prisma.whatsAppSettings.findUnique({ where: { clientId: actor.clientId } }),
+    getShopSettings(actor.clientId)
+  ]);
+  if (lastKey > todayKey(shop.timezone)) throw fail(400, 'A day that has not come yet has no Day Book.');
+  if (!settings?.dayBookTo) {
+    throw fail(400, isOwner(actor)
+      ? 'Save the WhatsApp number the Day Book should go to first, in Settings > WhatsApp.'
+      : 'The shop owner has not saved a WhatsApp number for the Day Book yet. They can do it in Settings > WhatsApp.');
+  }
+  await requireDayBookAllowance(actor.clientId, shop.timezone);
+  const sent = await sendDayBook(actor.clientId, lastKey, settings.dayBookTo, `DAY_BOOK_PAGE:${actor.clientId}:${pressId(input.nonce)}`,
+    { fromKey, locationId, sentBy: actor.id });
+  const row = await prisma.whatsAppMessage.findUnique({ where: { serviceMessageId: sent.id } });
+  return { id: row?.id ?? null, status: sent.status, to: maskPhone(settings.dayBookTo) };
+}
+
+/** Where a Day Book sent from the page has got to, for the chip beside the button. */
+export async function dayBookMessage(actor: Actor, id: unknown) {
+  requireMay(actor, DAY_BOOK_PERMISSION);
+  if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) throw fail(400, 'Which message is missing.');
+  const m = await prisma.whatsAppMessage.findFirst({ where: { id, clientId: actor.clientId, kind: 'DAY_BOOK' } });
+  if (!m) return null;
+  let waitingReason: string | null = null;
+  if (m.status === 'QUEUED' && m.serviceMessageId && Date.now() - m.createdAt.getTime() > 30_000) {
+    waitingReason = await whatsappClient.message(m.serviceMessageId).then(r => r.waitingReason ?? null).catch(() => null);
+  }
+  return { ...publicMessage(m), waitingReason };
 }
 
 /**
@@ -357,9 +464,13 @@ export async function sendDayBook(clientId: string, dayKey: string, to: string, 
  * (or two servers) cannot both send; a failure hands the claim back for the next tick. After
  * midnight a missed day is not sent late -- tomorrow's is.
  */
-export async function runDayBookTick(now = new Date()) {
+export async function runDayBookTick(now = new Date(), opts: { onlyClients?: string[] } = {}) {
   if (!whatsappConfigured()) return { sent: 0, failed: 0 };
-  const due = await prisma.whatsAppSettings.findMany({ where: { dayBookEnabled: true, dayBookTo: { not: null } } });
+  // onlyClients is for the verification suite, which shares a database with real shops: a tick
+  // with a pretend clock must never claim a real shop's night.
+  const due = await prisma.whatsAppSettings.findMany({
+    where: { dayBookEnabled: true, dayBookTo: { not: null }, ...(opts.onlyClients ? { clientId: { in: opts.onlyClients } } : {}) }
+  });
   let sent = 0, failed = 0;
   for (const s of due) {
     try {

@@ -2,7 +2,7 @@ import { getShopSettings } from '../lib/clientSettings';
 import { InventoryReason, SalesOrderStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import {
-  localDayRange, previousDayKey, isDayInProgress, todayKey, DEFAULT_TIMEZONE
+  localDayRange, localDayKey, localDayKeyFromParts, previousDayKey, isDayInProgress, todayKey, DEFAULT_TIMEZONE
 } from '../utils/businessDay';
 import { SnapshotService } from './snapshot.service';
 
@@ -41,6 +41,34 @@ const REASON_LABELS: Record<string, string> = {
 };
 
 const label = (reason: string) => REASON_LABELS[reason] || reason.replace(/_/g, ' ').toLowerCase();
+
+/** The longest range one book may cover. A month is what an accountant asks for. */
+export const MAX_RANGE_DAYS = 31;
+
+/** Every day key from the first to the last, both included; stops after `limit` keys. */
+export function dayKeysBetween(fromKey: string, toKey: string, limit: number): string[] {
+  const keys: string[] = [];
+  const [y, m, d] = fromKey.split('-').map(Number);
+  for (let i = 0; i < limit; i++) {
+    const k = localDayKeyFromParts(y, m, d, i);
+    if (k > toKey) break;
+    keys.push(k);
+  }
+  return keys;
+}
+
+export interface DayBookDayRow {
+  date: string;
+  unitsIn: number;
+  unitsOut: number;
+  /** Null when the opening count is unknown. */
+  closingUnits: number | null;
+  dispatchCount: number;
+  unitsDispatched: number;
+  revenue: number;
+  costOfGoods: number;
+  grossProfit: number;
+}
 
 export interface DayBookLine {
   reason: string;
@@ -181,9 +209,34 @@ export class DayBookService {
    * @param dayKey "YYYY-MM-DD" in the SHOP's timezone, not UTC.
    */
   async getDay(clientId: string, dayKey: string, locationId?: string) {
+    return this.build(clientId, dayKey, dayKey, locationId);
+  }
+
+  /**
+   * The same book over several days: opening on the first morning, closing on the last night,
+   * everything between added up, and one row per day.
+   *
+   * It is the SAME arithmetic as one day over a longer window, not a sum of daily reports, so a
+   * range and its days cannot disagree: the opening of the range is the opening of its first
+   * day and its closing is the closing of its last day, by construction.
+   */
+  async getRange(clientId: string, fromKey: string, toKey: string, locationId?: string) {
+    if (fromKey > toKey) throw Object.assign(new Error('The first day must not be after the last day.'), { statusCode: 400 });
+    const timezone = await this.getTimezone(clientId);
+    if (toKey > todayKey(timezone)) throw Object.assign(new Error('The last day cannot be after today.'), { statusCode: 400 });
+    if (dayKeysBetween(fromKey, toKey, MAX_RANGE_DAYS + 1).length > MAX_RANGE_DAYS) {
+      throw Object.assign(new Error(`Choose ${MAX_RANGE_DAYS} days or fewer.`), { statusCode: 400 });
+    }
+    return this.build(clientId, fromKey, toKey, locationId);
+  }
+
+  private async build(clientId: string, fromKey: string, toKey: string, locationId?: string) {
     const { timezone, businessName } = await this.getShop(clientId);
-    const { start, end } = localDayRange(dayKey, timezone);
-    const inProgress = isDayInProgress(dayKey, timezone);
+    const { start } = localDayRange(fromKey, timezone);
+    const { start: lastDayStart, end } = localDayRange(toKey, timezone);
+    const inProgress = isDayInProgress(toKey, timezone);
+    const isRange = fromKey !== toKey;
+    const dayKey = toKey;
 
     const movementWhere = {
       clientId,
@@ -221,6 +274,7 @@ export class DayBookService {
         select: {
           id: true,
           dispatchNumber: true,
+          dispatchedAt: true,
           salesOrder: {
             select: { orderNumber: true, status: true, customer: { select: { name: true } } }
           },
@@ -238,8 +292,8 @@ export class DayBookService {
       prisma.purchaseOrder.count({ where: { clientId, createdAt: { gte: start, lt: end } } }),
       prisma.purchaseOrder.count({ where: { clientId, receivedAt: { gte: start, lt: end } } }),
       prisma.productVariant.count({ where: { clientId, createdAt: { gte: start, lt: end } } }),
-      this.getOpening(clientId, dayKey, start, locationId),
-      this.getMeasuredClosing(clientId, dayKey, start, end, inProgress, locationId)
+      this.getOpening(clientId, fromKey, start, locationId),
+      this.getMeasuredClosing(clientId, toKey, lastDayStart, end, inProgress, locationId)
     ]);
 
     // ─── IN / OUT, GROUPED BY REASON ──────────────────────────────────────────
@@ -251,6 +305,13 @@ export class DayBookService {
     // selling price as profit. That is not a wrong sum, it is an undisclosed assumption -- and
     // "you made 5,000 profit on a 5,000 sale" is a sentence a merchant will believe.
     let unitsSoldWithoutCost = 0;
+
+    const perDay = new Map<string, DayBookDayRow>();
+    if (isRange) {
+      for (const k of dayKeysBetween(fromKey, toKey, MAX_RANGE_DAYS)) {
+        perDay.set(k, { date: k, unitsIn: 0, unitsOut: 0, closingUnits: null, dispatchCount: 0, unitsDispatched: 0, revenue: 0, costOfGoods: 0, grossProfit: 0 });
+      }
+    }
 
     for (const m of movements) {
       const units = m.quantity;
@@ -275,6 +336,14 @@ export class DayBookService {
       if (m.reason === InventoryReason.TRANSFER) {
         if (units < 0) transferUnits += Math.abs(units);
         if (!locationId) continue;
+      }
+
+      // One row per day for a range, under the same transfer rule as the totals above, so the
+      // rows add up to them.
+      const dayRow = perDay.get(localDayKey(m.createdAt, timezone));
+      if (dayRow) {
+        if (units > 0) dayRow.unitsIn += units; else dayRow.unitsOut += Math.abs(units);
+        if (m.reason === InventoryReason.SALE && units < 0) dayRow.costOfGoods += value;
       }
 
       const bucket = units > 0 ? inbound : outbound;
@@ -382,6 +451,22 @@ export class DayBookService {
     // compares like with like.
     const costOfGoods = soldLine?.value || 0;
 
+    // The daily rows: sales by the day the goods left, and a running closing count.
+    for (const d of countable) {
+      const row = d.dispatchedAt ? perDay.get(localDayKey(d.dispatchedAt, timezone)) : undefined;
+      if (!row) continue;
+      row.dispatchCount += 1;
+      row.unitsDispatched += d.items.reduce((a, i) => a + (i.quantity || 0), 0);
+      row.revenue += ledgerByDispatch.get(d.id) || 0;
+    }
+    let running = opening ? opening.units : null;
+    for (const row of perDay.values()) {
+      if (running !== null) { running += row.unitsIn - row.unitsOut; row.closingUnits = running; }
+      row.revenue = round(row.revenue);
+      row.costOfGoods = round(row.costOfGoods);
+      row.grossProfit = round(row.revenue - row.costOfGoods);
+    }
+
     // ─── PER LOCATION ─────────────────────────────────────────────────────────
     const byLocation = locations.map(loc => {
       const own = movements.filter(m => m.locationId === loc.id);
@@ -456,6 +541,9 @@ export class DayBookService {
 
     return {
       date: dayKey,
+      // Set for a range only: the days it covers, first and last included, and a row for each.
+      range: isRange ? { from: fromKey, to: toKey, dayCount: perDay.size } : null,
+      days: isRange ? [...perDay.values()] : null,
       timezone,
       // Printed reports carry the shop's name in the header; the page ignores it.
       businessName,

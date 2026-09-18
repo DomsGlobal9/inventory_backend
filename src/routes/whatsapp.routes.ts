@@ -34,6 +34,10 @@ router.post('/send', handle(req => whatsapp.sendDocument(actor(req), req.body ??
 router.get('/messages', handle(req => whatsapp.latestFor(actor(req), req.query.kind, req.query.id)));
 router.put('/day-book', handle(req => whatsapp.saveDayBookSettings(actor(req), req.body ?? {})));
 router.post('/day-book/send-now', handle(req => whatsapp.sendDayBookNow(actor(req), req.body?.nonce), 202));
+// The Day Book page's own button: any day or range on the screen, to the owner's saved number.
+router.get('/day-book/sending', requirePermission('report:financial'), handle(req => whatsapp.getDayBookSending(actor(req))));
+router.post('/day-book/send', requirePermission('report:financial'), handle(req => whatsapp.sendDayBookFromPage(actor(req), req.body ?? {}), 202));
+router.get('/day-book/message', requirePermission('report:financial'), handle(req => whatsapp.dayBookMessage(actor(req), req.query.id)));
 
 export default router;
 

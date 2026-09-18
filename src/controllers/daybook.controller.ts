@@ -15,6 +15,19 @@ export const getDayBook = async (req: Request, res: Response, next: NextFunction
       throw Object.assign(new Error('Provide a date as YYYY-MM-DD.'), { statusCode: 400 });
     }
 
+    // A range: both ends, or neither. One end alone is a mistake worth saying, not guessing.
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    if (from || to) {
+      if (!isValidDayKey(from) || !isValidDayKey(to)) {
+        throw Object.assign(new Error('Provide both from and to as YYYY-MM-DD.'), { statusCode: 400 });
+      }
+      const range = from === to
+        ? await dayBookService.getDay(tenant(req), from, locationId)
+        : await dayBookService.getRange(tenant(req), from, to, locationId);
+      return res.json({ success: true, data: range });
+    }
+
     const data = dayKey
       ? await dayBookService.getDay(tenant(req), dayKey, locationId)
       : await dayBookService.getToday(tenant(req), locationId);
