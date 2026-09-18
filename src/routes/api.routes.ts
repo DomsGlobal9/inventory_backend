@@ -43,6 +43,7 @@ import storefrontConnectionRoutes from './storefront-connection.routes';
 import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
 import dayBookRoutes from './daybook.routes';
+import whatsappRoutes, { whatsappEvents } from './whatsapp.routes';
 import clientErrorRoutes from './client-error.routes';
 import supportTicketRoutes from './support-ticket.routes';
 import teamRoutes from './team.routes';
@@ -90,6 +91,10 @@ router.use('/shopify', shopifyPublicRoutes);
 // caller on this service, so it is also the most tightly limited. It reads only what is
 // already printed on the tag, and the shop's gateway key never leaves the server.
 router.use('/public/tryon', shopperTryOnPublicRoutes);
+
+// Delivery ticks and account changes from the ScaleEzy WhatsApp Service. Ahead of the gate: the
+// service has no session, and proves itself with a signature checked before anything is read.
+router.post('/whatsapp/events', whatsappEvents);
 
 // Global Authentication Enforcement for all business APIs
 router.use(authenticate);
@@ -160,5 +165,6 @@ router.use('/inventory-transfers', hideCost, inventoryTransferRoutes);
 router.use('/shelves', hideCost, shelvesRoutes);
 router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);
+router.use('/whatsapp', whatsappRoutes);
 
 export default router;

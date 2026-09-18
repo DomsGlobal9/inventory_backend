@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { whatsappClient, whatsappConfigured } from './whatsapp/client';
 import { prisma } from '../lib/prisma';
 import { inventoryValueFor, inventoryValueByClient, valuationCaveatFor } from '../lib/inventoryValuation';
 import { forgetIdentity, forgetClientIdentities } from '../lib/identityCache';
@@ -516,6 +517,10 @@ export class PlatformAdminService {
       `DELETE FROM sales_order_items WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE client_id = $1)`,
       `DELETE FROM sales_orders WHERE client_id = $1`,
       `DELETE FROM sales_ledger WHERE client_id = $1`,
+      // WhatsApp: what was sent from here (masked numbers only) and the owner's Day Book number.
+      // The shop's linked number itself lives in the WhatsApp Service and is unlinked there.
+      `DELETE FROM whatsapp_messages WHERE client_id = $1`,
+      `DELETE FROM whatsapp_settings WHERE client_id = $1`,
       // Goods receipts point at locations (restrict), so they go before the orders and locations.
       `DELETE FROM purchase_receipt_items WHERE receipt_id IN (SELECT id FROM purchase_receipts WHERE client_id = $1)`,
       `DELETE FROM purchase_receipts WHERE client_id = $1`,
@@ -650,6 +655,15 @@ export class PlatformAdminService {
       const { error } = await supabase.storage.from('inventory-images').remove(storagePaths);
       if (error) console.error(`[DeleteClient] ${storagePaths.length} images left in storage for ${clientId}:`, error);
       else imagesRemoved = storagePaths.length;
+    }
+
+    // The shop's own WhatsApp number, linked in the WhatsApp Service, is unlinked there too --
+    // otherwise the owner's phone stays linked to a shop that no longer exists. Best effort, after
+    // the rows are gone: a service that is down must not stop a deletion, and "not linked" is fine.
+    if (whatsappConfigured()) {
+      await whatsappClient.disconnect(clientId).catch(err => {
+        if (err?.statusCode !== 404) console.error(`[DeleteClient] WhatsApp not unlinked for ${clientId}:`, err?.message);
+      });
     }
 
     return { clientId, deleted: true, tablesCleared: statements.length, imagesRemoved };

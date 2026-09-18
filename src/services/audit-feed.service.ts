@@ -259,6 +259,14 @@ const ACTION_LABELS: Record<string, string> = {
   'STOREFRONT_CONNECTION:TEST': 'tested a website connection',
   'STOREFRONT_CONNECTION:RETRY': 'sent an update to a website again',
 
+  // WhatsApp
+  'WHATSAPP:LINK': "started linking the shop's WhatsApp",
+  'WHATSAPP:DISCONNECT': "unlinked the shop's WhatsApp",
+  'WHATSAPP:SEND': 'sent a document on WhatsApp',
+  'WHATSAPP:TEST': 'sent a WhatsApp test message',
+  'WHATSAPP:DAY_BOOK': 'changed the nightly Day Book on WhatsApp',
+  'WHATSAPP:SEND_NOW': 'had the Day Book sent on WhatsApp',
+
   // Reports
   'REPORT:SNAPSHOTS': 'saved a stock snapshot',
   'REPORT:RUN_SNAPSHOT': 'saved a stock snapshot',
@@ -298,7 +306,7 @@ const AREAS: Record<string, string> = {
   RETURN: 'returns', ROLE: 'roles', SALES_ORDER: 'orders', SHELVE: 'racks and shelves',
   SHOPIFY_CONNECT: 'Shopify', STOCK_COUNT: 'stock counts', STOREFRONT_CONNECTION: 'website connections',
   SUPPLIER: 'suppliers', SUPPLIER_PRODUCT: 'suppliers', SUPPORT_TICKET: 'support tickets',
-  TEAM: 'the team', USER: 'their account', USER_CREDENTIAL: 'team passwords', VARIANT: 'products'
+  TEAM: 'the team', USER: 'their account', USER_CREDENTIAL: 'team passwords', VARIANT: 'products', WHATSAPP: 'WhatsApp'
 };
 
 const areaOf = (entityType: string) =>

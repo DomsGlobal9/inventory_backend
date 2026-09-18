@@ -191,7 +191,12 @@ export const PERMISSIONS: readonly PermissionDef[] = [
 
   // Reading a colleague's password in plain text. Its own key, never implied by managing the
   // team, and every use is recorded -- see team.routes.
-  { key: 'team:view_password', group: 'The shop', label: "Read a team member's password", sensitive: true }
+  { key: 'team:view_password', group: 'The shop', label: "Read a team member's password", sensitive: true },
+
+  // Linking the shop's own WhatsApp number: whoever holds it decides which phone every bill and
+  // purchase order is sent from. Sending itself needs no key of its own -- whoever may send a
+  // purchase order or take a sale may send it on WhatsApp too.
+  { key: 'whatsapp:manage', group: 'The shop', label: "Link and unlink the shop's WhatsApp number", sensitive: true }
 ];
 
 /**

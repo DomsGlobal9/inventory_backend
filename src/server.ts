@@ -8,6 +8,7 @@ import { prisma } from './lib/prisma';
 import { tenantRateLimiter } from './middleware/rate-limiter.middleware';
 import { SnapshotScheduler } from './jobs/snapshot.scheduler';
 import { HousekeepingScheduler } from './jobs/housekeeping.scheduler';
+import { WhatsAppDayBookScheduler } from './jobs/whatsapp-daybook.scheduler';
 import { OfferMirrorWorker } from './services/shopify-discounts';
 import { StorefrontDispatcherService } from './services/storefront-dispatcher.service';
 
@@ -100,6 +101,12 @@ app.use('/api/v1/shopify/webhooks', express.raw({ type: '*/*', limit: '5mb' }));
  */
 app.use('/api/v1/products/import', carriesLogin, express.json({ limit: '10mb' }));
 
+// WhatsApp: a document's PDF travels inside the send request (5 MB of PDF is ~7 MB of base64),
+// and the service's events are signed over their raw bytes, like Shopify's above. Both scoped to
+// their own paths so nothing else gains a larger body.
+app.use('/api/v1/whatsapp/send', carriesLogin, express.json({ limit: '8mb' }));
+app.use('/api/v1/whatsapp/events', express.raw({ type: '*/*', limit: '1mb' }));
+
 app.use(express.json());
 
 /*
@@ -143,9 +150,10 @@ app.get('/ready', async (req, res) => {
 // Apply rate limiting to all /api routes
 // Not Shopify's webhooks or a storefront's API. Shopify sends bursts from a handful of addresses and
 // gives up on a store whose webhooks keep failing; every one is HMAC-verified before anything is
-// read. A storefront has its own, higher limit per connection (storefront-public.routes).
+// read. A storefront has its own, higher limit per connection (storefront-public.routes). The
+// WhatsApp Service's events come the same way -- a burst of ticks from one address, each signed.
 app.use('/api', (req, res, next) =>
-  /^\/v1\/(shopify|storefront)\//.test(req.path) ? next() : tenantRateLimiter(req, res, next));
+  /^\/v1\/(shopify|storefront)\/|^\/v1\/whatsapp\/events$/.test(req.path) ? next() : tenantRateLimiter(req, res, next));
 
 // Every response here is per-authenticated-user data (never a static public asset),
 // and Express auto-generates an ETag on JSON bodies by default. Without an explicit
@@ -184,6 +192,7 @@ app.listen(PORT, () => {
     SnapshotScheduler.start();
     StorefrontDispatcherService.start();
     HousekeepingScheduler.start();
+    WhatsAppDayBookScheduler.start();
     OfferMirrorWorker.start();
   }
 });

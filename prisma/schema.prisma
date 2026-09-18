@@ -3156,3 +3156,68 @@ model PricingQuote {
   @@index([salesOrderId])
   @@map("pricing_quotes")
 }
+
+// =============================================================================
+// WHATSAPP
+// =============================================================================
+//
+// Inventory's side of WhatsApp. The numbers, the send queue and the engine live in the separate
+// ScaleEzy WhatsApp Service (D:\villy\whatsapp-service); this keeps only what the shop's screens
+// need: its nightly Day Book choice, and what was sent from here with where it has got to.
+
+/// One row per shop, created the first time the owner saves a WhatsApp choice.
+model WhatsAppSettings {
+  clientId String @id @map("client_id")
+
+  /// The nightly Day Book, sent from the ScaleEzy number to the owner. Off until switched on.
+  dayBookEnabled Boolean @default(false) @map("day_book_enabled")
+  /// "HH:MM", the shop's own time (ClientSettings.timezone).
+  dayBookTime    String  @default("22:00") @map("day_book_time")
+  /// Digits with country code. Where the owner wants it.
+  dayBookTo      String? @map("day_book_to")
+  /// The last business day ("YYYY-MM-DD") whose Day Book was handed to the service, so a
+  /// restart at 10 pm never sends the same night twice.
+  dayBookLastSentFor String? @map("day_book_last_sent_for")
+
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("whatsapp_settings")
+}
+
+/// What this app asked WhatsApp to send, and where it has got to.
+model WhatsAppMessage {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  /// The WhatsApp Service's own id; ticks arrive against it.
+  serviceMessageId String? @unique @map("service_message_id")
+
+  /// PURCHASE_ORDER | GOODS_RECEIPT | BILL | RETURN_NOTE | DAY_BOOK | TEST
+  kind        String
+  referenceId String? @map("reference_id")
+  /// Only the last four digits: enough to recognise, not a list of customers' numbers.
+  toMasked    String  @map("to_masked")
+
+  /// QUEUED | SENDING | SENT | DELIVERED | READ | FAILED | EXPIRED
+  status     String  @default("QUEUED")
+  failReason String? @map("fail_reason")
+  sentBy     String? @map("sent_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId, kind, referenceId, createdAt])
+  @@map("whatsapp_messages")
+}
+
+/// Events from the WhatsApp Service already handled. It delivers at least once, so the same
+/// event can arrive twice; the second is recognised here and ignored.
+model WhatsAppEventSeen {
+  id         String   @id
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@index([receivedAt])
+  @@map("whatsapp_events_seen")
+}

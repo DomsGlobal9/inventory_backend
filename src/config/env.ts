@@ -163,6 +163,20 @@ const envSchema = z.object({
   EMAIL_FROM_NAME: z.string().default('Scaleezy Inventory'),
   EMAIL_FROM_ADDRESS: optionalStr(z.string().email("EMAIL_FROM_ADDRESS must be a valid address")),
 
+  // --- WhatsApp ----------------------------------------------------------------------
+  //
+  // The ScaleEzy WhatsApp Service (its own repo and Render service). All optional: without them
+  // the WhatsApp screens say it is not set up, and every Send button falls back to opening
+  // WhatsApp on the person's own device with the message typed -- exactly as before.
+  WHATSAPP_SERVICE_URL: optionalStr(z.string().url("WHATSAPP_SERVICE_URL must be a valid URL")),
+  // This module's key, made once on the service (`npm run create-module`).
+  WHATSAPP_SERVICE_KEY: optionalStr(z.string().min(16, "WHATSAPP_SERVICE_KEY should be at least 16 characters")),
+  // Shared with the service; every event it posts here is signed with it.
+  WHATSAPP_WEBHOOK_SECRET: optionalStr(z.string().min(16, "WHATSAPP_WEBHOOK_SECRET should be at least 16 characters")),
+  // The nightly Day Book job sends real messages to real owners. A development machine usually
+  // points at the production database, so there it stays off unless this says otherwise.
+  WHATSAPP_DAYBOOK_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
+
   // --- Shopify -----------------------------------------------------------------------
   //
   // All optional, and the integration fails SAFE without them: the OAuth routes refuse to

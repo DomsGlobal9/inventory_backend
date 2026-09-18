@@ -26,14 +26,18 @@ export const ACTIVITY_ROWS_KEPT = 30;
 const SECURITY_ENTITY_TYPES = ['TEAM', 'USER_CREDENTIAL', 'ACCOUNT'] as const;
 /** Of roles, only the changes: the "who does this affect?" preview is not an event. */
 const SECURITY_ROLE_ACTIONS = ['CREATED', 'UPDATED', 'DELETED'] as const;
+/** Of WhatsApp, linking and unlinking: they decide which number every bill goes out from. */
+const SECURITY_WHATSAPP_ACTIONS = ['LINK', 'DISCONNECT'] as const;
 
 export const isSecurityEvent = (entityType: string, action: string) =>
   (SECURITY_ENTITY_TYPES as readonly string[]).includes(entityType) ||
-  (entityType === 'ROLE' && (SECURITY_ROLE_ACTIONS as readonly string[]).includes(action));
+  (entityType === 'ROLE' && (SECURITY_ROLE_ACTIONS as readonly string[]).includes(action)) ||
+  (entityType === 'WHATSAPP' && (SECURITY_WHATSAPP_ACTIONS as readonly string[]).includes(action));
 
 /** The same rule as isSecurityEvent, for SQL. Kept beside it so the two cannot drift. */
 const SECURITY_SQL = Prisma.sql`(entity_type IN (${Prisma.join([...SECURITY_ENTITY_TYPES])})
-  OR (entity_type = 'ROLE' AND action IN (${Prisma.join([...SECURITY_ROLE_ACTIONS])})))`;
+  OR (entity_type = 'ROLE' AND action IN (${Prisma.join([...SECURITY_ROLE_ACTIONS])}))
+  OR (entity_type = 'WHATSAPP' AND action IN (${Prisma.join([...SECURITY_WHATSAPP_ACTIONS])})))`;
 
 /**
  * Sign-ins belong in the Security log only. In the everyday feed "Anjali signed in" at every
@@ -116,7 +120,9 @@ const SENTENCES: Record<string, string> = {
   'TEAM:RESEND': "{actor} sent {target}'s sign-in details again",
   'ROLE:CREATED': '{actor} created the role {target}',
   'ROLE:UPDATED': '{actor} changed what the role {target} can do',
-  'ROLE:DELETED': '{actor} deleted a role'
+  'ROLE:DELETED': '{actor} deleted a role',
+  'WHATSAPP:LINK': "{actor} started linking the shop's WhatsApp",
+  'WHATSAPP:DISCONNECT': "{actor} unlinked the shop's WhatsApp"
 };
 
 /** Rows an owner should look at twice. */
@@ -143,7 +149,8 @@ export async function listSecurityLog(clientId: string, opts: { limit?: number; 
       createdAt: { gte: since, ...(opts.before ? { lt: opts.before } : {}) },
       OR: [
         { entityType: { in: [...SECURITY_ENTITY_TYPES] } },
-        { entityType: 'ROLE', action: { in: [...SECURITY_ROLE_ACTIONS] } }
+        { entityType: 'ROLE', action: { in: [...SECURITY_ROLE_ACTIONS] } },
+        { entityType: 'WHATSAPP', action: { in: [...SECURITY_WHATSAPP_ACTIONS] } }
       ],
       // The general logger's own row for a password view; credential-audit writes the real one.
       NOT: { entityType: 'TEAM', action: 'VIEW' }
@@ -160,7 +167,7 @@ export async function listSecurityLog(clientId: string, opts: { limit?: number; 
   for (const r of page) {
     if (r.userId) userIds.add(r.userId);
     if (r.entityType === 'ROLE') roleIds.add(r.entityId);
-    else userIds.add(r.entityId);
+    else if (r.entityType !== 'WHATSAPP') userIds.add(r.entityId);
   }
   const [users, roles] = await Promise.all([
     prisma.user.findMany({ where: { clientId, id: { in: [...userIds] } }, select: { id: true, name: true, email: true } }),
