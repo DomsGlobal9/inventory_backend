@@ -5,3 +5,7 @@ FROM evoapicloud/evolution-api:v2.3.7@sha256:1bd8afc4a6cf48822e6cf02469aeae7bd35
 
 COPY patch-pairing.cjs /tmp/patch-pairing.cjs
 RUN node /tmp/patch-pairing.cjs && rm /tmp/patch-pairing.cjs
+
+# The encryption library logs whole session objects, keys included. Keep the logs, drop the keys.
+COPY patch-quiet-keys.cjs /tmp/patch-quiet-keys.cjs
+RUN node /tmp/patch-quiet-keys.cjs && rm /tmp/patch-quiet-keys.cjs
