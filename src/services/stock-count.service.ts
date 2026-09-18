@@ -84,7 +84,7 @@ export class StockCountService {
     });
 
     if (variants.length === 0) {
-      throw new Error('No variants found to audit for this location.');
+      throw badRequest('There is nothing to count yet: this shop has no products on sale. Add products first.');
     }
 
     const count = await prisma.stockCount.create({
@@ -124,29 +124,76 @@ export class StockCountService {
     // Bare Errors here meant a second press of Start answered 500 -- "the server broke" for
     // something the server refused on purpose -- and, because errorHandler persists only 5xx,
     // every double-click was written onto the Platform Console's Errors page.
-    if (count.status !== StockCountStatus.DRAFT) {
-      throw conflict(
-        count.status === StockCountStatus.IN_PROGRESS
-          ? 'This audit is already under way. Refresh to see where it got to.'
-          : 'This audit has already been completed, so it cannot be started again.'
-      );
-    }
+    if (count.status !== StockCountStatus.DRAFT) throw conflict(this.cannotStart(count.status));
 
-    return prisma.stockCount.update({
-      where: { id },
-      data: {
-        status: StockCountStatus.IN_PROGRESS,
-        startedAt: new Date()
-      }
+    // Only from DRAFT, in the same statement: a count cancelled a moment ago must not be started.
+    const started = await prisma.stockCount.updateMany({
+      where: { id, clientId, status: StockCountStatus.DRAFT },
+      data: { status: StockCountStatus.IN_PROGRESS, startedAt: new Date() }
     });
+    if (started.count === 0) throw conflict(this.cannotStart(await this.statusOf(clientId, id)));
+    return prisma.stockCount.findUnique({ where: { id } });
+  }
+
+  private cannotStart(status: StockCountStatus | null) {
+    if (status === StockCountStatus.IN_PROGRESS) return 'This audit is already under way. Refresh to see where it got to.';
+    if (status === StockCountStatus.CANCELLED) return 'This count was cancelled, so it cannot be started. Start a new count instead.';
+    return 'This audit has already been completed, so it cannot be started again.';
+  }
+
+  /** Why a count that is no longer open refuses to be changed, in the words the person needs. */
+  private closedMessage(status: StockCountStatus | null) {
+    if (status === StockCountStatus.CANCELLED) return 'This count was cancelled, so nothing on it can be changed. Start a new count instead.';
+    return 'This audit has already been completed. Start a new one to count again.';
+  }
+
+  private async statusOf(clientId: string, id: string) {
+    return (await prisma.stockCount.findFirst({ where: { id, clientId }, select: { status: true } }))?.status ?? null;
+  }
+
+  /**
+   * Called off. Only DRAFT or IN_PROGRESS: a completed count has already corrected the stock,
+   * and undoing that is a new count's job, not this one's.
+   *
+   * No stock moves, and nothing typed is thrown away: a cancelled count keeps its lines, so the
+   * owner can still see what was counted before somebody called it off -- often the very thing
+   * they want to check. Those lines no longer stop a binned product being deleted for good: the
+   * delete ignores lines of cancelled counts and removes them itself (see product.repository).
+   *
+   * completedAt / completedBy hold when and by whom it was CLOSED -- for a cancelled count, the
+   * cancelling. There is no separate column, and the schema is not changing for this.
+   */
+  async cancelCount(clientId: string, id: string, cancelledBy?: string) {
+    const count = await prisma.stockCount.findFirst({ where: { id, clientId }, select: { status: true, _count: { select: { items: true } } } });
+    if (!count) throw notFound('Stock count not found');
+    if (count.status === StockCountStatus.COMPLETED) {
+      throw conflict('This count is already completed and its corrections are in your stock, so it cannot be cancelled. To fix a number, start a new count or correct that item’s stock.');
+    }
+    if (count.status === StockCountStatus.CANCELLED) throw conflict('This count has already been cancelled.');
+
+    // One statement decides it. Completing claims the count the same way (see completeCount), so
+    // when both are pressed at once exactly one of them finds it still open, and the other is told.
+    const claimed = await prisma.stockCount.updateMany({
+      where: { id, clientId, status: { in: [StockCountStatus.DRAFT, StockCountStatus.IN_PROGRESS] } },
+      data: { status: StockCountStatus.CANCELLED, completedAt: new Date(), completedBy: cancelledBy, totalItems: count._count.items }
+    });
+    const cancelled = claimed.count > 0;
+
+    if (!cancelled) {
+      const now = await this.statusOf(clientId, id);
+      throw conflict(now === StockCountStatus.COMPLETED
+        ? 'This count was completed a moment ago, so it cannot be cancelled. Its corrections are in your stock.'
+        : 'This count has already been cancelled.');
+    }
+    return prisma.stockCount.findUnique({ where: { id } });
   }
 
   async updateItemCount(clientId: string, id: string, itemId: string, countedQty: number | null) {
-    // Validate count exists and is in progress
+    // Validate count exists and is still open
     const count = await prisma.stockCount.findFirst({ where: { id, clientId } });
     if (!count) throw notFound('Stock count not found');
-    if (count.status === StockCountStatus.COMPLETED) {
-      throw conflict('This audit has already been completed. Start a new one to count again.');
+    if (count.status === StockCountStatus.COMPLETED || count.status === StockCountStatus.CANCELLED) {
+      throw conflict(this.closedMessage(count.status));
     }
 
     /*
@@ -167,10 +214,19 @@ export class StockCountService {
       expectedNow = stock?.quantity ?? 0;
     }
 
-    return prisma.stockCountItem.update({
-      where: { id: itemId, stockCountId: id },
+    // Only while the count is still open, checked in the same statement: a line typed on one
+    // screen while the count is being cancelled or completed on another must not land after it.
+    const saved = await prisma.stockCountItem.updateMany({
+      where: { id: itemId, stockCountId: id, stockCount: { status: { in: [StockCountStatus.DRAFT, StockCountStatus.IN_PROGRESS] } } },
       data: { countedQty, ...(expectedNow !== undefined ? { expectedQty: expectedNow } : {}) }
     });
+    if (saved.count === 0) {
+      const now = await this.statusOf(clientId, id);
+      // Still open, yet nothing matched: the line itself is gone, not the count closed.
+      if (now === StockCountStatus.DRAFT || now === StockCountStatus.IN_PROGRESS) throw notFound('That line is not on this audit.');
+      throw conflict(this.closedMessage(now));
+    }
+    return prisma.stockCountItem.findUnique({ where: { id: itemId } });
   }
 
   async completeCount(clientId: string, id: string, completedBy?: string) {
@@ -180,8 +236,8 @@ export class StockCountService {
     });
 
     if (!count) throw notFound('Stock count not found');
-    if (count.status === StockCountStatus.COMPLETED) {
-      throw conflict('This audit has already been completed. Start a new one to count again.');
+    if (count.status === StockCountStatus.COMPLETED || count.status === StockCountStatus.CANCELLED) {
+      throw conflict(this.closedMessage(count.status));
     }
     if (!count.locationId) throw new Error('Legacy stock count without a location cannot be completed in multi-location mode.');
 
@@ -200,39 +256,54 @@ export class StockCountService {
     const accuracy = itemsCounted > 0 ? (matchedItems / itemsCounted) * 100 : null;
 
     // Execute completion atomically
-    await prisma.$transaction(async (tx) => {
-      for (const item of itemsWithDifferences) {
-        const difference = item.countedQty! - item.expectedQty;
-
-        await inventoryMutationService.applyMovement({
-          clientId,
-          locationId: count.locationId!,
-          variantId: item.variantId,
-          movementType: 'ADJUSTMENT',
-          reason: 'AUDIT_CORRECTION',
-          quantityDelta: difference,
-          notes: `Audit Correction (Count: ${count.name})`,
-          createdBy: completedBy,
-          tx
+    try {
+      await prisma.$transaction(async (tx) => {
+        // Claimed FIRST, and only if still open. Cancelling claims it the same way, so of a
+        // complete and a cancel pressed together exactly one finds it open; the loser changes
+        // nothing. It used to be marked completed last, after the corrections, with nothing to stop
+        // a second completion -- or a cancel -- getting in between.
+        const claimed = await tx.stockCount.updateMany({
+          where: { id, clientId, status: { in: [StockCountStatus.DRAFT, StockCountStatus.IN_PROGRESS] } },
+          data: {
+            status: StockCountStatus.COMPLETED,
+            completedAt: new Date(),
+            completedBy,
+            totalItems,
+            matchedItems,
+            adjustedItems,
+            accuracy: accuracy !== null ? accuracy : undefined
+          }
         });
-      }
+        if (claimed.count === 0) throw conflict(this.closedMessage(await this.statusOf(clientId, id)));
 
-      await tx.stockCount.update({
-        where: { id },
-        data: {
-          status: StockCountStatus.COMPLETED,
-          completedAt: new Date(),
-          completedBy,
-          totalItems,
-          matchedItems,
-          adjustedItems,
-          accuracy: accuracy !== null ? accuracy : undefined
+        for (const item of itemsWithDifferences) {
+          const difference = item.countedQty! - item.expectedQty;
+
+          await inventoryMutationService.applyMovement({
+            clientId,
+            locationId: count.locationId!,
+            variantId: item.variantId,
+            movementType: 'ADJUSTMENT',
+            reason: 'AUDIT_CORRECTION',
+            quantityDelta: difference,
+            notes: `Audit Correction (Count: ${count.name})`,
+            createdBy: completedBy,
+            tx
+          });
         }
+      }, {
+        timeout: 30000,
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
       });
-    }, {
-      timeout: 30000,
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
-    });
+    } catch (error: any) {
+      // Serializable turns "somebody closed it at the same instant" into a write conflict. Say
+      // what actually happened to the count rather than "somebody saved this at the same moment".
+      if (error?.code === 'P2034' || /could not serialize access/i.test(String(error?.message))) {
+        const now = await this.statusOf(clientId, id);
+        if (now === StockCountStatus.COMPLETED || now === StockCountStatus.CANCELLED) throw conflict(this.closedMessage(now));
+      }
+      throw error;
+    }
 
     return prisma.stockCount.findUnique({ where: { id } });
   }

@@ -693,6 +693,11 @@ export class SalesOrderService {
           include: {
             variant: {
               include: { product: true }
+            },
+            // What each line still holds, read from the reservations themselves. See heldQty below.
+            inventoryReservations: {
+              where: { status: { in: ['ACTIVE', 'PARTIALLY_FULFILLED'] } },
+              select: { reservedQty: true, dispatchedQty: true }
             }
           }
         },
@@ -720,8 +725,21 @@ export class SalesOrderService {
       }
     });
     if (!order) throw notFound('Order not found');
+    /*
+     * heldQty: how many pieces of the line are still set aside for this order, right now.
+     *
+     * The order screen used to work it out as "ordered minus sent", patched per status -- and every
+     * status it forgot was a line claiming stock it no longer held. A part-sent order closed short
+     * ends DISPATCHED, not CANCELLED, so its unsent saree read "RESERVED 1" while the saree was
+     * already back on sale. The live reservation rows are the fact; the status is only a summary.
+     */
+    const items = order.items.map(({ inventoryReservations, ...item }) => ({
+      ...item,
+      heldQty: inventoryReservations.reduce((sum, r) => sum + Math.max(0, r.reservedQty - r.dispatchedQty), 0)
+    }));
     return {
       ...order,
+      items,
       atCounter: order.sourceSystem === COUNTER_SOURCE,
       payment: paymentSummary(toMinor(order.total), order.payments)
     };

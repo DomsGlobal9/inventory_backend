@@ -75,6 +75,8 @@ export const updatePOStatus = async (req: Request, res: Response, next: NextFunc
     const id = req.params.id as string;
     const { status } = req.body;
     const data = await purchaseOrderService.updatePOStatus(clientId, id, status);
+    // Said by the route, so the activity feed can tell a sent order from a cancelled one.
+    res.locals.auditAction = status === 'CANCELLED' ? 'CANCELLED' : 'MARKED_SENT';
     res.json({ success: true, data });
   } catch (error) {
     next(error);

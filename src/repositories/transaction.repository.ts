@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { withPerformerNames } from '../lib/performerNames';
 import { Prisma, TransactionType, InventoryReason } from '@prisma/client';
 
 export class TransactionRepository {
@@ -129,7 +130,8 @@ export class TransactionRepository {
       })
     ]);
 
-    return { total, data, page: filters.page, limit: filters.limit };
+    // Who, as a name or "System" -- never the shop's id or a raw user id (lib/performerNames).
+    return { total, data: await withPerformerNames(clientId, data), page: filters.page, limit: filters.limit };
   }
 }
 

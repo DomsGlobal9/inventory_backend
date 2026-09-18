@@ -7,6 +7,7 @@ import { encryptCredential } from '../lib/credentialEncryption';
 import { WILDCARD_PERMISSION, expandPermissions, holdsEverything } from '../config/permissions';
 import { respondWithError } from '../utils/respondWithError';
 import { forgetIdentity } from '../lib/identityCache';
+import { recordAccountEvent } from '../services/security-log';
 
 const userWithRolesInclude = {
   roles: {
@@ -21,6 +22,28 @@ const userWithRolesInclude = {
     }
   }
 };
+
+/**
+ * A refused sign-in, recorded against the account(s) it was aimed at, for that shop's Security
+ * log. Not awaited: the person waiting for "wrong password" should not wait for the record too.
+ *
+ * Which accounts: a switched-off account found directly is one; otherwise every account with that
+ * email -- a wrong password among several workspaces cannot say which one was meant, and a
+ * switched-off person trying to get back in never reached the active-only lookup above. An email
+ * that belongs to nobody records nothing: there is no shop to tell.
+ */
+function noteRefusedSignIn(email: string, clientId: string | undefined, found: { id: string; clientId: string; status: string } | undefined | null, ip?: string) {
+  if (found) {
+    recordAccountEvent({ clientId: found.clientId, accountUserId: found.id, action: found.status === 'ACTIVE' ? 'SIGN_IN_FAILED' : 'SIGN_IN_BLOCKED', ipAddress: ip });
+    return;
+  }
+  prisma.user
+    .findMany({ where: { email, ...(clientId ? { clientId } : {}) }, select: { id: true, clientId: true, status: true }, take: 10 })
+    .then(accounts => accounts.forEach(a => recordAccountEvent({
+      clientId: a.clientId, accountUserId: a.id, action: a.status === 'ACTIVE' ? 'SIGN_IN_FAILED' : 'SIGN_IN_BLOCKED', ipAddress: ip
+    })))
+    .catch(err => console.error('security-log: could not note a refused sign-in', err?.message));
+}
 
 export const login = async (req: Request, res: Response) => {
   try {
@@ -81,6 +104,7 @@ export const login = async (req: Request, res: Response) => {
 
     if (!user || user.status !== 'ACTIVE') {
       recordFailure(throttleKey);
+      noteRefusedSignIn(email, clientId, user, req.ip);
       return res.status(401).json({ success: false, message: 'Invalid credentials or inactive user' });
     }
 
@@ -88,9 +112,11 @@ export const login = async (req: Request, res: Response) => {
 
     if (!isValidPassword) {
       recordFailure(throttleKey);
+      recordAccountEvent({ clientId: user.clientId, accountUserId: user.id, action: 'SIGN_IN_FAILED', ipAddress: req.ip });
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
     clearFailures(throttleKey);
+    recordAccountEvent({ clientId: user.clientId, accountUserId: user.id, actorUserId: user.id, action: 'SIGNED_IN', ipAddress: req.ip });
 
     // Role names, and everything those roles actually confer.
     //
@@ -167,6 +193,7 @@ export const logoutOtherDevices = async (req: Request, res: Response) => {
     const authUser = (req as any).user;
     const updated = await prisma.user.update({ where: { id: authUser.id }, data: { sessionVersion: { increment: 1 } } });
     forgetIdentity(updated.id);
+    recordAccountEvent({ clientId: updated.clientId, accountUserId: updated.id, actorUserId: updated.id, action: 'SIGNED_OUT_OTHER_DEVICES', ipAddress: req.ip });
     res.cookie('token', AuthService.generateToken({ userId: updated.id, clientId: updated.clientId, sessionVersion: updated.sessionVersion }), authCookieOptions);
     res.json({ success: true, message: 'Signed out of every other device.' });
   } catch (error: any) {
@@ -312,6 +339,7 @@ export const changeMyPassword = async (req: Request, res: Response) => {
       }
     });
     forgetIdentity(user.id);
+    recordAccountEvent({ clientId: changed.clientId, accountUserId: changed.id, actorUserId: changed.id, action: 'PASSWORD_CHANGED', ipAddress: req.ip });
     // This device stays signed in, on a token carrying the new number.
     res.cookie('token', AuthService.generateToken({ userId: changed.id, clientId: changed.clientId, sessionVersion: changed.sessionVersion }), authCookieOptions);
 

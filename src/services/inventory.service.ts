@@ -20,7 +20,7 @@ export class InventoryService {
       referenceType: referenceType || 'MANUAL', 
       unitCost,
       notes,
-      createdBy: performedBy || clientId
+      createdBy: performedBy || 'SYSTEM'
     });
   }
 
@@ -36,7 +36,7 @@ export class InventoryService {
       referenceId: reference,
       referenceType: referenceType || 'MANUAL', 
       notes,
-      createdBy: performedBy || clientId
+      createdBy: performedBy || 'SYSTEM'
     });
   }
 
@@ -52,7 +52,7 @@ export class InventoryService {
       referenceId: reference, 
       referenceType: referenceType || 'MANUAL',
       notes,
-      createdBy: performedBy || clientId
+      createdBy: performedBy || 'SYSTEM'
     });
   }
 
@@ -117,6 +117,10 @@ export class InventoryService {
     } else {
       orderBy.createdAt = 'desc';
     }
+    // The id breaks ties. Variants made together share a createdAt (and often an updatedAt), and
+    // without a tie-breaker Postgres may order them differently from one page to the next -- the
+    // same row on pages 1 and 2, another on neither, and the same key twice in the table.
+    const ordering: any[] = [orderBy, { id: 'asc' }];
 
     const onHand = (stocks: { locationId: string | null; quantity: number }[]) =>
       (locationId ? stocks.filter(s => s.locationId === locationId) : stocks)
@@ -138,7 +142,7 @@ export class InventoryService {
       // re-fetch only the page's rows in full.
       const candidates = await prisma.productVariant.findMany({
         where,
-        orderBy,
+        orderBy: ordering,
         select: {
           id: true,
           reorderLevel: true,
@@ -197,7 +201,7 @@ export class InventoryService {
       [variants, total] = await Promise.all([
         prisma.productVariant.findMany({
           where,
-          orderBy,
+          orderBy: ordering,
           skip,
           take: Number(limit),
           include: {

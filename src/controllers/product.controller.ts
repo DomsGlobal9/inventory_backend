@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { parseBody } from '../validations/parseBody';
 import { productService } from '../services/product.service';
 import { createProductSchema, updateProductSchema, productQuerySchema } from '../validations/product.schema';
 
@@ -7,7 +8,7 @@ export class ProductController {
   async create(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const validatedData = createProductSchema.parse(req.body);
+      const validatedData = parseBody(createProductSchema, req.body);
       const product = await productService.createProduct(clientId, validatedData);
       res.status(201).json({ success: true, data: product });
     } catch (error) {
@@ -49,7 +50,7 @@ export class ProductController {
   async update(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const validatedData = updateProductSchema.parse(req.body);
+      const validatedData = parseBody(updateProductSchema, req.body);
       const product = await productService.updateProduct(req.params.id as string, clientId, validatedData);
       res.status(200).json({ success: true, data: product });
     } catch (error) {

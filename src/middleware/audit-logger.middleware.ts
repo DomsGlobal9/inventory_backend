@@ -1,12 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
+import { isAuditNoise } from '../services/audit-feed.service';
+import { pruneAuditLogs } from '../services/security-log';
 
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-
-// Keep every client's activity feed bounded -- without this, a busy warehouse doing
-// hundreds of stock moves a day would grow this table forever. 30 is generous for "what
-// has my team been doing lately" without needing real log-retention infrastructure.
-const ROLLING_LIMIT_PER_CLIENT = 30;
 
 function looksLikeId(segment: string) {
   return /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(segment) || /^[0-9a-f]{20,}$/i.test(segment) || /^\d+$/.test(segment);
@@ -47,19 +44,6 @@ function inferActionAndEntity(method: string, path: string) {
   return { action, entityType, entityId };
 }
 
-async function pruneOldLogs(clientId: string) {
-  const count = await prisma.auditLog.count({ where: { clientId } });
-  if (count <= ROLLING_LIMIT_PER_CLIENT) return;
-
-  const oldest = await prisma.auditLog.findMany({
-    where: { clientId },
-    orderBy: { createdAt: 'asc' },
-    take: count - ROLLING_LIMIT_PER_CLIENT,
-    select: { id: true }
-  });
-  await prisma.auditLog.deleteMany({ where: { id: { in: oldest.map(o => o.id) } } });
-}
-
 export const auditLogger = (req: Request, res: Response, next: NextFunction) => {
   if (!MUTATION_METHODS.has(req.method)) return next();
 
@@ -83,11 +67,16 @@ export const auditLogger = (req: Request, res: Response, next: NextFunction) => 
     const action = res.locals.auditAction ?? inferred.action;
     const entityType = inferred.entityType;
     const entityId = res.locals.auditEntityId ?? inferred.entityId;
+    // A price quote or a preview is not activity, and with only the latest rows kept per shop each
+    // one pushed a real change out of the feed. The list lives beside the feed that reads it.
+    if (isAuditNoise(entityType, action)) return;
 
+    // Everyday activity is trimmed to the latest rows; security events are kept for months. The
+    // rule for which is which lives in the security-log module.
     prisma.auditLog.create({
       data: { clientId: user.clientId, userId: user.id, action, entityType, entityId, ipAddress: req.ip }
     })
-      .then(() => pruneOldLogs(user.clientId))
+      .then(() => pruneAuditLogs(user.clientId))
       .catch(err => console.error('audit-logger: failed to record activity', err));
   });
 

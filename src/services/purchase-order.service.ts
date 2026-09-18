@@ -23,6 +23,13 @@ const RECEIPT_INCLUDE = {
 /** The store an order is for, with what a supplier needs to deliver there. */
 const DELIVER_TO_SELECT = { id: true, name: true, code: true, active: true, address: true, phone: true } satisfies Prisma.StockLocationSelect;
 
+/**
+ * A purchase order's lines in the order they were added. SKU breaks ties for orders raised
+ * before each line got its own timestamp -- not their original order, but at least one that
+ * does not change when a line is received.
+ */
+const ITEM_ORDER = [{ createdAt: 'asc' as const }, { sku: 'asc' as const }];
+
 const refuse = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 
 export class PurchaseOrderService {
@@ -67,6 +74,11 @@ export class PurchaseOrderService {
     });
     const supplierSkuMap = new Map(supplierLinks.map(l => [l.variantId, l.supplierSku]));
 
+    // Each line a millisecond apart, in the order it was added, so ITEM_ORDER keeps that order.
+    // One shared timestamp left the database free to return lines in any order, and they
+    // shuffled after every receipt -- the line just received dropped to the bottom.
+    const addedAt = Date.now();
+
     const created = await prisma.purchaseOrder.create({
       data: {
         clientId,
@@ -76,13 +88,15 @@ export class PurchaseOrderService {
         status: PurchaseOrderStatus.DRAFT,
         expectedDeliveryDate: data.expectedDeliveryDate,
         notes: data.notes,
-        totalAmount: data.items.reduce((sum, item) => sum + (item.orderedQty * item.unitPrice), 0),
+        // In whole paise, so the float sum of many lines cannot leave a 0.000000001 tail.
+        totalAmount: data.items.reduce((sum, item) => sum + Math.round(item.orderedQty * item.unitPrice * 100), 0) / 100,
         items: {
-          create: data.items.map(item => {
+          create: data.items.map((item, index) => {
             const variant = variantMap.get(item.variantId);
             if (!variant) throw Object.assign(new Error(`Variant ${item.variantId} not found`), { statusCode: 404 });
 
             return {
+              createdAt: new Date(addedAt + index),
               variantId: variant.id,
               sku: variant.sku,
               variantCode: variant.variantCode,
@@ -98,7 +112,7 @@ export class PurchaseOrderService {
         }
       },
       include: {
-        items: true,
+        items: { orderBy: ITEM_ORDER },
         supplier: true,
         location: { select: DELIVER_TO_SELECT }
       }
@@ -152,6 +166,7 @@ export class PurchaseOrderService {
         // Every delivery, so the order page can list them and print any one again.
         receipts: { include: RECEIPT_INCLUDE, orderBy: { receivedAt: 'asc' } },
         items: {
+          orderBy: ITEM_ORDER,
           include: {
             variant: {
               select: {
@@ -477,7 +492,7 @@ export class PurchaseOrderService {
             receivedAt
           },
           include: {
-            items: true
+            items: { orderBy: ITEM_ORDER }
           }
         });
 
@@ -506,7 +521,7 @@ export class PurchaseOrderService {
     if (receipt.poId !== poId) {
       throw Object.assign(new Error('That receipt key was already used for a different purchase order.'), { statusCode: 409 });
     }
-    const po = await prisma.purchaseOrder.findFirstOrThrow({ where: { id: poId, clientId }, include: { items: true } });
+    const po = await prisma.purchaseOrder.findFirstOrThrow({ where: { id: poId, clientId }, include: { items: { orderBy: ITEM_ORDER } } });
     return { po, receipt, duplicate: true };
   }
 
@@ -546,7 +561,7 @@ export class PurchaseOrderService {
   async emailToSupplier(clientId: string, id: string, orderedByName?: string) {
     const po = await prisma.purchaseOrder.findFirst({
       where: { id, clientId },
-      include: { supplier: true, items: true, location: { select: DELIVER_TO_SELECT } }
+      include: { supplier: true, items: { orderBy: ITEM_ORDER }, location: { select: DELIVER_TO_SELECT } }
     });
     if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
 

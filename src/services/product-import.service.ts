@@ -4,6 +4,8 @@ import { prisma } from '../lib/prisma';
 import { readColorMetadata } from '../lib/catalogMetadata';
 import { grants } from '../config/permissions';
 import { inventoryMutationService } from './inventory-mutation.service';
+import { InventoryAlertService } from './inventory-alert.service';
+import { isWholePaise } from '../validations/money';
 import { generateSequentialCode } from '../utils/codeGenerator';
 
 /**
@@ -448,8 +450,10 @@ class ProductImportService {
             else if (n < 0) errors.push({ rowNumber: row.rowNumber, message: `${label} cannot be negative.` });
           } else if (rule === 'money>0') {
             if (n <= 0) errors.push({ rowNumber: row.rowNumber, message: `${label} must be more than zero.` });
+            else if (!isWholePaise(n)) errors.push({ rowNumber: row.rowNumber, message: `${label} goes to the paisa: use at most 2 digits after the point, not ${n}.` });
           } else {
             if (n < 0) errors.push({ rowNumber: row.rowNumber, message: `${label} cannot be negative.` });
+            else if (!isWholePaise(n)) errors.push({ rowNumber: row.rowNumber, message: `${label} goes to the paisa: use at most 2 digits after the point, not ${n}.` });
           }
         }
 
@@ -540,6 +544,8 @@ class ProductImportService {
     }
 
     let createdProducts = 0, createdVariants = 0, updatedVariants = 0, stockMovements = 0;
+    /** Existing items whose reorder level this file sets. */
+    const newLevels: string[] = [];
 
     for (const group of groups.values()) {
       // One transaction per PRODUCT, not per file.
@@ -610,7 +616,10 @@ class ProductImportService {
             // Only what the file actually supplied. A blank cell leaves the value alone.
             if (this.num(row.sellingPrice) !== undefined) data.sellingPrice = new Prisma.Decimal(this.num(row.sellingPrice)!);
             if (this.num(row.costPrice) !== undefined) data.costPrice = new Prisma.Decimal(this.num(row.costPrice)!);
-            if (this.num(row.reorderLevel) !== undefined) data.reorderLevel = this.num(row.reorderLevel)!;
+            if (this.num(row.reorderLevel) !== undefined) {
+              data.reorderLevel = this.num(row.reorderLevel)!;
+              newLevels.push(existing.id);
+            }
             if (Object.keys(data).length) {
               await tx.productVariant.update({ where: { id: existing.id }, data });
               updatedVariants++;
@@ -662,6 +671,14 @@ class ProductImportService {
           }
         }
       }, { timeout: 30000 });
+    }
+
+    // A new reorder level on an item that already had stock raises or clears its alerts in every
+    // store, and no stock moved to make anything look. Re-checked once for all of them, after the
+    // file is in; never allowed to fail an import that has already been applied.
+    if (newLevels.length) {
+      await InventoryAlertService.recheckVariants(prisma, clientId, newLevels)
+        .catch(err => console.error('[productImport] stock alerts could not be re-checked', err));
     }
 
     return { importId, createdProducts, createdVariants, updatedVariants, stockMovements };

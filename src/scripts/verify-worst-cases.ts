@@ -269,7 +269,7 @@ async function raceStock(owner: string, ctx: { variantId: string; locationId: st
   const results = await Promise.all(
     Array.from({ length: RACERS }, () =>
       call(owner, 'POST', '/inventory/stock-out', {
-        variantId: ctx.variantId, locationId: ctx.locationId, quantity: AVAILABLE, reason: 'SALE'
+        variantId: ctx.variantId, locationId: ctx.locationId, quantity: AVAILABLE, reason: 'DAMAGE'
       })
     )
   );

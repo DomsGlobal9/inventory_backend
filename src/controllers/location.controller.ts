@@ -101,7 +101,9 @@ export const updateLocation = async (req: Request, res: Response) => {
       ]);
       const pieces = held._sum.quantity ?? 0;
       if (pieces > 0 || incoming > 0) {
+        // field says which box was refused, so the form can put the switch back where it is saved.
         return res.status(409).json({
+          field: 'active',
           error: `This store still has ${pieces > 0 ? `${pieces} pieces in stock` : ''}${pieces > 0 && incoming > 0 ? ' and ' : ''}${incoming > 0 ? `${incoming} open purchase order${incoming === 1 ? '' : 's'}` : ''}. Move the stock and finish or move the orders before switching it off.`
         });
       }

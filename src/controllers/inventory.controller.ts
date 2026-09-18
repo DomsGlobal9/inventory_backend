@@ -10,6 +10,18 @@ import { canSeeCost } from '../middleware/cost-visibility.middleware';
 const performerOf = (req: Request) => (req as any).user?.name || (req as any).user?.id;
 
 const VALID_REASONS: string[] = Object.values(InventoryReason);
+// Not the list of reason codes: those mean nothing to the person reading this.
+const UNKNOWN_REASON = 'That reason is not one the app knows. Choose a reason from the list.';
+
+/**
+ * Why pieces may be taken off by hand.
+ *
+ * Not SALE. A counter sale or a sent order takes its pieces off by itself, and the day book
+ * measures sales against those dispatches -- so a hand-made "SALE" was a write-off wearing a
+ * sale's name: the day book counted pieces as sold that no order sold, and a damaged saree
+ * issued with the form's old default of SALE disappeared into the sales figures.
+ */
+const MANUAL_STOCK_OUT_REASONS: string[] = ['DAMAGE', 'RETURN_TO_VENDOR', 'SAMPLE'];
 
 /**
  * Run the movement payload through stockChangeSchema before anything touches stock.
@@ -57,7 +69,7 @@ export class InventoryController {
       const { locationId } = req.body;
 
       if (reason !== undefined && !VALID_REASONS.includes(reason)) {
-        return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
+        return res.status(400).json({ success: false, message: UNKNOWN_REASON });
       }
 
       let targetLocationId = locationId || (req as any).locationId;
@@ -84,8 +96,16 @@ export class InventoryController {
       const { variantId, quantity, reason, referenceType, reference, notes } = parsed.data;
       const { locationId } = req.body;
 
-      if (reason !== undefined && !VALID_REASONS.includes(reason)) {
-        return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
+      // Chosen by the person, never assumed: the form used to start on SALE, so every write-off
+      // that was not changed by hand landed in the ledger as a sale.
+      if (!reason) {
+        return res.status(400).json({ success: false, message: 'Choose why these pieces are going out: damaged, a sample, or returned to the supplier.' });
+      }
+      if (reason === 'SALE') {
+        return res.status(400).json({ success: false, message: 'Sales take stock off by themselves when the sale is made or the order is sent. To take pieces off by hand, choose damaged, a sample, or returned to the supplier.' });
+      }
+      if (!MANUAL_STOCK_OUT_REASONS.includes(reason)) {
+        return res.status(400).json({ success: false, message: VALID_REASONS.includes(reason) ? 'That reason is not for taking stock off by hand. Choose damaged, a sample, or returned to the supplier.' : UNKNOWN_REASON });
       }
 
       let targetLocationId = locationId || (req as any).locationId;
@@ -122,7 +142,12 @@ export class InventoryController {
         return res.status(400).json({ success: false, message: 'An adjustment of zero would change nothing.' });
       }
       if (reason !== undefined && !VALID_REASONS.includes(reason)) {
-        return res.status(400).json({ success: false, message: `Invalid reason. Must be one of: ${VALID_REASONS.join(', ')}` });
+        return res.status(400).json({ success: false, message: UNKNOWN_REASON });
+      }
+      // A correction marked SALE would count in the day book as a sale no order made -- the same
+      // hole stock-out closes above.
+      if (reason === 'SALE') {
+        return res.status(400).json({ success: false, message: 'A stock correction is not a sale. Sales take stock off by themselves when the sale is made or the order is sent.' });
       }
 
       let targetLocationId = locationId || (req as any).locationId;

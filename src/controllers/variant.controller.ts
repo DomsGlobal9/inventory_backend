@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { parseBody } from '../validations/parseBody';
 import { variantService } from '../services/variant.service';
 import {
   createVariantSchema,
@@ -22,9 +23,9 @@ export class VariantController {
     try {
       const clientId = (req as any).clientId as string;
       const productId = req.params.productId as string;
-      const validatedData = createVariantSchema.parse(req.body);
+      const validatedData = parseBody(createVariantSchema, req.body);
       const locationId = validatedData.locationId || (req as any).locationId;
-      const variant = await variantService.createVariant(productId, clientId, validatedData, locationId);
+      const variant = await variantService.createVariant(productId, clientId, validatedData, locationId, (req as any).user?.id);
       res.status(201).json({ success: true, data: variant });
     } catch (error) {
       next(error);
@@ -35,12 +36,12 @@ export class VariantController {
     try {
       const clientId = (req as any).clientId as string;
       const productId = req.params.productId as string;
-      const validatedData = bulkCreateVariantSchema.parse(req.body);
+      const validatedData = parseBody(bulkCreateVariantSchema, req.body);
       const locationId = validatedData.locationId || (req as any).locationId;
 
       const result = await variantService.bulkCreateVariants(
         productId, clientId, validatedData.variants, locationId,
-        validatedData.applyToAllLocations, validatedData.supplierId
+        validatedData.applyToAllLocations, validatedData.supplierId, (req as any).user?.id
       );
       res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -51,7 +52,7 @@ export class VariantController {
   async bulkUpdate(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const validatedData = bulkUpdateVariantSchema.parse(req.body);
+      const validatedData = parseBody(bulkUpdateVariantSchema, req.body);
 
       // The route is gated on inventory:adjust, which is authority over QUANTITIES. This
       // endpoint also accepts prices and costs, and those are somebody else's authority:
@@ -89,7 +90,9 @@ export class VariantController {
       // the import dialog wins; the header's location is the fallback for API clients that
       // did not say. The service verifies whichever it gets belongs to this tenant.
       const locationId = validatedData.locationId || ((req as any).locationId as string | undefined);
-      const result = await variantService.bulkUpdateVariants(clientId, validatedData.updates, locationId);
+      // Who, for the ledger: the person's id, which the ledger shows as their name. It was the
+      // shop's own id, printed in the USER / SYSTEM column of every corrected row.
+      const result = await variantService.bulkUpdateVariants(clientId, validatedData.updates, locationId, (req as any).user?.id);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -110,7 +113,7 @@ export class VariantController {
   async update(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const validatedData = updateVariantSchema.parse(req.body);
+      const validatedData = parseBody(updateVariantSchema, req.body);
       const variant = await variantService.updateVariant(req.params.id as string, clientId, validatedData);
       res.status(200).json({ success: true, data: variant });
     } catch (error) {

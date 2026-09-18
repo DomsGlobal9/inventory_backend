@@ -256,7 +256,7 @@ async function run() {
 
   await test('issue 10 reduces stock', async () => {
     const r = await c.post('/inventory/stock-out', {
-      variantId: v1, locationId: locMain, quantity: 10, reason: 'SALE'
+      variantId: v1, locationId: locMain, quantity: 10, reason: 'DAMAGE'
     });
     assert(r.status === 200 || r.status === 201, `got ${r.status}`);
     const chk = await c.get('/inventory/variants', { params: { search: `E2E-${stamp}-RED-M` } });
@@ -266,7 +266,7 @@ async function run() {
 
   await test('issuing more than on hand is refused and changes nothing', async () => {
     const r = await c.post('/inventory/stock-out', {
-      variantId: v1, locationId: locMain, quantity: 99999, reason: 'SALE'
+      variantId: v1, locationId: locMain, quantity: 99999, reason: 'DAMAGE'
     });
     assert(r.status >= 400, `expected rejection, got ${r.status}`);
     const chk = await c.get('/inventory/variants', { params: { search: `E2E-${stamp}-RED-M` } });

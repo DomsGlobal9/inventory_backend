@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isWholePaise, PAISA_MESSAGE } from './money';
 
 export const purchaseOrderCreateSchema = z.object({
   supplierId: z.string().min(1, "Supplier ID is required"),
@@ -14,7 +15,9 @@ export const purchaseOrderCreateSchema = z.object({
     orderedQty: z.number().int('Order whole pieces.').positive("Quantity must be positive")
       .max(1_000_000, 'That is more pieces than any delivery can hold. Check the quantity.'),
     unitPrice: z.number().min(0, "Unit price must be >= 0")
-      .max(10_000_000, 'That price looks wrong. Enter what one piece costs.'),
+      .max(10_000_000, 'That price looks wrong. Enter what one piece costs.')
+      // The unit price column has no scale, so ₹10.555 was stored as typed and printed raw.
+      .refine(isWholePaise, PAISA_MESSAGE),
     productTitle: z.string().optional().nullable(),
     color: z.string().optional().nullable(),
     size: z.string().optional().nullable()

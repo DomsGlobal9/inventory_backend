@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { withPerformerNames } from '../lib/performerNames';
 import { TransactionType } from '@prisma/client';
 
 export class InventoryRepository {
@@ -120,7 +121,7 @@ export class InventoryRepository {
     ]);
 
     return {
-      data: transactions,
+      data: await withPerformerNames(clientId, transactions),
       pagination: {
         total,
         page: Number(page),

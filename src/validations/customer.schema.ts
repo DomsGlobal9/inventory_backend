@@ -17,6 +17,15 @@ const phoneField = z.string({ required_error: 'Enter the customer\'s phone numbe
     return result.value;
   });
 
+/**
+ * A text field, with the sentence to show when something other than text is sent.
+ *
+ * Zod's own wording ("Expected string, received number", "Invalid email") reached the customer form
+ * as it was, so a shopkeeper was told "Invalid email" in developer language. Every refusal here is
+ * said the way the person at the counter would need to hear it.
+ */
+const text = (what: string) => z.string({ invalid_type_error: `${what} must be written as text.` });
+
 // Every field the customer service actually writes must be listed here: z.object()
 // strips unknown keys, so anything missing arrives as `undefined` and is silently
 // dropped. companyName, gstNumber and status were all being collected by
@@ -24,16 +33,24 @@ const phoneField = z.string({ required_error: 'Enter the customer\'s phone numbe
 const fields = {
   // Trimmed before the length check, for the same reason as the product title: "   " passed
   // min(1) and saved a customer with a blank name, which no search can ever find again.
-  name: z.string().trim().min(1, "Give the customer a name"),
-  companyName: z.string().optional().nullable(),
+  name: z.string({ required_error: "Enter the customer's name.", invalid_type_error: "Enter the customer's name." })
+    .trim().min(1, "Enter the customer's name."),
+  companyName: text('The company name').optional().nullable(),
   // A blank email is no email, not an invalid one: the form sends "" for an empty box.
-  email: z.preprocess(v => (typeof v === 'string' && v.trim() === '' ? null : v), z.string().trim().email("Invalid email").optional().nullable()),
-  gstNumber: z.string().optional().nullable(),
-  billingAddress: z.string().optional().nullable(),
-  shippingAddress: z.string().optional().nullable(),
-  status: z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED']).optional(),
+  email: z.preprocess(v => (typeof v === 'string' && v.trim() === '' ? null : v),
+    text('The email').trim()
+      .max(254, 'That email address is too long. Check it, or leave the box empty.')
+      .email("That email address doesn't look right. Check it, or leave the box empty.")
+      .optional().nullable()),
+  gstNumber: text('The GSTIN').optional().nullable(),
+  billingAddress: text('The billing address').optional().nullable(),
+  shippingAddress: text('The delivery address').optional().nullable(),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED'], {
+    errorMap: () => ({ message: 'A customer can only be Active, Inactive or Archived.' })
+  }).optional(),
   // Groups for offers: VIP, STAFF, WHOLESALE. Tidied and de-duplicated by the service.
-  tags: z.array(z.string().trim().min(1, 'A group needs a name').max(40, 'Keep a group name under 40 characters'))
+  tags: z.array(text('A group name').trim().min(1, 'A group needs a name').max(40, 'Keep a group name under 40 characters'),
+    { invalid_type_error: 'Send the groups as a list of names.' })
     .max(20, 'A customer can be in at most 20 groups').optional(),
 };
 

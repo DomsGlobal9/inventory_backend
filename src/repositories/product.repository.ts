@@ -120,7 +120,9 @@ export class ProductRepository {
             purchaseOrderItems: {
               include: { po: true },
             },
-            stockCountItems: { take: 1 }
+            // A cancelled count keeps its lines as a record, but a count that never happened is no
+            // reason to keep a binned product forever. hardDelete removes those lines itself.
+            stockCountItems: { where: { stockCount: { status: { not: 'CANCELLED' } } }, take: 1 }
           }
         }
       }
@@ -263,9 +265,14 @@ export class ProductRepository {
 
     // Prisma Cascade delete on Product Variant will delete variants, images.
     // Assuming schema has onDelete: Cascade for Product -> Variants and Product -> Images
-    return prisma.product.delete({
-      where: { id }
-    });
+    // Lines of cancelled counts still point at the variants and would block the delete; they are
+    // the only count lines eligibility allows, and they go with the product, in one transaction.
+    return prisma.$transaction(async (tx) => {
+      await tx.stockCountItem.deleteMany({
+        where: { variant: { productId: id }, stockCount: { status: 'CANCELLED' } }
+      });
+      return tx.product.delete({ where: { id } });
+    }, { maxWait: 15000, timeout: 30000 });
   }
 }
 

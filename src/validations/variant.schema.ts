@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isWholePaise, PAISA_MESSAGE } from './money';
 
 export const createVariantSchema = z.object({
   sku: z.string().trim().min(1, "Give the variant an SKU"),
@@ -7,15 +8,15 @@ export const createVariantSchema = z.object({
   hexCode: z.string().optional(),
   quantity: z.number().int().min(0).default(0),
   reorderLevel: z.number().int().min(0).default(5),
-  priceOverride: z.number().positive().optional(),
+  priceOverride: z.number().positive().refine(isWholePaise, PAISA_MESSAGE).optional(),
   // The price a customer actually pays for this specific size/color, and what it cost
   // to acquire -- previously accepted nowhere (silently stripped by this schema), so a
   // variant could never have its own price even though the DB column existed.
   // Nullable (not just optional): clearing the field is a real, supported action --
   // it removes the variant-specific override and falls back to the product's basePrice
   // (see resolveVariantForLocation) -- not merely "no value sent".
-  sellingPrice: z.number().positive().max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.').nullable().optional(),
-  costPrice: z.number().positive().max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.').nullable().optional(),
+  sellingPrice: z.number().positive().max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.').refine(isWholePaise, PAISA_MESSAGE).nullable().optional(),
+  costPrice: z.number().positive().max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.').refine(isWholePaise, PAISA_MESSAGE).nullable().optional(),
   locationId: z.string().optional()
 });
 
@@ -36,9 +37,9 @@ export const bulkUpdateVariantSchema = z.object({
   updates: z.array(z.object({
     sku: z.string().trim().min(1, "Give the variant an SKU"),
     quantity: z.number().int().min(0).optional(),
-    priceOverride: z.number().positive().optional(),
-    sellingPrice: z.number().positive().optional(),
-    costPrice: z.number().positive().optional(),
+    priceOverride: z.number().positive().refine(isWholePaise, PAISA_MESSAGE).optional(),
+    sellingPrice: z.number().positive().refine(isWholePaise, PAISA_MESSAGE).optional(),
+    costPrice: z.number().positive().refine(isWholePaise, PAISA_MESSAGE).optional(),
     reorderLevel: z.number().int().min(0).optional(),
   }))
     .min(1, "At least one update is required")

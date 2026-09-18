@@ -101,7 +101,7 @@ async function run() {
   const sLocId = defLoc?.id || ids.loc1;
 
   await test('5.1 Stock-In', async () => { const r = await api.post('/inventory/stock-in', { variantId: ids.var1, quantity: 50, reason: 'INITIAL_STOCK', locationId: sLocId, unitCost: 1500 }); assert(r.status === 200); });
-  await test('5.2 Stock-Out', async () => { const r = await api.post('/inventory/stock-out', { variantId: ids.var1, quantity: 5, reason: 'SALE', locationId: sLocId }); assert(r.status === 200); });
+  await test('5.2 Stock-Out', async () => { const r = await api.post('/inventory/stock-out', { variantId: ids.var1, quantity: 5, reason: 'DAMAGE', locationId: sLocId }); assert(r.status === 200); });
   await test('5.3 Adjustment (+)', async () => { const r = await api.post('/inventory/adjustment', { variantId: ids.var1, quantity: 3, reason: 'MANUAL_ADJUSTMENT', locationId: sLocId }); assert(r.status === 200); });
   await test('5.4 Adjustment (-)', async () => { const r = await api.post('/inventory/adjustment', { variantId: ids.var1, quantity: -2, reason: 'DAMAGE', locationId: sLocId }); assert(r.status === 200); });
   await test('5.5 Get transactions', async () => { const r = await api.get('/inventory/transactions'); assert(r.status === 200); });

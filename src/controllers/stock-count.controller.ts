@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { stockCountService } from '../services/stock-count.service';
 import { stockCountCreateSchema, stockCountUpdateItemSchema } from '../validations/stock-count.schema';
+import { holdsEverything } from '../config/permissions';
 
 export class StockCountController {
 
@@ -70,6 +71,27 @@ export class StockCountController {
       }
 
       const result = await stockCountService.updateItemCount(clientId, id, itemId, parsed.data.countedQty);
+      res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Only the shop's super admin -- the account owner, who holds everything -- may call a count
+   * off. Deliberately not a permission from the catalogue: an ADMIN or manager who could cancel
+   * could quietly abandon a count whose numbers they did not like, and a count is how an owner
+   * checks the people who look after the stock.
+   */
+  async cancelCount(req: Request, res: Response, next: NextFunction) {
+    try {
+      const user = (req as any).user;
+      if (!holdsEverything(user?.permissions, user?.roles)) {
+        return res.status(403).json({ success: false, message: 'Only the shop’s super admin can cancel a stock count. Ask them to cancel it, or finish the count.' });
+      }
+      const clientId = (req as any).clientId as string;
+      const cancelledBy = user?.name || user?.email || user?.id;
+      const result = await stockCountService.cancelCount(clientId, req.params.id as string, cancelledBy);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);

@@ -13,5 +13,7 @@ router.get('/:id', requirePermission('stock_count:view'), stockCountController.g
 router.post('/:id/start', requirePermission('stock_count:create'), stockCountController.startCount);
 router.put('/:id/items/:itemId', requirePermission('stock_count:update'), stockCountController.updateItemCount);
 router.post('/:id/complete', requirePermission('stock_count:complete'), stockCountController.completeCount);
+// The super admin only: checked inside, since no permission from the catalogue grants it.
+router.post('/:id/cancel', requirePermission('stock_count:view'), stockCountController.cancelCount);
 
 export default router;

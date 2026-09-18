@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { respondWithError } from '../utils/respondWithError';
+import { InventoryAlertService } from '../services/inventory-alert.service';
 
 export const getAlerts = async (req: Request, res: Response) => {
   try {
@@ -36,6 +37,7 @@ export const getAlerts = async (req: Request, res: Response) => {
             colorName: true,
             hexCode: true,
             size: true,
+            reorderLevel: true,
             productId: true,
             product: { select: { title: true } }
           }
@@ -50,40 +52,58 @@ export const getAlerts = async (req: Request, res: Response) => {
       }
     });
 
-    const unreadCount = await prisma.inventoryAlert.count({
-      where: {
-        ...where,
-        reads: { none: { userId } }
+    /*
+     * Read against the item's reorder level NOW, not the one stored when the alert was raised.
+     *
+     * The row's threshold is a snapshot. Changing a reorder level (Import Updates, a product
+     * import) left Stock alerts and the bell showing the old number -- "Reorder level is 3" for
+     * an item set to 0 -- and still listing as LOW an item the Inventory Overview called Healthy.
+     * Changes are re-checked when they are made (InventoryAlertService.recheckVariants); this is
+     * the same rule applied on the way out, so an alert raised before that existed cannot linger.
+     */
+    const current = alerts.filter(alert => {
+      if (!alert.isResolved && alert.type === 'LOW_STOCK' && alert.variant && alert.currentQuantity != null) {
+        return InventoryAlertService.targetFor(alert.currentQuantity, alert.variant.reorderLevel)?.type === 'LOW_STOCK';
       }
+      return true;
     });
 
-    const formattedAlerts = alerts.map(alert => ({
-      id: alert.id,
-      type: alert.type,
-      severity: alert.severity,
-      title: alert.title,
-      message: alert.message,
-      variantId: alert.variant?.id,
-      variantName: alert.variant?.product?.title || alert.variant?.sku,
-      productTitle: alert.variant?.product?.title,
-      productId: alert.variant?.productId,
-      sku: alert.variant?.sku,
-      variantCode: alert.variant?.variantCode,
-      colorName: alert.variant?.colorName,
-      hexCode: alert.variant?.hexCode,
-      size: alert.variant?.size,
-      quantity: alert.currentQuantity, // Frontend expects quantity
-      reorderLevel: alert.threshold, // Frontend expects reorderLevel
-      locationId: alert.location?.id,
-      locationName: alert.location?.name,
-      currentQuantity: alert.currentQuantity,
-      threshold: alert.threshold,
-      isRead: alert.reads.length > 0, // Per-user read state
-      isResolved: alert.isResolved,
-      isPinned: alert.isPinned,
-      createdAt: alert.createdAt,
-      updatedAt: alert.updatedAt
-    }));
+    // Counted from what is shown, so the bell's number and the list agree.
+    const unreadCount = current.filter(alert => alert.reads.length === 0).length;
+
+    const formattedAlerts = current.map(alert => {
+      const level = alert.variant?.reorderLevel ?? alert.threshold;
+      const live = alert.type === 'LOW_STOCK' && !alert.isResolved && alert.currentQuantity != null
+        ? InventoryAlertService.targetFor(alert.currentQuantity, level)
+        : null;
+      return {
+        id: alert.id,
+        type: alert.type,
+        severity: alert.severity,
+        title: alert.title,
+        message: live?.message ?? alert.message,
+        variantId: alert.variant?.id,
+        variantName: alert.variant?.product?.title || alert.variant?.sku,
+        productTitle: alert.variant?.product?.title,
+        productId: alert.variant?.productId,
+        sku: alert.variant?.sku,
+        variantCode: alert.variant?.variantCode,
+        colorName: alert.variant?.colorName,
+        hexCode: alert.variant?.hexCode,
+        size: alert.variant?.size,
+        quantity: alert.currentQuantity, // Frontend expects quantity
+        reorderLevel: level, // Frontend expects reorderLevel
+        locationId: alert.location?.id,
+        locationName: alert.location?.name,
+        currentQuantity: alert.currentQuantity,
+        threshold: level,
+        isRead: alert.reads.length > 0, // Per-user read state
+        isResolved: alert.isResolved,
+        isPinned: alert.isPinned,
+        createdAt: alert.createdAt,
+        updatedAt: alert.updatedAt
+      };
+    });
 
     res.json({
       success: true,

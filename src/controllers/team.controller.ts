@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { teamService } from '../services/team.service';
 import { recordCredentialDisclosure } from '../services/credential-audit';
+import { listSecurityLog } from '../services/security-log';
 import { holdsEverything } from '../config/permissions';
 import { respondWithError } from '../utils/respondWithError';
 
@@ -47,6 +48,22 @@ export const listActivity = async (req: Request, res: Response) => {
   }
 };
 
+/** Security log: sign-ins, passwords, roles and team changes, kept for months. See services/security-log. */
+export const listSecurityEvents = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const before = typeof req.query.before === 'string' ? new Date(req.query.before) : undefined;
+    const limit = Number(req.query.limit) || undefined;
+    const data = await listSecurityLog(user.clientId, {
+      limit,
+      before: before && !Number.isNaN(before.getTime()) ? before : undefined
+    });
+    res.json({ success: true, data });
+  } catch (error: any) {
+    return respondWithError(res, error, { status: 500, message: 'Could not load the security log. Try again.' });
+  }
+};
+
 export const inviteMember = async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
@@ -58,6 +75,8 @@ export const inviteMember = async (req: Request, res: Response) => {
     const result = await teamService.inviteMember({
       clientId: user.clientId, name, email, roleId, customPassword, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
     });
+    // The new person's id, so the Security log can say who was added. The path carries none.
+    res.locals.auditEntityId = result.id;
     res.status(201).json({ success: true, data: result });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to add team member' });

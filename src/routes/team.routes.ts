@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requirePermission } from '../middleware/permission.middleware';
 import {
-  listMembers, listRoles, listActivity, inviteMember, updateMemberRole, setMemberStatus,
+  listMembers, listRoles, listActivity, listSecurityEvents, inviteMember, updateMemberRole, setMemberStatus,
   viewMemberPassword,
   resendMemberCredentials, setMemberPassword
 } from '../controllers/team.controller';
@@ -15,6 +15,7 @@ router.use(requirePermission('admin:users'));
 router.get('/members', listMembers);
 router.get('/roles', listRoles);
 router.get('/activity', listActivity);
+router.get('/security-log', listSecurityEvents);
 router.post('/members', inviteMember);
 router.patch('/members/:id/role', updateMemberRole);
 router.patch('/members/:id/status', setMemberStatus);

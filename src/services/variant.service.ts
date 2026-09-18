@@ -2,6 +2,7 @@ import { variantRepository } from '../repositories/variant.repository';
 import { productRepository } from '../repositories/product.repository';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { InventoryAlertService } from './inventory-alert.service';
 import { generateUniqueCode, generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { valuationService } from './valuation.service';
@@ -139,7 +140,7 @@ export class VariantService {
     }
   }
 
-  async createVariant(productId: string, clientId: string, data: any, locationId?: string) {
+  async createVariant(productId: string, clientId: string, data: any, locationId?: string, performedBy?: string) {
     // Ensure product exists and belongs to client
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
@@ -167,13 +168,13 @@ export class VariantService {
 
     if (data.quantity > 0) {
       const locationIds = await this.resolveInitialStockLocationIds(clientId, locationId);
-      await this.applyInitialStock(clientId, created.id, data.quantity, locationIds, clientId, data.costPrice);
+      await this.applyInitialStock(clientId, created.id, data.quantity, locationIds, performedBy || 'SYSTEM', data.costPrice);
     }
 
     return created;
   }
 
-  async bulkCreateVariants(productId: string, clientId: string, variants: any[], locationId?: string, applyToAllLocations?: boolean, supplierId?: string) {
+  async bulkCreateVariants(productId: string, clientId: string, variants: any[], locationId?: string, applyToAllLocations?: boolean, supplierId?: string, performedBy?: string) {
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
     assertCanTakeVariants(product);
@@ -234,7 +235,7 @@ export class VariantService {
 
           if (v.quantity > 0) {
             try {
-              await this.applyInitialStock(clientId, created.id, v.quantity, locationIds, clientId, v.costPrice);
+              await this.applyInitialStock(clientId, created.id, v.quantity, locationIds, performedBy || 'SYSTEM', v.costPrice);
             } catch (stockError: any) {
               // The variant row is already committed at this point -- the create and the
               // movement are not one transaction -- so this is NOT the same failure as "the
@@ -316,7 +317,7 @@ export class VariantService {
     return { created, skipped, errors, adjusted, stockNotApplied };
   }
 
-  async bulkUpdateVariants(clientId: string, updates: any[], locationId?: string) {
+  async bulkUpdateVariants(clientId: string, updates: any[], locationId?: string, performedBy?: string) {
     // Resolved once, outside the per-row transactions. It is the same answer for every row,
     // and each round trip to this database costs over a second -- doing the lookup inside the
     // transaction pushed it past Prisma's 5s limit and every row failed with "Transaction
@@ -359,6 +360,15 @@ export class VariantService {
           if (costPrice !== undefined) dataToUpdate.costPrice = costPrice;
           if (reorderLevel !== undefined) dataToUpdate.reorderLevel = reorderLevel;
 
+          // The variant first, so the movement below judges its alert by the reorder level in
+          // this same row of the file rather than the one it is replacing.
+          if (Object.keys(dataToUpdate).length > 0) {
+            await tx.productVariant.update({
+              where: { id: variant.id },
+              data: dataToUpdate
+            });
+          }
+
           if (quantity !== undefined) {
             // Resolved above precisely because at least one row carries a quantity, so this
             // cannot be null here -- but say so rather than asserting past the type.
@@ -379,20 +389,14 @@ export class VariantService {
                 reason: 'MANUAL_CORRECTION',
                 quantityDelta: quantity - currentQty,
                 notes: 'Bulk CSV Update',
-                createdBy: clientId,
+                // Nobody signed in (an API caller) is the app doing it: the ledger says System.
+                createdBy: performedBy || 'SYSTEM',
                 tx
               });
             }
           }
 
-          if (Object.keys(dataToUpdate).length > 0) {
-            await tx.productVariant.update({
-              where: { id: variant.id },
-              data: dataToUpdate
-            });
-          }
-
-          return sku;
+          return variant.id;
         }, {
           // Prisma's defaults are 2s to acquire and 5s to run. A stock movement is several
           // round trips and each one costs over a second against this database, so every row
@@ -409,6 +413,19 @@ export class VariantService {
 
     const updated = results.filter((r) => r.status === 'fulfilled').length;
     const skipped = results.filter((r) => r.status === 'rejected').length;
+
+    // A reorder level is the same in every store, so changing one can raise or clear an alert in
+    // a store whose stock this file never touched -- and a row that only sets reorderLevel moves
+    // no stock at all, so nothing else would look. Re-checked once for every row that applied.
+    // Never allowed to fail the import: the changes are saved, and the next movement re-checks.
+    const touched = results
+      .map((r, i) => ({ r, u: updates[i] }))
+      .filter(x => x.r.status === 'fulfilled' && (x.u.reorderLevel !== undefined || x.u.quantity !== undefined))
+      .map(x => (x.r as PromiseFulfilledResult<string>).value);
+    if (touched.length) {
+      await InventoryAlertService.recheckVariants(prisma, clientId, touched)
+        .catch(err => console.error('[bulkUpdateVariants] stock alerts could not be re-checked', err));
+    }
 
     // Paired with its original index BEFORE filtering. Mapping over the filtered array and
     // indexing `updates` with its position named the wrong row: with row 0 succeeding and row

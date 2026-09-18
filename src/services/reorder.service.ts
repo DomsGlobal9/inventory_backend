@@ -111,9 +111,16 @@ export class ReorderService {
       where: { clientId, reorderLevel: { gt: 0 } },
       select: {
         id: true, sku: true, size: true, colorName: true,
-        reorderLevel: true, reorderQty: true, averageCost: true, lastPurchaseCost: true,
+        reorderLevel: true, reorderQty: true, averageCost: true, lastPurchaseCost: true, costPrice: true,
         product: { select: { title: true, status: true } },
         stocks: { where: location ? { locationId: location.id } : {}, select: { quantity: true } },
+        // Whether it has been held anywhere at all, and whether it is switched off for this
+        // store: together they tell "run out here" from "never carried here". See below.
+        _count: { select: { stocks: true } },
+        locationProfiles: {
+          where: location ? { locationId: location.id } : { locationId: { in: [] } },
+          select: { isAvailable: true }
+        },
         supplierLinks: {
           select: {
             id: true, supplierId: true, supplierSku: true, costPrice: true,
@@ -131,6 +138,10 @@ export class ReorderService {
     }>();
     const unassigned: (ReorderLine & { productTitle: string })[] = [];
     let coveredByOpenOrders = 0;
+    // Low or out here, but deliberately not suggested -- counted so the screen never calls the
+    // store healthy while leaving them out.
+    let notSoldHere = 0;
+    let neverStockedHere = 0;
 
     for (const variant of variants) {
       // Trashed and archived products should not generate purchase suggestions -- nobody
@@ -140,11 +151,29 @@ export class ReorderService {
       const currentStock = variant.stocks.reduce((sum, s) => sum + s.quantity, 0);
       if (currentStock > variant.reorderLevel) continue;
       const onOrder = onOrderBy.get(variant.id) ?? 0;
-      // A store is asked to reorder only what it carries: stock has been held there, or some is on
-      // order for it. Otherwise a new branch, or a warehouse that never takes saris, was told the
-      // whole catalogue had run out -- 236 items at a store that had never stocked one of them.
-      // Low-stock alerts draw the same line, since they only ever fire from stock moving there.
-      if (location && variant.stocks.length === 0 && onOrder === 0) continue;
+      const profile = variant.locationProfiles[0];
+      // Switched off for this store in the item's store settings: not sold here, so not bought for it.
+      if (location && profile?.isAvailable === false) {
+        notSoldHere++;
+        continue;
+      }
+      /*
+       * A store is asked to reorder only what it carries. Otherwise a new branch, or a warehouse
+       * that never takes saris, was told the whole catalogue had run out -- 236 items at a store
+       * that had never stocked one of them.
+       *
+       * But "no stock row here" alone was the wrong test: an item never received anywhere has no
+       * row at any store, so a shop's out-of-stock item vanished from Reorder while the Dashboard
+       * counted it as out, and the screen said "Inventory is Healthy". Carried here means: held
+       * here before, on order for here, switched on for here, or not yet held anywhere at all.
+       * Only an item stocked at other stores and never at this one is left out.
+       */
+      const carriedHere = variant.stocks.length > 0 || onOrder > 0
+        || profile?.isAvailable === true || variant._count.stocks === 0;
+      if (location && !carriedHere) {
+        neverStockedHere++;
+        continue;
+      }
       // Low now, but enough is already coming. Reaching the level counts once something is on
       // order: a suggestion brings stock up to the level, so ordering exactly what was suggested
       // must clear it -- with ">" it came straight back asking for one more, and one more after that.
@@ -165,10 +194,13 @@ export class ReorderService {
       // The supplier's agreed price is the right basis for a purchase order. averageCost is
       // a blend of everything ever paid across every source, and lastPurchaseCost is
       // whatever the last receipt happened to cost -- neither is what this vendor charges.
+      // A 0 anywhere in the chain means "never recorded", not "free" -- stopping at it priced the
+      // line at ₹0, and receiving that order would drag the average cost down.
+      // Rounded to the paisa: the average cost carries six decimals, and a purchase order is money.
+      const known = (v: unknown) => (v != null && Number(v) > 0 ? Math.round(Number(v) * 100) / 100 : null);
       const unitPrice =
-        (link?.costPrice != null ? Number(link.costPrice) : null)
-        ?? (variant.lastPurchaseCost != null ? Number(variant.lastPurchaseCost) : null)
-        ?? (variant.averageCost != null ? Number(variant.averageCost) : 0);
+        known(link?.costPrice) ?? known(variant.lastPurchaseCost)
+        ?? known(variant.costPrice) ?? known(variant.averageCost) ?? 0;
 
       const line: ReorderLine & { productTitle: string } = {
         variantId: variant.id,
@@ -181,7 +213,7 @@ export class ReorderService {
         reorderLevel: variant.reorderLevel,
         suggestedQty: qty,
         unitPrice,
-        lineTotal: qty * unitPrice,
+        lineTotal: Math.round(qty * unitPrice * 100) / 100,
         supplierSku: link?.supplierSku ?? null,
         leadTimeDays: link?.leadTimeDays ?? null,
         minOrderQty: link?.minOrderQty ?? null,
@@ -215,6 +247,8 @@ export class ReorderService {
       unassigned,
       summary: {
         coveredByOpenOrders,
+        notSoldHere,
+        neverStockedHere,
         ordersWithoutStore,
         supplierCount: suppliers.length,
         lineCount: suppliers.reduce((n, s) => n + s.lines.length, 0) + unassigned.length,

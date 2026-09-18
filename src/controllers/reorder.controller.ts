@@ -14,7 +14,12 @@ export const getReorderSuggestions = async (req: Request, res: Response, next: N
 
 export const createReorderDrafts = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { groups, locationId } = createDraftOrdersSchema.parse(req.body);
+    // safeParse, so the person reads the sentence that went wrong rather than "Validation failed".
+    const parsed = createDraftOrdersSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Check the quantities and try again.', errors: parsed.error.errors });
+    }
+    const { groups, locationId } = parsed.data;
     const result = await reorderService.createDraftOrders(tenant(req), groups, locationId, (req as any).locationId);
     res.status(201).json({ success: true, data: result });
   } catch (error) { next(error); }

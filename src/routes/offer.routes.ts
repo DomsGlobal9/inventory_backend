@@ -175,6 +175,8 @@ router.post('/:id/status', requirePermission('offer:update'), async (req: Reques
     }
 
     const offer = await offerService.setStatus(clientOf(req), String(req.params.id), next as any, userOf(req));
+    // Named here so the activity feed says started, paused or retired rather than "status".
+    res.locals.auditAction = next === 'ACTIVE' ? 'STARTED' : next === 'PAUSED' ? 'PAUSED' : 'RETIRED';
     res.json({ success: true, data: offer });
   } catch (error) {
     return respondWithError(res, error, { status: 400, message: 'Could not change that offer.' });

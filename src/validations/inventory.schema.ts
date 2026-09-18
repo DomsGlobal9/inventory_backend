@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isWholePaise } from './money';
 
 export const stockChangeSchema = z.object({
   variantId: z.string().uuid("Invalid variant ID"),
@@ -28,6 +29,7 @@ export const stockChangeSchema = z.object({
     .number()
     .nonnegative('What you paid cannot be a negative number.')
     .finite('That is not an amount.')
+    .refine(isWholePaise, 'What you paid goes to the paisa: use at most 2 digits after the point, for example 840.50.')
     .optional(),
 
   notes: z.string().optional()
