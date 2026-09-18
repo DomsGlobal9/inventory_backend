@@ -1,6 +1,6 @@
 import type { Message, MessageStatus, Prisma } from '@prisma/client';
 import type { Ctx } from '../context';
-import { advanceStatus, isServerTick, mapEngineMessageStatus } from '../domain/status';
+import { advanceStatus, mapEngineMessageStatus } from '../domain/status';
 import { enqueueForModule } from '../events/module-events';
 
 type Tx = Prisma.TransactionClient;
@@ -9,8 +9,8 @@ export interface ApplyOptions {
   failReason?: string;
   engineMessageId?: string;
   at?: Date;
-  /** The event is a WhatsApp server tick (SERVER_ACK or later), not just our send call returning. */
-  serverAck?: boolean;
+  /** The change comes from an engine event (not just our send call returning). */
+  engineConfirmed?: boolean;
 }
 
 /**
@@ -28,8 +28,8 @@ export async function applyInTx(tx: Tx, messageId: string, incoming: MessageStat
     SELECT status FROM "Message" WHERE id = ${messageId} FOR UPDATE`;
   const current = rows[0]?.status;
   if (!current) return null;
-  if (opts.serverAck) {
-    await tx.message.updateMany({ where: { id: messageId, serverAckAt: null }, data: { serverAckAt: opts.at ?? new Date() } });
+  if (opts.engineConfirmed) {
+    await tx.message.updateMany({ where: { id: messageId, engineConfirmedAt: null }, data: { engineConfirmedAt: opts.at ?? new Date() } });
   }
   const next = advanceStatus(current, incoming);
   if (!next) {
@@ -87,7 +87,7 @@ export async function recordSent(ctx: Ctx, messageId: string, engineMessageId: s
     const early = await tx.engineReceipt.findUnique({ where: { engineMessageId } });
     if (early) {
       const s = mapEngineMessageStatus(early.status);
-      if (s) await applyInTx(tx, messageId, s, { at: early.at, serverAck: isServerTick(early.status) });
+      if (s) await applyInTx(tx, messageId, s, { at: early.at, engineConfirmed: true });
       await tx.engineReceipt.delete({ where: { engineMessageId } });
     }
   });

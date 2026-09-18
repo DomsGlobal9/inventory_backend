@@ -1,5 +1,5 @@
 import type { Ctx } from '../context';
-import { mapConnectionState, mapEngineMessageStatus, advanceStatus, isServerTick } from '../domain/status';
+import { mapConnectionState, mapEngineMessageStatus, advanceStatus } from '../domain/status';
 import { digitsFromJid } from '../lib/phone';
 import { applyMessageStatus, recordSent } from '../messages/status-apply';
 import { setAccountStatus } from '../accounts/service';
@@ -82,7 +82,7 @@ async function onMessagesUpdate(ctx: Ctx, updates: Record<string, unknown>[]): P
     if (!status) continue;
     const msg = await ctx.db.message.findUnique({ where: { engineMessageId: keyId }, select: { id: true } });
     if (msg) {
-      await applyMessageStatus(ctx, msg.id, status, status === 'FAILED' ? { failReason: 'WhatsApp could not deliver this message.' } : { serverAck: isServerTick(u.status) });
+      await applyMessageStatus(ctx, msg.id, status, status === 'FAILED' ? { failReason: 'WhatsApp could not deliver this message.' } : { engineConfirmed: true });
       continue;
     }
     // Tick for a message whose send call has not returned yet: keep it, the worker applies it.
@@ -107,7 +107,10 @@ async function onSendMessage(ctx: Ctx, instance: string, data: Record<string, un
   const keyId = typeof key.id === 'string' ? key.id : null;
   if (!keyId) return;
   const known = await ctx.db.message.findUnique({ where: { engineMessageId: keyId }, select: { id: true } });
-  if (known) return;
+  if (known) {
+    await confirmedByEngine(ctx, keyId);
+    return;
+  }
   const account = await ctx.db.account.findUnique({ where: { instanceName: instance }, select: { id: true } });
   if (!account) return;
   const to =
@@ -127,7 +130,13 @@ async function onSendMessage(ctx: Ctx, instance: string, data: Record<string, un
   });
   if (!candidate) return;
   await recordSent(ctx, candidate.id, keyId);
+  await confirmedByEngine(ctx, keyId);
   ctx.log.debug({ messageId: candidate.id }, 'send event matched a message being sent');
+}
+
+/** The engine's own event about one of our messages arrived: the event path works for it. */
+async function confirmedByEngine(ctx: Ctx, engineMessageId: string): Promise<void> {
+  await ctx.db.message.updateMany({ where: { engineMessageId, engineConfirmedAt: null }, data: { engineConfirmedAt: new Date() } });
 }
 
 async function onMessagesUpsert(ctx: Ctx, instance: string, data: Record<string, unknown>): Promise<void> {

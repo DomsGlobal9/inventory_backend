@@ -5,9 +5,10 @@ import { istDayStart, istHour } from '../domain/rules';
 import { normalisePhone } from '../lib/phone';
 import { getScaleezyAccount } from '../accounts/service';
 
-// Daily early warning: the ScaleEzy number sends a short text to CANARY_TO (default: itself)
-// and expects the delivered tick within 10 minutes. A failure here tells us WhatsApp changed
-// something before clients notice.
+// Daily early warning: the ScaleEzy number sends a short text to CANARY_TO (default: itself).
+// To a second phone it must be DELIVERED within 10 minutes. To itself WhatsApp gives no timely
+// tick at all, so it must be sent and confirmed by the engine's own event within 10 minutes.
+// A failure here tells us something changed before clients notice.
 
 export const CANARY_DEADLINE_MS = 10 * 60 * 1000;
 
@@ -50,15 +51,16 @@ export async function settleCanaries(ctx: Ctx, now = new Date()): Promise<void> 
   const pending = await ctx.db.canaryRun.findMany({ where: { outcome: 'PENDING' } });
   for (const run of pending) {
     const m = run.messageId ? await ctx.db.message.findUnique({ where: { id: run.messageId }, include: { account: { select: { phone: true } } } }) : null;
-    // WhatsApp never sends a delivered tick for a message to one's own number (checked on the real
-    // engine: only the server tick arrives). A canary to itself therefore passes on the server
-    // tick; a canary to a second phone (CANARY_TO) passes only on the delivered tick.
+    // Checked on the real engine: a message to one's own number gets no delivered tick, and even
+    // the server tick only arrives when the phone next syncs (minutes to hours later). A canary to
+    // itself passes once it is sent and the engine's own event about it reached us; a canary to a
+    // second phone (CANARY_TO) passes only on the delivered tick.
     const toSelf = Boolean(m && m.account.phone && m.toDigits === m.account.phone);
-    if (m && toSelf && m.serverAckAt && m.status !== 'FAILED' && m.status !== 'EXPIRED') {
-      const secs = Math.round((m.serverAckAt.getTime() - m.queuedAt.getTime()) / 1000);
+    if (m && toSelf && m.engineConfirmedAt && m.status !== 'FAILED' && m.status !== 'EXPIRED') {
+      const secs = Math.round((m.engineConfirmedAt.getTime() - m.queuedAt.getTime()) / 1000);
       await ctx.db.canaryRun.update({
         where: { id: run.id },
-        data: { outcome: 'OK', detail: `Sent to itself; WhatsApp's server confirmed it in ${secs} s. (No delivered tick exists for messages to yourself; set CANARY_TO to a second phone to check delivery too.)` },
+        data: { outcome: 'OK', detail: `Sent to itself and confirmed by the engine in ${secs} s. (Messages to yourself get no delivered tick; set CANARY_TO to a second phone to check delivery too.)` },
       });
       continue;
     }
@@ -77,7 +79,7 @@ export async function settleCanaries(ctx: Ctx, now = new Date()): Promise<void> 
         data: {
           outcome: 'FAILED',
           detail: toSelf
-            ? `WhatsApp's server did not confirm it within 10 minutes (last status ${m?.status ?? 'unknown'}).`
+            ? `Not sent and confirmed by the engine within 10 minutes (last status ${m?.status ?? 'unknown'}).`
             : `Not delivered within 10 minutes (last status ${m?.status ?? 'unknown'}).`,
         },
       });

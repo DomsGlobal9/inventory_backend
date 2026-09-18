@@ -34,12 +34,6 @@ export function mapEngineMessageStatus(engineStatus: unknown): MessageStatus | n
   }
 }
 
-/** True for engine acks that come from WhatsApp itself (server, device or reader), not from our own call. */
-export function isServerTick(engineStatus: unknown): boolean {
-  const s = typeof engineStatus === 'number' ? engineStatus : ['ERROR', 'PENDING', 'SERVER_ACK', 'DELIVERY_ACK', 'READ', 'PLAYED'].indexOf(String(engineStatus ?? '').toUpperCase());
-  return s >= 2;
-}
-
 /**
  * The status after applying `incoming` to `current`, or null when nothing should change.
  * - forward moves only (SENT -> DELIVERED -> READ);

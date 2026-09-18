@@ -379,7 +379,7 @@ describe.skipIf(!hasTestDb)('worker resilience', () => {
     expect(await env.db.moduleEvent.count()).toBe(0);
   });
 
-  it('the WhatsApp server tick is recorded without changing the status or telling the module twice', async () => {
+  it('an engine tick is recorded as engine confirmation without changing the status or telling the module twice', async () => {
     const m = await queueMessage(env, shop.id, mod.id);
     await step();
     const id = env.engine.sends[0]!.engineMessageId;
@@ -387,11 +387,11 @@ describe.skipIf(!hasTestDb)('worker resilience', () => {
     await handleEngineEvent(env.ctx, { event: 'messages.update', instance: shop.instanceName, data: { keyId: id, fromMe: true, status: 'SERVER_ACK' } });
     const row = await env.db.message.findUniqueOrThrow({ where: { id: m.id } });
     expect(row.status).toBe('SENT');
-    expect(row.serverAckAt).not.toBeNull();
+    expect(row.engineConfirmedAt).not.toBeNull();
     expect((await statusEvents(m.id)).map((e) => (e.payload as { status: string }).status)).toEqual(['SENT']);
   });
 
-  it('canary to the ScaleEzy number itself passes on the server tick (no delivered tick exists for self)', async () => {
+  it('canary to the ScaleEzy number itself passes once the engine confirms it (no delivered tick exists for self)', async () => {
     const run = await startCanary(env.ctx);
     expect(run.outcome).toBe('PENDING');
     await step();
@@ -399,11 +399,12 @@ describe.skipIf(!hasTestDb)('worker resilience', () => {
     expect(sent.number).toBe('919000000001'); // itself
     await settleCanaries(env.ctx);
     expect((await env.db.canaryRun.findUniqueOrThrow({ where: { id: run.id } })).outcome).toBe('PENDING');
-    await handleEngineEvent(env.ctx, { event: 'messages.update', instance: sent.instance, data: { keyId: sent.engineMessageId, fromMe: true, status: 'SERVER_ACK' } });
+    // The engine's send event (what arrives for a message to yourself).
+    await handleEngineEvent(env.ctx, { event: 'send.message', instance: sent.instance, data: { key: { id: sent.engineMessageId, remoteJid: `${sent.number}@s.whatsapp.net`, fromMe: true } } });
     await settleCanaries(env.ctx);
     const done = await env.db.canaryRun.findUniqueOrThrow({ where: { id: run.id } });
     expect(done.outcome).toBe('OK');
-    expect(done.detail).toMatch(/server confirmed it/);
+    expect(done.detail).toMatch(/confirmed by the engine/);
   });
 
   it('canary to a second phone needs the delivered tick; without it, it fails after 10 minutes', async () => {

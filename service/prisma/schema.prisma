@@ -135,9 +135,10 @@ model Message {
   queuedAt        DateTime      @default(now())
   sendingAt       DateTime?
   sentAt          DateTime?
-  /// When WhatsApp's server confirmed it (engine SERVER_ACK). Messages to one's own number never
-  /// get a delivered tick, so this is the strongest proof available for them.
-  serverAckAt     DateTime?
+  /// When the engine's own event about this message reached us (its send event or any WhatsApp
+  /// tick). Proves the engine -> service event path. Messages to one's own number get no timely
+  /// tick at all (checked on the real engine), so for them this is the confirmation.
+  engineConfirmedAt DateTime?
   deliveredAt     DateTime?
   readAt          DateTime?
   failedAt        DateTime?

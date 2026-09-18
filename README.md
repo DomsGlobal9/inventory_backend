@@ -53,7 +53,7 @@ Module calls carry `x-module-key`; the platform console uses `x-admin-key`. Ever
 | GET | `/v1/accounts/client/:clientId` | `{ status, phone (masked), linkedAt, lastSeenAt }` |
 | POST | `/v1/accounts/client/:clientId/disconnect` | Logs the number out → `LOGGED_OUT`. |
 | POST | `/v1/messages` | `{ from: 'scaleezy' \| { clientId }, to, text?, document?: { fileName, mimeType: 'application/pdf', base64 }, kind, reference?, idempotencyKey }` → `202 { id, status }` (`duplicate: true` when an earlier message is returned). |
-| GET | `/v1/messages/:id` | Status and times (`sentAt`, `serverAckAt`, `deliveredAt`, `readAt`, `failReason`). Own messages only. |
+| GET | `/v1/messages/:id` | Status and times (`sentAt`, `engineConfirmedAt`, `deliveredAt`, `readAt`, `failReason`). Own messages only. |
 | POST | `/v1/numbers/check` | `{ from, to }` → `{ onWhatsApp }` (cached 7 days). |
 | POST | `/engine/events/:secret` | The engine's webhook (secret compared in constant time). |
 | GET | `/admin/accounts`, `/admin/accounts/verify`, `/admin/messages?status=&since=`, `/admin/canary` | Console views. No message text, full numbers masked. |
@@ -80,11 +80,12 @@ Each event is `POST`ed to the module's `webhookUrl` as
 
 ### Ticks, and messages to yourself
 
-`SENT` = the engine sent it; `serverAckAt` = WhatsApp's server confirmed it (engine event);
-`DELIVERED`/`READ` = the recipient's phone. **WhatsApp never sends a delivered tick for a message
-to one's own number** (verified on the real engine: only the server tick arrives). So the canary,
-when sent to the ScaleEzy number itself, passes on the server tick; set `CANARY_TO` to a second
-phone to check real delivery.
+`SENT` = the engine sent it; `engineConfirmedAt` = the engine's own event about it (its send
+event or any WhatsApp tick) reached the service; `DELIVERED`/`READ` = the recipient's phone.
+Checked on the real engine: **a message to one's own number gets no delivered tick**, and even
+the server tick only arrives when the phone next syncs (minutes to hours later). So the canary,
+when sent to the ScaleEzy number itself, passes once it is sent and confirmed by the engine; set
+`CANARY_TO` to a second phone (spare SIM) for a real delivered check.
 
 ## Running locally
 

@@ -89,7 +89,7 @@ describe.skipIf(!hasTestDb)('single sender, restarts, database outages', () => {
     expect(env.engine.sends.filter((s) => s.number === '919876543210')).toHaveLength(2);
   });
 
-  it('database cut off for a while: /ready fails, the service recovers by itself and sends', async () => {
+  it('database cut off for a while: /ready fails, the service recovers by itself and sends', { timeout: 180_000 }, async () => {
     const u = new URL(TEST_DB_URL);
     const proxy = new TcpProxy(u.hostname, Number(u.port || 5432));
     await proxy.start();
@@ -118,11 +118,12 @@ describe.skipIf(!hasTestDb)('single sender, restarts, database outages', () => {
       await waitFor(async () => !r.isLeader, 5000); // the lock connection died with it
 
       await proxy.start(proxy.port); // database back
-      await waitFor(async () => (await fetch(`${url}/ready`)).status === 200, 15_000, 200);
-      await waitFor(async () => r.isLeader, 10_000);
+      // A dead pooled connection is only given up after its socket time limit (30 s), so allow for it.
+      await waitFor(async () => (await fetch(`${url}/ready`)).status === 200, 60_000, 200);
+      await waitFor(async () => r.isLeader, 30_000);
       // Queued through the main connection, sent by the recovered instance.
       const m = await queueMessage(env, shop.id, mod.id);
-      await waitFor(async () => (await env.db.message.findUniqueOrThrow({ where: { id: m.id } })).status === 'SENT', 15_000).catch(async (e) => {
+      await waitFor(async () => (await env.db.message.findUniqueOrThrow({ where: { id: m.id } })).status === 'SENT', 60_000).catch(async (e) => {
         const row = await env.db.message.findUniqueOrThrow({ where: { id: m.id } });
         const acc = await env.db.account.findUniqueOrThrow({ where: { id: shop.id } });
         throw new Error(`${(e as Error).message}: message ${row.status} tries ${row.tries} next ${row.nextAttemptAt.toISOString()} account ${acc.status} leader ${r.isLeader} sends ${viaProxy.engine.sends.length} calls ${viaProxy.engine.calls.slice(-5).join(',')}`);

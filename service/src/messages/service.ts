@@ -125,7 +125,7 @@ export function publicMessageView(m: Message) {
     failReason: m.failReason,
     queuedAt: m.queuedAt,
     sentAt: m.sentAt,
-    serverAckAt: m.serverAckAt,
+    engineConfirmedAt: m.engineConfirmedAt,
     deliveredAt: m.deliveredAt,
     readAt: m.readAt,
     failedAt: m.failedAt,

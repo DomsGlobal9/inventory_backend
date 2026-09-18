@@ -66,7 +66,7 @@ async function main(): Promise<void> {
     } else if (started.outcome === 'FAILED') {
       report(false, 'canary', started.detail ?? '');
     } else {
-      process.stdout.write('....  canary sent; waiting for the delivered tick (up to 11 minutes)\n');
+      process.stdout.write('....  canary sent; waiting for it to be confirmed (up to 11 minutes)\n');
       const until = Date.now() + 11 * 60 * 1000;
       let outcome = 'PENDING';
       let detail = '';
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
         outcome = found?.outcome ?? 'PENDING';
         detail = found?.detail ?? '';
       }
-      report(outcome === 'OK', 'canary delivered', detail || outcome);
+      report(outcome === 'OK', 'canary passed', detail || outcome);
     }
   }
 

@@ -217,23 +217,30 @@ async function main(): Promise<void> {
   const chk = await http('POST', '/v1/numbers/check', { from: 'scaleezy', to: SELF }, inv);
   line(chk.status === 200 && chk.body?.onWhatsApp === true, 'numbers/check on the ScaleEzy number', JSON.stringify(chk.body));
 
-  // --- throwaway client instance: QR (and pairing code in the full run), then deleted ---
-  const qr = await http('POST', `/v1/accounts/client/${THROWAWAY_CLIENT}/link`, { method: 'qr' }, inv);
+  // --- throwaway client instances: one QR, one pairing code (full run only), then deleted ---
+  const qrClient = `${THROWAWAY_CLIENT}-qr`;
+  const codeClient = `${THROWAWAY_CLIENT}-code`;
+  const qr = await http('POST', `/v1/accounts/client/${qrClient}/link`, { method: 'qr' }, inv);
   line(qr.status === 200 && typeof qr.body?.qr === 'string' && qr.body.qr.startsWith('data:image/png;base64,'), 'throwaway client: link returns a QR', `status ${qr.body?.status}, qr ${qr.body?.qr ? `${qr.body.qr.length} chars` : 'none'}`);
+  // Asking again gives the current QR of the same instance (the screen refreshes it this way).
+  const qr2 = await http('POST', `/v1/accounts/client/${qrClient}/link`, { method: 'qr' }, inv);
+  line(qr2.status === 200 && typeof qr2.body?.qr === 'string', 'throwaway client: asking again returns the current QR');
   if (!NO_SEND) {
     // Requests a pairing code for the ScaleEzy number (the only number we may involve). The phone
     // may show a "link a device" prompt; nothing is linked unless someone types the code there.
-    const code = await http('POST', `/v1/accounts/client/${THROWAWAY_CLIENT}/link`, { method: 'code', phone: SELF }, inv);
-    line(code.status === 200 && /^[A-Z0-9]{8}$/.test(code.body?.pairingCode ?? ''), 'throwaway client: link with phone returns a pairing code', `status ${code.status}, code ${code.body?.pairingCode ? 'received (8 chars)' : JSON.stringify(code.body)}`);
+    const t0 = Date.now();
+    const code = await http('POST', `/v1/accounts/client/${codeClient}/link`, { method: 'code', phone: SELF }, inv);
+    line(code.status === 200 && /^[A-Z0-9]{8}$/.test(code.body?.pairingCode ?? ''), 'throwaway client: link with phone returns a pairing code', `status ${code.status}, ${Math.round((Date.now() - t0) / 1000)} s, code ${code.body?.pairingCode ? 'received (8 chars)' : JSON.stringify(code.body)}`);
   }
-  const throwaway = await db.account.findUnique({ where: { clientId: THROWAWAY_CLIENT } });
-  if (throwaway) {
+  for (const clientId of [qrClient, codeClient, THROWAWAY_CLIENT]) {
+    const throwaway = await db.account.findUnique({ where: { clientId } });
+    if (!throwaway) continue;
     await engine('DELETE', `/instance/delete/${encodeURIComponent(throwaway.instanceName)}`);
-    await sleep(1500);
+    await sleep(2000);
     const gone = await engine('GET', `/instance/fetchInstances?instanceName=${encodeURIComponent(throwaway.instanceName)}`);
     const stillThere = Array.isArray(gone.body) && gone.body.some((i: any) => i?.name === throwaway.instanceName);
     await db.account.delete({ where: { id: throwaway.id } });
-    line(!stillThere, 'throwaway instance deleted from the engine and the service');
+    line(!stillThere, `throwaway instance ${clientId} deleted from the engine and the service`);
   }
 
   if (NO_SEND) {
@@ -333,19 +340,19 @@ async function restartTest(invKey: string, inv: Record<string, string>, accountI
 }
 
 /**
- * Ticks for a message: the WhatsApp server tick must arrive through the engine webhook. A
- * delivered tick is waited for briefly but cannot come here: WhatsApp sends none for messages to
- * one's own number, and this build may message nobody else.
+ * The engine's own event about the message must reach the service. A delivered tick is waited
+ * for briefly but cannot come here: WhatsApp sends none for messages to one's own number (and
+ * the server tick only when the phone next syncs), and this build may message nobody else.
  */
 async function confirmTicks(invKey: string, id: string, label: string): Promise<void> {
   const until = Date.now() + 60_000;
   let m: any = null;
   while (Date.now() < until) {
     m = (await http('GET', `/v1/messages/${id}`, undefined, { 'x-module-key': invKey })).body;
-    if (m?.serverAckAt) break;
+    if (m?.engineConfirmedAt) break;
     await sleep(1500);
   }
-  line(Boolean(m?.serverAckAt), `${label}: WhatsApp server tick received through the engine webhook`, `sent ${m?.sentAt}, server tick ${m?.serverAckAt}`);
+  line(Boolean(m?.engineConfirmedAt), `${label}: confirmed by the engine's own event (webhook path works)`, `sent ${m?.sentAt}, engine confirmed ${m?.engineConfirmedAt}`);
   await sleep(15_000);
   m = (await http('GET', `/v1/messages/${id}`, undefined, { 'x-module-key': invKey })).body;
   line(null, `${label}: delivered tick`, m?.deliveredAt ? `DELIVERED at ${m.deliveredAt}` : 'none, as expected for a message to yourself');
