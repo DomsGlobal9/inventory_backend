@@ -2,14 +2,14 @@ import { Router, json } from 'express';
 import type { Prisma } from '@prisma/client';
 import type { Ctx } from '../context';
 import { requireAdmin } from '../auth/middleware';
-import { reconnectAccount } from '../accounts/service';
+import { linkScaleezy, reconnectAccount } from '../accounts/service';
 import { startCanary } from '../health/canary';
 import { runHealthWatch } from '../health/watch';
 import { EngineError } from '../engine/client';
 import { Errors } from '../lib/errors';
-import { maskPhone } from '../lib/phone';
+import { maskPhone, normalisePhone } from '../lib/phone';
 import { route } from './errors';
-import { adminMessagesQuery } from './schemas';
+import { adminMessagesQuery, linkBody } from './schemas';
 
 // For the platform console. Never returns message text, documents or full numbers.
 export function adminRoutes(ctx: Ctx): Router {
@@ -59,6 +59,20 @@ export function adminRoutes(ctx: Ctx): Router {
         out.push({ id: a.id, kind: a.kind, status: a.status, engineState, ok: a.status !== 'CONNECTED' || engineState === 'open' });
       }
       res.json({ ok: out.every((a) => a.ok), accounts: out });
+    }),
+  );
+
+  /** Links the ScaleEzy number (QR, or a pairing code for the given phone). Used once after a deploy. */
+  r.post(
+    '/scaleezy/link',
+    route(async (req, res) => {
+      const body = linkBody.parse(req.body ?? {});
+      let phone: string | null = null;
+      if (body.method === 'code') {
+        phone = normalisePhone(body.phone);
+        if (!phone) throw Errors.badRequest('To link with a code, give the WhatsApp number of the phone you are linking.');
+      }
+      res.json(await linkScaleezy(ctx, body.method, phone));
     }),
   );
 

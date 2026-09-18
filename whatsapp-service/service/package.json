@@ -18,6 +18,7 @@
     "module:create": "tsx scripts/create-module.ts",
     "db:migrate": "prisma migrate deploy",
     "smoke": "tsx scripts/smoke.ts",
+    "link:scaleezy": "tsx scripts/link-scaleezy.ts",
     "test:unit": "vitest run test/unit"
   },
   "dependencies": {

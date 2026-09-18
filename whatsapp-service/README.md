@@ -61,7 +61,7 @@ Module calls carry `x-module-key`; the platform console uses `x-admin-key`. Ever
 | POST | `/v1/numbers/check` | `{ from, to }` → `{ onWhatsApp }` (cached 7 days). |
 | POST | `/engine/events/:secret` | The engine's webhook (secret compared in constant time). |
 | GET | `/admin/accounts`, `/admin/accounts/verify`, `/admin/messages?status=&since=`, `/admin/canary` | Console views. No message text, full numbers masked. |
-| POST | `/admin/accounts/:id/reconnect`, `/admin/canary/run`, `/admin/health-watch/run` | Console actions. |
+| POST | `/admin/scaleezy/link` (QR or pairing code for the ScaleEzy number), `/admin/accounts/:id/reconnect`, `/admin/canary/run`, `/admin/health-watch/run` | Console actions. |
 | GET | `/health` (no detail), `/ready` (database + engine) | |
 
 Refusals (4xx, plain English): number not linked / disconnected, invalid `to`, person replied
@@ -159,7 +159,7 @@ Queued messages older than 24 h expire ("Not sent within a day, so it was not se
 
 ```powershell
 cd service
-npm run module:create -- --name inventory --webhook-url https://<inventory-backend>/whatsapp/events --can-send-as-scaleezy
+npm run module:create -- --name inventory --webhook-url https://<inventory-backend>/api/v1/whatsapp/events --can-send-as-scaleezy
 # on Render (Shell tab of whatsapp-service):
 node dist/scripts/create-module.js --name inventory --webhook-url https://... --can-send-as-scaleezy
 ```
@@ -168,11 +168,12 @@ The key (`WHATSAPP_SERVICE_KEY`) and webhook secret are printed **once**; only t
 and the encrypted secret are stored. Put both in the module's own secret settings. To replace a
 leaked key: `--name inventory --rotate-key` (the old key stops working at once).
 
-## Deploying to Render (not done yet)
+## Deploying to Render
 
 1. **Confirm the region** of the Inventory backend and set it on all four pieces in
    `render.yaml` (placeholder: `singapore`). They must share Render's private network.
-2. Push this repo to GitHub, then Render → New → Blueprint → this repo.
+2. Render → New → Blueprint → the inventory backend repo, **Blueprint path `whatsapp-service/render.yaml`**.
+   The Inventory backend service itself ignores `whatsapp-service/**` (Build Filters), so the two deploy apart.
 3. Set the `sync: false` values in the dashboard:
    - `whatsapp-service` → `ENCRYPTION_KEY`:
      `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`
@@ -184,7 +185,9 @@ leaked key: `--name inventory --rotate-key` (the old key stops working at once).
 4. One time, create the engine's database (Render Shell or psql with the external URL):
    `CREATE DATABASE evolution;`
 5. Create the module key for Inventory (above).
-6. Link the ScaleEzy number to the `scaleezy` instance (console link flow), then set
+6. Link the ScaleEzy number (the engine is private, so this goes through the admin API):
+   `npm run link:scaleezy -- --base https://<whatsapp-service>.onrender.com` with `ADMIN_KEY` set,
+   opens `scaleezy-qr.html` to scan; or add `--code 91XXXXXXXXXX` for a pairing code. Then set
    `CANARY_ENABLED=true`.
 7. Run the **smoke test** (below).
 

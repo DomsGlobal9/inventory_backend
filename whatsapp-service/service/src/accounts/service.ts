@@ -117,8 +117,20 @@ export async function linkClient(ctx: Ctx, clientId: string, method: 'qr' | 'cod
       update: {},
     });
   }
+  return startLink(ctx, account, method, phone);
+}
 
-  const info = await engineCall(() => ctx.engine.connectionInfo(account!.instanceName));
+/**
+ * Admin: links the ScaleEzy number itself. The engine is on the private network, so this is the
+ * only way to show its QR / pairing code. Refuses when it is already connected.
+ */
+export async function linkScaleezy(ctx: Ctx, method: 'qr' | 'code', phone: string | null): Promise<LinkResult> {
+  const account = await ensureScaleezyAccount(ctx);
+  return startLink(ctx, account, method, phone);
+}
+
+async function startLink(ctx: Ctx, account: Account, method: 'qr' | 'code', phone: string | null): Promise<LinkResult> {
+  const info = await engineCall(() => ctx.engine.connectionInfo(account.instanceName));
   if (info?.state === 'open') {
     await setAccountStatus(ctx, account.id, 'CONNECTED', 'link', { phone: info.ownerDigits, displayName: info.profileName });
     return { status: 'CONNECTED' };

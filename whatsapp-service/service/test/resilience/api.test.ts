@@ -223,6 +223,29 @@ describe.skipIf(!hasTestDb)('API', () => {
     expect(again).toEqual({ status: 'CONNECTED' });
   });
 
+  it('admin links the ScaleEzy number: admin key only, QR or code, never re-links a connected one', async () => {
+    const admin = { 'x-admin-key': env.ctx.config.ADMIN_KEY };
+    // Connected already: left alone.
+    expect(await (await post('/admin/scaleezy/link', { method: 'qr' }, undefined, admin)).json()).toEqual({ status: 'CONNECTED' });
+    // A module key, even one allowed to send as ScaleEzy, cannot link it.
+    expect((await post('/admin/scaleezy/link', { method: 'qr' }, undefined, { 'x-admin-key': inventory.key })).status).toBe(401);
+    expect((await post('/admin/scaleezy/link', { method: 'qr' })).status).toBe(401);
+    // Not linked yet (fresh deploy, no ScaleEzy row): the row is made and a QR comes back.
+    await env.db.account.deleteMany({ where: { kind: 'SCALEEZY' } });
+    env.engine.states.delete(env.ctx.config.SCALEEZY_INSTANCE);
+    const qr = await (await post('/admin/scaleezy/link', { method: 'qr' }, undefined, admin)).json() as any;
+    expect(qr.status).toBe('LINKING');
+    expect(qr.qr).toMatch(/^data:image\/png;base64,/);
+    const row = await env.db.account.findFirstOrThrow({ where: { kind: 'SCALEEZY' } });
+    expect(row.instanceName).toBe(env.ctx.config.SCALEEZY_INSTANCE);
+    expect(row.status).toBe('LINKING');
+    const code = await (await post('/admin/scaleezy/link', { method: 'code', phone: '8142424642' }, undefined, admin)).json() as any;
+    expect(code.pairingCode).toBe('ABCD1234');
+    expect((await post('/admin/scaleezy/link', { method: 'code' }, undefined, admin)).status).toBe(400);
+    expect((await post('/admin/scaleezy/link', { method: 'sms' }, undefined, admin)).status).toBe(400);
+    expect(await env.db.account.count({ where: { kind: 'SCALEEZY' } })).toBe(1);
+  });
+
   it('numbers/check answers from the engine and caches', async () => {
     env.engine.notOnWhatsApp.add('919876500001');
     const a = await (await post('/v1/numbers/check', { from: { clientId: 'shop1' }, to: '9876500001' }, inventory.key)).json() as any;
