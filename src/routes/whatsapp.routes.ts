@@ -1,10 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import * as whatsapp from '../services/whatsapp/service';
 import { WhatsAppServiceError } from '../services/whatsapp/client';
+import { requirePermission } from '../middleware/permission.middleware';
 
 /**
- * Settings > WhatsApp, the Send buttons, and the nightly Day Book choice. Every rule about who may
- * do what lives in services/whatsapp; these only pass the signed-in person through.
+ * Settings > WhatsApp, the Send buttons, and the nightly Day Book choice. The rules about who may do
+ * what live in services/whatsapp; linking is also guarded here at the door, like every route whose
+ * whole purpose is one permission.
  */
 const router = Router();
 
@@ -25,9 +27,9 @@ const handle = (fn: (req: Request) => Promise<unknown>, status = 200) =>
   };
 
 router.get('/', handle(req => whatsapp.getOverview(actor(req))));
-router.post('/link', handle(req => whatsapp.link(actor(req), req.body?.method, req.body?.phone)));
-router.post('/disconnect', handle(req => whatsapp.disconnect(actor(req))));
-router.post('/test', handle(req => whatsapp.sendTest(actor(req), req.body?.to, req.body?.nonce), 202));
+router.post('/link', requirePermission('whatsapp:manage'), handle(req => whatsapp.link(actor(req), req.body?.method, req.body?.phone)));
+router.post('/disconnect', requirePermission('whatsapp:manage'), handle(req => whatsapp.disconnect(actor(req))));
+router.post('/test', requirePermission('whatsapp:manage'), handle(req => whatsapp.sendTest(actor(req), req.body?.to, req.body?.nonce), 202));
 router.post('/send', handle(req => whatsapp.sendDocument(actor(req), req.body ?? {}), 202));
 router.get('/messages', handle(req => whatsapp.latestFor(actor(req), req.query.kind, req.query.id)));
 router.put('/day-book', handle(req => whatsapp.saveDayBookSettings(actor(req), req.body ?? {})));

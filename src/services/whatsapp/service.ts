@@ -182,7 +182,13 @@ const publicMessage = (m: { id: string; kind: string; referenceId: string | null
 
 // ── The shop's screen ──────────────────────────────────────────────────────────────────────
 
+/** Anyone who may send some document on WhatsApp, or manage it, may see whether it is linked. */
+const MAY_SEE_WHATSAPP = ['whatsapp:manage', ...Object.values(SEND_PERMISSION)];
+
 export async function getOverview(actor: Actor) {
+  if (!MAY_SEE_WHATSAPP.some(p => may(actor, p))) {
+    throw fail(403, 'WhatsApp is not part of your role. Ask whoever manages your team.');
+  }
   const configured = whatsappConfigured();
   let account: { status: string; phone: string | null; linkedAt: string | null } | null = null;
   let problem: string | null = null;
@@ -266,6 +272,7 @@ export async function sendDocument(actor: Actor, input: { kind: unknown; id: unk
 /** The latest message for one document: what its Send button shows. */
 export async function latestFor(actor: Actor, kind: unknown, id: unknown) {
   if (!SEND_KINDS.includes(kind as SendKind) || typeof id !== 'string') throw fail(400, 'Which document is missing.');
+  requireMay(actor, SEND_PERMISSION[kind as SendKind]);
   const m = await prisma.whatsAppMessage.findFirst({
     where: { clientId: actor.clientId, kind: kind as string, referenceId: id },
     orderBy: { createdAt: 'desc' }
