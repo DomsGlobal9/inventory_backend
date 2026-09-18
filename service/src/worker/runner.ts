@@ -1,3 +1,4 @@
+import { pruneOldRecords } from './retention';
 import type { Ctx } from '../context';
 import { dispatchDueEvents } from '../events/module-events';
 import { runHealthWatch } from '../health/watch';
@@ -38,6 +39,7 @@ export class Runner {
   private wasLeader = false;
   private lastLeaderTry = 0;
   private loopRunning: Promise<void> | null = null;
+  private lastPrunedAt = 0;
 
   constructor(
     private readonly ctx: Ctx,
@@ -125,6 +127,12 @@ export class Runner {
     await this.sender.recoverStale();
     // Ticks that never matched a message (e.g. sent from the phone itself) are not kept.
     await this.ctx.db.engineReceipt.deleteMany({ where: { at: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } } });
+    // Old records, once an hour: nothing here is needed for long (see worker/retention).
+    if (Date.now() - this.lastPrunedAt >= 60 * 60 * 1000) {
+      this.lastPrunedAt = Date.now();
+      const r = await pruneOldRecords(this.ctx);
+      if (Object.values(r).some(n => n > 0)) this.ctx.log.info(r, 'old records removed');
+    }
   }
 
   /**

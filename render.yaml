@@ -152,6 +152,8 @@ services:
         value: scaleezy
       - key: SCALEEZY_DAILY_CAP
         value: "150"
+      - key: MESSAGE_RETENTION_DAYS
+        value: "30" # finished messages are deleted after this; STOPs are kept for good
       - key: CANARY_ENABLED
         value: "false" # switch on once the ScaleEzy number is linked on Render
       - key: CANARY_HOUR_IST

@@ -53,6 +53,8 @@ const schema = z.object({
 
   SCALEEZY_INSTANCE: z.string({ required_error: 'is required' }).regex(/^[A-Za-z0-9_-]{1,64}$/, 'letters, digits, - and _ only'),
   SCALEEZY_DAILY_CAP: int(150, 1, 10000),
+  // Finished messages are deleted after this many days (see worker/retention). STOPs are kept for good.
+  MESSAGE_RETENTION_DAYS: int(30, 7, 3650),
 
   WORKER_ENABLED: bool(true),
   SEND_GAP_MIN_MS: int(4000, 0, 600000),
