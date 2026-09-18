@@ -1,0 +1,4 @@
+# Everything is LF, in the repo and on checkout: the Docker images and CI run on Linux.
+* text=auto eol=lf
+*.png binary
+*.pdf binary

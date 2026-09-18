@@ -1,0 +1,199 @@
+// ScaleEzy WhatsApp Service data. Lives in its own database (`whatsapp`), next to the
+// engine's `evolution` database on the same Postgres server.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AccountKind {
+  SCALEEZY
+  CLIENT
+}
+
+enum AccountStatus {
+  NOT_LINKED
+  LINKING
+  CONNECTED
+  DISCONNECTED
+  LOGGED_OUT
+}
+
+enum MessageStatus {
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  EXPIRED
+}
+
+enum MessageKind {
+  S1
+  S2
+  S3
+  S4
+  S5
+  S6
+  S7
+  S8
+  C1
+  C2
+  C3
+  C4
+  C5
+  C6
+  C7
+  TEST
+}
+
+/// One WhatsApp number = one engine instance.
+model Account {
+  id              String        @id @default(uuid())
+  kind            AccountKind
+  /// Platform client id. Null for the ScaleEzy number; unique for clients.
+  clientId        String?       @unique
+  instanceName    String        @unique
+  /// Digits only, set once linked.
+  phone           String?
+  displayName     String?
+  status          AccountStatus @default(NOT_LINKED)
+  linkedAt        DateTime?
+  lastSeenAt      DateTime?
+  statusChangedAt DateTime      @default(now())
+  /// Overrides the automatic cap when set.
+  dailyCap        Int?
+  createdAt       DateTime      @default(now())
+
+  messages   Message[]
+  optOuts    OptOut[]
+  statusLogs AccountStatusLog[]
+
+  @@index([kind])
+}
+
+/// Every status change of a number, so the console can show when and why it dropped.
+model AccountStatusLog {
+  id        String        @id @default(uuid())
+  accountId String
+  account   Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  from      AccountStatus
+  to        AccountStatus
+  source    String
+  at        DateTime      @default(now())
+
+  @@index([accountId, at])
+}
+
+/// A ScaleEzy module (Inventory, CRM, ...) allowed to call this service.
+model ModuleClient {
+  id                     String   @id @default(uuid())
+  name                   String   @unique
+  /// sha256 of the key; the key itself is shown once by the CLI and never stored.
+  keyHash                String   @unique
+  webhookUrl             String?
+  /// AES-256-GCM, key from ENCRYPTION_KEY.
+  webhookSecretEncrypted String?
+  canSendAsScaleEzy      Boolean  @default(false)
+  active                 Boolean  @default(true)
+  createdAt              DateTime @default(now())
+
+  messages Message[]
+  events   ModuleEvent[]
+}
+
+/// The outbox. Every message is stored here first; the worker sends it.
+model Message {
+  id              String        @id @default(uuid())
+  accountId       String
+  account         Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  /// Null only for messages the service sends itself (canary).
+  moduleId        String?
+  module          ModuleClient? @relation(fields: [moduleId], references: [id], onDelete: SetNull)
+  toDigits        String
+  kind            MessageKind
+  reference       String?
+  idempotencyKey  String
+  /// sha256 of text + document, for the 60 s double-click rule.
+  contentHash     String
+  text            String?
+  document        Bytes?
+  fileName        String?
+  mimeType        String?
+  status          MessageStatus @default(QUEUED)
+  failReason      String?
+  tries           Int           @default(0)
+  /// Not before this time (retry backoff).
+  nextAttemptAt   DateTime      @default(now())
+  engineMessageId String?       @unique
+  queuedAt        DateTime      @default(now())
+  sendingAt       DateTime?
+  sentAt          DateTime?
+  deliveredAt     DateTime?
+  readAt          DateTime?
+  failedAt        DateTime?
+
+  @@unique([moduleId, idempotencyKey])
+  @@index([status, accountId, nextAttemptAt])
+  @@index([accountId, toDigits, contentHash, queuedAt])
+  @@index([accountId, sentAt])
+}
+
+/// Someone replied STOP to this number.
+model OptOut {
+  id        String   @id @default(uuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  toDigits  String
+  createdAt DateTime @default(now())
+
+  @@unique([accountId, toDigits])
+}
+
+/// "Is this number on WhatsApp", cached 7 days.
+model NumberCheck {
+  toDigits   String   @id
+  onWhatsApp Boolean
+  checkedAt  DateTime @default(now())
+}
+
+/// Delivery ticks that arrived before we knew which message they belong to (the engine can
+/// report "delivered" before its own send call has returned to us).
+model EngineReceipt {
+  engineMessageId String   @id
+  status          String
+  at              DateTime @default(now())
+}
+
+/// Events to forward to a module's webhook. Stored first so a crash never loses one
+/// (at-least-once; the module dedupes by id).
+model ModuleEvent {
+  id            String       @id @default(uuid())
+  moduleId      String
+  module        ModuleClient @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  type          String
+  payload       Json
+  tries         Int          @default(0)
+  nextAttemptAt DateTime     @default(now())
+  deliveredAt   DateTime?
+  failedAt      DateTime?
+  lastError     String?
+  createdAt     DateTime     @default(now())
+
+  @@index([deliveredAt, failedAt, nextAttemptAt])
+}
+
+model CanaryRun {
+  id        String   @id @default(uuid())
+  at        DateTime @default(now())
+  messageId String?
+  /// PENDING, OK, FAILED
+  outcome   String
+  detail    String?
+}
