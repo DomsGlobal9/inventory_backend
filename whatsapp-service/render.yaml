@@ -103,6 +103,7 @@ services:
         value: en
       # Events to our service over the private network:
       #   http://<whatsapp-service internal host>:10000/engine/events/<ENGINE_WEBHOOK_SECRET>
+      #   with the secret URL-encoded (encodeURIComponent): it can contain / + =
       - key: WEBHOOK_GLOBAL_ENABLED
         value: "true"
       - key: WEBHOOK_GLOBAL_URL

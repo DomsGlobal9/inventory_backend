@@ -183,6 +183,9 @@ leaked key: `--name inventory --rotate-key` (the old key stops working at once).
    - `whatsapp-engine` → `WEBHOOK_GLOBAL_URL`:
      `http://<whatsapp-service internal hostname>:10000/engine/events/<ENGINE_WEBHOOK_SECRET>`
      (hostname from the service's Connect → Internal tab; the secret from the `whatsapp-shared` group).
+     **URL-encode the secret** (Render's generated value can contain `/`, `+`, `=`):
+     `node -e "console.log(encodeURIComponent(process.argv[1]))" '<secret>'`. Pasted raw, a `/`
+     splits the path and every engine event gets 404 (messages send, but ticks never arrive).
 4. One time, create the engine's database (Render Shell or psql with the external URL):
    `CREATE DATABASE evolution;`
 5. Create the module key for Inventory (above).
