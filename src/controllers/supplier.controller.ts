@@ -45,7 +45,7 @@ export const createSupplier = async (req: Request, res: Response, next: NextFunc
     
     const parsed = supplierSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+      return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Validation error', errors: parsed.error.errors });
     }
 
     const data = await supplierService.createSupplier(clientId, parsed.data as any);
@@ -62,7 +62,7 @@ export const updateSupplier = async (req: Request, res: Response, next: NextFunc
     
     const parsed = supplierSchema.partial().safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+      return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Validation error', errors: parsed.error.errors });
     }
 
     const id = req.params.id as string;

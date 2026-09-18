@@ -435,7 +435,14 @@ class ProductImportService {
           ['CostPrice', row.costPrice, 'money>=0']
         ] as const) {
           const n = this.num(value);
-          if (n === undefined) continue;
+          // Words where a number belongs ("twelve") used to be dropped on the way in, and a missing
+          // number means "leave this alone" -- so the pieces silently never arrived. Named instead.
+          if (n === undefined) {
+            if (value !== undefined && value !== null && String(value).trim() !== '') {
+              errors.push({ rowNumber: row.rowNumber, message: `${label} must be a number, not "${String(value).slice(0, 20)}".` });
+            }
+            continue;
+          }
           if (rule === 'int>=0') {
             if (!Number.isInteger(n)) errors.push({ rowNumber: row.rowNumber, message: `${label} must be a whole number, not ${n}.` });
             else if (n < 0) errors.push({ rowNumber: row.rowNumber, message: `${label} cannot be negative.` });

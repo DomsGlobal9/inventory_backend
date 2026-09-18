@@ -43,7 +43,7 @@ export const createPO = async (req: Request, res: Response, next: NextFunction) 
 
     const parsed = purchaseOrderCreateSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+      return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Validation error', errors: parsed.error.errors });
     }
 
     const data = await purchaseOrderService.createPO(clientId, parsed.data as any, (req as any).locationId);
@@ -88,7 +88,7 @@ export const receiveGoods = async (req: Request, res: Response, next: NextFuncti
 
     const parsed = purchaseOrderReceiveSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+      return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Validation error', errors: parsed.error.errors });
     }
 
     const id = req.params.id as string;

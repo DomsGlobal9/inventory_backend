@@ -12,7 +12,7 @@ export const createOrder = async (req: Request, res: Response) => {
 
     const parsed = createOrderSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+      return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Validation error', errors: parsed.error.errors });
     }
 
     let locationId = parsed.data.locationId;
@@ -64,7 +64,7 @@ export const createFullOrder = async (req: Request, res: Response) => {
 
     const parsed = createFullOrderSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+      return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Validation error', errors: parsed.error.errors });
     }
 
     let locationId = parsed.data.locationId;

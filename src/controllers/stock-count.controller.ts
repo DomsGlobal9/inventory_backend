@@ -32,7 +32,7 @@ export class StockCountController {
       const body = { ...req.body, locationId: req.body.locationId || (req as any).locationId };
       const parsed = stockCountCreateSchema.safeParse(body);
       if (!parsed.success) {
-        return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+        return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Validation error', errors: parsed.error.errors });
       }
 
       const { name, locationId, categoryId } = parsed.data;
@@ -66,7 +66,7 @@ export class StockCountController {
 
       const parsed = stockCountUpdateItemSchema.safeParse(req.body);
       if (!parsed.success) {
-        return res.status(400).json({ success: false, message: "Validation error", errors: parsed.error.errors });
+        return res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Validation error', errors: parsed.error.errors });
       }
 
       const result = await stockCountService.updateItemCount(clientId, id, itemId, parsed.data.countedQty);

@@ -14,8 +14,8 @@ export const createVariantSchema = z.object({
   // Nullable (not just optional): clearing the field is a real, supported action --
   // it removes the variant-specific override and falls back to the product's basePrice
   // (see resolveVariantForLocation) -- not merely "no value sent".
-  sellingPrice: z.number().positive().nullable().optional(),
-  costPrice: z.number().positive().nullable().optional(),
+  sellingPrice: z.number().positive().max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.').nullable().optional(),
+  costPrice: z.number().positive().max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.').nullable().optional(),
   locationId: z.string().optional()
 });
 

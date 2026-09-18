@@ -11,7 +11,11 @@ export const upsertVariantLocationProfile = async (req: Request, res: Response) 
     const { isAvailable, priceOverride } = req.body;
 
     if (priceOverride !== null && priceOverride < 0) {
-      return res.status(400).json({ error: 'Price override cannot be negative' });
+      return res.status(400).json({ error: 'A price cannot be less than zero.' });
+    }
+    // The column holds up to 99,999,999.99; beyond that the save failed as a server error.
+    if (priceOverride !== null && Number(priceOverride) > 99999999.99) {
+      return res.status(400).json({ error: 'That price is too large. The most a piece can cost is ₹9,99,99,999.' });
     }
 
     const profile = await variantLocationService.upsertLocationProfile(

@@ -22,7 +22,7 @@ export const createProductSchema = z.object({
   // price is often the last thing decided -- and every comparable catalogue (Shopify, Zoho)
   // lets you park one without it. Requiring it here meant Save as Draft could only ever
   // 400, since the review screen offers drafts before pricing is settled.
-  basePrice: z.number().nonnegative("Base price cannot be negative"),
+  basePrice: z.number().nonnegative("Base price cannot be negative").max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.'),
   status: z.nativeEnum(ProductStatus).optional()
 }).superRefine((val, ctx) => {
   // Anything that is not explicitly a draft is going into the sellable catalogue, so it

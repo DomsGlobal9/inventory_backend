@@ -67,6 +67,11 @@ export const createLocation = async (req: Request, res: Response) => {
     });
     res.status(201).json(location);
   } catch (error: any) {
+    // A code another store already uses came back as "Something went wrong at our end", which tells
+    // the shop nothing and reads as a fault of ours. It is their answer to give, so it says so.
+    if (error?.code === 'P2002') {
+      return res.status(409).json({ error: `Another store already uses the code ${String(req.body?.code ?? '').toUpperCase()}. Choose a different one.` });
+    }
     return respondWithError(res, error, { status: 400 });
   }
 };
@@ -123,6 +128,9 @@ export const updateLocation = async (req: Request, res: Response) => {
     const location = await prisma.stockLocation.findUnique({ where: { id } });
     res.json(location);
   } catch (error: any) {
+    if (error?.code === 'P2002') {
+      return res.status(409).json({ error: `Another store already uses the code ${String(req.body?.code ?? '').toUpperCase()}. Choose a different one.` });
+    }
     return respondWithError(res, error, { status: 400 });
   }
 };

@@ -9,8 +9,12 @@ export const purchaseOrderCreateSchema = z.object({
   notes: z.string().optional().nullable(),
   items: z.array(z.object({
     variantId: z.string().min(1, "Variant ID is required"),
-    orderedQty: z.number().int('Order whole pieces.').positive("Quantity must be positive"),
-    unitPrice: z.number().min(0, "Unit price must be >= 0"),
+    // Capped, because a number past what the column holds failed deep inside the database as a
+    // server error -- and still burned a purchase order number on the way.
+    orderedQty: z.number().int('Order whole pieces.').positive("Quantity must be positive")
+      .max(1_000_000, 'That is more pieces than any delivery can hold. Check the quantity.'),
+    unitPrice: z.number().min(0, "Unit price must be >= 0")
+      .max(10_000_000, 'That price looks wrong. Enter what one piece costs.'),
     productTitle: z.string().optional().nullable(),
     color: z.string().optional().nullable(),
     size: z.string().optional().nullable()
