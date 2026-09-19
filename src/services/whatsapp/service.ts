@@ -550,7 +550,9 @@ export async function handleEvent(event: { id?: unknown; type?: unknown; data?: 
     return { handled: true };
   }
   if (d.kind === 'SCALEEZY' && (event.type === 'account.disconnected' || event.type === 'account.connected')) {
-    await tellPlatformAdmins(event.type === 'account.connected' ? 'BACK' : d.status === 'LOGGED_OUT' ? 'LOGGED_OUT' : 'DISCONNECTED');
+    // Not awaited: the service gives up on an answer after 10 s, and email can take longer.
+    alertRun = tellPlatformAdmins(event.type === 'account.connected' ? 'BACK' : d.status === 'LOGGED_OUT' ? 'LOGGED_OUT' : 'DISCONNECTED')
+      .catch(err => console.error('[whatsapp] platform alert failed:', (err as Error)?.message));
     return { handled: true };
   }
   return { handled: true };
@@ -565,7 +567,15 @@ export async function handleEvent(event: { id?: unknown; type?: unknown; data?: 
 const ALERT_GAP_MS = 6 * 60 * 60 * 1000;
 const lastAlert = new Map<string, number>();
 /** Swappable so the test never emails the real admins; `forget` clears the 6-hour memory for tests. */
-export const platformAlertMail = { send: sendMail, forget: () => lastAlert.clear() };
+export const platformAlertMail = {
+  send: sendMail,
+  /** WHATSAPP_ALERT_EMAILS; a function so the test can set it without touching the environment. */
+  to: (): string | undefined => env.WHATSAPP_ALERT_EMAILS,
+  forget: () => lastAlert.clear(),
+  /** Resolves once the emails of the latest alert have been tried (for tests). */
+  settled: () => alertRun
+};
+let alertRun: Promise<unknown> = Promise.resolve();
 
 async function tellPlatformAdmins(what: 'LOGGED_OUT' | 'DISCONNECTED' | 'BACK') {
   const now = Date.now();
@@ -575,8 +585,17 @@ async function tellPlatformAdmins(what: 'LOGGED_OUT' | 'DISCONNECTED' | 'BACK') 
   } else if (now - (lastAlert.get(what) ?? 0) < ALERT_GAP_MS) {
     return;
   }
+  // Claimed before the first await, so a second event arriving meanwhile does not send it again.
+  const before = lastAlert.get(what);
+  lastAlert.set(what, now);
 
-  const admins = await prisma.platformAdmin.findMany({ where: { status: 'ACTIVE' }, select: { email: true, name: true } });
+  const written = (platformAlertMail.to() ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const listed = written.filter(s => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
+  if (listed.length < written.length) console.error(`[whatsapp] WHATSAPP_ALERT_EMAILS: skipped ${written.length - listed.length} entr${written.length - listed.length === 1 ? 'y that is' : 'ies that are'} not an email address`);
+  // A list with nothing usable falls back to the admins, so a typo never means nobody is told.
+  const admins = listed.length
+    ? listed.map(email => ({ email, name: 'ScaleEzy team' }))
+    : await prisma.platformAdmin.findMany({ where: { status: 'ACTIVE' }, select: { email: true, name: true } });
   const reconnect = [
     'To connect it again (about 2 minutes, with the ScaleEzy phone in your hand):',
     '1. On the phone: WhatsApp > Linked devices. Leave any "ScaleEzy (Chrome)" there alone.',
@@ -599,15 +618,16 @@ async function tellPlatformAdmins(what: 'LOGGED_OUT' | 'DISCONNECTED' | 'BACK') 
       body: "ScaleEzy's own WhatsApp number is connected again. Day Books and alerts are going out as normal."
     }
   }[what];
-  let delivered = false;
-  for (const a of admins) {
-    const r = await platformAlertMail.send({ to: a.email, subject: mail.subject, text: `Hello ${a.name},\n\n${mail.body}\n\nScaleEzy`, kind: `scaleezy-whatsapp-${what.toLowerCase()}` })
-      .catch(err => { console.error('[whatsapp] platform alert email not sent:', (err as Error)?.message); return null; });
-    if (r?.sent) delivered = true;
-    else if (r) console.error('[whatsapp] platform alert email not sent:', r.reason);
+  const sent = await Promise.all(admins.map(a =>
+    platformAlertMail.send({ to: a.email, subject: mail.subject, text: `Hello ${a.name},\n\n${mail.body}\n\nScaleEzy`, kind: `scaleezy-whatsapp-${what.toLowerCase()}` })
+      .then(r => { if (!r.sent) console.error('[whatsapp] platform alert email not sent:', r.reason); return r.sent; })
+      .catch(err => { console.error('[whatsapp] platform alert email not sent:', (err as Error)?.message); return false; })
+  ));
+  // Only a sent email keeps the 6-hour quiet time; after a mail outage the next event tries again.
+  if (!sent.includes(true)) {
+    if (before === undefined) lastAlert.delete(what);
+    else lastAlert.set(what, before);
   }
-  // Only a sent email starts the 6-hour quiet time; after a mail outage the next event tries again.
-  if (delivered) lastAlert.set(what, now);
 }
 
 /**

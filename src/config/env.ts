@@ -173,6 +173,11 @@ const envSchema = z.object({
   WHATSAPP_SERVICE_KEY: optionalStr(z.string().min(16, "WHATSAPP_SERVICE_KEY should be at least 16 characters")),
   // Shared with the service; every event it posts here is signed with it.
   WHATSAPP_WEBHOOK_SECRET: optionalStr(z.string().min(16, "WHATSAPP_WEBHOOK_SECRET should be at least 16 characters")),
+  // Who hears that ScaleEzy's own WhatsApp number dropped. Empty: every active console admin.
+  // Comma-separated addresses: only those (a team inbox, or one address while testing). Not checked
+  // here: a typo in an optional alert setting must not stop the whole backend from starting; the
+  // alert skips a bad address and says so in the log.
+  WHATSAPP_ALERT_EMAILS: optionalStr(z.string()),
   // The nightly Day Book job sends real messages to real owners. A development machine usually
   // points at the production database, so there it stays off unless this says otherwise.
   WHATSAPP_DAYBOOK_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),

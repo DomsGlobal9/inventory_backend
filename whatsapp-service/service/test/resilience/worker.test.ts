@@ -315,6 +315,19 @@ describe.skipIf(!hasTestDb)('worker resilience', () => {
     expect(JSON.stringify(drops[0]!.payload)).not.toContain('919000000002');
   });
 
+  it("health watch: ScaleEzy's own number logging out, and coming back, reach the module signed (its admin alert rests on this)", async () => {
+    const sc = await env.db.account.findFirstOrThrow({ where: { kind: 'SCALEEZY' } });
+    env.engine.setState(sc.instanceName, 'close', sc.phone!, 401);
+    await runHealthWatch(env.ctx, { confirmDelayMs: 0 });
+    env.engine.setState(sc.instanceName, 'open', sc.phone!);
+    await runHealthWatch(env.ctx, { confirmDelayMs: 0 });
+    await dispatchDueEvents(env.ctx);
+    const got = hook.received.filter((r) => r.data.kind === 'SCALEEZY');
+    expect(got.map((r) => [r.type, r.data.status])).toEqual([['account.disconnected', 'LOGGED_OUT'], ['account.connected', 'CONNECTED']]);
+    expect(got.every((r) => r.signatureOk && r.data.clientId === null)).toBe(true);
+    expect(JSON.stringify(got)).not.toContain(sc.phone!);
+  });
+
   it('health watch: a blip that recovers within the confirm delay alarms nobody', async () => {
     env.engine.setState(shop.instanceName, 'connecting', '919000000002');
     setTimeout(() => env.engine.setState(shop.instanceName, 'open', '919000000002'), 100);

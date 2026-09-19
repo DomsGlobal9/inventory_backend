@@ -430,21 +430,23 @@ async function main() {
     check('the owner is told on WhatsApp, from the ScaleEzy number, at their Day Book number', s4.length === n3 + 1 && s4.at(-1)?.body?.from === 'scaleezy' && s4.at(-1)?.body?.to === '918142424642' && /Settings > WhatsApp/.test(s4.at(-1)?.body?.text), s4.at(-1)?.body);
     // Recorder in place of real email BEFORE any ScaleEzy event: these would go to the real admins.
     const alerts: Array<{ to: string; subject: string; text: string }> = [];
-    const realSend = wa.platformAlertMail.send;
+    const realSend = wa.platformAlertMail.send, realTo = wa.platformAlertMail.to;
     wa.platformAlertMail.send = async (m: any) => { alerts.push(m); return { sent: true }; };
+    wa.platformAlertMail.to = () => undefined; // first: no list set, so every active admin
+    const fire = async (e: any) => { const r = await wa.handleEvent(e); await wa.platformAlertMail.settled(); return r; };
     try {
       const admins = await prisma.platformAdmin.count({ where: { status: 'ACTIVE' } });
-      await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT', previousStatus: 'CONNECTED' }));
+      await fire(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT', previousStatus: 'CONNECTED' }));
       check('ScaleEzy\'s own number dropping tells no shop owner', seen.filter(s => s.body?.kind === 'S4').length === n3 + 1);
       check('every active platform admin gets an email', admins > 0 && alerts.length === admins, { admins, alerts: alerts.length });
       check('it says logged out, what stops, and how to link again', /logged out/.test(alerts[0]?.subject) && /Day Book/.test(alerts[0]?.text) && /npm run link:scaleezy/.test(alerts[0]?.text) && /Leave any "ScaleEzy \(Chrome\)"/.test(alerts[0]?.text), alerts[0]?.text);
-      await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT', previousStatus: 'CONNECTED' }));
+      await fire(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT', previousStatus: 'CONNECTED' }));
       check('the same drop again within 6 hours sends nothing more', alerts.length === admins);
-      await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'DISCONNECTED', previousStatus: 'CONNECTED' }));
+      await fire(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'DISCONNECTED', previousStatus: 'CONNECTED' }));
       check('a different drop (phone offline) is its own email, and says it usually comes back', alerts.length === 2 * admins && /not connected/.test(alerts.at(-1)!.subject) && /comes back by itself/.test(alerts.at(-1)!.text));
-      await wa.handleEvent(ev('account.connected', { kind: 'SCALEEZY', clientId: null, status: 'CONNECTED', previousStatus: 'LOGGED_OUT' }));
+      await fire(ev('account.connected', { kind: 'SCALEEZY', clientId: null, status: 'CONNECTED', previousStatus: 'LOGGED_OUT' }));
       check('coming back after a reported drop sends "back"', alerts.length === 3 * admins && /is back/.test(alerts.at(-1)!.subject));
-      await wa.handleEvent(ev('account.connected', { kind: 'SCALEEZY', clientId: null, status: 'CONNECTED', previousStatus: 'DISCONNECTED' }));
+      await fire(ev('account.connected', { kind: 'SCALEEZY', clientId: null, status: 'CONNECTED', previousStatus: 'DISCONNECTED' }));
       check('a second "back" with no new drop in between sends nothing', alerts.length === 3 * admins);
       await wa.handleEvent(ev('account.connected', { kind: 'CLIENT', clientId: SHOP, status: 'CONNECTED' }));
       await wa.handleEvent(ev('account.disconnected', { kind: 'CLIENT', clientId: SHOP, status: 'DISCONNECTED' }));
@@ -453,14 +455,47 @@ async function main() {
       wa.platformAlertMail.forget();
       let tries = 0;
       wa.platformAlertMail.send = async () => { tries++; throw new Error('smtp down'); };
-      const r = await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
+      const r = await fire(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
       check('email failing never fails the event (it is still recorded as handled)', r.handled === true && tries === admins && alerts.length === n4, { r, tries });
       wa.platformAlertMail.send = async (m: any) => { alerts.push(m); return { sent: true }; };
-      await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
+      await fire(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
       check('after a failed email, the next drop tries again (a mail outage does not silence it for 6 hours)', alerts.length === n4 + admins);
+      wa.platformAlertMail.forget();
+      const n5 = alerts.length;
+      wa.platformAlertMail.to = () => ' ops@example.com, second@example.com ';
+      await fire(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
+      const listed = alerts.slice(n5).map(a => a.to);
+      check('with WHATSAPP_ALERT_EMAILS set, only those addresses get it (no admin)', listed.length === 2 && listed[0] === 'ops@example.com' && listed[1] === 'second@example.com', listed);
+      wa.platformAlertMail.forget();
+      let n8 = alerts.length;
+      wa.platformAlertMail.to = () => 'ops@example.com, not-an-address, ';
+      await fire(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
+      check('a typo in the list is skipped; the good address still gets it', alerts.slice(n8).map(a => a.to).join() === 'ops@example.com', alerts.slice(n8).map(a => a.to));
+      wa.platformAlertMail.forget();
+      n8 = alerts.length;
+      wa.platformAlertMail.to = () => 'typo-only';
+      await fire(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
+      check('a list with no usable address falls back to the admins (nobody told is never the result)', alerts.length - n8 === admins, alerts.length - n8);
+      wa.platformAlertMail.forget();
+      const n6 = alerts.length;
+      wa.platformAlertMail.to = () => 'ops@example.com';
+      wa.platformAlertMail.send = async (m: any) => { await new Promise(res => setTimeout(res, 12_000)); alerts.push(m); return { sent: true }; };
+      const t0 = Date.now();
+      const slow = await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'DISCONNECTED' }));
+      const tookMs = Date.now() - t0;
+      check('email taking 12 s: the service still gets its answer at once (it gives up after 10 s)', slow.handled === true && tookMs < 3000, { tookMs });
+      await wa.platformAlertMail.settled();
+      check('and the email still goes out afterwards', alerts.length === n6 + 1);
+      wa.platformAlertMail.forget();
+      wa.platformAlertMail.send = async (m: any) => { await new Promise(res => setTimeout(res, 300)); alerts.push(m); return { sent: true }; };
+      const n7 = alerts.length;
+      await Promise.all([1, 2, 3].map(() => wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }))));
+      await new Promise(res => setTimeout(res, 1000));
+      check('three drop events at the same moment: one email, not three', alerts.length === n7 + 1, alerts.length - n7);
       wa.platformAlertMail.forget();
     } finally {
       wa.platformAlertMail.send = realSend;
+      wa.platformAlertMail.to = realTo;
     }
 
     console.log('\nH. HANDLED EVENTS ARE NOT KEPT FOR EVER');
