@@ -428,8 +428,40 @@ async function main() {
     await wa.handleEvent(ev('account.disconnected', { kind: 'CLIENT', clientId: SHOP, status: 'DISCONNECTED' }));
     const s4 = seen.filter(s => s.path === '/v1/messages' && s.body?.kind === 'S4');
     check('the owner is told on WhatsApp, from the ScaleEzy number, at their Day Book number', s4.length === n3 + 1 && s4.at(-1)?.body?.from === 'scaleezy' && s4.at(-1)?.body?.to === '918142424642' && /Settings > WhatsApp/.test(s4.at(-1)?.body?.text), s4.at(-1)?.body);
-    await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null }));
-    check('ScaleEzy\'s own number dropping tells no shop owner', seen.filter(s => s.body?.kind === 'S4').length === n3 + 1);
+    // Recorder in place of real email BEFORE any ScaleEzy event: these would go to the real admins.
+    const alerts: Array<{ to: string; subject: string; text: string }> = [];
+    const realSend = wa.platformAlertMail.send;
+    wa.platformAlertMail.send = async (m: any) => { alerts.push(m); return { sent: true }; };
+    try {
+      const admins = await prisma.platformAdmin.count({ where: { status: 'ACTIVE' } });
+      await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT', previousStatus: 'CONNECTED' }));
+      check('ScaleEzy\'s own number dropping tells no shop owner', seen.filter(s => s.body?.kind === 'S4').length === n3 + 1);
+      check('every active platform admin gets an email', admins > 0 && alerts.length === admins, { admins, alerts: alerts.length });
+      check('it says logged out, what stops, and how to link again', /logged out/.test(alerts[0]?.subject) && /Day Book/.test(alerts[0]?.text) && /npm run link:scaleezy/.test(alerts[0]?.text) && /Leave any "ScaleEzy \(Chrome\)"/.test(alerts[0]?.text), alerts[0]?.text);
+      await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT', previousStatus: 'CONNECTED' }));
+      check('the same drop again within 6 hours sends nothing more', alerts.length === admins);
+      await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'DISCONNECTED', previousStatus: 'CONNECTED' }));
+      check('a different drop (phone offline) is its own email, and says it usually comes back', alerts.length === 2 * admins && /not connected/.test(alerts.at(-1)!.subject) && /comes back by itself/.test(alerts.at(-1)!.text));
+      await wa.handleEvent(ev('account.connected', { kind: 'SCALEEZY', clientId: null, status: 'CONNECTED', previousStatus: 'LOGGED_OUT' }));
+      check('coming back after a reported drop sends "back"', alerts.length === 3 * admins && /is back/.test(alerts.at(-1)!.subject));
+      await wa.handleEvent(ev('account.connected', { kind: 'SCALEEZY', clientId: null, status: 'CONNECTED', previousStatus: 'DISCONNECTED' }));
+      check('a second "back" with no new drop in between sends nothing', alerts.length === 3 * admins);
+      await wa.handleEvent(ev('account.connected', { kind: 'CLIENT', clientId: SHOP, status: 'CONNECTED' }));
+      await wa.handleEvent(ev('account.disconnected', { kind: 'CLIENT', clientId: SHOP, status: 'DISCONNECTED' }));
+      check("a shop's number dropping or coming back never emails ScaleEzy's admins", alerts.length === 3 * admins);
+      const n4 = alerts.length;
+      wa.platformAlertMail.forget();
+      let tries = 0;
+      wa.platformAlertMail.send = async () => { tries++; throw new Error('smtp down'); };
+      const r = await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
+      check('email failing never fails the event (it is still recorded as handled)', r.handled === true && tries === admins && alerts.length === n4, { r, tries });
+      wa.platformAlertMail.send = async (m: any) => { alerts.push(m); return { sent: true }; };
+      await wa.handleEvent(ev('account.disconnected', { kind: 'SCALEEZY', clientId: null, status: 'LOGGED_OUT' }));
+      check('after a failed email, the next drop tries again (a mail outage does not silence it for 6 hours)', alerts.length === n4 + admins);
+      wa.platformAlertMail.forget();
+    } finally {
+      wa.platformAlertMail.send = realSend;
+    }
 
     console.log('\nH. HANDLED EVENTS ARE NOT KEPT FOR EVER');
     const { HousekeepingScheduler } = require('../jobs/housekeeping.scheduler');

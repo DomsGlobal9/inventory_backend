@@ -549,7 +549,65 @@ export async function handleEvent(event: { id?: unknown; type?: unknown; data?: 
     await tellOwnerDisconnected(d.clientId);
     return { handled: true };
   }
+  if (d.kind === 'SCALEEZY' && (event.type === 'account.disconnected' || event.type === 'account.connected')) {
+    await tellPlatformAdmins(event.type === 'account.connected' ? 'BACK' : d.status === 'LOGGED_OUT' ? 'LOGGED_OUT' : 'DISCONNECTED');
+    return { handled: true };
+  }
   return { handled: true };
+}
+
+/**
+ * ScaleEzy's own number dropped (or came back). Every shop's Day Book and alerts go out from it, so
+ * the people who run ScaleEzy hear by email at once instead of from a shop whose Day Book never came.
+ * At most one email of each kind per 6 hours, so a number that keeps flapping does not flood the inbox;
+ * "back" only follows a drop we actually reported. One backend instance, so memory is enough.
+ */
+const ALERT_GAP_MS = 6 * 60 * 60 * 1000;
+const lastAlert = new Map<string, number>();
+/** Swappable so the test never emails the real admins; `forget` clears the 6-hour memory for tests. */
+export const platformAlertMail = { send: sendMail, forget: () => lastAlert.clear() };
+
+async function tellPlatformAdmins(what: 'LOGGED_OUT' | 'DISCONNECTED' | 'BACK') {
+  const now = Date.now();
+  if (what === 'BACK') {
+    const dropped = Math.max(lastAlert.get('LOGGED_OUT') ?? 0, lastAlert.get('DISCONNECTED') ?? 0);
+    if (!dropped || (lastAlert.get('BACK') ?? 0) > dropped) return;
+  } else if (now - (lastAlert.get(what) ?? 0) < ALERT_GAP_MS) {
+    return;
+  }
+
+  const admins = await prisma.platformAdmin.findMany({ where: { status: 'ACTIVE' }, select: { email: true, name: true } });
+  const reconnect = [
+    'To connect it again (about 2 minutes, with the ScaleEzy phone in your hand):',
+    '1. On the phone: WhatsApp > Linked devices. Leave any "ScaleEzy (Chrome)" there alone.',
+    '2. On the computer, in backend/whatsapp-service/service, run:',
+    '   npm run link:scaleezy -- --base https://whatsapp-service-gv88.onrender.com',
+    '3. A QR page opens by itself. Scan it from Linked devices > Link a device.',
+    'Full guide: backend/whatsapp-service/docs/HOW-IT-WORKS.md, "Reconnecting a number that logged out".'
+  ].join('\n');
+  const mail = {
+    LOGGED_OUT: {
+      subject: "ScaleEzy's WhatsApp number was logged out",
+      body: `ScaleEzy's own WhatsApp number was logged out. Until it is linked again, no shop gets its Day Book, alerts or login messages on WhatsApp. It will not come back by itself.\n\n${reconnect}`
+    },
+    DISCONNECTED: {
+      subject: "ScaleEzy's WhatsApp number is not connected",
+      body: `ScaleEzy's own WhatsApp number stopped answering. The phone may be switched off or without internet. It usually comes back by itself once the phone is online. Messages wait and go out then; anything still waiting after a day is dropped.\n\nIf you do not get a "back" email within an hour, check the phone. If WhatsApp there shows no "ScaleEzy (Chrome)" under Linked devices, link it again:\n\n${reconnect}`
+    },
+    BACK: {
+      subject: "ScaleEzy's WhatsApp number is back",
+      body: "ScaleEzy's own WhatsApp number is connected again. Day Books and alerts are going out as normal."
+    }
+  }[what];
+  let delivered = false;
+  for (const a of admins) {
+    const r = await platformAlertMail.send({ to: a.email, subject: mail.subject, text: `Hello ${a.name},\n\n${mail.body}\n\nScaleEzy`, kind: `scaleezy-whatsapp-${what.toLowerCase()}` })
+      .catch(err => { console.error('[whatsapp] platform alert email not sent:', (err as Error)?.message); return null; });
+    if (r?.sent) delivered = true;
+    else if (r) console.error('[whatsapp] platform alert email not sent:', r.reason);
+  }
+  // Only a sent email starts the 6-hour quiet time; after a mail outage the next event tries again.
+  if (delivered) lastAlert.set(what, now);
 }
 
 /**

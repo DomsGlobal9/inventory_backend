@@ -117,7 +117,7 @@ Phone numbers are shown and logged as the last four digits only (`••••46
 | Daily limit reached | "Today's WhatsApp limit for this number is used up, to keep it safe from being blocked. It goes after midnight." | Sends it just after midnight (Indian time) |
 | The service or engine restarts | Nothing | Picks up exactly where it stopped; never sends a message twice |
 | Engine or network down briefly | A short wait | Retries after 30 s, 2 min, 8 min |
-| ScaleEzy's number itself drops | ScaleEzy's daily test fails; admin sees it | Day Books wait until it is relinked: see *Reconnecting a number that logged out* below |
+| ScaleEzy's number itself drops | Every ScaleEzy console admin gets an email within a few minutes ("was logged out" or "is not connected"), and a "back" email when it returns; the daily test fails too | Day Books wait until it is relinked: see *Reconnecting a number that logged out* below |
 
 ## Reconnecting a number that logged out
 
@@ -140,7 +140,8 @@ How they know: **Settings → WhatsApp** says it is not connected, **Send on Wha
 
 ### ScaleEzy's own number, 8142424642 (ScaleEzy staff do this)
 
-How you know: shops see **"ScaleEzy's WhatsApp number is not connected right now"** when they
+How you know: every ScaleEzy console admin gets an email, **"ScaleEzy's WhatsApp number was logged out"**
+(sent by Inventory, at most one of each kind every 6 hours, with these steps in it). Also, shops see **"ScaleEzy's WhatsApp number is not connected right now"** when they
 press *Send me today's now*, Day Books stop arriving, the 9 am daily test fails
 (`/admin/canary`), and the smoke test says `FAIL  ScaleEzy number connected`.
 
