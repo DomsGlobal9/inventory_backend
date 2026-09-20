@@ -31,13 +31,17 @@ export const fillMail = { send: sendMail };
 
 const pieces = (n: number) => `${n} ${n === 1 ? 'piece' : 'pieces'}`;
 
-async function locationOf(clientId: string, locationId: string) {
+async function locationOf(clientId: string, locationId: string, forWriting = false) {
   const location = await prisma.stockLocation.findFirst({
     where: { id: locationId, clientId },
-    select: { id: true, name: true }
+    select: { id: true, name: true, active: true }
   });
   if (!location) throw notFound('That location was not found.');
-  return location;
+  // Reading is always fine; working in a place the shop has closed is not.
+  if (forWriting && !location.active) {
+    throw badRequest(`${location.name} is switched off. Switch it on in Settings before filling its shelves.`);
+  }
+  return { id: location.id, name: location.name };
 }
 
 /** Spots that can hold stock: switched on, with nothing inside them. */
@@ -135,6 +139,7 @@ export const fillService = {
     if (!spot) throw notFound('That shelf was not found.');
     if (spot._count.children > 0) throw badRequest(`${spot.address} has shelves or boxes inside it. Stand at one of those.`);
     if (!spot.active) throw badRequest(`${spot.address} is switched off. Switch it on in Racks & shelves first.`);
+    await locationOf(clientId, spot.locationId, true);
 
     const held = spot.fillState;
     const claimAgeMin = held?.claimedAt ? (Date.now() - held.claimedAt.getTime()) / 60000 : Infinity;
@@ -188,7 +193,14 @@ export const fillService = {
     input: { lines: { variantId: string; quantity: number }[]; saveKey: string }
   ) {
     const already = await prisma.shelfFillSave.findUnique({ where: { clientId_saveKey: { clientId, saveKey: input.saveKey } } });
-    if (already) return { ...(already.result as object), repeat: true };
+    if (already) {
+      // The same key for a DIFFERENT shelf can only be a mistake in the phone. Answering with the
+      // first shelf's result would show "saved" for a shelf nothing was saved to.
+      if (already.spotId !== spotId) {
+        throw badRequest('That save belongs to another shelf. Open this shelf again and add the items once more.');
+      }
+      return { ...(already.result as object), repeat: true };
+    }
 
     const spot = await prisma.storageSpot.findFirst({
       where: { id: spotId, clientId },
@@ -197,6 +209,7 @@ export const fillService = {
     if (!spot) throw notFound('That shelf was not found.');
     if (spot._count.children > 0) throw badRequest(`${spot.address} has shelves or boxes inside it. Stand at one of those.`);
     if (!spot.active) throw badRequest(`${spot.address} is switched off. Switch it on in Racks & shelves first.`);
+    await locationOf(clientId, spot.locationId, true);
     if (input.lines.length > MAX_LINES) throw badRequest(`That is more than ${MAX_LINES} items on one shelf. Save what you have, then carry on.`);
 
     // Two lines for the same item are one line. Sorted by item id so two phones saving shelves that
@@ -261,7 +274,13 @@ export const fillService = {
       };
       await tx.shelfFillSave.create({ data: { clientId, spotId, saveKey: input.saveKey, result: answer as any } });
       return answer;
-    }, TX).catch((error: any) => {
+    }, TX).catch(async (error: any) => {
+      // The same save sent twice at the same moment: the second one loses the race to write the key.
+      // It is the same save, so it gets the same answer instead of a failure.
+      if (error?.code === 'P2002') {
+        const done = await prisma.shelfFillSave.findUnique({ where: { clientId_saveKey: { clientId, saveKey: input.saveKey } } });
+        if (done && done.spotId === spotId) return { ...(done.result as object), repeat: true };
+      }
       // Not an error to the person: the shelf simply is not saved yet, and the lines that need
       // changing say so beside themselves. The phone keeps everything they typed.
       if (error instanceof ShelfLinesProblem) {
@@ -306,6 +325,11 @@ export const fillService = {
     await locationOf(clientId, locationId);
     const status = await fillService.status(clientId, locationId);
     if (status.firstFill.state === 'FINISHED') return { ...status, alreadyFinished: true };
+    // Nothing was ever filled here, so there is no first fill to finish. Saying so beats recording
+    // one that started and ended in the same moment, which the console would then show as done.
+    if (status.firstFill.state === 'NOT_STARTED' && status.shelves.completed === 0) {
+      return { ...status, nothingToFinish: true, message: 'Nothing has been put on a shelf here yet, so there is nothing to finish.' };
+    }
     const left = status.shelves.notStarted + status.shelves.inProgress + status.shelves.skipped;
     if (left > 0 && !force) {
       return {
@@ -364,15 +388,32 @@ export const fillService = {
     return { reminded: stale.length, emails: sent };
   },
 
-  /** The owner opening it again, for a shop that reorganises everything. Recorded. */
+  /**
+   * The owner opening it again, for a shop that reorganises everything. Recorded.
+   *
+   * Every shelf goes back to "not started", because that is what walking round again means. Without
+   * that there would be no next shelf to stand at, nothing could ever finish it again, and the till
+   * would keep taking from Not shelved for ever.
+   */
   async reopen(clientId: string, userId: string | null, locationId: string) {
     await locationOf(clientId, locationId);
     const row = await prisma.locationFirstFill.findUnique({ where: { locationId } });
     if (!row || row.state !== 'FINISHED') throw badRequest('That location is not finished, so there is nothing to open again.');
-    await prisma.locationFirstFill.update({
-      where: { locationId },
-      data: { state: 'FILLING', reopenedAt: new Date(), reopenedBy: userId, finishedAt: null, finishedBy: null, endedByItself: null }
-    });
+    await prisma.$transaction([
+      prisma.spotFillState.updateMany({
+        where: { clientId, locationId },
+        data: { state: 'NOT_STARTED', claimedBy: null, claimedAt: null, finishedBy: null, finishedAt: null }
+      }),
+      prisma.locationFirstFill.update({
+        where: { locationId },
+        data: {
+          state: 'FILLING', reopenedAt: new Date(), reopenedBy: userId,
+          startedAt: new Date(), finishedAt: null, finishedBy: null, endedByItself: null,
+          // A new walk deserves its own reminder if it is forgotten too.
+          remindedAt: null
+        }
+      })
+    ]);
     return fillService.status(clientId, locationId);
   }
 };

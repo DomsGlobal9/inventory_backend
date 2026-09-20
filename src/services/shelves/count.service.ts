@@ -26,6 +26,7 @@ export const shelfCountService = {
       select: { id: true, address: true, locationId: true, active: true, _count: { select: { children: true } } }
     });
     if (!spot) throw notFound('That shelf was not found.');
+    if (!spot.active) throw badRequest(`${spot.address} is switched off. Switch it on in Racks & shelves first.`);
     if (spot._count.children > 0) throw badRequest(`${spot.address} has shelves inside it. Count those instead.`);
 
     if (!Array.isArray(body.counts)) throw badRequest('Send what was counted.');
@@ -52,7 +53,18 @@ export const shelfCountService = {
       where: { clientId, id: { in: lines.map(l => l.variantId) } },
       select: { id: true, sku: true, product: { select: { title: true } } }
     });
-    if (variants.length !== lines.length) throw notFound('One of the counted items was not found.');
+    if (variants.length !== lines.length) {
+      const known = new Set(variants.map(v => v.id));
+      const missing = lines.filter(l => !known.has(l.variantId));
+      // A stray row recorded on the shelf must not make the whole shelf uncountable: it is left out
+      // of the count and named. A line the COUNTER typed is still refused, because they chose it.
+      const typedMissing = missing.filter(l => seen.has(l.variantId));
+      if (typedMissing.length > 0) {
+        throw notFound(`${typedMissing.length === 1 ? 'One of the items counted was' : `${typedMissing.length} of the items counted were`} not found in this shop.`);
+      }
+      for (const stray of missing) lines.splice(lines.indexOf(stray), 1);
+      if (lines.length === 0) throw badRequest('Nothing on this shelf could be counted. Ask for a stock check on it.');
+    }
     const nameOf = new Map(variants.map(v => [v.id, `${v.product.title} (${v.sku})`]));
 
     const results = [];

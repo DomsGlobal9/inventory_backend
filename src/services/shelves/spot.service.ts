@@ -40,9 +40,20 @@ async function readSnapshot(tx: Prisma.TransactionClient, clientId: string, loca
     id: s.id, parentId: s.parentId, address: s.address, kind: s.kind, depth: s.depth,
     active: s.active, isShopFloor: s.isShopFloor, walkOrder: s.walkOrder, hasStock: holdsStock.has(s.id)
   }));
-  // Latest rename per old address, and only while that address is still free.
-  const renamedAway = [...new Map(renames.map(r => [r.oldAddress, r.newAddress])).entries()]
-    .map(([oldAddress, newAddress]) => ({ oldAddress, newAddress }));
+  // Latest rename per old address, followed to the end of the chain: a rack renamed R01 -> SILK and
+  // later SILK -> R02 must still be recognised as R01, or the setup would build a second R01 beside it.
+  const latest = new Map(renames.map(r => [r.oldAddress, r.newAddress]));
+  const renamedAway = [...latest.entries()].map(([oldAddress, firstHop]) => {
+    let to = firstHop;
+    const seen = new Set([oldAddress, to]);
+    while (latest.has(to)) {
+      const next = latest.get(to)!;
+      if (seen.has(next)) break; // A rename that loops back on itself; stop rather than spin.
+      seen.add(next);
+      to = next;
+    }
+    return { oldAddress, newAddress: to };
+  });
   const parent = parentId ? rows.find(r => r.id === parentId) ?? null : null;
   if (parentId && !parent) throw notFound('The rack or shelf to add these under was not found in this location.');
   return { spots: rows, renamedAway, parent };
@@ -275,6 +286,10 @@ export const spotService = {
             const parent = await tx.storageSpot.findUnique({ where: { id: spot.parentId }, select: { active: true, address: true } });
             if (parent && !parent.active) throw badRequest(`${parent.address} is switched off. Switch that on first.`);
           }
+          // Switching a rack off switched everything inside it off, so switching it on brings the
+          // same shelves back. Otherwise the shelves stay hidden and unusable, and the shop has to
+          // switch each one on by hand without being told that is what happened.
+          await tx.storageSpot.updateMany({ where: { id: { in: branch.map(b => b.id) } }, data: { active: true } });
           data.active = true;
         }
 
@@ -446,11 +461,16 @@ export const spotService = {
       addresses: list.slice(0, 50).map(p => p.address), more: Math.max(0, list.length - 50),
       areas: [...new Set(list.filter(p => p.depth === 1).map(p => `${p.address}: ${p.isShopFloor ? 'shop floor' : 'back room'}`))]
     };
+    // The same limit in the preview as in the save: a sheet that would make 8000 spots must say so
+    // while the person can still fix it, not after they press Import.
+    if (list.length > MAX_BULK) throw badRequest(`That makes ${list.length} spots. At most ${MAX_BULK} at once: split the file.`);
     if (errors.length > 0 || preview || list.length === 0) return { ...summary, saved: false };
-    if (list.length > MAX_BULK) throw badRequest(`That makes ${list.length} spots. At most ${MAX_BULK} at once.`);
 
     try {
       await prisma.$transaction(async tx => {
+        // The same lock "Describe your shop" takes, so an import and a setup cannot half-collide and
+        // leave the person with a refusal about an address they never typed.
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`shelves:${locationId}`}))::text`;
         const labels = await uniqueLabelCodes(tx, clientId, list.length);
         await tx.storageSpot.createMany({
           data: list.map((p, i) => ({
@@ -459,7 +479,11 @@ export const spotService = {
           }))
         });
       }, TX);
-    } catch (error) {
+    } catch (error: any) {
+      // Somebody else added some of these addresses between the preview and the save.
+      if (error?.code === 'P2002') {
+        throw conflict('Somebody added some of these addresses a moment ago. Press Import again to add the rest.');
+      }
       return explainUnique(error);
     }
     return { ...summary, saved: true };

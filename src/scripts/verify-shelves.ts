@@ -198,6 +198,29 @@ async function main() {
     const createdBetweenThem = both.reduce((t, r) => t + (r.data?.data?.create ?? 0), 0);
     check('two answers at the same moment: each spot exists exactly once', rows.length === wanted.length && new Set(rows.map(r => r.address)).size === wanted.length, rows.map(r => r.address).join());
     check('  ...and between them they claim to have created it exactly once (the second one says "nothing new")', createdBetweenThem === wanted.length && both.every(r => r.status === 201 || r.status === 200), both.map(r => `${r.status}:${r.data?.data?.create}/${r.data?.data?.alreadyThere}`).join(' | '));
+
+    // Answers a person, or a broken screen, could really send.
+    const odd: [string, any, number[]][] = [
+      ['no levels at all', { levels: [] }, [400]],
+      ['a rack count of 0', { levels: [{ kind: 'AREA', range: { codes: ['Z1'] } }, { kind: 'RACK', range: { from: 0, to: 0, prefix: 'R' } }] }, [201, 200]],
+      ['a backwards range', { levels: [{ kind: 'AREA', range: { codes: ['Z2'] } }, { kind: 'RACK', range: { from: 9, to: 2 } }] }, [400]],
+      ['the same code twice', { levels: [{ kind: 'AREA', range: { codes: ['Z3', 'Z3'] } }] }, [400]],
+      ['a code with a space in it', { levels: [{ kind: 'AREA', range: { codes: ['Z 4'] } }] }, [201, 200]],
+      ['a code of emoji', { levels: [{ kind: 'AREA', range: { codes: ['🧵'] } }] }, [400]],
+      ['a prefix that makes the code too long', { levels: [{ kind: 'AREA', range: { codes: ['Z5'] } }, { kind: 'RACK', range: { from: 1, to: 2, prefix: 'ABCDEFGHIJ', pad: 4 } }] }, [400]],
+      ['per-rack numbers as text', { levels: [{ kind: 'AREA', range: { codes: ['Z6'] } }, { kind: 'RACK', range: { from: 1, to: 2, prefix: 'R' } }, { kind: 'SHELF', range: { from: 1, to: 3 }, perParent: ['2', '2'] }] }, [400]],
+      ['a shop floor flag on a shelf level', { parentId: (await spot('FLOOR-C1')).id, isShopFloor: true, levels: [{ kind: 'SHELF', range: { from: 8, to: 9 } }] }, [400]],
+      ['a parent from another location', { parentId: (await spot('FLOOR-C1')).id, levels: [{ kind: 'SHELF', range: { from: 1, to: 2 } }] }, [404]]
+    ];
+    for (const [what, body, allowed] of odd) {
+      const where = /another location/.test(what) ? godown.id : store.id;
+      const r = await own.post(`/shelves/locations/${where}/spots/bulk`, body);
+      check(`describe: ${what} is handled (${allowed.join(' or ')}), in words`, allowed.includes(r.status) && (r.status < 400 || (typeof r.data?.message === 'string' && !leaks(r))), brief(r));
+    }
+    const emoji = await prisma.storageSpot.count({ where: { clientId: SHOP, address: { contains: '🧵' } } });
+    check('  ...and no spot with an emoji address was created', emoji === 0);
+    const spaced = await prisma.storageSpot.findFirst({ where: { clientId: SHOP, locationId: store.id, address: 'Z4' } });
+    check('  ...a code typed with a space becomes a proper address (Z 4 -> Z4)', !!spaced, String(spaced?.address));
   }
 
   // ── B. Put away, find, move ───────────────────────────────────────────────────────────────────

@@ -146,12 +146,16 @@ export function planShelfLegs(input: PlanInput): { legs: PlannedLeg[]; issues: P
       }
     }
     // Whatever Not shelved could not cover came from the back room, without anyone moving it first.
+    // A shop with NO shop-floor shelves at all (everything in a godown, sold at a counter) is not
+    // doing anything odd: every sale would otherwise raise an issue and an alert, for ever.
+    const hasFloorShelves = [...spots.values()].some(s => s.isShopFloor);
     let excess = total() - officialAfter;
     for (const shelf of inWalk(stocked().filter(s => !s.isShopFloor))) {
       if (excess <= 0) break;
       const n = Math.min(excess, shelf.quantity);
       take(shelf, n, 'AUTO');
       excess -= n;
+      if (!hasFloorShelves) continue;
       issues.push({
         kind: 'SOLD_FROM_BACK_ROOM', spotId: shelf.spotId, address: shelf.address, quantity: n,
         message: `${pieces(n)} of ${itemName} sold at the till came from ${shelf.address}, which is not on the shop floor. ` +

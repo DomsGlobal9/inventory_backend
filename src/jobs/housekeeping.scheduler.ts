@@ -37,6 +37,12 @@ export class HousekeepingScheduler {
   /** How long a handled WhatsApp event's id is remembered. */
   static readonly WHATSAPP_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
+  /**
+   * How long a shelf's "this save already happened" key is kept. It exists so a phone that lost the
+   * network can retry; a month later nobody is retrying, and the rows would grow for ever.
+   */
+  static readonly SHELF_FILL_SAVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
   /** Exposed so it can be run, and verified, without waiting for the clock. */
   static async runOnce(now = new Date()) {
     const cutoff = new Date(now.getTime() - this.UNUSED_QUOTE_RETENTION_MS);
@@ -52,13 +58,20 @@ export class HousekeepingScheduler {
     // Not throwing away, but the same "nobody else will ever come back for this" chore: a Shopify
     // privacy request that failed after its webhook was acknowledged. Shopify will not resend it.
     const privacyRequestsRetried = await shopifyPrivacyService.retryUnfinished();
+    const shelfSaveKeys = await prisma.shelfFillSave.deleteMany({
+      where: { createdAt: { lt: new Date(now.getTime() - this.SHELF_FILL_SAVE_RETENTION_MS) } }
+    });
 
     // A shop that started putting its stock onto shelves and never finished. It changes how the till
     // picks shelves, so after a week they are reminded once.
     const shelfFills = await fillService.remindForgotten(now)
       .catch(error => { console.error('[Housekeeping] shelf reminder failed:', (error as Error)?.message); return { reminded: 0, emails: 0 }; });
 
-    return { unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried, whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded };
+    return {
+      unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried,
+      whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded,
+      shelfSaveKeys: shelfSaveKeys.count
+    };
   }
 
   static start() {

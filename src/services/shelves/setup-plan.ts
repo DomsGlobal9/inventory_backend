@@ -188,7 +188,9 @@ export function planSetup(spec: SetupSpec, snapshot: Snapshot): SetupPlan {
     address: parent?.address ?? null,
     id: parent?.id ?? null,
     depth: parent?.depth ?? 0,
-    isShopFloor: parent ? parent.isShopFloor : spec.isShopFloor ?? true,
+    // The same default as everywhere else (create, CSV import): a place nobody describes is a back
+    // room, because a till sale taking from it first is the answer that surprises a shop.
+    isShopFloor: parent ? parent.isShopFloor : spec.isShopFloor ?? false,
     blocked: parent && !parent.active
       ? { outcome: 'conflict', reason: `${parent.address} is switched off. Switch it on first, or choose another place.` }
       : parent?.hasStock
