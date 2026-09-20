@@ -211,7 +211,7 @@ export function planSetup(spec: SetupSpec, snapshot: Snapshot): SetupPlan {
         if (holder.blocked) {
           const row: PlannedSpot = {
             level: i, address, code, kind: level.kind, depth, parentAddress: holder.address,
-            parentId: holder.id ?? null, isShopFloor: holder.isShopFloor, walkOrder: 0,
+            parentId: holder.id === null ? null : holder.id, isShopFloor: holder.isShopFloor, walkOrder: 0,
             outcome: 'skipped', reason: holder.blocked.reason
           };
           planned.push(row);
@@ -236,7 +236,7 @@ export function planSetup(spec: SetupSpec, snapshot: Snapshot): SetupPlan {
 
           planned.push({
             level: i, address, code, kind: found.kind, depth, parentAddress: holder.address,
-            parentId: holder.id ?? null, isShopFloor: found.isShopFloor, walkOrder: found.walkOrder,
+            parentId: holder.id === null ? null : holder.id, isShopFloor: found.isShopFloor, walkOrder: found.walkOrder,
             outcome: !found.active ? 'conflict' : 'already_exists',
             existingId: found.id,
             reason: !found.active ? blocked?.reason : undefined,
@@ -250,7 +250,7 @@ export function planSetup(spec: SetupSpec, snapshot: Snapshot): SetupPlan {
           const reason = `${address} was renamed to ${renamedTo}, which is still there. It is not made a second time.`;
           planned.push({
             level: i, address, code, kind: level.kind, depth, parentAddress: holder.address,
-            parentId: holder.id ?? null, isShopFloor: holder.isShopFloor, walkOrder: 0,
+            parentId: holder.id === null ? null : holder.id, isShopFloor: holder.isShopFloor, walkOrder: 0,
             outcome: 'conflict', reason
           });
           next.push({ address, depth, isShopFloor: holder.isShopFloor, blocked: { outcome: 'skipped', reason } });
@@ -259,7 +259,7 @@ export function planSetup(spec: SetupSpec, snapshot: Snapshot): SetupPlan {
 
         planned.push({
           level: i, address, code, kind: level.kind, depth, parentAddress: holder.address,
-          parentId: holder.id ?? null, isShopFloor: holder.isShopFloor,
+          parentId: holder.id === null ? null : holder.id, isShopFloor: holder.isShopFloor,
           walkOrder: walkAfter(holder.address ?? ''),
           outcome: 'created'
         });

@@ -142,6 +142,64 @@ async function main() {
   const roots = tree.data?.data?.spots ?? [];
   check('the tree comes back in walking order: FLOOR before STORE, C1 before C2 before C3, then R1, M1', roots.map((r: any) => r.address).join() === 'FLOOR,STORE' && roots[0].children.map((c: any) => c.address).join() === 'FLOOR-C1,FLOOR-C2,FLOOR-C3,FLOOR-R1,FLOOR-M1', JSON.stringify(roots.map((r: any) => [r.address, r.children.map((c: any) => c.address)])));
 
+  // ── A2. Describe your shop: one plan behind preview and save ──────────────────────
+  console.log('\nA2. DESCRIBE YOUR SHOP (perParent, conflicts, preview = save)');
+  {
+    const bulk = (body: any) => own.post(`/shelves/locations/${godown.id}/spots/bulk`, body);
+    const spec = (racks: number, perParent?: number[]) => ({
+      levels: [
+        { kind: 'AREA', range: { codes: ['BACK'] } },
+        { kind: 'RACK', range: { from: 1, to: racks, prefix: 'R', pad: 2 } },
+        { kind: 'SHELF', range: { from: 1, to: 6 }, perParent }
+      ],
+      isShopFloor: false
+    });
+
+    const pv = await bulk({ ...spec(5, [6, 4, 4, 5, 3]), preview: true });
+    check('each rack its own number of shelves: preview says 1 + 5 + 22 = 28, nothing saved', pv.status === 200 && pv.data.data.create === 28 && pv.data.data.saved === false && (await prisma.storageSpot.count({ where: { clientId: SHOP, locationId: godown.id, address: { startsWith: 'BACK' } } })) === 0, brief(pv));
+    const previewAddresses = pv.data.data.addresses;
+    const saved = await bulk(spec(5, [6, 4, 4, 5, 3]));
+    const reallyThere = (await prisma.storageSpot.findMany({ where: { clientId: SHOP, locationId: godown.id, address: { startsWith: 'BACK' } }, select: { address: true }, orderBy: { address: 'asc' } })).map(r => r.address);
+    check('  ...saved: 28 created, and the shop really holds 28', saved.data.data.create === 28 && reallyThere.length === 28, brief(saved));
+    check('  ...what preview showed is what save created (R3)', previewAddresses.every((a: string) => reallyThere.includes(a)) && saved.data.data.addresses.every((a: string) => previewAddresses.includes(a)), JSON.stringify({ previewAddresses: previewAddresses.length }));
+    check('  ...R02 has 4 shelves and R05 has 3', reallyThere.filter(a => a.startsWith('BACK-R02-')).length === 4 && reallyThere.filter(a => a.startsWith('BACK-R05-')).length === 3, reallyThere.filter(a => a.startsWith('BACK-R05-')).join());
+
+    const twice = await bulk(spec(5, [6, 4, 4, 5, 3]));
+    check('answering the same again creates nothing (R2)', twice.data.data.create === 0 && twice.data.data.alreadyThere === 28, brief(twice));
+    const fewer = await bulk(spec(3, [6, 4, 4]));
+    check('answering with fewer racks removes nothing', fewer.data.data.create === 0 && (await prisma.storageSpot.count({ where: { clientId: SHOP, locationId: godown.id, address: { startsWith: 'BACK' } } })) === 28, brief(fewer));
+
+    const badLength = await bulk(spec(5, [6, 4]));
+    check('a per-rack list of the wrong length: 400, saying how many are needed', badLength.status === 400 && /one number for each of the 5/.test(badLength.data.message), brief(badLength));
+    const badNumber = await bulk(spec(5, [6, 4, 4, 5, 99]));
+    check('more shelves than codes named: 400, in words', badNumber.status === 400 && /more than the 6 codes/.test(badNumber.data.message), brief(badNumber));
+
+    // P1: a rack the shop switched off. P3: it must not stop the other racks.
+    const r03 = await prisma.storageSpot.findFirstOrThrow({ where: { clientId: SHOP, locationId: godown.id, address: 'BACK-R03' } });
+    await prisma.storageSpot.updateMany({ where: { id: { in: [r03.id] } }, data: { active: false } });
+    const withOff = await bulk({ levels: [{ kind: 'AREA', range: { codes: ['BACK'] } }, { kind: 'RACK', range: { from: 1, to: 6, prefix: 'R', pad: 2 } }, { kind: 'SHELF', range: { from: 1, to: 6 }, perParent: [6, 4, 6, 5, 3, 2] }], isShopFloor: false });
+    check('a switched-off rack is left out and said so (P1)', withOff.data.data.conflictCount >= 1 && withOff.data.data.conflicts.some((c: any) => c.address === 'BACK-R03' && /switched off/.test(c.reason)), brief(withOff));
+    check('  ...no new shelf is made inside it: the 6 asked for are skipped, and it keeps the 4 it had', withOff.data.data.skipped === 6 && !withOff.data.data.addresses.some((a: string) => a.startsWith('BACK-R03-')) && (await prisma.storageSpot.count({ where: { clientId: SHOP, locationId: godown.id, address: { startsWith: 'BACK-R03-' } } })) === 4, brief(withOff));
+    check('  ...and the new rack R06 with its 2 shelves is still created (P3)', withOff.data.data.create === 3 && !!(await prisma.storageSpot.findFirst({ where: { clientId: SHOP, locationId: godown.id, address: 'BACK-R06-2' } })), brief(withOff));
+    check('  ...the switched-off rack is still switched off afterwards (nothing was changed)', (await prisma.storageSpot.findUniqueOrThrow({ where: { id: r03.id } })).active === false);
+    await prisma.storageSpot.updateMany({ where: { id: r03.id }, data: { active: true } });
+
+    // P2: a rack renamed since. The answer must not build a second one beside it.
+    const r05 = await prisma.storageSpot.findFirstOrThrow({ where: { clientId: SHOP, locationId: godown.id, address: 'BACK-R05' } });
+    const renamed = await own.patch(`/shelves/spots/${r05.id}`, { code: 'SILK' });
+    const afterRename = await bulk(spec(5, [6, 4, 4, 5, 3]));
+    check('a rack renamed to SILK is not made a second time (P2)', renamed.status === 200 && !afterRename.data.data.addresses.includes('BACK-R05') && afterRename.data.data.conflicts.some((c: any) => c.address === 'BACK-R05' && /renamed to BACK-SILK/.test(c.reason)), brief(afterRename));
+    check('  ...and no second R05 exists', (await prisma.storageSpot.count({ where: { clientId: SHOP, locationId: godown.id, address: 'BACK-R05' } })) === 0);
+
+    // Two people pressing Create at the same moment: the location lock puts them in a queue.
+    const both = await Promise.all([bulk(spec(8, [1, 1, 1, 1, 1, 1, 1, 1])), bulk(spec(8, [1, 1, 1, 1, 1, 1, 1, 1]))]);
+    const wanted = ['BACK-R07', 'BACK-R08', 'BACK-R07-1', 'BACK-R08-1'];
+    const rows = await prisma.storageSpot.findMany({ where: { clientId: SHOP, locationId: godown.id, address: { in: wanted } }, select: { address: true } });
+    const createdBetweenThem = both.reduce((t, r) => t + (r.data?.data?.create ?? 0), 0);
+    check('two answers at the same moment: each spot exists exactly once', rows.length === wanted.length && new Set(rows.map(r => r.address)).size === wanted.length, rows.map(r => r.address).join());
+    check('  ...and between them they claim to have created it exactly once (the second one says "nothing new")', createdBetweenThem === wanted.length && both.every(r => r.status === 201 || r.status === 200), both.map(r => `${r.status}:${r.data?.data?.create}/${r.data?.data?.alreadyThere}`).join(' | '));
+  }
+
   // ── B. Put away, find, move ───────────────────────────────────────────────────────────────────
   console.log('\nB. PUT AWAY, FIND, MOVE');
   const wh = warehouse.http;

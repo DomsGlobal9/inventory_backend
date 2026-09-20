@@ -40,7 +40,12 @@ export const bulkSpotsSchema = z.object({
   parentId: id('The parent').optional().nullable(),
   /** Only used when the first level is an area. */
   isShopFloor: z.boolean().optional(),
-  levels: z.array(z.object({ kind, range }).strict()).min(1, 'Add at least one level.').max(4, 'At most 4 levels.'),
+  levels: z.array(z.object({
+    kind,
+    range,
+    /** One number per parent above: rack 1 gets 6 shelves, rack 2 gets 4. Checked in setup-plan.ts. */
+    perParent: z.array(z.number().int('How many must be a whole number.').min(0).max(2000)).max(2000).optional()
+  }).strict()).min(1, 'Add at least one level.').max(4, 'At most 4 levels.'),
   preview: z.boolean().optional()
 }).strict();
 

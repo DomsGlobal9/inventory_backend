@@ -3,10 +3,11 @@ import { Prisma, StorageSpotKind } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest, conflict, notFound } from '../../utils/httpError';
 import {
-  compareWalk, expandCodes, joinAddress, labelPayload, MAX_BULK, MAX_DEPTH, newLabelCode,
+  compareWalk, joinAddress, labelPayload, MAX_BULK, MAX_DEPTH, newLabelCode,
   normaliseCode, parseLabel, walkKeys, normaliseAddress
 } from './addresses';
 import { BulkSpotsInput, CreateSpotInput, UpdateSpotInput } from './shelf.schema';
+import { planSetup, SetupSpec, Snapshot } from './setup-plan';
 
 /**
  * A location's rack tree: areas, racks and cupboards, shelves, boxes. Setting it up, changing it,
@@ -18,6 +19,34 @@ const TX = { maxWait: 20000, timeout: 60000 } as const;
 const pieces = (n: number) => `${n} ${n === 1 ? 'piece' : 'pieces'}`;
 
 type SpotRow = Prisma.StorageSpotGetPayload<{}>;
+
+/**
+ * The shop as the planner needs to see it: every spot of this location, which of them hold pieces,
+ * and the addresses that were renamed away (so an answer does not build a second R01 beside the rack
+ * the shop renamed to SILK). Read inside the same transaction as the save, after the lock.
+ */
+async function readSnapshot(tx: Prisma.TransactionClient, clientId: string, locationId: string, parentId: string | null): Promise<Snapshot> {
+  const [spots, stocked, renames] = await Promise.all([
+    tx.storageSpot.findMany({ where: { clientId, locationId } }),
+    tx.spotStock.findMany({ where: { clientId, locationId }, select: { spotId: true }, distinct: ['spotId'] }),
+    tx.storageSpotAddressChange.findMany({
+      where: { clientId, spot: { locationId } },
+      select: { oldAddress: true, newAddress: true, changedAt: true },
+      orderBy: { changedAt: 'asc' }
+    })
+  ]);
+  const holdsStock = new Set(stocked.map(s => s.spotId));
+  const rows = spots.map(s => ({
+    id: s.id, parentId: s.parentId, address: s.address, kind: s.kind, depth: s.depth,
+    active: s.active, isShopFloor: s.isShopFloor, walkOrder: s.walkOrder, hasStock: holdsStock.has(s.id)
+  }));
+  // Latest rename per old address, and only while that address is still free.
+  const renamedAway = [...new Map(renames.map(r => [r.oldAddress, r.newAddress])).entries()]
+    .map(([oldAddress, newAddress]) => ({ oldAddress, newAddress }));
+  const parent = parentId ? rows.find(r => r.id === parentId) ?? null : null;
+  if (parentId && !parent) throw notFound('The rack or shelf to add these under was not found in this location.');
+  return { spots: rows, renamedAway, parent };
+}
 
 async function locationOf(clientId: string, locationId: string) {
   const location = await prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { id: true, name: true, code: true, active: true, type: true } });
@@ -151,89 +180,64 @@ export const spotService = {
   },
 
   /**
-   * Quick create: "area STORE, racks R01-R20, shelves 1-5, boxes A-D" in one go. Spots that already
-   * exist at an address are reused as parents and not made twice. With `preview`, nothing is saved.
+   * Quick create and "Describe your shop": "area STORE, racks R01-R20, shelves 1-5, boxes A-D" in one
+   * go, each rack allowed its own number of shelves (`perParent`).
+   *
+   * Preview and save both call `planSetup` (setup-plan.ts), so what preview showed as new is exactly
+   * what save creates. Save takes the location's lock, reads the shop again, plans again, and answers
+   * with what really happened -- not with what the preview guessed. Nothing is ever renamed, re-kinded,
+   * moved, switched off or removed here.
    */
   async bulk(clientId: string, locationId: string, input: BulkSpotsInput, userId: string | null) {
     await locationOf(clientId, locationId);
-    const levels = input.levels.map((l, i) => ({ kind: l.kind as StorageSpotKind, codes: expandCodes(l.range as any, `Level ${i + 1}`) }));
+    const spec: SetupSpec = {
+      parentId: input.parentId ?? null,
+      isShopFloor: input.isShopFloor,
+      levels: input.levels.map(l => ({ kind: l.kind as StorageSpotKind, range: l.range as any, perParent: l.perParent }))
+    };
 
     const run = async (tx: Prisma.TransactionClient, save: boolean) => {
-      let parent: SpotRow | null = null;
-      if (input.parentId) {
-        if (save) await tx.$queryRaw`SELECT id FROM storage_spots WHERE id = ${input.parentId} FOR UPDATE`;
-        parent = await tx.storageSpot.findFirst({ where: { id: input.parentId, clientId, locationId } });
-        if (!parent) throw notFound('The rack or shelf to add these under was not found in this location.');
+      if (save) {
+        // One setup at a time per location: the shop and ScaleEzy's team can both press Create.
+        // ::text because the lock function itself returns nothing, which Prisma cannot read back.
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`shelves:${locationId}`}))::text`;
       }
-      if (parent && input.isShopFloor !== undefined) throw badRequest('Shop floor or back room is set on the area, and everything inside it follows.');
-      if ((parent?.depth ?? 0) + levels.length > MAX_DEPTH) {
-        throw badRequest(`That would be ${(parent?.depth ?? 0) + levels.length} levels deep. At most ${MAX_DEPTH}: area, rack, shelf, box.`);
-      }
-
-      let total = 1;
-      for (const l of levels) total *= l.codes.length;
-      if (total > MAX_BULK) throw badRequest(`That makes ${total} spots. At most ${MAX_BULK} at once: split it into smaller groups.`);
-
-      const existing = await tx.storageSpot.findMany({ where: { clientId, locationId } });
-      const byAddress = new Map(existing.map(s => [s.address, s]));
-      const stocked = new Set((await tx.spotStock.findMany({ where: { clientId, locationId }, select: { spotId: true }, distinct: ['spotId'] })).map(s => s.spotId));
-
-      type Planned = { id: string; parentId: string | null; kind: StorageSpotKind; code: string; address: string; depth: number; walkOrder: number; isShopFloor: boolean };
-      const toCreate: Planned[] = [];
-      const reused: string[] = [];
-      const nextWalk = new Map<string, number>();
-      const walkAfter = (parentId: string | null) => {
-        const key = parentId ?? '__root__';
-        if (!nextWalk.has(key)) {
-          const max = existing.filter(s => s.parentId === parentId).reduce((m, s) => Math.max(m, s.walkOrder), 0);
-          nextWalk.set(key, max);
-        }
-        const value = nextWalk.get(key)! + 10;
-        nextWalk.set(key, value);
-        return value;
+      const snapshot = await readSnapshot(tx, clientId, locationId, spec.parentId ?? null);
+      const plan = planSetup(spec, snapshot);
+      const toCreate = plan.spots.filter(p => p.outcome === 'created');
+      const answer = {
+        create: plan.counts.created,
+        alreadyThere: plan.counts.alreadyThere,
+        conflicts: plan.spots.filter(p => p.outcome === 'conflict').map(p => ({ address: p.address, reason: p.reason ?? '' })).slice(0, 50),
+        conflictCount: plan.counts.conflict,
+        skipped: plan.counts.skipped,
+        notes: plan.spots.filter(p => p.note).map(p => ({ address: p.address, note: p.note! })).slice(0, 50),
+        addresses: plan.addresses.slice(0, 50),
+        more: Math.max(0, plan.counts.created - 50)
       };
+      if (!save || toCreate.length === 0) return { ...answer, saved: false };
 
-      let frontier: { id: string | null; address: string | null; depth: number; isShopFloor: boolean; stocked: boolean }[] =
-        [{ id: parent?.id ?? null, address: parent?.address ?? null, depth: parent?.depth ?? 0, isShopFloor: parent?.isShopFloor ?? !!input.isShopFloor, stocked: parent ? stocked.has(parent.id) : false }];
-
-      for (const level of levels) {
-        const next: typeof frontier = [];
-        for (const holder of frontier) {
-          if (holder.stocked) throw conflict(`${holder.address} holds stock. Move it off first, then add shelves or boxes inside it.`);
-          for (const code of level.codes) {
-            const address = joinAddress(holder.address, code);
-            const found = byAddress.get(address);
-            if (found) {
-              if (found.parentId !== holder.id) throw conflict(`${address} already exists somewhere else in this location.`);
-              reused.push(address);
-              next.push({ id: found.id, address, depth: found.depth, isShopFloor: found.isShopFloor, stocked: stocked.has(found.id) });
-              continue;
-            }
-            const planned: Planned = {
-              id: crypto.randomUUID(), parentId: holder.id, kind: level.kind, code, address,
-              depth: holder.depth + 1, walkOrder: walkAfter(holder.id), isShopFloor: holder.isShopFloor
-            };
-            toCreate.push(planned);
-            byAddress.set(address, { ...planned } as any);
-            next.push({ id: planned.id, address, depth: planned.depth, isShopFloor: planned.isShopFloor, stocked: false });
-          }
-        }
-        frontier = next;
-      }
-
-      if (toCreate.length > MAX_BULK) throw badRequest(`That makes ${toCreate.length} spots. At most ${MAX_BULK} at once.`);
-      const preview = { create: toCreate.length, alreadyThere: reused.length, addresses: toCreate.slice(0, 50).map(p => p.address), more: Math.max(0, toCreate.length - 50) };
-      if (!save || toCreate.length === 0) return { ...preview, saved: false };
-
+      // Ids and label codes are made here, never while planning: planning must stay repeatable.
       const labels = await uniqueLabelCodes(tx, clientId, toCreate.length);
-      // Parents are always planned before their children, and createMany keeps the order.
+      const idByAddress = new Map(toCreate.map(p => [p.address, crypto.randomUUID()]));
       await tx.storageSpot.createMany({
+        // Parents are planned before their children, and createMany keeps the order.
         data: toCreate.map((p, i) => ({
-          id: p.id, clientId, locationId, parentId: p.parentId, kind: p.kind, code: p.code, address: p.address,
-          depth: p.depth, walkOrder: p.walkOrder, isShopFloor: p.isShopFloor, labelCode: labels[i], createdBy: userId
+          id: idByAddress.get(p.address)!,
+          clientId,
+          locationId,
+          parentId: p.parentId ?? (p.parentAddress ? idByAddress.get(p.parentAddress) ?? null : null),
+          kind: p.kind,
+          code: p.code,
+          address: p.address,
+          depth: p.depth,
+          walkOrder: p.walkOrder,
+          isShopFloor: p.isShopFloor,
+          labelCode: labels[i],
+          createdBy: userId
         }))
       });
-      return { ...preview, saved: true };
+      return { ...answer, saved: true };
     };
 
     if (input.preview) return run(prisma, false);
