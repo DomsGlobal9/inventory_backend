@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { shopifyInstallationService } from '../services/shopify-installation.service';
 import { shopifyPrivacyService } from '../services/shopify-privacy';
+import { fillService } from '../services/shelves/fill.service';
 
 /**
  * Throwing away what has stopped meaning anything.
@@ -52,7 +53,12 @@ export class HousekeepingScheduler {
     // privacy request that failed after its webhook was acknowledged. Shopify will not resend it.
     const privacyRequestsRetried = await shopifyPrivacyService.retryUnfinished();
 
-    return { unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried, whatsappEvents: whatsappEvents.count };
+    // A shop that started putting its stock onto shelves and never finished. It changes how the till
+    // picks shelves, so after a week they are reminded once.
+    const shelfFills = await fillService.remindForgotten(now)
+      .catch(error => { console.error('[Housekeeping] shelf reminder failed:', (error as Error)?.message); return { reminded: 0, emails: 0 }; });
+
+    return { unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried, whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded };
   }
 
   static start() {

@@ -19,6 +19,7 @@ import { AuthService } from '../services/auth.service';
 import { seedRolesForClient } from '../services/rbac-seed.service';
 import { platformAdminService } from '../services/platform-admin.service';
 import { inventoryMutationService } from '../services/inventory-mutation.service';
+import * as wa from '../services/shelves/fill.service';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 const STAMP = Date.now();
@@ -215,6 +216,34 @@ const blueBefore = await onShelf(s12.id, blue.id), greenBefore = await onShelf(s
     await inventoryMutationService.applyMovement({ clientId: SHOP, variantId: blue.id, locationId: store.id, movementType: 'OUT', reason: 'SALE', quantityDelta: -1 });
     check(`after finishing, a till sale takes from the shop-floor shelf again, not from the ${blueSpare} left off them`,
       await onShelf(s11.id, blue.id) === blueOn - 1, `${blueOn} -> ${await onShelf(s11.id, blue.id)}`);
+
+    // A first fill nobody finished. The reminder must reach the owner once, and only once.
+    {
+      const alerts: { to: string; subject: string; text: string }[] = [];
+      const realSend = (wa as any).fillMail.send;
+      (wa as any).fillMail.send = async (m: any) => { alerts.push(m); return { sent: true }; };
+      try {
+        await prisma.locationFirstFill.updateMany({
+          where: { locationId: store.id },
+          data: { state: 'FILLING', remindedAt: null, startedAt: new Date(Date.now() - 8 * 86400000) }
+        });
+        const first = await wa.fillService.remindForgotten();
+        check('a first fill left open for a week reminds the owner, once', first.reminded === 1 && alerts.length === 1 && /half filled/.test(alerts[0].subject), JSON.stringify({ first, alerts: alerts.length }));
+        check('  ...and the email says where it got to and what it means', /shelves are done/.test(alerts[0].text) && /takes a piece that is on no shelf first/.test(alerts[0].text), alerts[0]?.text?.slice(0, 160));
+        const again = await wa.fillService.remindForgotten();
+        check('  ...and never again for the same fill', again.reminded === 0 && alerts.length === 1);
+        await prisma.locationFirstFill.updateMany({ where: { locationId: store.id }, data: { startedAt: new Date() } });
+        const fresh = await wa.fillService.remindForgotten();
+        check('a first fill started today is left alone', fresh.reminded === 0 && alerts.length === 1);
+      } finally {
+        (wa as any).fillMail.send = realSend;
+        // Put it back as the earlier checks left it: finished by a person.
+        await prisma.locationFirstFill.updateMany({
+          where: { locationId: store.id },
+          data: { state: 'FINISHED', finishedAt: new Date(), endedByItself: false, remindedAt: null }
+        });
+      }
+    }
 
     const reopen = await own.post('/shelves/fill/reopen', { locationId: store.id });
     check('the owner can open it again afterwards, for a shop that reorganises', reopen.data.data.firstFill.state === 'FILLING', brief(reopen));

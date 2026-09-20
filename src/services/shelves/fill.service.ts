@@ -2,6 +2,7 @@ import { Prisma, SpotFillStateKind } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest, notFound } from '../../utils/httpError';
 import { inventoryMutationService } from '../inventory-mutation.service';
+import { sendMail } from '../../lib/mailer';
 import { compareWalk, walkKeys } from './addresses';
 
 /**
@@ -22,6 +23,11 @@ const TX = { maxWait: 20000, timeout: 60000 } as const;
 /** After this long, somebody else's "I'm at this shelf" stops being shown. It is never a lock. */
 const CLAIM_MINUTES = 30;
 const MAX_LINES = 200;
+/** How long a first fill may run before the shop is reminded, once, that it is still open. */
+const REMIND_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Swappable so a test never emails a real shop. */
+export const fillMail = { send: sendMail };
 
 const pieces = (n: number) => `${n} ${n === 1 ? 'piece' : 'pieces'}`;
 
@@ -311,6 +317,51 @@ export const fillService = {
     }
     await endFirstFill(prisma, locationId, clientId, userId, false);
     return { ...(await fillService.status(clientId, locationId)), finished: true };
+  },
+
+  /**
+   * A first fill nobody has finished after a week. It is easy to forget, and while it runs the till
+   * picks shelves differently (D1), so the shop is reminded once -- never twice, and never nagged
+   * into finishing something they are genuinely still doing.
+   *
+   * Run from housekeeping. `now` is passed in so it can be tested without waiting a week.
+   */
+  async remindForgotten(now = new Date()) {
+    const week = new Date(now.getTime() - REMIND_AFTER_MS);
+    const stale = await prisma.locationFirstFill.findMany({
+      where: { state: 'FILLING', remindedAt: null, startedAt: { lt: week } },
+      include: { location: { select: { name: true } } },
+      take: 50
+    });
+    let sent = 0;
+    for (const row of stale) {
+      // Marked first: a mail outage must not mean the same shop is reminded every six hours.
+      await prisma.locationFirstFill.update({ where: { id: row.id }, data: { remindedAt: now } });
+      const [shop, owners, status] = await Promise.all([
+        prisma.clientSettings.findUnique({ where: { clientId: row.clientId }, select: { businessName: true } }),
+        prisma.user.findMany({
+          where: { clientId: row.clientId, status: 'ACTIVE', roles: { some: { role: { name: 'SUPER_ADMIN' } } } },
+          select: { email: true, name: true }
+        }),
+        fillService.status(row.clientId, row.locationId).catch(() => null)
+      ]);
+      const left = status ? status.shelves.total - status.shelves.completed : 0;
+      const text =
+        `You started putting ${row.location.name}'s stock onto shelves on ${row.startedAt?.toDateString()}, and it is not finished yet.\n\n` +
+        (status ? `${status.shelves.completed} of ${status.shelves.total} shelves are done${left > 0 ? `, ${left} to go` : ''}, and ${status.piecesWaiting} ${status.piecesWaiting === 1 ? 'piece is' : 'pieces are'} still on no shelf.\n\n` : '') +
+        'Nothing is wrong. While it is unfinished, a till sale takes a piece that is on no shelf first, so shelves your staff have counted stay right. ' +
+        'When you are done, open Shelves > Fill shelves and press Finished.';
+      for (const owner of owners) {
+        const r = await fillMail.send({
+          to: owner.email,
+          subject: `${shop?.businessName || 'Your shop'}: the shelves at ${row.location.name} are half filled`,
+          text: `Hello ${owner.name},\n\n${text}\n\nScaleEzy`,
+          kind: 'shelves-first-fill-reminder'
+        }).catch(err => { console.error('[shelves] reminder not sent:', (err as Error)?.message); return null; });
+        if (r?.sent) sent++;
+      }
+    }
+    return { reminded: stale.length, emails: sent };
   },
 
   /** The owner opening it again, for a shop that reorganises everything. Recorded. */
