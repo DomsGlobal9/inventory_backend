@@ -90,6 +90,23 @@ export const resolveIssueSchema = z.object({
   note: z.string().trim().max(500, 'A note can be at most 500 characters.').optional().nullable()
 }).strict();
 
+
+/** One shelf's worth of the first fill, saved in one go. */
+export const fillShelfSchema = z.object({
+  lines: z.array(z.object({
+    variantId: id('The item'),
+    quantity: pieces
+  }).strict()).min(1, 'Add at least one item, or use Skip shelf.').max(200, 'That is a lot for one shelf. Save these, then carry on.'),
+  /** Made on the phone, once per shelf visit: a retry after the network drops is not a second save. */
+  saveKey: z.string().min(8, 'The save key is missing.').max(64)
+}).strict();
+
+export const finishFillSchema = z.object({
+  locationId: id('The location'),
+  /** The second press, after the screen has named the shelves left over. */
+  force: z.boolean().optional()
+}).strict();
+
 export type CreateSpotInput = z.infer<typeof createSpotSchema>;
 export type BulkSpotsInput = z.infer<typeof bulkSpotsSchema>;
 export type UpdateSpotInput = z.infer<typeof updateSpotSchema>;

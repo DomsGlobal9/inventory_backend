@@ -262,6 +262,7 @@ model StockLocation {
   payments         SalesOrderPayment[]
   /// Its racks, shelves and boxes.
   storageSpots     StorageSpot[]
+  firstFill        LocationFirstFill?
   spotStocks       SpotStock[]
   shelfIssues      ShelfIssue[]
 
@@ -344,12 +345,94 @@ model StorageSpot {
   legs           InventoryTransactionSpot[]
   issues         ShelfIssue[]
   addressChanges StorageSpotAddressChange[]
+  fillState      SpotFillState?
 
   @@unique([locationId, address])
   @@unique([clientId, labelCode])
   @@index([clientId, locationId])
   @@index([parentId])
   @@map("storage_spots")
+}
+
+/// How far the FIRST FILL has got on one shelf. Onboarding, not stock: a shelf can be COMPLETED and
+/// hold nothing, and a quantity can never say whether a person has been there. No row means NOT_STARTED.
+model SpotFillState {
+  id         String @id @default(uuid())
+  clientId   String @map("client_id")
+  locationId String @map("location_id")
+  spotId     String @unique @map("spot_id")
+  spot       StorageSpot @relation(fields: [spotId], references: [id], onDelete: Cascade)
+
+  state SpotFillStateKind @default(NOT_STARTED)
+
+  /// Who is on this shelf now: a courtesy for the next phone, never a lock.
+  claimedBy  String?   @map("claimed_by")
+  claimedAt  DateTime? @map("claimed_at")
+  finishedBy String?   @map("finished_by")
+  finishedAt DateTime? @map("finished_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId, locationId, state])
+  @@map("spot_fill_states")
+}
+
+enum SpotFillStateKind {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+}
+
+/// The first fill of one location. While it is FILLING, a till sale takes from Not shelved first, so
+/// shelves somebody has just counted stay right (decision D1). It ends by itself only when every
+/// shelf is COMPLETED and at least one was filled, or when a person with shelf:manage presses Finished.
+model LocationFirstFill {
+  id         String @id @default(uuid())
+  clientId   String @map("client_id")
+  locationId String @unique @map("location_id")
+  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  state FirstFillState @default(NOT_STARTED)
+
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  finishedBy String?   @map("finished_by")
+  /// True when the last shelf finished it, false when a person pressed Finished.
+  endedByItself Boolean? @map("ended_by_itself")
+  reopenedAt DateTime? @map("reopened_at")
+  reopenedBy String?   @map("reopened_by")
+  /// Set when the day-7 reminder has gone, so it is sent once.
+  remindedAt DateTime? @map("reminded_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId, state])
+  @@map("location_first_fills")
+}
+
+enum FirstFillState {
+  NOT_STARTED
+  FILLING
+  FINISHED
+}
+
+/// One shelf's save during the first fill, remembered by the key the phone made. A retry after the
+/// network dropped gets the same answer back instead of putting the pieces away a second time.
+model ShelfFillSave {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+  spotId   String @map("spot_id")
+  /// Made on the phone, once per shelf visit.
+  saveKey  String @map("save_key")
+  result   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([clientId, saveKey])
+  @@index([spotId])
+  @@map("shelf_fill_saves")
 }
 
 /// Pieces of one variant on one spot. A row reaching 0 is deleted.

@@ -67,7 +67,16 @@ export async function applyShelfLegs(tx: Prisma.TransactionClient, input: ShelfL
     return { spotId: r.spotId, address: spot.address, isShopFloor: spot.isShopFloor, walkKey: spot.walkKey, quantity: r.quantity };
   });
 
+  // A till sale during a location's first fill takes from Not shelved first (D1). One indexed lookup,
+  // and only for sales that reach this far -- a shop with no shelves for this item has already left.
+  let firstFill = false;
+  if (input.reason === 'SALE') {
+    const row = await tx.locationFirstFill.findUnique({ where: { locationId: input.locationId }, select: { state: true } });
+    firstFill = row?.state === 'FILLING';
+  }
+
   const { legs, issues } = planShelfLegs({
+    firstFill,
     reason: input.reason,
     delta: input.delta,
     officialBefore: input.officialBefore,

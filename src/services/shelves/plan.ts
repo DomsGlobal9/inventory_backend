@@ -47,6 +47,13 @@ export type PlanInput = {
   scanned: { spotId: string; quantity: number }[];
   /** Spots the scanned legs may refer to. */
   spots: Map<string, KnownSpot>;
+  /**
+   * This location is in its FIRST FILL: staff are walking the shelves recording what is on them
+   * (decision D1). A till sale then takes from Not shelved first, so a shelf counted a minute ago is
+   * not quietly reduced by a sale of a piece that was still in the unshelved pile. It goes back to
+   * the normal rule -- shop-floor shelves first -- the moment the first fill ends.
+   */
+  firstFill?: boolean;
   /** For the issue wording. */
   itemName: string;
 };
@@ -127,12 +134,16 @@ export function planShelfLegs(input: PlanInput): { legs: PlannedLeg[]; issues: P
 
   if (reason === 'SALE') {
     // Decision 1: a till sale comes off shop-floor shelves in walking order, then Not shelved.
-    let remaining = -delta - Math.abs(namedTotal);
-    for (const shelf of inWalk(stocked().filter(s => s.isShopFloor))) {
-      if (remaining === 0) break;
-      const n = Math.min(remaining, shelf.quantity);
-      take(shelf, n, 'AUTO');
-      remaining -= n;
+    // During a first fill (D1) that is turned around: Not shelved is used first, and a shelf is only
+    // touched once Not shelved has run out.
+    if (!input.firstFill) {
+      let remaining = -delta - Math.abs(namedTotal);
+      for (const shelf of inWalk(stocked().filter(s => s.isShopFloor))) {
+        if (remaining === 0) break;
+        const n = Math.min(remaining, shelf.quantity);
+        take(shelf, n, 'AUTO');
+        remaining -= n;
+      }
     }
     // Whatever Not shelved could not cover came from the back room, without anyone moving it first.
     let excess = total() - officialAfter;
@@ -145,6 +156,19 @@ export function planShelfLegs(input: PlanInput): { legs: PlannedLeg[]; issues: P
         kind: 'SOLD_FROM_BACK_ROOM', spotId: shelf.spotId, address: shelf.address, quantity: n,
         message: `${pieces(n)} of ${itemName} sold at the till came from ${shelf.address}, which is not on the shop floor. ` +
           'Nothing was moved to the floor first, so check that shelf.'
+      });
+    }
+    // Only during a first fill: Not shelved ran out, so the piece sold did come off a floor shelf.
+    // The rule must never leave more on the shelves than the location holds.
+    for (const shelf of inWalk(stocked().filter(s => s.isShopFloor))) {
+      if (excess <= 0) break;
+      const n = Math.min(excess, shelf.quantity);
+      take(shelf, n, 'AUTO');
+      excess -= n;
+      issues.push({
+        kind: 'AUTO_TAKEN_FROM_SHELF', spotId: shelf.spotId, address: shelf.address, quantity: n,
+        message: `${pieces(n)} of ${itemName} sold at the till while the shelves were being filled. Nothing was left ` +
+          `off the shelves, so ${n === 1 ? 'it was' : 'they were'} taken off ${shelf.address}. Check that shelf.`
       });
     }
     return { legs, issues };

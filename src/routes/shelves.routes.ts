@@ -7,8 +7,10 @@ import { spotService, shelfStockService, shelfIssueService } from '../services/s
 import { pickService } from '../services/shelves/pick.service';
 import { shelfCountService } from '../services/shelves/count.service';
 import {
-  bulkSpotsSchema, createSpotSchema, moveAllSchema, moveSchema, putawaySchema, resolveIssueSchema, updateSpotSchema
+  bulkSpotsSchema, createSpotSchema, fillShelfSchema, finishFillSchema, moveAllSchema, moveSchema,
+  putawaySchema, resolveIssueSchema, updateSpotSchema
 } from '../services/shelves/shelf.schema';
+import { fillService } from '../services/shelves/fill.service';
 
 /**
  * Racks and shelves.
@@ -252,6 +254,53 @@ router.post('/issues/:issueId/resolve', requirePermission('shelf:manage'), async
     res.locals.auditEntityId = issue.id;
     res.json({ success: true, data: issue });
   } catch (error) { return fail(res, error, 'Could not resolve that.'); }
+});
+
+// -- The first fill: walking the shelves once and recording what is on them --------------------
+router.get('/locations/:locationId/fill', requirePermission('shelf:view'), async (req, res) => {
+  try {
+    res.json({ success: true, data: await fillService.status(clientOf(req), param(req, 'locationId')) });
+  } catch (error) { return fail(res, error, 'Could not load how far the shelves have got.'); }
+});
+
+router.post('/spots/:spotId/fill/open', requirePermission('shelf:putaway'), async (req, res) => {
+  try {
+    const name = ((req as any).user?.name as string | undefined) ?? null;
+    res.json({ success: true, data: await fillService.openShelf(clientOf(req), userOf(req), param(req, 'spotId'), name) });
+  } catch (error) { return fail(res, error, 'Could not open that shelf.'); }
+});
+
+router.post('/spots/:spotId/fill', requirePermission('shelf:putaway'), async (req, res) => {
+  const body = parse(fillShelfSchema, req.body, res);
+  if (!body) return;
+  try {
+    const result = await fillService.saveShelf(clientOf(req), userOf(req), param(req, 'spotId'), body);
+    res.locals.auditAction = 'SHELF_FILLED';
+    res.locals.auditEntityId = param(req, 'spotId');
+    res.json({ success: true, data: result });
+  } catch (error) { return fail(res, error, 'Could not save that shelf.'); }
+});
+
+router.post('/spots/:spotId/fill/skip', requirePermission('shelf:putaway'), async (req, res) => {
+  try {
+    res.json({ success: true, data: await fillService.skipShelf(clientOf(req), userOf(req), param(req, 'spotId')) });
+  } catch (error) { return fail(res, error, 'Could not skip that shelf.'); }
+});
+
+router.post('/fill/finish', requirePermission('shelf:manage'), async (req, res) => {
+  const body = parse(finishFillSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json({ success: true, data: await fillService.finish(clientOf(req), userOf(req), body.locationId, !!body.force) });
+  } catch (error) { return fail(res, error, 'Could not finish the first fill.'); }
+});
+
+router.post('/fill/reopen', requirePermission('shelf:manage'), async (req, res) => {
+  const body = parse(finishFillSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json({ success: true, data: await fillService.reopen(clientOf(req), userOf(req), body.locationId) });
+  } catch (error) { return fail(res, error, 'Could not open the first fill again.'); }
 });
 
 export default router;

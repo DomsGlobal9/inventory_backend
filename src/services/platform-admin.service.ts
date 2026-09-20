@@ -533,6 +533,9 @@ export class PlatformAdminService {
       `DELETE FROM inventory_transfers WHERE client_id = $1`,
       // Racks and shelves. Issues and legs point at spots and transactions; stock on a shelf holds its
       // spot, variant and location (restrict); the tree holds its parent (restrict), so deepest first.
+      `DELETE FROM shelf_fill_saves WHERE client_id = $1`,
+      `DELETE FROM spot_fill_states WHERE client_id = $1`,
+      `DELETE FROM location_first_fills WHERE client_id = $1`,
       `DELETE FROM shelf_issues WHERE client_id = $1`,
       `DELETE FROM inventory_transaction_spots WHERE client_id = $1`,
       `DELETE FROM spot_stocks WHERE client_id = $1`,
