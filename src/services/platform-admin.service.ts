@@ -16,6 +16,45 @@ function generateTempPassword() {
   return crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe -- same scheme as team.service.ts
 }
 
+/**
+ * How far a shop has got with racks and shelves, in three counts and a state, so the console can
+ * see who is stuck halfway instead of guessing. Three small grouped queries, whatever the shop's size.
+ *
+ * "Shelves done" is the onboarding measure (somebody stood there); "% shelved" is the stock measure
+ * right now, and it falls again whenever new stock arrives. They are never rolled into one number.
+ */
+async function shelvesProgressFor(clientId: string) {
+  const [spots, states, [totals], fills] = await Promise.all([
+    prisma.storageSpot.count({ where: { clientId, active: true } }),
+    prisma.spotFillState.groupBy({ by: ['state'], where: { clientId }, _count: { _all: true } }),
+    prisma.$queryRaw<{ shelved: bigint | null; held: bigint | null }[]>`
+      SELECT
+        (SELECT COALESCE(SUM(quantity), 0) FROM spot_stocks WHERE client_id = ${clientId}) AS shelved,
+        (SELECT COALESCE(SUM(quantity), 0) FROM inventory_stocks WHERE client_id = ${clientId} AND quantity > 0) AS held`,
+    prisma.locationFirstFill.groupBy({ by: ['state'], where: { clientId }, _count: { _all: true } })
+  ]);
+  const completed = states.find(s => s.state === 'COMPLETED')?._count._all ?? 0;
+  const skipped = states.find(s => s.state === 'SKIPPED')?._count._all ?? 0;
+  const shelved = Number(totals?.shelved ?? 0);
+  const held = Number(totals?.held ?? 0);
+  return {
+    spots,
+    shelvesDone: completed,
+    shelvesSkipped: skipped,
+    piecesShelved: shelved,
+    piecesHeld: held,
+    percentShelved: held > 0 ? Math.round((shelved / held) * 100) : 0,
+    // A shop is only "done" when it has finished a first fill somewhere and is not still filling.
+    state: spots === 0
+      ? 'NOT_STARTED'
+      : fills.some(f => f.state === 'FILLING')
+        ? 'FILLING'
+        : fills.some(f => f.state === 'FINISHED')
+          ? 'DONE'
+          : completed === 0 ? 'RACKS_ONLY' : 'FILLING'
+  };
+}
+
 export class PlatformAdminService {
   // There is no local `Client` registry (see SUPER_ADMIN_PLAN.md) -- every clientId this
   // console can ever show is derived from the `User` table, so a client with zero users
@@ -148,6 +187,8 @@ export class PlatformAdminService {
       })
     ]);
 
+    const shelves = await shelvesProgressFor(clientId);
+
     // Onboarding is a heuristic, not a stored concept -- there's no onboarding-flow
     // model anywhere in this schema. "Has ever created a product" is the simplest
     // honest signal available locally.
@@ -168,6 +209,10 @@ export class PlatformAdminService {
       inventoryValue,
       valuationCaveat,
       onboardingStatus,
+      // Where this shop has got to with racks and shelves, so a quiet shop can be helped rather
+      // than guessed about. Two numbers, because they answer different questions: how far round the
+      // shop somebody has been, and how much of the stock is on a shelf right now.
+      shelves,
       adminName: adminUser?.name || null,
       adminEmail: adminUser?.email || null
     };
