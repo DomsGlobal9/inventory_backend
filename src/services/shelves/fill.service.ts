@@ -249,7 +249,7 @@ export const fillService = {
             free,
             message: free <= 0
               ? `ScaleEzy has none of these left to put on a shelf here. Put ${line.quantity === 1 ? 'it' : 'them'} aside for a stock count.`
-              : `Only ${pieces(free)} can go on a shelf here now. Somebody may have just sold one.`
+              : `Only ${pieces(free)} of this ${free === 1 ? "is" : "are"} not on a shelf yet. Check how many are really here.`
           });
         }
       }
