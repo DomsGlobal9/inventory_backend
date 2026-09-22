@@ -5,8 +5,9 @@
  * on the customer's page -- and never anyone who replied STOP. Who recorded the yes, and when, is
  * kept: under the DPDP Act the shop must be able to show that the customer agreed.
  *
- * STOP is the customer's own word and outranks everything here. Only the customer can undo it (by
- * messaging the shop), so no screen in this app turns it back on.
+ * STOP is the customer's own word and outranks everything here. The WhatsApp Service keeps it for
+ * ever and sends nothing more from the shop's number to them -- not even a bill -- so no screen in
+ * this app turns it back on.
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
@@ -35,7 +36,7 @@ export async function setOffersConsent(actor: Actor, customerId: string, agreed:
   });
   if (!c) throw notFound('Customer not found');
   if (agreed && c.whatsappStoppedAt) {
-    throw badRequest('This customer replied STOP on WhatsApp. Only they can start offers again, by sending the shop a message.');
+    throw badRequest('This customer replied STOP on WhatsApp, so nothing can be sent to them from your number any more.');
   }
   if (agreed && !c.phone) throw badRequest('Add a phone number for this customer first.');
   await prisma.customer.update({

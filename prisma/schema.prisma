@@ -1109,7 +1109,7 @@ model Customer {
   whatsappOffers    Boolean   @default(false) @map("whatsapp_offers")
   whatsappOffersAt  DateTime? @map("whatsapp_offers_at")
   whatsappOffersBy  String?   @map("whatsapp_offers_by")
-  /// Replied STOP to the shop's number. Never messaged again from it; only the customer undoes this.
+  /// Replied STOP to the shop's number. Never messaged again from it (the WhatsApp Service keeps STOP for ever).
   whatsappStoppedAt DateTime? @map("whatsapp_stopped_at")
 
   /// "MM-DD", no year: a birthday wish needs the day, not the age.
