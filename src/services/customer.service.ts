@@ -1,3 +1,4 @@
+import { monthDay } from './loyalty/rules';
 import { normaliseTags } from './offers/rules';
 import { literal } from '../utils/likeText';
 import { prisma } from '../lib/prisma';
@@ -181,6 +182,8 @@ export class CustomerService {
           // Groups sent with a new customer are kept. Only the update path wrote them, so a customer
           // created as a VIP came back in no group and no VIP offer ever reached them.
           tags: normaliseTags(data.tags),
+          birthday: monthDay(data.birthday),
+          anniversary: monthDay(data.anniversary),
         }
       });
     }, {
@@ -209,6 +212,8 @@ export class CustomerService {
       where: { clientId, phone, deletedAt: null },
       select: {
         id: true, customerCode: true, name: true, phone: true, email: true, tags: true, status: true,
+        // The counter shows whether they agreed to offers (so the tick is not asked twice) and their points.
+        whatsappOffers: true, whatsappStoppedAt: true, loyaltyPoints: true,
         salesOrders: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true, orderNumber: true } }
       }
     });
@@ -325,6 +330,8 @@ export class CustomerService {
         shippingAddress: data.shippingAddress,
         status: data.status,
         ...(data.tags !== undefined ? { tags: normaliseTags(data.tags) } : {}),
+        ...(data.birthday !== undefined ? { birthday: monthDay(data.birthday) } : {}),
+        ...(data.anniversary !== undefined ? { anniversary: monthDay(data.anniversary) } : {}),
     };
   }
 }

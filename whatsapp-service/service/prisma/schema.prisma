@@ -50,6 +50,10 @@ enum MessageKind {
   C5
   C6
   C7
+  /// A shop's WhatsApp campaign to customers who agreed (Inventory feeds these a few at a time).
+  C8
+  /// A shop's loyalty notice: points earned after a sale.
+  C9
   TEST
 }
 

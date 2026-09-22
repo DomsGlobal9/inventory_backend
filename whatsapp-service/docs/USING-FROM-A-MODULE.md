@@ -67,6 +67,8 @@ Add new kinds to `service/src/http/schemas.ts` (and this table) before using the
 | C5 | Return / refund note PDF | Inventory | **built** |
 | C6 | Payment reminder | **CRM** or **Billing** | planned |
 | C7 | Single-use offer code | **Marketing** | planned |
+| C8 | Campaign message to customers who agreed to offers (fed a few at a time, 10 am-8 pm, at most half the number's daily cap) | Inventory | **built** |
+| C9 | Loyalty notice: points earned after a sale (owner switches on) | Inventory | **built** |
 | TEST | "Your WhatsApp is linked" test | any | built |
 
 ## Building a WhatsApp feature: step by step

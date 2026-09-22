@@ -1,3 +1,4 @@
+import { CampaignsScheduler } from './jobs/campaigns.scheduler';
 import express from 'express'; // Restart trigger 2
 import cors from 'cors';
 import { env } from './config/env';
@@ -193,6 +194,7 @@ app.listen(PORT, () => {
     StorefrontDispatcherService.start();
     HousekeepingScheduler.start();
     WhatsAppDayBookScheduler.start();
+    CampaignsScheduler.start();
     OfferMirrorWorker.start();
   }
 });

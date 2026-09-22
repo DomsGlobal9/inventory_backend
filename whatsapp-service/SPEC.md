@@ -28,7 +28,7 @@ Node 20 + TypeScript + Express, Prisma + Postgres (its own database `whatsapp`, 
 ## Data (Prisma)
 - `Account`: id, kind `SCALEEZY|CLIENT`, clientId (null for SCALEEZY; unique for CLIENT), instanceName (unique), phone (digits, set when linked), displayName, status `NOT_LINKED|LINKING|CONNECTED|DISCONNECTED|LOGGED_OUT`, linkedAt, lastSeenAt, statusChangedAt, dailyCap, createdAt.
 - `ModuleClient`: id, name (`inventory`…), keyHash (sha256 of the key; key shown once when created by a CLI script), webhookUrl, webhookSecretEncrypted (AES-256-GCM, key from env), canSendAsScaleEzy (bool), active.
-- `Message` (outbox): id, accountId, moduleId, toDigits, kind (`S1..S8`, `C1..C7`, `TEST`), reference (e.g. PO id), idempotencyKey (unique per module), text, document (bytea, nullable) + fileName + mimeType, status `QUEUED|SENDING|SENT|DELIVERED|READ|FAILED|EXPIRED`, failReason (plain English), tries, engineMessageId (unique, nullable), queuedAt, sentAt, deliveredAt, readAt, failedAt. Document bytes are wiped once SENT/FAILED/EXPIRED.
+- `Message` (outbox): id, accountId, moduleId, toDigits, kind (`S1..S8`, `C1..C9`, `TEST`), reference (e.g. PO id), idempotencyKey (unique per module), text, document (bytea, nullable) + fileName + mimeType, status `QUEUED|SENDING|SENT|DELIVERED|READ|FAILED|EXPIRED`, failReason (plain English), tries, engineMessageId (unique, nullable), queuedAt, sentAt, deliveredAt, readAt, failedAt. Document bytes are wiped once SENT/FAILED/EXPIRED.
 - `OptOut`: accountId + toDigits unique (STOP replies).
 - `CanaryRun`: at, messageId, outcome, detail.
 

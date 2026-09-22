@@ -35,14 +35,16 @@ import { purchaseOrderService } from '../purchase-order.service';
 import { COUNTER_SOURCE } from '../counter-sale/counter-sale.service';
 import { renderDayBookPdf } from './daybook-pdf';
 import { whatsappClient, whatsappConfigured, WhatsAppServiceError, type MessageStatus } from './client';
+import { markStopped } from '../campaigns/consent';
 
 export type Actor = { id: string; clientId: string; name?: string | null; permissions?: string[]; roles?: string[] };
 export type SendKind = 'PURCHASE_ORDER' | 'GOODS_RECEIPT' | 'BILL' | 'RETURN_NOTE';
 export const SEND_KINDS: readonly SendKind[] = ['PURCHASE_ORDER', 'GOODS_RECEIPT', 'BILL', 'RETURN_NOTE'];
 
 /** The service's own message kinds (PLAN-whatsapp.md section 4). */
-const SERVICE_KIND: Record<SendKind | 'DAY_BOOK' | 'TEST' | 'DISCONNECTED', string> = {
-  PURCHASE_ORDER: 'C1', BILL: 'C2', GOODS_RECEIPT: 'C3', RETURN_NOTE: 'C5', DAY_BOOK: 'S6', DISCONNECTED: 'S4', TEST: 'TEST'
+const SERVICE_KIND: Record<SendKind | 'DAY_BOOK' | 'TEST' | 'DISCONNECTED' | 'CAMPAIGN' | 'LOYALTY', string> = {
+  PURCHASE_ORDER: 'C1', BILL: 'C2', GOODS_RECEIPT: 'C3', RETURN_NOTE: 'C5', DAY_BOOK: 'S6', DISCONNECTED: 'S4', TEST: 'TEST',
+  CAMPAIGN: 'C8', LOYALTY: 'C9'
 };
 
 /** What allowed the same document on paper allows it on WhatsApp. */
@@ -267,6 +269,36 @@ export async function sendDocument(actor: Actor, input: { kind: unknown; id: unk
   });
   const row = await record(actor.clientId, kind, id, target.to, actor.id, sent);
   return { ...publicMessage(row), recipientName: target.recipientName };
+}
+
+/**
+ * A text from the shop's own number, for the campaigns module: a campaign message, a birthday wish,
+ * a points notice. The caller has already decided who may receive it (agreed to offers, not STOP);
+ * the WhatsApp Service still refuses anyone who replied STOP, whatever this app thinks.
+ *
+ * The idempotency key is the caller's: one campaign and one customer is one message, however many
+ * times this is retried.
+ */
+export async function sendShopText(input: {
+  clientId: string; to: string; text: string; kind: 'CAMPAIGN' | 'LOYALTY'; referenceId: string | null;
+  idempotencyKey: string; sentBy: string | null;
+}) {
+  const to = whatsappDigits(input.to, 'This customer');
+  const sent = await whatsappClient.send({
+    from: { clientId: input.clientId },
+    to,
+    text: input.text,
+    kind: SERVICE_KIND[input.kind],
+    reference: input.referenceId ? `${input.kind}:${input.referenceId}` : input.kind,
+    idempotencyKey: input.idempotencyKey
+  });
+  return record(input.clientId, input.kind, input.referenceId, to, input.sentBy, sent);
+}
+
+/** The shop's linked number, in full, for a campaign's "send me a test" -- or null if not linked. */
+export async function shopNumber(clientId: string): Promise<{ digits: string | null; status: string; linkedAt: string | null }> {
+  const a = await whatsappClient.account(clientId);
+  return { digits: (a.phone ?? '').replace(/\D/g, '') || null, status: a.status, linkedAt: a.linkedAt };
 }
 
 /** The latest message for one document: what its Send button shows. */
@@ -545,7 +577,13 @@ export async function handleEvent(event: { id?: unknown; type?: unknown; data?: 
     return { handled: true };
   }
 
-  if (event.type === 'account.disconnected' && d.kind === 'CLIENT' && typeof d.clientId === 'string') {
+  // A customer replied STOP to a shop's number. The service already never sends to them again; the
+  // shop's own records say so too, so campaigns stop choosing them and the customer page shows why.
+  if (event.type === 'contact.opted_out' && d.kind === 'CLIENT' && typeof d.clientId === 'string' && typeof d.contact === 'string') {
+    await markStopped(d.clientId, d.contact);
+    return { handled: true };
+  }
+    if (event.type === 'account.disconnected' && d.kind === 'CLIENT' && typeof d.clientId === 'string') {
     await tellOwnerDisconnected(d.clientId);
     return { handled: true };
   }

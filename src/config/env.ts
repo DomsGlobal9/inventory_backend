@@ -181,6 +181,8 @@ const envSchema = z.object({
   // The nightly Day Book job sends real messages to real owners. A development machine usually
   // points at the production database, so there it stays off unless this says otherwise.
   WHATSAPP_DAYBOOK_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
+  // Campaigns and automatic loyalty messages go to real customers; off outside production unless this says so.
+  WHATSAPP_CAMPAIGNS_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
 
   // --- Shopify -----------------------------------------------------------------------
   //

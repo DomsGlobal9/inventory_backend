@@ -31,7 +31,8 @@ export const RBAC_DATA = {
         'offer:view', 'offer:create', 'offer:update', 'offer:archive', 'offer:manual_discount',
         'offer:publish_external', 'offer:manual_discount_unlimited', 'offer:settings',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
-        'admin:locations', 'admin:catalog', 'admin:users', 'team:view_password', 'whatsapp:manage'
+        'admin:locations', 'admin:catalog', 'admin:users', 'team:view_password', 'whatsapp:manage',
+        'loyalty:manage', 'campaign:send'
       ]
     },
 

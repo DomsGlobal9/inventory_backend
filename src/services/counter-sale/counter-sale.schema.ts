@@ -32,7 +32,9 @@ export const completeSaleSchema = z.object({
     phone: z.string().max(40).optional().nullable(),
     name: z.string().max(120).optional().nullable(),
     email: z.preprocess(v => (typeof v === 'string' && v.trim() === '' ? null : v),
-      z.string().trim().email('That email address does not look right.').max(120).optional().nullable())
+      z.string().trim().email('That email address does not look right.').max(120).optional().nullable()),
+    /** The customer said yes to offers on WhatsApp, and the cashier ticked it. */
+    offersOk: z.boolean().optional()
   }).strict().refine(c => c.id || c.phone, { message: "Enter the customer's phone number." }),
   quoteId: z.string().min(1, 'Price the basket first.'),
   couponCodes: z.array(z.string().min(1).max(60)).max(10).optional(),
@@ -46,7 +48,7 @@ export const completeSaleSchema = z.object({
       message: 'The same item is in the basket twice. Change its quantity instead.'
     }),
   payments: z.array(z.object({
-    method: z.enum(['CASH', 'UPI', 'CARD'], { errorMap: () => ({ message: 'Choose Cash, UPI or Card.' }) }),
+    method: z.enum(['CASH', 'UPI', 'CARD', 'POINTS'], { errorMap: () => ({ message: 'Choose Cash, UPI, Card or Points.' }) }),
     amount: money('Amount'),
     cashReceived: money('Cash received').optional().nullable(),
     reference: z.string().max(60).optional().nullable()

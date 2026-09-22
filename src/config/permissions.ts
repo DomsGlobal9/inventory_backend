@@ -163,6 +163,15 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'customer:create', group: 'Selling', label: 'Add a customer',    implies: ['customer:view'] },
   { key: 'customer:update', group: 'Selling', label: 'Change a customer', implies: ['customer:view'] },
 
+  // Loyalty and campaigns. Earning and spending points at the counter needs nothing extra: whoever
+  // may take the sale may take points as payment. Setting the rules changes what every sale gives
+  // away, and a campaign speaks to many customers at once from the shop's own number.
+  { key: 'loyalty:manage',  group: 'Selling', label: "Set the loyalty points rules, and change a customer's points by hand",
+    implies: ['customer:view'], sensitive: true },
+  { key: 'campaign:view',   group: 'Selling', label: 'See WhatsApp campaigns and how they did', implies: ['customer:view'] },
+  { key: 'campaign:send',   group: 'Selling', label: 'Write and send WhatsApp campaigns to customers',
+    implies: ['campaign:view'], sensitive: true },
+
   // ── Money ─────────────────────────────────────────────────────────────────
   // The split that makes the rest of this meaningful. Before it, dashboard:view carried the
   // shop's whole financial position and every seeded role held it, including SALES.

@@ -1,3 +1,4 @@
+import { settleReturn, previewReturn } from './loyalty';
 import { prisma } from '../lib/prisma';
 import { runTransaction } from '../lib/txRetry';
 import { Prisma, ReturnReason } from '@prisma/client';
@@ -299,6 +300,10 @@ export class ReturnService {
         }
       }
 
+      // Loyalty points on the bill: those used on these goods come back as points (and the money
+      // owed drops by as much), those earned on them are taken back. Nothing for a bill without points.
+      await settleReturn(tx as any, clientId, id);
+
       return tx.salesReturn.update({
         where: { id },
         data: {
@@ -378,7 +383,9 @@ export class ReturnService {
       }
     });
     if (!ret) throw notFound('Return not found');
-    return ret;
+    // Still open, on a bill paid partly with points: how the amount owed will split on completing.
+    const pointsPreview = ret.status === 'COMPLETED' || ret.status === 'REJECTED' ? null : await previewReturn(clientId, id).catch(() => null);
+    return { ...ret, pointsPreview };
   }
 }
 

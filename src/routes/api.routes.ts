@@ -44,6 +44,8 @@ import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
 import dayBookRoutes from './daybook.routes';
 import whatsappRoutes, { whatsappEvents } from './whatsapp.routes';
+import campaignRoutes from './campaign.routes';
+import loyaltyRoutes from './loyalty.routes';
 import clientErrorRoutes from './client-error.routes';
 import supportTicketRoutes from './support-ticket.routes';
 import teamRoutes from './team.routes';
@@ -166,5 +168,7 @@ router.use('/shelves', hideCost, shelvesRoutes);
 router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);
 router.use('/whatsapp', whatsappRoutes);
+router.use('/campaigns', campaignRoutes);
+router.use('/loyalty', loyaltyRoutes);
 
 export default router;

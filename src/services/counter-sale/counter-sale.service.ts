@@ -7,6 +7,10 @@ import { dispatchService } from '../dispatch.service';
 import { counterCustomer } from '../customer.service';
 import { normaliseManualDiscount, toMinor } from '../pricing';
 import { planPayments, paymentSummary, recordPayments } from '../payments';
+import { checkSale, settleSale } from '../loyalty';
+import { recordOffersConsent } from '../campaigns/consent';
+import { afterCommit } from '../../lib/afterCommit';
+import { sendAfterSaleNotice } from '../campaigns/notices';
 import { CompleteSaleInput } from './counter-sale.schema';
 
 /** Where a counter order came from, beside the sale id the screen made up. */
@@ -65,12 +69,17 @@ export class CounterSaleService {
 
     // Checked before a transaction opens: "na" is not a reason, and that needs no database.
     const orderManual = normaliseManualDiscount(input.manualDiscount, 'this bill');
-    const [{ manualDiscountMaxPercent }, variants] = await Promise.all([
+    // Loyalty's rules and the customer's points, read before the transaction opens (each read inside
+    // it is another trip across regions with a transaction held open).
+    const pointsPaidMinor = (input.payments ?? []).filter(p => p.method === 'POINTS').reduce((sum, p) => sum + toMinor(p.amount), 0);
+    const [{ manualDiscountMaxPercent }, variants, loyaltyCheck] = await Promise.all([
       getShopSettings(clientId),
       prisma.productVariant.findMany({
         where: { id: { in: input.items.map(i => i.variantId) }, clientId },
         select: { id: true, product: { select: { title: true, status: true, trashedAt: true } } }
-      })
+      }),
+      // A new customer holds nothing; one chosen by id is checked here.
+      checkSale(clientId, input.customer.id ?? null, null, pointsPaidMinor)
     ]);
 
     /*
@@ -132,7 +141,28 @@ export class CounterSaleService {
           receivedById: order.createdById ?? null
         }, planned);
 
-        return order.id as string;
+        // Points used on the bill are taken, and points earned given, in this same transaction: a
+        // sale refused for points leaves nothing, and a sale that fails later takes no points.
+        await settleSale(tx, {
+          clientId,
+          customerId: customer.id,
+          orderId: order.id,
+          billMinor: toMinor(order.total),
+          pointsPaidMinor: planned.filter(p => p.method === 'POINTS').reduce((sum, p) => sum + p.amountMinor, 0),
+          userId: caller.userId
+        }, {
+          settings: loyaltyCheck.settings,
+          // Known only for a customer chosen by id; one found by number is read inside.
+          held: input.customer.id && input.customer.id === customer.id ? loyaltyCheck.held : undefined
+        });
+
+        // Only ever turned on here, when the cashier ticked that the customer agreed. Never off:
+        // a counter screen without the tick is not the customer saying no.
+        if (input.customer.offersOk) await recordOffersConsent(tx, clientId, customer.id, caller.userId);
+
+        const saleId = order.id as string;
+        afterCommit(() => { void sendAfterSaleNotice(clientId, saleId); });
+        return saleId;
       }, { timeout: 30000, maxWait: 15000 });
 
       return { replayed: false, sale: await this.getSale(clientId, orderId) };

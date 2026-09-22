@@ -53,6 +53,8 @@ enum PaymentMethod {
   CASH
   UPI
   CARD
+  /// Loyalty points spent on the bill. Money the shop already owed the customer, not money in.
+  POINTS
 }
 
 enum TransferStatus {
@@ -306,23 +308,23 @@ model InventoryStock {
 /// A point in a location's rack tree: an area, a rack or cupboard, a shelf, a box. Up to 4 deep, and each
 /// branch as deep as that shop needs. Stock sits only on a spot with nothing under it.
 model StorageSpot {
-  id         String @id @default(uuid())
-  clientId   String @map("client_id")
-  locationId String @map("location_id")
+  id         String        @id @default(uuid())
+  clientId   String        @map("client_id")
+  locationId String        @map("location_id")
   location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
 
   parentId String?       @map("parent_id")
   parent   StorageSpot?  @relation("StorageSpotTree", fields: [parentId], references: [id], onDelete: Restrict)
   children StorageSpot[] @relation("StorageSpotTree")
 
-  kind StorageSpotKind
+  kind    StorageSpotKind
   /// This spot's own part of the address: C2, 1, A.
-  code String
+  code    String
   /// The whole address, upper case, unique in the location: FLOOR-C2-1-A.
   address String
   /// What the shop calls it, free to change: "Silk sarees, blue box".
-  name  String?
-  depth Int
+  name    String?
+  depth   Int
 
   /// Position in the walk through the shop, among its siblings.
   walkOrder   Int     @default(0) @map("walk_order")
@@ -357,10 +359,10 @@ model StorageSpot {
 /// How far the FIRST FILL has got on one shelf. Onboarding, not stock: a shelf can be COMPLETED and
 /// hold nothing, and a quantity can never say whether a person has been there. No row means NOT_STARTED.
 model SpotFillState {
-  id         String @id @default(uuid())
-  clientId   String @map("client_id")
-  locationId String @map("location_id")
-  spotId     String @unique @map("spot_id")
+  id         String      @id @default(uuid())
+  clientId   String      @map("client_id")
+  locationId String      @map("location_id")
+  spotId     String      @unique @map("spot_id")
   spot       StorageSpot @relation(fields: [spotId], references: [id], onDelete: Cascade)
 
   state SpotFillStateKind @default(NOT_STARTED)
@@ -389,22 +391,22 @@ enum SpotFillStateKind {
 /// shelves somebody has just counted stay right (decision D1). It ends by itself only when every
 /// shelf is COMPLETED and at least one was filled, or when a person with shelf:manage presses Finished.
 model LocationFirstFill {
-  id         String @id @default(uuid())
-  clientId   String @map("client_id")
-  locationId String @unique @map("location_id")
+  id         String        @id @default(uuid())
+  clientId   String        @map("client_id")
+  locationId String        @unique @map("location_id")
   location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
 
   state FirstFillState @default(NOT_STARTED)
 
-  startedAt  DateTime? @map("started_at")
-  finishedAt DateTime? @map("finished_at")
-  finishedBy String?   @map("finished_by")
+  startedAt     DateTime? @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+  finishedBy    String?   @map("finished_by")
   /// True when the last shelf finished it, false when a person pressed Finished.
-  endedByItself Boolean? @map("ended_by_itself")
-  reopenedAt DateTime? @map("reopened_at")
-  reopenedBy String?   @map("reopened_by")
+  endedByItself Boolean?  @map("ended_by_itself")
+  reopenedAt    DateTime? @map("reopened_at")
+  reopenedBy    String?   @map("reopened_by")
   /// Set when the day-7 reminder has gone, so it is sent once.
-  remindedAt DateTime? @map("reminded_at")
+  remindedAt    DateTime? @map("reminded_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -422,12 +424,12 @@ enum FirstFillState {
 /// One shelf's save during the first fill, remembered by the key the phone made. A retry after the
 /// network dropped gets the same answer back instead of putting the pieces away a second time.
 model ShelfFillSave {
-  id       String @id @default(uuid())
-  clientId String @map("client_id")
-  spotId   String @map("spot_id")
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  spotId    String   @map("spot_id")
   /// Made on the phone, once per shelf visit.
-  saveKey  String @map("save_key")
-  result   Json
+  saveKey   String   @map("save_key")
+  result    Json
   createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([clientId, saveKey])
@@ -437,13 +439,13 @@ model ShelfFillSave {
 
 /// Pieces of one variant on one spot. A row reaching 0 is deleted.
 model SpotStock {
-  id         String @id @default(uuid())
-  clientId   String @map("client_id")
-  locationId String @map("location_id")
-  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  spotId     String @map("spot_id")
-  spot       StorageSpot @relation(fields: [spotId], references: [id], onDelete: Restrict)
-  variantId  String @map("variant_id")
+  id         String         @id @default(uuid())
+  clientId   String         @map("client_id")
+  locationId String         @map("location_id")
+  location   StockLocation  @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  spotId     String         @map("spot_id")
+  spot       StorageSpot    @relation(fields: [spotId], references: [id], onDelete: Restrict)
+  variantId  String         @map("variant_id")
   variant    ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
 
   quantity Int
@@ -459,9 +461,9 @@ model SpotStock {
 /// One shelf's part of a stock movement: a sale that took 4 from A-03-2 and 1 from B-01-1 is one
 /// inventory_transactions row with two of these.
 model InventoryTransactionSpot {
-  id            String @id @default(uuid())
-  clientId      String @map("client_id")
-  transactionId String @map("transaction_id")
+  id            String               @id @default(uuid())
+  clientId      String               @map("client_id")
+  transactionId String               @map("transaction_id")
   transaction   InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
 
   /// Null once the spot is deleted; the address is kept.
@@ -469,8 +471,8 @@ model InventoryTransactionSpot {
   spot    StorageSpot? @relation(fields: [spotId], references: [id], onDelete: SetNull)
   address String
 
-  variantId  String @map("variant_id")
-  locationId String @map("location_id")
+  variantId  String        @map("variant_id")
+  locationId String        @map("location_id")
   quantity   Int
   source     SpotLegSource
 
@@ -484,11 +486,11 @@ model InventoryTransactionSpot {
 
 /// Something about the shelves that did not add up, shown to the shop instead of being corrected quietly.
 model ShelfIssue {
-  id         String @id @default(uuid())
-  clientId   String @map("client_id")
-  locationId String @map("location_id")
-  location   StockLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
-  variantId  String @map("variant_id")
+  id         String         @id @default(uuid())
+  clientId   String         @map("client_id")
+  locationId String         @map("location_id")
+  location   StockLocation  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  variantId  String         @map("variant_id")
   variant    ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
 
   spotId  String?      @map("spot_id")
@@ -500,7 +502,7 @@ model ShelfIssue {
 
   kind     ShelfIssueKind
   quantity Int
-  message  String @db.Text
+  message  String         @db.Text
 
   status         ShelfIssueStatus @default(OPEN)
   resolvedBy     String?          @map("resolved_by")
@@ -518,14 +520,14 @@ model ShelfIssue {
 
 /// A spot's address before and after a change. Kept here rather than in audit_logs, which prunes.
 model StorageSpotAddressChange {
-  id         String @id @default(uuid())
-  clientId   String @map("client_id")
-  spotId     String @map("spot_id")
+  id         String      @id @default(uuid())
+  clientId   String      @map("client_id")
+  spotId     String      @map("spot_id")
   spot       StorageSpot @relation(fields: [spotId], references: [id], onDelete: Cascade)
-  oldAddress String @map("old_address")
-  newAddress String @map("new_address")
-  changedBy  String? @map("changed_by")
-  changedAt  DateTime @default(now()) @map("changed_at")
+  oldAddress String      @map("old_address")
+  newAddress String      @map("new_address")
+  changedBy  String?     @map("changed_by")
+  changedAt  DateTime    @default(now()) @map("changed_at")
 
   @@index([spotId, changedAt])
   @@map("storage_spot_address_changes")
@@ -623,16 +625,16 @@ model ProductVariant {
   barcode String? @unique
 
   // Relations
-  images             ProductImage[]
-  transactions       InventoryTransaction[]
-  reservations       InventoryReservation[]
-  salesOrderItems    SalesOrderItem[]
-  stockCountItems    StockCountItem[]
-  purchaseOrderItems PurchaseOrderItem[]
+  images               ProductImage[]
+  transactions         InventoryTransaction[]
+  reservations         InventoryReservation[]
+  salesOrderItems      SalesOrderItem[]
+  stockCountItems      StockCountItem[]
+  purchaseOrderItems   PurchaseOrderItem[]
   purchaseReceiptItems PurchaseReceiptItem[]
-  stocks             InventoryStock[]
-  transfers          InventoryTransfer[]
-  supplierLinks      SupplierProduct[]
+  stocks               InventoryStock[]
+  transfers            InventoryTransfer[]
+  supplierLinks        SupplierProduct[]
 
   createdAt        DateTime                 @default(now()) @map("created_at")
   updatedAt        DateTime                 @updatedAt @map("updated_at")
@@ -1025,8 +1027,8 @@ model PurchaseReceiptItem {
   size         String?
 
   /// On the order, and already received before this delivery.
-  orderedQty     Int @map("ordered_qty")
-  receivedBefore Int @map("received_before")
+  orderedQty     Int     @map("ordered_qty")
+  receivedBefore Int     @map("received_before")
   /// Arrived in this delivery.
   quantity       Int
   unitPrice      Decimal @map("unit_price")
@@ -1102,7 +1104,26 @@ model Customer {
   /// store's customers, and a workspace can connect several stores.
   sourceStore String? @map("source_store")
 
-  salesOrders SalesOrder[]
+  /// Agreed to hear about offers on WhatsApp. Off until somebody at the shop records that the
+  /// customer said yes -- who and when are kept as the proof (DPDP Act). Campaigns reach only these.
+  whatsappOffers    Boolean   @default(false) @map("whatsapp_offers")
+  whatsappOffersAt  DateTime? @map("whatsapp_offers_at")
+  whatsappOffersBy  String?   @map("whatsapp_offers_by")
+  /// Replied STOP to the shop's number. Never messaged again from it; only the customer undoes this.
+  whatsappStoppedAt DateTime? @map("whatsapp_stopped_at")
+
+  /// "MM-DD", no year: a birthday wish needs the day, not the age.
+  birthday    String?
+  anniversary String?
+
+  /// Loyalty points held now: the sum of loyalty_entries, kept here so a redemption can take them
+  /// with one guarded UPDATE (never below what is held) and campaigns can filter on it.
+  loyaltyPoints   Int       @default(0) @map("loyalty_points")
+  /// Last time points were earned or used -- points expire after a quiet spell, not by batch.
+  loyaltyActiveAt DateTime? @map("loyalty_active_at")
+
+  salesOrders    SalesOrder[]
+  loyaltyEntries LoyaltyEntry[]
 
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -1372,20 +1393,25 @@ model SalesReturn {
   refundTotal      Decimal @default(0) @map("refund_total") @db.Decimal(10, 2)
   /// NONE | PENDING | REFUNDED | FAILED
   refundStatus     String  @default("NONE") @map("refund_status")
+  /// Of what came back, the part the customer had paid with loyalty points goes back as points,
+  /// not money: set when the return is completed, and refundTotal is then the money part only.
+  pointsBack       Int     @default(0) @map("points_back")
+  pointsBackValue  Decimal @default(0) @map("points_back_value") @db.Decimal(10, 2)
+  /// Points earned on the returned goods, taken back.
+  pointsTakenBack  Int     @default(0) @map("points_taken_back")
   externalRefundId String? @map("external_refund_id")
 
   items SalesReturnItem[]
 
-  completedAt DateTime? @map("completed_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  completedAt DateTime?           @map("completed_at")
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+  /// Refunds paid for this return.
+  refunds     SalesOrderPayment[]
 
   @@unique([clientId, returnNumber])
   @@index([salesOrderId])
   @@index([clientId, status])
-  /// Refunds paid for this return.
-  refunds SalesOrderPayment[]
-
   @@map("sales_returns")
 }
 
@@ -1566,7 +1592,7 @@ model User {
   dailyReportDeliveries DailyReportDelivery[]
 
   /// Orders this person rang up.
-  salesOrdersCreated SalesOrder[] @relation("SalesOrderCreatedBy")
+  salesOrdersCreated SalesOrder[]        @relation("SalesOrderCreatedBy")
   /// Money this person took or paid back.
   paymentsReceived   SalesOrderPayment[] @relation("PaymentReceivedBy")
 
@@ -1617,13 +1643,13 @@ model ClientErrorLog {
 // Separate credential store, deliberately NOT a `User` row -- a platform admin isn't
 // scoped to any single clientId. See SUPER_ADMIN_PLAN.md for the full design.
 model PlatformAdmin {
-  id       String     @id @default(uuid())
-  email    String     @unique
-  password String
-  name     String
-  status   UserStatus @default(ACTIVE)
+  id             String     @id @default(uuid())
+  email          String     @unique
+  password       String
+  name           String
+  status         UserStatus @default(ACTIVE)
   /// Same as User.sessionVersion, for the platform console.
-  sessionVersion Int @default(0) @map("session_version")
+  sessionVersion Int        @default(0) @map("session_version")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2450,10 +2476,10 @@ model ShopifyInstallation {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  idMap       ShopifyIdMap[]
-  locationMap ShopifyLocationMap[]
+  idMap        ShopifyIdMap[]
+  locationMap  ShopifyLocationMap[]
   offerMirrors OfferExternalMirror[]
-  echoes      ShopifyInventoryEcho[]
+  echoes       ShopifyInventoryEcho[]
 
   @@index([clientId])
   @@index([uninstalledAt])
@@ -3168,7 +3194,7 @@ model OfferExternalMirror {
   shopifyDiscountId String? @map("shopify_discount_id")
   /// AUTOMATIC | CODE -- what the Shopify discount IS. An offer switched between the two cannot be
   /// updated in place; the old one is removed and a new one created.
-  kind String?
+  kind              String?
 
   pushedHash String? @map("pushed_hash")
   remoteHash String? @map("remote_hash")
@@ -3253,11 +3279,11 @@ model WhatsAppSettings {
   clientId String @id @map("client_id")
 
   /// The nightly Day Book, sent from the ScaleEzy number to the owner. Off until switched on.
-  dayBookEnabled Boolean @default(false) @map("day_book_enabled")
+  dayBookEnabled     Boolean @default(false) @map("day_book_enabled")
   /// "HH:MM", the shop's own time (ClientSettings.timezone).
-  dayBookTime    String  @default("22:00") @map("day_book_time")
+  dayBookTime        String  @default("22:00") @map("day_book_time")
   /// Digits with country code. Where the owner wants it.
-  dayBookTo      String? @map("day_book_to")
+  dayBookTo          String? @map("day_book_to")
   /// The last business day ("YYYY-MM-DD") whose Day Book was handed to the service, so a
   /// restart at 10 pm never sends the same night twice.
   dayBookLastSentFor String? @map("day_book_last_sent_for")
@@ -3303,4 +3329,148 @@ model WhatsAppEventSeen {
 
   @@index([receivedAt])
   @@map("whatsapp_events_seen")
+}
+
+// ── Loyalty points ────────────────────────────────────────────────────────────────────────
+
+/// A shop's points rules. Off until the owner switches it on.
+model LoyaltySettings {
+  clientId String @id @map("client_id")
+
+  enabled          Boolean @default(false)
+  /// Points earned for every full ₹100 paid (points spent on a bill earn nothing).
+  pointsPer100     Int     @default(1) @map("points_per_100")
+  /// What one point is worth, in paise (100 = ₹1).
+  pointValuePaise  Int     @default(100) @map("point_value_paise")
+  /// Points a customer must hold before they can use any.
+  minRedeemPoints  Int     @default(100) @map("min_redeem_points")
+  /// At most this share of a bill can be paid with points.
+  maxRedeemPercent Int     @default(50) @map("max_redeem_percent")
+  /// Points lapse after this many months with no purchase and no points used. 0 = never.
+  expiryMonths     Int     @default(12) @map("expiry_months")
+  /// A gift on the customer's birthday, 0 = none. Given once a year, with the birthday wish.
+  birthdayPoints   Int     @default(0) @map("birthday_points")
+
+  /// After a counter sale, tell the customer on WhatsApp what they earned and hold.
+  notifyAfterSale Boolean @default(false) @map("notify_after_sale")
+  /// Automatic wishes, sent from the shop's own number to customers who agreed to offers.
+  birthdayWish    Boolean @default(false) @map("birthday_wish")
+  birthdayText    String? @map("birthday_text") @db.Text
+  anniversaryWish Boolean @default(false) @map("anniversary_wish")
+  anniversaryText String? @map("anniversary_text") @db.Text
+  /// A week before points lapse, remind the customer to use them.
+  expiryReminder  Boolean @default(false) @map("expiry_reminder")
+
+  /// The last shop-local day ("YYYY-MM-DD") the automatic messages were prepared for.
+  autoPreparedFor String? @map("auto_prepared_for")
+
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("loyalty_settings")
+}
+
+enum LoyaltyEntryKind {
+  EARNED
+  USED
+  /// A return: points used on the returned goods, given back.
+  RETURN_GIVEN_BACK
+  /// A return: points earned on the returned goods, taken back.
+  RETURN_TAKEN_BACK
+  BIRTHDAY
+  EXPIRED
+  /// Changed by hand, with a reason.
+  ADJUSTED
+}
+
+/// Every change to a customer's points. customers.loyalty_points is their sum.
+model LoyaltyEntry {
+  id         String           @id @default(uuid())
+  clientId   String           @map("client_id")
+  customerId String           @map("customer_id")
+  customer   Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  kind       LoyaltyEntryKind
+  /// Signed: + earned or given, - used or taken.
+  points     Int
+  /// Balance right after this entry.
+  balance    Int
+
+  salesOrderId  String? @map("sales_order_id")
+  salesReturnId String? @map("sales_return_id")
+  note          String?
+  createdById   String? @map("created_by_id")
+
+  /// What makes this entry happen once: "EARNED:<order>", "BIRTHDAY:<customer>:2026" and so on.
+  /// A retried sale or a job run twice finds the entry already there.
+  onceKey String @unique @map("once_key")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, customerId, createdAt])
+  @@index([salesOrderId])
+  @@map("loyalty_entries")
+}
+
+// ── WhatsApp campaigns ────────────────────────────────────────────────────────────────────
+
+enum CampaignStatus {
+  DRAFT
+  SENDING
+  PAUSED
+  DONE
+  CANCELLED
+}
+
+/// One message to many customers, from the shop's own number, handed to WhatsApp a few at a time.
+model Campaign {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  name     String
+  /// With {name}, {shop}, {points}, {points_value}. The STOP line is added when sent.
+  text     String         @db.Text
+  status   CampaignStatus @default(DRAFT)
+  /// Who it is for: tags, bought within / not for N days, spent at least, points at least...
+  audience Json           @default("{}")
+  /// MANUAL, or the automatic kind: BIRTHDAY, ANNIVERSARY, POINTS_EXPIRING.
+  source   String         @default("MANUAL")
+
+  /// Not before this moment.
+  startAt    DateTime? @map("start_at")
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  recipients CampaignRecipient[]
+
+  @@index([clientId, status])
+  @@index([clientId, createdAt])
+  @@map("campaigns")
+}
+
+/// One customer in one campaign. Fixed when the campaign starts; checked again just before sending.
+model CampaignRecipient {
+  id         String   @id @default(uuid())
+  campaignId String   @map("campaign_id")
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  clientId   String   @map("client_id")
+  customerId String   @map("customer_id")
+
+  /// WAITING | HANDED (to WhatsApp; its own status is on whatsapp_messages) | SKIPPED | FAILED
+  state      String    @default("WAITING")
+  skipReason String?   @map("skip_reason")
+  /// Our whatsapp_messages row once handed over: its ticks are this recipient's.
+  messageId  String?   @unique @map("message_id")
+  handedAt   DateTime? @map("handed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([campaignId, customerId])
+  @@index([campaignId, state])
+  @@index([clientId, handedAt])
+  @@map("campaign_recipients")
 }

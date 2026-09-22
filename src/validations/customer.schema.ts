@@ -52,6 +52,9 @@ const fields = {
   tags: z.array(text('A group name').trim().min(1, 'A group needs a name').max(40, 'Keep a group name under 40 characters'),
     { invalid_type_error: 'Send the groups as a list of names.' })
     .max(20, 'A customer can be in at most 20 groups').optional(),
+  // "MM-DD" (a date picker's "YYYY-MM-DD" is accepted and the year dropped). Checked by the service.
+  birthday: text('The birthday').max(10).optional().nullable(),
+  anniversary: text('The anniversary').max(10).optional().nullable(),
 };
 
 /** A new customer: a shop finds people by phone, so there is no customer without one. */

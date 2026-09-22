@@ -566,6 +566,11 @@ export class PlatformAdminService {
       // The shop's linked number itself lives in the WhatsApp Service and is unlinked there.
       `DELETE FROM whatsapp_messages WHERE client_id = $1`,
       `DELETE FROM whatsapp_settings WHERE client_id = $1`,
+      // Campaigns and loyalty points (entries point at customers, deleted further down).
+      `DELETE FROM campaign_recipients WHERE client_id = $1`,
+      `DELETE FROM campaigns WHERE client_id = $1`,
+      `DELETE FROM loyalty_entries WHERE client_id = $1`,
+      `DELETE FROM loyalty_settings WHERE client_id = $1`,
       // Goods receipts point at locations (restrict), so they go before the orders and locations.
       `DELETE FROM purchase_receipt_items WHERE receipt_id IN (SELECT id FROM purchase_receipts WHERE client_id = $1)`,
       `DELETE FROM purchase_receipts WHERE client_id = $1`,
