@@ -512,7 +512,9 @@ export class PlatformAdminService {
       where: { product: { clientId } },
       select: { storagePath: true }
     });
-    const storagePaths = images.map(i => i.storagePath).filter((p): p is string => !!p);
+    // Campaign pictures are files in the same bucket.
+    const campaignPictures = await prisma.campaignMedia.findMany({ where: { clientId }, select: { storagePath: true } });
+    const storagePaths = [...images.map(i => i.storagePath), ...campaignPictures.map(p => p.storagePath)].filter((p): p is string => !!p);
 
     // Children first. Where a relation cascades this is redundant, and harmless; where it does
     // not, it is the difference between a clean delete and a foreign-key error.
@@ -569,6 +571,9 @@ export class PlatformAdminService {
       // Campaigns and loyalty points (entries point at customers, deleted further down).
       `DELETE FROM campaign_recipients WHERE client_id = $1`,
       `DELETE FROM campaigns WHERE client_id = $1`,
+      // Pictures are held by campaigns and templates (restrict), so they go after both.
+      `DELETE FROM campaign_templates WHERE client_id = $1`,
+      `DELETE FROM campaign_media WHERE client_id = $1`,
       `DELETE FROM loyalty_entries WHERE client_id = $1`,
       `DELETE FROM store_credit_entries WHERE client_id = $1`,
       `DELETE FROM loyalty_settings WHERE client_id = $1`,

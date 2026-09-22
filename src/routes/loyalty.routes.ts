@@ -16,7 +16,7 @@ const handle = (fn: (req: Request) => Promise<unknown>) =>
   };
 
 // Anyone who sees customers sees the rules: the counter needs them to explain points to a customer.
-router.get('/settings', requirePermission('customer:view'), handle(req => loyalty.getSettings((req as any).user.clientId)));
+router.get('/settings', requirePermission('customer:view'), handle(req => loyalty.settingsForScreen((req as any).user.clientId)));
 router.put('/settings', requirePermission('loyalty:manage'), handle(req => loyalty.saveSettings(actor(req), req.body ?? {})));
 
 // The New sale screen: this customer's points, and how many may pay part of this bill.

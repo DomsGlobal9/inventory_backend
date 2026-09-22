@@ -15,6 +15,13 @@
  * EACH CUSTOMER ONCE. A recipient is claimed (WAITING -> HANDING) before the call, and the call's
  * key is the campaign and the customer, so a crash between the call and the write is repaired by
  * simply trying again: the service returns the same message.
+ *
+ * WHAT WAS FROZEN. The words, picture and link come from the campaign's snapshot (made at Start),
+ * never from the draft or today's settings. Each customer's {link} is their own short link, made
+ * before sending began (PREPARING); a customer whose link is somehow missing is not sent to.
+ *
+ * ONE OFFER IN 72 HOURS. Checked at each customer's turn, not at Start: a campaign can run for days,
+ * and a customer offered something two days before Start may be free by the time their turn comes.
  */
 import { prisma } from '../../lib/prisma';
 import { getShopSettings } from '../../lib/clientSettings';
@@ -24,6 +31,9 @@ import { WhatsAppServiceError } from '../whatsapp/client';
 import { getSettings as loyaltySettings, rupeesOf, valueOf } from '../loyalty';
 import { render } from './message';
 import { markStopped } from './consent';
+import { recentlyOffered } from './audience';
+import { links } from '../links';
+import type { Snapshot } from './campaign.service';
 
 export const IN_FLIGHT = 3;
 export const SEND_FROM_HOUR = 10;
@@ -55,6 +65,10 @@ type ShopResult = { clientId: string; handed: number; skipped: number; failed: n
  * `ignoreHours` is for tests too.
  */
 export async function runCampaignTick(now = new Date(), opts: { onlyClients?: string[]; ignoreHours?: boolean } = {}) {
+  // Campaigns still making their links: finish those first (a later run carries on if it is big).
+  const { prepareAll } = await import('./campaign.service');
+  await prepareAll({ onlyClients: opts.onlyClients }).catch(e => console.error('[campaigns] preparing links failed:', (e as Error)?.message));
+
   // A claim left by a crash goes back in the queue; its key makes the retry safe.
   await prisma.campaignRecipient.updateMany({
     where: { state: 'HANDING', handedAt: { lt: new Date(now.getTime() - STALE_CLAIM_MS) }, ...(opts.onlyClients ? { clientId: { in: opts.onlyClients } } : {}) },
@@ -105,12 +119,20 @@ async function runShop(clientId: string, campaignIds: string[], now: Date, ignor
 
   for (const campaignId of campaignIds) {
     if (room <= 0) break;
-    const campaign = await prisma.campaign.findFirst({ where: { id: campaignId, status: 'SENDING' }, select: { id: true, text: true } });
+    const campaign = await prisma.campaign.findFirst({ where: { id: campaignId, status: 'SENDING' }, select: { id: true, text: true, source: true, snapshot: true } });
     if (!campaign) continue;
+    // Started before snapshots existed: its words as they were, no picture, no link.
+    const snap = (campaign.snapshot ?? null) as unknown as Snapshot | null;
+    const words = snap?.text ?? campaign.text;
+    const imageUrl = snap?.media?.url ?? null;
+    const hasLink = !!snap?.link;
+    const offer = campaign.source === 'MANUAL';
     const next = await prisma.campaignRecipient.findMany({
       // A few spare, so customers skipped on the way do not leave the room unused.
-      where: { campaignId, state: 'WAITING' }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: room + 20, select: { id: true, customerId: true }
+      where: { campaignId, state: 'WAITING' }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: room + 20, select: { id: true, customerId: true, linkCode: true }
     });
+    // Asked once for this handful, not once per customer.
+    const offeredRecently = offer ? await recentlyOffered(clientId, now, { exceptCampaignId: campaignId, customerIds: next.map(r => r.customerId) }) : new Set<string>();
     for (const r of next) {
       if (room <= 0) break;
       const claimed = await prisma.campaignRecipient.updateMany({ where: { id: r.id, state: 'WAITING' }, data: { state: 'HANDING', handedAt: now } });
@@ -121,25 +143,38 @@ async function runShop(clientId: string, campaignIds: string[], now: Date, ignor
         where: { id: r.customerId, clientId },
         select: { name: true, phone: true, deletedAt: true, status: true, whatsappOffers: true, whatsappStoppedAt: true, loyaltyPoints: true }
       });
-      const why = !c || c.deletedAt ? 'The customer was deleted.'
-        : c.whatsappStoppedAt ? 'The customer replied STOP.'
-        : !c.whatsappOffers ? 'The customer no longer agrees to offers.'
-        : !c.phone ? 'The customer has no phone number.'
-        : c.status !== 'ACTIVE' ? 'The customer is not active.'
+      const skip: [string, string] | null = !c || c.deletedAt ? ['DELETED', 'The customer was deleted.']
+        : c.whatsappStoppedAt ? ['OPTED_OUT', 'The customer replied STOP.']
+        : !c.whatsappOffers ? ['NO_CONSENT', 'The customer no longer agrees to offers.']
+        : !c.phone ? ['NO_PHONE', 'The customer has no phone number.']
+        : c.status !== 'ACTIVE' ? ['INACTIVE', 'The customer is not active.']
+        : offeredRecently.has(r.customerId) ? ['RECENT_OFFER', 'Had an offer from the shop in the last 3 days.']
         : null;
-      if (why) {
-        await prisma.campaignRecipient.update({ where: { id: r.id }, data: { state: 'SKIPPED', skipReason: why, handedAt: null } });
+      if (skip) {
+        await prisma.campaignRecipient.update({ where: { id: r.id }, data: { state: 'SKIPPED', skipCode: skip[0], skipReason: skip[1], handedAt: null } });
         res.skipped += 1;
         continue;
       }
 
-      const text = render(campaign.text, {
-        name: c!.name, shop, points: c!.loyaltyPoints, pointsValue: rupeesOf(valueOf(Math.max(0, c!.loyaltyPoints), loyalty))
+      let link: string | null = null;
+      if (hasLink) {
+        // Never without the link: back to making links, and nobody else in this campaign goes now.
+        if (!r.linkCode || !links.available()) {
+          await prisma.campaignRecipient.update({ where: { id: r.id }, data: { state: 'WAITING', handedAt: null } });
+          if (!r.linkCode) await prisma.campaign.updateMany({ where: { id: campaign.id, status: 'SENDING' }, data: { status: 'PREPARING' } });
+          break;
+        }
+        link = links.shortUrl(r.linkCode);
+      }
+
+      const text = render(words, {
+        name: c!.name, shop: snap?.shopName ?? shop, points: c!.loyaltyPoints, pointsValue: rupeesOf(valueOf(Math.max(0, c!.loyaltyPoints), loyalty)), link
       });
       try {
         const row = await sendShopText({
           clientId, to: c!.phone!.replace(/^\+/, ''), text, kind: 'CAMPAIGN', referenceId: campaign.id,
-          idempotencyKey: `CAMPAIGN:${campaign.id}:${r.customerId}`, sentBy: null
+          idempotencyKey: `CAMPAIGN:${campaign.id}:${r.customerId}`, sentBy: null,
+          imageUrl, linkPreview: hasLink && !imageUrl
         });
         await prisma.campaignRecipient.update({ where: { id: r.id }, data: { state: 'HANDED', messageId: row.id, handedAt: now } });
         res.handed += 1;
@@ -149,7 +184,7 @@ async function runShop(clientId: string, campaignIds: string[], now: Date, ignor
         // yet updated to know campaign messages. Not the customer's fault: they wait their turn again.
         if (e instanceof WhatsAppServiceError && e.statusCode < 500 && !/request is not valid/i.test(e.message)) {
           if (/STOP/.test(e.message)) await markStopped(clientId, c!.phone!);
-          await prisma.campaignRecipient.update({ where: { id: r.id }, data: { state: 'FAILED', skipReason: e.message, handedAt: null } });
+          await prisma.campaignRecipient.update({ where: { id: r.id }, data: { state: 'FAILED', skipCode: /STOP/.test(e.message) ? 'OPTED_OUT' : 'REFUSED', skipReason: e.message, handedAt: null } });
           res.failed += 1;
           continue;
         }

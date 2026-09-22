@@ -9,3 +9,6 @@ export { runDailyPrepare, prepareShopDay } from './auto';
 export { sendAfterSaleNotice } from './notices';
 export { checkAudience, whereFor, describeAudience } from './audience';
 export { render, checkText } from './message';
+export { listTemplates, saveTemplate, deleteTemplate, STARTERS } from './templates';
+export { purgeUnused as purgeUnusedCampaignMedia, prepareImage } from './media';
+export { recentlyOffered } from './audience';

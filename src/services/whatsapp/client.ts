@@ -75,10 +75,38 @@ export const whatsappClient = {
     to: string;
     text?: string | null;
     document?: { fileName: string; mimeType: 'application/pdf'; base64: string } | null;
+    /** A JPEG/PNG in ScaleEzy's picture storage; the text becomes its caption (1,024 letters). */
+    image?: { url: string } | null;
+    /** WhatsApp's link card for a link in a text-only message. */
+    linkPreview?: boolean;
     kind: string;
     reference?: string | null;
     idempotencyKey: string;
   }) => call<SendResult>('POST', '/v1/messages', input, 60_000),
 
-  message: (id: string) => call<{ id: string; status: MessageStatus; failReason: string | null; waitingFor: 'link' | 'daily_limit' | null; waitingReason: string | null }>('GET', `/v1/messages/${encodeURIComponent(id)}`, undefined, 8_000)
+  message: (id: string) => call<{ id: string; status: MessageStatus; failReason: string | null; failCode?: string | null; waitingFor: 'link' | 'daily_limit' | null; waitingReason: string | null }>('GET', `/v1/messages/${encodeURIComponent(id)}`, undefined, 8_000),
+
+  /**
+   * What the live service can send. Asked before offering pictures, so Inventory can go live before
+   * or after the service. An older service has no such address: that answers "text and PDFs only".
+   * Remembered for five minutes.
+   */
+  capabilities: async (): Promise<Capabilities> => {
+    if (capsCache && capsCache.until > Date.now()) return capsCache.value;
+    let value: Capabilities;
+    try {
+      const c = await call<any>('GET', '/v1/capabilities', undefined, 8_000);
+      value = { image: c?.image ? { urlPrefixes: Array.isArray(c.image.urlPrefixes) ? c.image.urlPrefixes : [], maxCaption: Number(c.image.maxCaption) || 1024 } : null, linkPreview: c?.linkPreview === true };
+    } catch (e) {
+      if (e instanceof WhatsAppServiceError && e.statusCode === 404) value = { image: null, linkPreview: false };
+      else throw e;
+    }
+    capsCache = { value, until: Date.now() + 5 * 60_000 };
+    return value;
+  }
 };
+
+export type Capabilities = { image: { urlPrefixes: string[]; maxCaption: number } | null; linkPreview: boolean };
+let capsCache: { value: Capabilities; until: number } | null = null;
+/** For tests: forget what the service said. */
+export const forgetCapabilities = () => { capsCache = null; };

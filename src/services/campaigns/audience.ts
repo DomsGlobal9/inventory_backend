@@ -70,11 +70,39 @@ export const reachable = (clientId: string): Prisma.CustomerWhereInput => ({
   clientId, deletedAt: null, status: 'ACTIVE', phone: { not: null }, whatsappOffers: true, whatsappStoppedAt: null
 });
 
+/** Every live customer, reachable or not: what the shop's choices are applied to in the breakdown. */
+const everyone = (clientId: string): Prisma.CustomerWhereInput => ({ clientId, deletedAt: null, status: 'ACTIVE' });
+
 const liveOrder = { status: { not: 'CANCELLED' as const }, deletedAt: null };
 
-/** The customer filter for an audience, at this moment. */
-export async function whereFor(clientId: string, a: Audience, now = new Date()): Promise<Prisma.CustomerWhereInput> {
-  const and: Prisma.CustomerWhereInput[] = [reachable(clientId)];
+/** At most one offer per customer per shop in any 72 hours (decision D3, 22 Sep 2026). */
+export const RECENT_OFFER_HOURS = 72;
+
+/**
+ * Customers this shop has already sent an offer to in the last 72 hours: a message of one of its own
+ * campaigns (not wishes or points reminders) that WhatsApp accepted and did not then fail, or one being
+ * handed over right now. Test sends are not campaigns' messages and never count.
+ */
+export async function recentlyOffered(clientId: string, now = new Date(), opts: { exceptCampaignId?: string; customerIds?: string[] } = {}): Promise<Set<string>> {
+  const since = new Date(now.getTime() - RECENT_OFFER_HOURS * 3_600_000);
+  const rows = await prisma.$queryRaw<{ customer_id: string }[]>`
+    SELECT DISTINCT r.customer_id
+      FROM campaign_recipients r
+      JOIN campaigns c ON c.id = r.campaign_id
+      LEFT JOIN whatsapp_messages m ON m.id = r.message_id
+     WHERE r.client_id = ${clientId}
+       AND c.source = 'MANUAL'
+       AND r.state IN ('HANDED', 'HANDING')
+       AND r.handed_at >= ${since}
+       AND (m.status IS NULL OR m.status NOT IN ('FAILED', 'EXPIRED'))
+       ${opts.exceptCampaignId ? Prisma.sql`AND r.campaign_id <> ${opts.exceptCampaignId}` : Prisma.empty}
+       ${opts.customerIds ? Prisma.sql`AND r.customer_id IN (${opts.customerIds.length ? Prisma.join(opts.customerIds) : Prisma.sql`NULL`})` : Prisma.empty}`;
+  return new Set(rows.map(r => r.customer_id));
+}
+
+/** The customer filter for an audience, at this moment. `base` is who it may reach at all. */
+export async function whereFor(clientId: string, a: Audience, now = new Date(), base: Prisma.CustomerWhereInput = reachable(clientId)): Promise<Prisma.CustomerWhereInput> {
+  const and: Prisma.CustomerWhereInput[] = [base];
   if (a.customerIds) and.push({ id: { in: a.customerIds } });
   if (a.tags?.length) {
     // Groups keep the spelling they were first given ("vip" and "VIP" are one group), so match every
@@ -106,16 +134,39 @@ export async function whereFor(clientId: string, a: Audience, now = new Date()):
   return { AND: and };
 }
 
-/** How many a campaign would reach now, with a few names so the shop can see it is right. */
-export async function preview(clientId: string, a: Audience) {
-  const where = await whereFor(clientId, a);
-  const [count, sample, everyone, agreed] = await Promise.all([
+/**
+ * How many a campaign would reach now, with a few names so the shop can see it is right, and -- the
+ * dry run -- how many of the customers its choices describe are left out, and why, before anything
+ * is sent.
+ */
+export async function preview(clientId: string, a: Audience, now = new Date()) {
+  const where = await whereFor(clientId, a, now);
+  const chosen = await whereFor(clientId, a, now, everyone(clientId));
+  const [count, sample, withPhone, agreed, matched, noPhone, stopped, notAgreed, reachIds] = await Promise.all([
     prisma.customer.count({ where }),
     prisma.customer.findMany({ where, take: 5, orderBy: { name: 'asc' }, select: { id: true, name: true, loyaltyPoints: true } }),
     prisma.customer.count({ where: { clientId, deletedAt: null, phone: { not: null } } }),
-    prisma.customer.count({ where: reachable(clientId) })
+    prisma.customer.count({ where: reachable(clientId) }),
+    prisma.customer.count({ where: chosen }),
+    prisma.customer.count({ where: { AND: [chosen, { phone: null }] } }),
+    prisma.customer.count({ where: { AND: [chosen, { phone: { not: null } }, { whatsappStoppedAt: { not: null } }] } }),
+    prisma.customer.count({ where: { AND: [chosen, { phone: { not: null } }, { whatsappStoppedAt: null }, { whatsappOffers: false }] } }),
+    prisma.customer.findMany({ where, select: { id: true }, take: 20_000 })
   ]);
-  return { count, sample, customersWithPhone: everyone, agreedToOffers: agreed };
+  const recent = await recentlyOffered(clientId, now, { customerIds: reachIds.map(r => r.id) });
+  return {
+    count, sample, customersWithPhone: withPhone, agreedToOffers: agreed,
+    breakdown: {
+      matched,
+      noPhone,
+      stopped,
+      notAgreed,
+      reachable: count,
+      /** Had an offer in the last 72 hours: skipped if it is still within 72 hours when their turn comes. */
+      recentOffer: recent.size,
+      willGet: count - recent.size
+    }
+  };
 }
 
 /** Plain words for an audience, for the list and the confirm box. */

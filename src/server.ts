@@ -113,6 +113,13 @@ app.use('/api/v1/products/import', carriesLogin, express.json({ limit: '10mb' })
 // their own paths so nothing else gains a larger body.
 app.use('/api/v1/whatsapp/send', carriesLogin, express.json({ limit: '8mb' }));
 app.use('/api/v1/whatsapp/events', express.raw({ type: '*/*', limit: '1mb' }));
+// A campaign picture travels as base64 inside JSON: 15 MB of photo is about 20 MB encoded. Only for
+// a signed-in caller, like the other large bodies above; the picture is checked and remade server-side.
+app.use('/api/v1/campaigns/media', carriesLogin, express.json({ limit: '21mb' }),
+  (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) =>
+    err?.type === 'entity.too.large'
+      ? res.status(413).json({ success: false, message: 'The picture is larger than 15 MB. Choose a smaller one.' })
+      : next(err));
 
 app.use(express.json());
 

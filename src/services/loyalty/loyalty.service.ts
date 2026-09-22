@@ -35,6 +35,9 @@ export type LoyaltySettingsView = LoyaltyRules & {
   birthdayText: string | null;
   anniversaryWish: boolean;
   anniversaryText: string | null;
+  /** Pictures above the wishes (campaign pictures), or none. */
+  birthdayMediaId: string | null;
+  anniversaryMediaId: string | null;
   expiryReminder: boolean;
 };
 
@@ -56,8 +59,29 @@ export async function getSettings(clientId: string, db: Tx | typeof prisma = pri
     birthdayText: row?.birthdayText ?? null,
     anniversaryWish: row?.anniversaryWish ?? false,
     anniversaryText: row?.anniversaryText ?? null,
+    birthdayMediaId: row?.birthdayMediaId ?? null,
+    anniversaryMediaId: row?.anniversaryMediaId ?? null,
     expiryReminder: row?.expiryReminder ?? false
   };
+}
+
+/** The settings as the Loyalty & wishes screen shows them: with the wishes' pictures to look at. */
+export async function settingsForScreen(clientId: string) {
+  const s = await getSettings(clientId);
+  const ids = [s.birthdayMediaId, s.anniversaryMediaId].filter((x): x is string => !!x);
+  const pics = ids.length ? await prisma.campaignMedia.findMany({ where: { id: { in: ids }, clientId }, select: { id: true, url: true, width: true, height: true } }) : [];
+  const pic = (id: string | null) => pics.find(p => p.id === id) ?? null;
+  return { ...s, birthdayMedia: pic(s.birthdayMediaId), anniversaryMedia: pic(s.anniversaryMediaId) };
+}
+
+/** A wish picture: null to take it away, or one of the shop's own campaign pictures. */
+async function wishMedia(clientId: string, raw: unknown, what: string): Promise<string | null | undefined> {
+  if (raw === undefined) return undefined;
+  if (raw === null || raw === '') return null;
+  if (typeof raw !== 'string' || !/^[0-9a-f-]{36}$/i.test(raw)) throw badRequest(`Choose the ${what} picture again.`);
+  const m = await prisma.campaignMedia.findFirst({ where: { id: raw, clientId }, select: { id: true } });
+  if (!m) throw badRequest(`Choose the ${what} picture again.`);
+  return m.id;
 }
 
 const MAX_WISH = 700;
@@ -86,7 +110,9 @@ export async function saveSettings(actor: Actor, input: Record<string, unknown>)
     anniversaryWish: flag(input.anniversaryWish, 'anniversary wishes'),
     expiryReminder: flag(input.expiryReminder, 'the reminder before points lapse'),
     birthdayText: wishText(input.birthdayText, 'birthday'),
-    anniversaryText: wishText(input.anniversaryText, 'anniversary')
+    anniversaryText: wishText(input.anniversaryText, 'anniversary'),
+    birthdayMediaId: await wishMedia(actor.clientId, input.birthdayMediaId, 'birthday'),
+    anniversaryMediaId: await wishMedia(actor.clientId, input.anniversaryMediaId, 'anniversary')
   };
   const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
   await prisma.loyaltySettings.upsert({
@@ -94,7 +120,7 @@ export async function saveSettings(actor: Actor, input: Record<string, unknown>)
     create: { clientId: actor.clientId, ...clean, updatedBy: actor.id },
     update: { ...clean, updatedBy: actor.id }
   });
-  return getSettings(actor.clientId);
+  return settingsForScreen(actor.clientId);
 }
 
 // ── Writing entries ─────────────────────────────────────────────────────────────────────────

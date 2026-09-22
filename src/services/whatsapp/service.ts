@@ -282,12 +282,18 @@ export async function sendDocument(actor: Actor, input: { kind: unknown; id: unk
 export async function sendShopText(input: {
   clientId: string; to: string; text: string; kind: 'CAMPAIGN' | 'LOYALTY'; referenceId: string | null;
   idempotencyKey: string; sentBy: string | null;
+  /** A picture above the words (its address in ScaleEzy's picture storage). */
+  imageUrl?: string | null;
+  /** WhatsApp's link card, for a text message with a link and no picture. */
+  linkPreview?: boolean;
 }) {
   const to = whatsappDigits(input.to, 'This customer');
   const sent = await whatsappClient.send({
     from: { clientId: input.clientId },
     to,
     text: input.text,
+    ...(input.imageUrl ? { image: { url: input.imageUrl } } : {}),
+    ...(!input.imageUrl && input.linkPreview ? { linkPreview: true } : {}),
     kind: SERVICE_KIND[input.kind],
     reference: input.referenceId ? `${input.kind}:${input.referenceId}` : input.kind,
     idempotencyKey: input.idempotencyKey
@@ -562,9 +568,14 @@ export async function handleEvent(event: { id?: unknown; type?: unknown; data?: 
     if (next === undefined || ['READ', 'FAILED', 'EXPIRED'].includes(row.status) || next <= (RANK[row.status] ?? -1)) {
       return { handled: true };
     }
+    const failed = d.status === 'FAILED' || d.status === 'EXPIRED';
     await prisma.whatsAppMessage.update({
       where: { id: row.id },
-      data: { status: d.status, failReason: typeof d.failReason === 'string' ? d.failReason : null }
+      data: {
+        status: d.status,
+        failReason: failed && typeof d.failReason === 'string' ? d.failReason : null,
+        failCode: failed && typeof d.failCode === 'string' ? d.failCode.slice(0, 40) : null
+      }
     });
     // A purchase order counts as sent once WhatsApp has it -- the same rule as email.
     if (row.kind === 'PURCHASE_ORDER' && row.referenceId && ['SENT', 'DELIVERED', 'READ'].includes(d.status)) {

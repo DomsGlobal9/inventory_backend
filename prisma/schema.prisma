@@ -3336,6 +3336,8 @@ model WhatsAppMessage {
   /// QUEUED | SENDING | SENT | DELIVERED | READ | FAILED | EXPIRED
   status     String  @default("QUEUED")
   failReason String? @map("fail_reason")
+  /// The service's code for why (NOT_ON_WHATSAPP, MEDIA_FETCH_FAILED, ...), for counting.
+  failCode   String? @map("fail_code")
   sentBy     String? @map("sent_by")
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -3382,6 +3384,9 @@ model LoyaltySettings {
   birthdayText    String? @map("birthday_text") @db.Text
   anniversaryWish Boolean @default(false) @map("anniversary_wish")
   anniversaryText String? @map("anniversary_text") @db.Text
+  /// A picture above the wishes (CampaignMedia ids), or none.
+  birthdayMediaId    String? @map("birthday_media_id")
+  anniversaryMediaId String? @map("anniversary_media_id")
   /// A week before points lapse, remind the customer to use them.
   expiryReminder  Boolean @default(false) @map("expiry_reminder")
 
@@ -3440,6 +3445,8 @@ model LoyaltyEntry {
 
 enum CampaignStatus {
   DRAFT
+  /// Started; each customer's short link is being made. Nothing is sent until every one exists.
+  PREPARING
   SENDING
   PAUSED
   DONE
@@ -3459,6 +3466,17 @@ model Campaign {
   audience Json           @default("{}")
   /// MANUAL, or the automatic kind: BIRTHDAY, ANNIVERSARY, POINTS_EXPIRING.
   source   String         @default("MANUAL")
+
+  /// The picture sent above the words (CampaignMedia, never changed once made).
+  mediaId String?         @map("media_id")
+  media   CampaignMedia?  @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+  /// Where {link} goes: { type: WHATSAPP | PRODUCT | SHOP | EXTERNAL, target, days, productName? }.
+  link    Json?
+  /// What was sent, fixed at Start: words, picture, link, shop name. The page shows this, never
+  /// today's product or settings. Null for a draft.
+  snapshot Json?
+  /// Why making the links has not finished yet (PREPARING), in words; cleared once it has.
+  prepareError String? @map("prepare_error")
 
   /// Not before this moment.
   startAt    DateTime? @map("start_at")
@@ -3487,6 +3505,13 @@ model CampaignRecipient {
   /// WAITING | HANDED (to WhatsApp; its own status is on whatsapp_messages) | SKIPPED | FAILED
   state      String    @default("WAITING")
   skipReason String?   @map("skip_reason")
+  /// Why, as a code: OPTED_OUT | NO_CONSENT | NO_PHONE | INACTIVE | DELETED | RECENT_OFFER |
+  /// CAMPAIGN_STOPPED | REFUSED. The words are in skip_reason.
+  skipCode   String?   @map("skip_code")
+  /// This customer's short-link token (links.newRecipientRef): random, meaningless outside this row.
+  linkRef    String?   @unique @map("link_ref")
+  /// Their link's code once made (go.scaleezy.com/<code>).
+  linkCode   String?   @map("link_code")
   /// Our whatsapp_messages row once handed over: its ticks are this recipient's.
   messageId  String?   @unique @map("message_id")
   handedAt   DateTime? @map("handed_at")
@@ -3618,4 +3643,46 @@ model ShortLinkTap {
   @@index([linkId, at])
   @@index([at])
   @@map("short_link_taps")
+}
+
+/// A picture made ready for WhatsApp: a JPEG, at most 1,600 px, under 1 MB, with no hidden photo
+/// data (GPS, camera), at a random address in inventory-images/whatsapp-media/. Never changed or
+/// replaced once made -- a campaign's history must show the picture that really went. Choosing
+/// another picture makes another row; pictures nothing uses are removed after a few days.
+model CampaignMedia {
+  id          String   @id @default(uuid())
+  clientId    String   @map("client_id")
+  storagePath String   @unique @map("storage_path")
+  url         String   @db.Text
+  width       Int
+  height      Int
+  byteSize    Int      @map("byte_size")
+  /// UPLOAD, or PRODUCT when made from one of the shop's product photos.
+  source      String   @default("UPLOAD")
+  productId   String?  @map("product_id")
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  campaigns Campaign[]
+  templates CampaignTemplate[]
+
+  @@index([clientId, createdAt])
+  @@map("campaign_media")
+}
+
+/// A campaign saved to start from again: words, picture and link choice. Not who it goes to.
+model CampaignTemplate {
+  id          String         @id @default(uuid())
+  clientId    String         @map("client_id")
+  name        String
+  text        String         @db.Text
+  mediaId     String?        @map("media_id")
+  media       CampaignMedia? @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+  link        Json?
+  createdById String?        @map("created_by_id")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  @@unique([clientId, name])
+  @@map("campaign_templates")
 }

@@ -284,6 +284,13 @@ export async function disableForOwner(clientId: string, owner: Owner, byUserId: 
   return { switchedOff: r.count };
 }
 
+/** Has the shop switched this thing's links off? (Any of them: they are switched together.) */
+export async function switchedOffByShop(clientId: string, owner: Owner): Promise<boolean> {
+  checkOwner(owner);
+  const n = await prisma.shortLink.count({ where: { clientId, ownerModule: owner.module, ownerRef: owner.ref ?? null, status: 'DISABLED_BY_SHOP', isTest: false } });
+  return n > 0;
+}
+
 /** The shop switches its own links back on. Never one ScaleEzy switched off. */
 export async function enableForOwner(clientId: string, owner: Owner) {
   checkOwner(owner);

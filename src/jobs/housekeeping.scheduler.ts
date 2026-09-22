@@ -3,6 +3,7 @@ import { shopifyInstallationService } from '../services/shopify-installation.ser
 import { shopifyPrivacyService } from '../services/shopify-privacy';
 import { fillService } from '../services/shelves/fill.service';
 import { links } from '../services/links';
+import { purgeUnusedCampaignMedia } from '../services/campaigns';
 
 /**
  * Throwing away what has stopped meaning anything.
@@ -72,7 +73,12 @@ export class HousekeepingScheduler {
     const shortLinks = await links.purge(now)
       .catch(error => { console.error('[Housekeeping] short-link clean-up failed:', (error as Error)?.message); return { taps: 0, testLinks: 0 }; });
 
+    // Campaign pictures nothing uses any more (a draft that changed its picture, a deleted draft).
+    const campaignPictures = await purgeUnusedCampaignMedia(now)
+      .catch(error => { console.error('[Housekeeping] campaign picture clean-up failed:', (error as Error)?.message); return 0; });
+
     return {
+      unusedCampaignPictures: campaignPictures,
       unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried,
       whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded,
       shelfSaveKeys: shelfSaveKeys.count, shortLinkTaps: shortLinks.taps, testShortLinks: shortLinks.testLinks

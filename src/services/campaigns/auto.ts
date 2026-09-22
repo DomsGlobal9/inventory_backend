@@ -26,17 +26,23 @@ const shortDate = (dayKey: string) => {
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 };
 
-async function makeCampaign(clientId: string, source: string, name: string, text: string, customerIds: string[]) {
+async function makeCampaign(clientId: string, source: string, name: string, text: string, customerIds: string[], mediaId: string | null = null) {
   if (customerIds.length === 0) return null;
   // The day's name carries the date: the same lot already made in the last two days is not made again,
   // even if the day's claim was somehow lost.
   const made = await prisma.campaign.findFirst({ where: { clientId, source, name, createdAt: { gte: new Date(Date.now() - 2 * DAY) } }, select: { id: true } });
   if (made) return null;
+  // The wish's picture, if the shop chose one and it still exists. Frozen like any campaign's.
+  const media = mediaId ? await prisma.campaignMedia.findFirst({ where: { id: mediaId, clientId }, select: { id: true, url: true, width: true, height: true } }) : null;
+  const shopName = (await getShopSettings(clientId)).businessName || 'our shop';
+  const now = new Date();
   return prisma.$transaction(async tx => {
     const c = await tx.campaign.create({
       data: {
-        clientId, source, name, text, status: 'SENDING', startedAt: new Date(),
-        audience: { customerIds } as Prisma.InputJsonValue
+        clientId, source, name, text, status: 'SENDING', startedAt: now,
+        audience: { customerIds } as Prisma.InputJsonValue,
+        mediaId: media?.id ?? null,
+        snapshot: { text, media, link: null, shopName, frozenAt: now.toISOString() } as Prisma.InputJsonValue
       }
     });
     await tx.campaignRecipient.createMany({ data: customerIds.map(customerId => ({ campaignId: c.id, clientId, customerId })), skipDuplicates: true });
@@ -75,12 +81,12 @@ export async function prepareShopDay(clientId: string, now = new Date(), opts: {
     const gift = s.enabled && s.birthdayPoints > 0
       ? `\n\nWe have added ${s.birthdayPoints.toLocaleString('en-IN')} points to your account as a gift. You now have {points} points.`
       : '';
-    if (await makeCampaign(clientId, 'BIRTHDAY', `Birthday wishes, ${shortDate(day)}`, (s.birthdayText || DEFAULT_BIRTHDAY_TEXT) + gift, ids)) out.birthdays = ids.length;
+    if (await makeCampaign(clientId, 'BIRTHDAY', `Birthday wishes, ${shortDate(day)}`, (s.birthdayText || DEFAULT_BIRTHDAY_TEXT) + gift, ids, s.birthdayMediaId ?? null)) out.birthdays = ids.length;
   }
 
   if (s.anniversaryWish) {
     const ids = (await prisma.customer.findMany({ where: { ...reachable(clientId), anniversary: { in: todays } }, select: { id: true } })).map(c => c.id);
-    if (await makeCampaign(clientId, 'ANNIVERSARY', `Anniversary wishes, ${shortDate(day)}`, s.anniversaryText || DEFAULT_ANNIVERSARY_TEXT, ids)) out.anniversaries = ids.length;
+    if (await makeCampaign(clientId, 'ANNIVERSARY', `Anniversary wishes, ${shortDate(day)}`, s.anniversaryText || DEFAULT_ANNIVERSARY_TEXT, ids, s.anniversaryMediaId ?? null)) out.anniversaries = ids.length;
   }
 
   // A week's notice: points lapse `expiryMonths` after the last purchase or use, so remind whoever's
