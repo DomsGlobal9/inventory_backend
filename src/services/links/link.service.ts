@@ -261,6 +261,32 @@ export async function statsFor(clientId: string, owner: Owner): Promise<LinkStat
   return { links: agg._count._all, tapped, totalTaps: agg._sum.tapCount ?? 0, robotOpens: agg._sum.botOpenCount ?? 0 };
 }
 
+/**
+ * The same figures for many owners at once, for a list screen.
+ *
+ * A list of a hundred campaigns calling statsFor a hundred times is two hundred round trips to
+ * Singapore for numbers that fit in one group-by. Owners with no links are simply absent from
+ * the map, which is what a caller wants to distinguish "no link" from "nobody tapped".
+ */
+export async function statsForMany(clientId: string, module: string, refs: string[]): Promise<Map<string, LinkStats>> {
+  const out = new Map<string, LinkStats>();
+  if (refs.length === 0) return out;
+  const rows = await prisma.$queryRaw<{ ref: string; links: bigint; tapped: bigint; taps: bigint | null; robots: bigint | null }[]>`
+    SELECT owner_ref AS ref,
+           COUNT(*) AS links,
+           COUNT(*) FILTER (WHERE tap_count > 0) AS tapped,
+           SUM(tap_count) AS taps,
+           SUM(bot_open_count) AS robots
+      FROM short_links
+     WHERE client_id = ${clientId} AND owner_module = ${module} AND is_test = false
+       AND owner_ref IN (${Prisma.join(refs.slice(0, 500))})
+     GROUP BY owner_ref`;
+  for (const r of rows) {
+    out.set(r.ref, { links: Number(r.links), tapped: Number(r.tapped), totalTaps: Number(r.taps ?? 0), robotOpens: Number(r.robots ?? 0) });
+  }
+  return out;
+}
+
 /** Per person, for the module that holds the tokens. */
 export async function tapsByRecipient(clientId: string, owner: Owner, recipientRefs: string[]) {
   checkOwner(owner);
@@ -323,9 +349,9 @@ export async function platformEnable(code: string) {
 }
 
 /** For the console: what a code is, without anything about who it was sent to. */
-export async function describe(code: string) {
+export async function describe(code: string, now = new Date()) {
   if (!/^[A-Za-z0-9]{7}$/.test(code)) return null;
-  return prisma.shortLink.findUnique({
+  const row = await prisma.shortLink.findUnique({
     where: { code },
     select: {
       code: true, clientId: true, ownerModule: true, ownerRef: true, targetType: true, target: true, status: true,
@@ -333,6 +359,13 @@ export async function describe(code: string) {
       firstTapAt: true, lastTapAt: true, createdAt: true
     }
   });
+  if (!row) return null;
+  // `status` is what is stored; `state` is what a person taps into. A link past its day is still
+  // ACTIVE in the column, and a console that showed "Working" for it would be telling the admin
+  // something the customer's phone disagrees with. Computed here so every caller gets the same
+  // answer as the redirect itself. recipientRef stays out: who a link was for is the shop's
+  // business, and there is no admin question it answers.
+  return { ...row, state: stateOf(row, now), shortUrl: shortUrl(row.code) };
 }
 
 // ── Housekeeping ──────────────────────────────────────────────────────────────────────────

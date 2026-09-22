@@ -59,6 +59,19 @@ const refusalAsync = async (p: Promise<unknown>): Promise<string> => {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const codeOf = (shortUrl: string) => shortUrl.slice(shortUrl.lastIndexOf('/') + 1);
 const row = (code: string) => prisma.shortLink.findUniqueOrThrow({ where: { code } });
+/**
+ * A tap is counted after the visitor has already been sent on -- deliberately, so nobody waits on
+ * our bookkeeping. So the count arrives a moment after the redirect, and how long that moment is
+ * depends on the database being in Singapore. Wait for the figure we expect instead of guessing at
+ * a number of milliseconds; if it never comes, the last row is returned and the check fails, which
+ * is what should happen.
+ */
+async function countedRow(code: string, want: (l: { tapCount: number; botOpenCount: number }) => boolean, ms = 10_000) {
+  const until = Date.now() + ms;
+  let l = await row(code);
+  while (!want(l) && Date.now() < until) { await sleep(250); l = await row(code); }
+  return l;
+}
 const BROWSER = 'Mozilla/5.0 (Linux; Android 14; SM-A146B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 const WHATSAPP = 'WhatsApp/2.24.13.78 A';
 
@@ -263,21 +276,18 @@ async function main() {
     check('to the product, carrying ?sz=<code>', r.headers.location === `${target}?sz=${code}`, r.headers.location);
     check('never cached, not indexed', /no-store/.test(String(r.headers['cache-control'])) && /noindex/.test(String(r.headers['x-robots-tag'])), r.headers);
     check('no cookie set, no app CORS on it', !r.headers['set-cookie'] && !r.headers['access-control-allow-credentials']);
-    await sleep(300);
-    let l = await row(code);
+    let l = await countedRow(code, x => x.tapCount === 1);
     check('counted as one tap, first and last time set', l.tapCount === 1 && l.botOpenCount === 0 && !!l.firstTapAt && !!l.lastTapAt, l);
 
     const p = await httpGet(`${SERVER}/l/${code}`, { 'user-agent': WHATSAPP });
     const h = await httpGet(`${SERVER}/l/${code}`, { 'user-agent': BROWSER }, 'HEAD');
     const n = await httpGet(`${SERVER}/l/${code}`, {});
     check('WhatsApp\'s preview robot, a HEAD and no browser string still get the redirect', [p, h, n].every(x => x.status === 302 && x.headers.location === `${target}?sz=${code}`), [p.status, h.status, n.status]);
-    await sleep(300);
-    l = await row(code);
+    l = await countedRow(code, x => x.botOpenCount === 3);
     check('...but count as robot opens, not taps', l.tapCount === 1 && l.botOpenCount === 3, { tap: l.tapCount, bot: l.botOpenCount });
     const firstTap = l.firstTapAt!.getTime();
     await httpGet(`${SERVER}/l/${code}`, { 'user-agent': BROWSER });
-    await sleep(300);
-    l = await row(code);
+    l = await countedRow(code, x => x.tapCount === 2);
     check('a second tap: count 2, first tap time unchanged, last tap later', l.tapCount === 2 && l.firstTapAt!.getTime() === firstTap && l.lastTapAt!.getTime() > firstTap);
     check('an open is stored as a time and person/robot only', (await prisma.shortLinkTap.count({ where: { linkId: l.id } })) === 5
       && Object.keys((await prisma.shortLinkTap.findFirstOrThrow({ where: { linkId: l.id } }))).sort().join() === 'at,id,linkId,visitor');
@@ -299,7 +309,7 @@ async function main() {
     const sqlish = await httpGet(`${SERVER}/l/${encodeURIComponent("a' OR 1=1")}`, { 'user-agent': BROWSER });
     check('unknown code, wrong shape, or junk: the same 404 page', [unknown, badShape, sqlish].every(x => x.status === 404 && /not available/.test(x.data)), [unknown.status, badShape.status, sqlish.status]);
     check('pages cannot be framed or scripted (helmet headers present)', /DENY|SAMEORIGIN/i.test(String(unknown.headers['x-frame-options'])) && !!unknown.headers['content-security-policy']);
-    await sleep(300);
+    await sleep(1500);
     const quiet = await Promise.all([first[1], first[2], first[3]].map(x => row(x.code)));
     check('opens of expired or switched-off links are not counted', quiet.every(q => q.tapCount === 0 && q.botOpenCount === 0));
     const post = await httpGet(`${SERVER}/l/${code}`, { 'user-agent': BROWSER }, 'POST');

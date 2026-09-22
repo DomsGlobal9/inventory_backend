@@ -141,7 +141,18 @@ export async function list(actor: Actor, input: { source?: unknown } = {}) {
     include: withMedia
   });
   const stats = await statsFor(rows.map(r => r.id));
-  return rows.map(r => view(r, stats.get(r.id)));
+  // Taps for the whole list in one query: the list is where an owner looks to see whether last
+  // week's offer worked, and "sent 300" without "42 tapped" is the half of that they came for.
+  // Which campaigns count is the same test the campaign page uses -- the frozen snapshot, not
+  // today's draft settings -- so the two screens can never disagree about one campaign. A draft
+  // has no snapshot and no links, so it rightly says nothing about taps rather than zero.
+  const withLinks = rows.filter(r => !!storedSnapshot(r.snapshot)?.link).map(r => r.id);
+  const linkStats = await links.statsForMany(actor.clientId, LINK_OWNER, withLinks);
+  return rows.map(r => {
+    const v = view(r, stats.get(r.id));
+    const ls = linkStats.get(r.id);
+    return { ...v, progress: { ...v.progress, tapped: ls?.tapped ?? null, taps: ls?.totalTaps ?? null } };
+  });
 }
 
 /** Why customers were not sent it, counted: "12 not sent: number not on WhatsApp". */
