@@ -315,7 +315,11 @@ export async function latestFor(actor: Actor, kind: unknown, id: unknown) {
     where: { clientId: actor.clientId, kind: kind as string, referenceId: id },
     orderBy: { createdAt: 'desc' }
   });
-  if (!m) return null;
+  // Has the person this would go to replied STOP? Worth answering before the press, not after:
+  // otherwise the screen offers a button whose only possible outcome is a refusal, and says
+  // nothing about the way round it (sharing from the shopkeeper's own phone).
+  const stopped = await recipientStopped(actor.clientId, kind as SendKind, id);
+  if (!m) return stopped ? { recipientStopped: true, recipientName: stopped.name } : null;
   // Still waiting after half a minute: say why (the shop's WhatsApp is not connected, or today's
   // limit is used up), so "Waiting to send" is never a mystery. Best effort -- the status stands
   // without it.
@@ -323,8 +327,37 @@ export async function latestFor(actor: Actor, kind: unknown, id: unknown) {
   if (m.status === 'QUEUED' && m.serviceMessageId && Date.now() - m.createdAt.getTime() > 30_000) {
     waitingReason = await whatsappClient.message(m.serviceMessageId).then(r => r.waitingReason ?? null).catch(() => null);
   }
-  return { ...publicMessage(m), waitingReason };
+  return { ...publicMessage(m), waitingReason, recipientStopped: !!stopped, recipientName: stopped?.name };
 }
+
+/**
+ * Who this document would go to, and whether they have asked us to stop.
+ *
+ * Only a customer can reply STOP -- a supplier's purchase order is a different relationship and a
+ * different number -- so only the customer-facing kinds are looked up. Best effort: if anything
+ * here fails the screen simply behaves as it did before, offering the send.
+ */
+async function recipientStopped(clientId: string, kind: SendKind, id: string): Promise<{ name: string } | null> {
+  const customerOf: Partial<Record<SendKind, () => Promise<{ name: string; whatsappStoppedAt: Date | null } | null>>> = {
+    BILL: () =>
+      prisma.salesOrder
+        .findFirst({ where: { id, clientId }, select: { customer: { select: { name: true, whatsappStoppedAt: true } } } })
+        .then(o => o?.customer ?? null),
+    // A return has no customer of its own: it reaches one through the sale it came from,
+    // the same way targetFor finds the number to send the note to.
+    RETURN_NOTE: () =>
+      prisma.salesReturn
+        .findFirst({ where: { id, clientId }, select: { salesOrder: { select: { customer: { select: { name: true, whatsappStoppedAt: true } } } } } })
+        .then(r => r?.salesOrder?.customer ?? null)
+  };
+  try {
+    const who = await customerOf[kind]?.();
+    return who?.whatsappStoppedAt ? { name: who.name } : null;
+  } catch {
+    return null;
+  }
+}
+
 
 // ── The nightly Day Book ───────────────────────────────────────────────────────────────────
 
