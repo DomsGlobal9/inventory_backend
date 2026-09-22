@@ -215,6 +215,38 @@ async function main() {
     check('the owner pays the ₹2,000 out in cash; the same press twice pays once', ok2(pay) && ok2(pay2) && await credit(radha.id) === 0 && (await prisma.storeCreditEntry.count({ where: { customerId: radha.id, kind: 'PAID_OUT' } })) === 1, `${brief(pay)} | ${brief(pay2)}`);
     const payMore = await own.post(`/counter-returns/credit/customers/${radha.id}/payout`, { amount: 1, method: 'CASH', nonce: crypto.randomUUID() });
     check('  ...and nothing more can be paid out than she holds', payMore.status === 400 && plain(payMore.data.message), brief(payMore));
+
+    // Paying out changes HOW a return's money went back (credit -> cash); it must not add a second
+    // refund to a bill -- that pushed a part-returned bill to "Refunded" and past what was paid.
+    const po_s7 = await sell(sita.http, [{ variantId: red.id, quantity: 2 }], { phone: phone(3), name: 'Uma Shankar' }, [{ method: 'CASH', amount: 2000 }]);
+    const uma = await prisma.customer.findFirstOrThrow({ where: { clientId: SHOP, name: 'Uma Shankar' } });
+    const po_l7 = (await sita.http.get(`/counter-returns/sale/${po_s7.data.data.id}`)).data.data.lines[0];
+    const po_ex7 = await sita.http.post('/counter-returns', { key: crypto.randomUUID(), orderId: po_s7.data.data.id, lines: [{ dispatchItemId: po_l7.dispatchItemId, quantity: 1 }], reason: 'SIZE_ISSUE', exchange: true });
+    const po_pay7 = await own.post(`/counter-returns/credit/customers/${uma.id}/payout`, { amount: 600, method: 'CASH', nonce: crypto.randomUUID() });
+    const po_rows7 = await prisma.salesOrderPayment.findMany({ where: { salesOrderId: po_s7.data.data.id, kind: 'REFUND' }, select: { method: true, amount: true, salesReturnId: true } });
+    const po_back7 = po_rows7.reduce((a, r) => a + Number(r.amount), 0);
+    check('one of two pieces exchanged, then ₹600 of the ₹1,000 credit paid out: the bill still shows ₹1,000 back (₹600 cash + ₹400 credit), not ₹1,600',
+      ok2(po_ex7) && ok2(po_pay7) && po_back7 === 1000 && po_rows7.length === 2 && po_rows7.every(r => r.salesReturnId === po_ex7.data.data.returnId)
+        && po_rows7.some(r => r.method === 'CASH' && Number(r.amount) === 600) && po_rows7.some(r => r.method === 'CREDIT' && Number(r.amount) === 400) && await credit(uma.id) === 400,
+      `${brief(po_pay7)} ${JSON.stringify(po_rows7)}`);
+    const po_bill7 = await own.get(`/sales-orders/${po_s7.data.data.id}`);
+    check('  ...and the bill is not marked Refunded -- one saree is still with her', po_bill7.status === 200 && po_bill7.data.payment?.status === 'PAID' && po_bill7.data.payment?.refunded === 1000, JSON.stringify(po_bill7.data?.payment ?? null));
+    const po_pay7b = await own.post(`/counter-returns/credit/customers/${uma.id}/payout`, { amount: 400, method: 'UPI', nonce: crypto.randomUUID() });
+    const po_rows7b = await prisma.salesOrderPayment.findMany({ where: { salesOrderId: po_s7.data.data.id, kind: 'REFUND' }, select: { method: true, amount: true } });
+    check('  ...the last ₹400 by UPI: the credit row is gone, ₹600 cash + ₹400 UPI, still ₹1,000 back', ok2(po_pay7b) && po_rows7b.length === 2 && !po_rows7b.some(r => r.method === 'CREDIT') && po_rows7b.reduce((a, r) => a + Number(r.amount), 0) === 1000 && await credit(uma.id) === 0, JSON.stringify(po_rows7b));
+    const po_sum7 = await own.get(`/counter-returns/sale/${po_s7.data.data.id}`);
+    check('  ...and her store credit history links the payouts to that bill', (await prisma.storeCreditEntry.count({ where: { customerId: uma.id, kind: 'PAID_OUT', salesOrderId: po_s7.data.data.id } })) === 2 && po_sum7.status === 200, brief(po_sum7));
+
+    // The ₹3,000 saree bought with ₹2,000 credit and ₹1,000 UPI, brought back for "cash": the credit
+    // part must go back as credit, or a return would turn store credit into cash without a manager.
+    const ld = (await sita.http.get(`/counter-returns/sale/${dearer.data.data.id}`)).data.data.lines[0];
+    const pvD = await sita.http.post('/counter-returns/preview', { orderId: dearer.data.data.id, lines: [{ dispatchItemId: ld.dispatchItemId, quantity: 1 }] });
+    check('returning a bill paid ₹2,000 with store credit: the screen says ₹2,000 goes back as credit, ₹1,000 as money', pvD.data.data.creditBack === 2000 && pvD.data.data.money === 1000 && pvD.data.data.value === 3000, brief(pvD));
+    const dD = await sita.http.post('/counter-returns', { key: crypto.randomUUID(), orderId: dearer.data.data.id, lines: [{ dispatchItemId: ld.dispatchItemId, quantity: 1 }], reason: 'OTHER', refund: { method: 'CASH' } });
+    const rowsD = await prisma.salesOrderPayment.findMany({ where: { salesReturnId: dD.data.data.returnId }, select: { method: true, amount: true } });
+    check('  ...taken back "for cash": ₹1,000 cash and ₹2,000 back to her store credit, never ₹3,000 cash',
+      dD.status === 201 && rowsD.length === 2 && rowsD.some(r => r.method === 'CASH' && Number(r.amount) === 1000) && rowsD.some(r => r.method === 'CREDIT' && Number(r.amount) === 2000) && await credit(radha.id) === 2000, `${brief(dD)} ${JSON.stringify(rowsD)}`);
+    await own.post(`/counter-returns/credit/customers/${radha.id}/payout`, { amount: 2000, method: 'CASH', nonce: crypto.randomUUID() });
     const books = await prisma.$queryRaw<{ n: bigint }[]>`
       SELECT COUNT(*) AS n FROM customers c WHERE c.client_id = ${SHOP}
          AND c.store_credit_paise <> COALESCE((SELECT SUM(amount_paise) FROM store_credit_entries e WHERE e.customer_id = c.id), 0)`;

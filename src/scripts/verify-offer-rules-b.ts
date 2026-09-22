@@ -195,7 +195,8 @@ async function main() {
   check('an hour of 25:00 is refused', validateSchedule({ from: '25:00', to: '10:00' }).length === 1);
   check('no days chosen is refused', validateSchedule({ days: [], from: '10:00', to: '11:00' }).length === 1);
 
-  const happy = await live({ name: 'Happy hour', value: 25, schedule: weekday });
+  // Starts well before the fixed Wednesday checked below; "yesterday" stops being before it once the calendar moves on.
+  const happy = await live({ name: 'Happy hour', value: 25, schedule: weekday, startsAt: new Date('2026-09-01T00:00:00Z') });
   const inside = await pricingQuoteService.liveOffers(CLIENT, 'POS', shop, null, [], new Date('2026-09-16T11:30:00Z'));
   const outside = await pricingQuoteService.liveOffers(CLIENT, 'POS', shop, null, [], new Date('2026-09-19T11:30:00Z'));
   check('the live offers at Wednesday 5 pm include the happy hour', inside.some(o => o.id === happy.id));

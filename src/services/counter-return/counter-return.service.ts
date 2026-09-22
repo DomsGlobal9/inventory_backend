@@ -24,7 +24,7 @@ import { badRequest, conflict, forbidden, notFound } from '../../utils/httpError
 import { grants, holdsEverything } from '../../config/permissions';
 import { portionOf, toMinor, fromMinor } from '../pricing';
 import { returnService } from '../return.service';
-import { shareOfBill } from '../loyalty';
+import { shareOfBill, shareBetween } from '../loyalty';
 import { post as postCredit, rupees } from '../store-credit';
 import { normalisePhone } from '../../lib/phone';
 
@@ -213,13 +213,68 @@ async function worth(db: Prisma.TransactionClient | typeof prisma, clientId: str
   }
   const share = await shareOfBill(db, clientId, orderId, totalMinor);
   const pointsBackMinor = share?.backMinor ?? 0;
+  const moneyMinor = totalMinor - pointsBackMinor;
+  const creditBackMinor = await creditShare(db, clientId, orderId, moneyMinor);
   return {
     valueMinor: totalMinor,
-    moneyMinor: totalMinor - pointsBackMinor,
+    moneyMinor,
+    // Of that, what was paid with store credit goes back as store credit; the rest is real money.
+    creditBackMinor,
+    cashMinor: moneyMinor - creditBackMinor,
     pointsBack: share?.back ?? 0,
     pointsBackMinor,
     pointsTakenBack: share?.takeBack ?? 0
   };
+}
+
+/**
+ * Of `moneyMinor` going back on a bill, the part the customer had paid with store credit. It goes
+ * back as store credit whatever the cashier chooses -- otherwise returning a bill paid with credit
+ * "for cash" would turn credit into money, which only a manager may do (payOut). Worked out
+ * cumulatively over the bill's completed returns, like the points share.
+ */
+async function creditShare(db: Prisma.TransactionClient | typeof prisma, clientId: string, orderId: string, moneyMinor: number, excludeReturnId?: string) {
+  if (moneyMinor <= 0) return 0;
+  const pays = await db.salesOrderPayment.findMany({ where: { clientId, salesOrderId: orderId, kind: 'PAYMENT' }, select: { method: true, amount: true } });
+  const creditPaid = pays.filter(p => p.method === 'CREDIT').reduce((a, p) => a + toMinor(p.amount as any), 0);
+  const moneyPaid = pays.filter(p => p.method !== 'POINTS').reduce((a, p) => a + toMinor(p.amount as any), 0);
+  if (creditPaid <= 0 || moneyPaid <= 0) return 0;
+  const earlier = await db.salesReturn.findMany({
+    where: { clientId, salesOrderId: orderId, status: 'COMPLETED', ...(excludeReturnId ? { id: { not: excludeReturnId } } : {}) },
+    select: { refundTotal: true }
+  });
+  const before = earlier.reduce((a, r) => a + toMinor(r.refundTotal as any), 0);
+  return Math.min(moneyMinor, shareBetween(creditPaid, moneyPaid, before, before + moneyMinor));
+}
+
+/**
+ * The refund rows for one return: the store-credit share as credit, the rest the way chosen. Store
+ * credit rows also add to the customer's credit. Returns the method recorded on the return.
+ */
+async function writeRefund(tx: Prisma.TransactionClient, input: {
+  clientId: string; orderId: string; returnId: string; returnNumber: string; locationId: string; customerId: string | null;
+  moneyMinor: number; creditBackMinor: number; method: RefundMethod | null; reference: string | null; userId: string; exchange?: boolean;
+}): Promise<RefundMethod | null> {
+  const creditMinor = input.method === 'CREDIT' ? input.moneyMinor : input.creditBackMinor;
+  const otherMinor = input.moneyMinor - creditMinor;
+  if (otherMinor > 0 && !input.method) throw badRequest('Say how the money goes back: cash, UPI, card or store credit.');
+  if (creditMinor > 0) {
+    if (!input.customerId) throw badRequest('Store credit needs a customer on the bill. Give the money back another way.');
+    await tx.salesOrderPayment.create({
+      data: { clientId: input.clientId, salesOrderId: input.orderId, locationId: input.locationId, kind: 'REFUND', method: 'CREDIT', amount: fromMinor(creditMinor), reference: null, salesReturnId: input.returnId, receivedById: input.userId }
+    });
+    await postCredit(tx, {
+      clientId: input.clientId, customerId: input.customerId, kind: 'FROM_RETURN', amountPaise: creditMinor,
+      onceKey: `FROM_RETURN:${input.returnId}`, salesOrderId: input.orderId, salesReturnId: input.returnId, createdById: input.userId,
+      note: input.exchange ? `Exchange: return ${input.returnNumber}` : input.method === 'CREDIT' ? `Return ${input.returnNumber}` : `Return ${input.returnNumber}: the part paid with store credit`
+    });
+  }
+  if (otherMinor > 0) {
+    await tx.salesOrderPayment.create({
+      data: { clientId: input.clientId, salesOrderId: input.orderId, locationId: input.locationId, kind: 'REFUND', method: input.method!, amount: fromMinor(otherMinor), reference: input.reference, salesReturnId: input.returnId, receivedById: input.userId }
+    });
+  }
+  return otherMinor > 0 ? input.method : creditMinor > 0 ? 'CREDIT' : null;
 }
 
 /** What the screen shows before Complete: the money, the points, and anything needing a manager. */
@@ -231,12 +286,14 @@ export async function preview(actor: Actor, input: { orderId?: unknown; lines?: 
   const w = await worth(prisma, actor.clientId, input.orderId, lines);
   const rules = await getRules(actor.clientId);
   return {
-    money: w.moneyMinor / 100,
+    // Real money going back (what the cashier hands over); store credit shown apart.
+    money: w.cashMinor / 100,
+    creditBack: w.creditBackMinor / 100,
     value: w.valueMinor / 100,
     pointsBack: w.pointsBack,
     pointsBackValue: w.pointsBackMinor / 100,
     pointsTakenBack: w.pointsTakenBack,
-    needsManager: needsManager(actor, sale.daysAgo, w.moneyMinor, rules)
+    needsManager: needsManager(actor, sale.daysAgo, w.cashMinor, rules)
   };
 }
 
@@ -298,10 +355,11 @@ export async function complete(actor: Actor, input: {
   ]);
   if (!location) throw badRequest('That store was not found. Choose your store in the top bar.');
   const before = await worth(prisma, actor.clientId, orderId, lines);
-  if (before.moneyMinor > 0 && !method) throw badRequest('Say how the money goes back: cash, UPI, card or store credit.');
+  if (before.cashMinor > 0 && !method) throw badRequest('Say how the money goes back: cash, UPI, card or store credit.');
   if (method === 'CREDIT' && !sale.customer?.id) throw badRequest('Store credit needs a customer on the bill. Give the money back another way.');
   const reference = method ? cleanReference(method, input.refund?.reference) : null;
-  const block = needsManager(actor, sale.daysAgo, before.moneyMinor, rules);
+  // Store credit going back is not money leaving the drawer, so only the rest counts to the limit.
+  const block = needsManager(actor, sale.daysAgo, before.cashMinor, rules);
   if (block && !isManager(actor)) throw forbidden(block);
 
   const returnId = await runTransaction(async tx => {
@@ -313,26 +371,19 @@ export async function complete(actor: Actor, input: {
     await tx.salesReturn.update({ where: { id: created.id }, data: { status: 'INSPECTED', atCounter: true, counterKey: key, locationId } });
     await returnService.completeReturnIn(tx, actor.clientId, created.id, { restockAt: locationId });
 
-    // What is left to pay back in money, after the points share went back as points.
+    // What is left to pay back, after the points share went back as points; of it, the store-credit
+    // share goes back as credit and the rest the way chosen.
     const done = await tx.salesReturn.findUniqueOrThrow({ where: { id: created.id }, select: { refundTotal: true, returnNumber: true } });
     const moneyMinor = toMinor(done.refundTotal as any);
-    if (moneyMinor > 0 && method) {
-      await tx.salesOrderPayment.create({
-        data: {
-          clientId: actor.clientId, salesOrderId: orderId, locationId, kind: 'REFUND', method,
-          amount: fromMinor(moneyMinor), reference, salesReturnId: created.id, receivedById: actor.id
-        }
+    if (moneyMinor > 0) {
+      const creditBackMinor = await creditShare(tx, actor.clientId, orderId, moneyMinor, created.id);
+      const recorded = await writeRefund(tx, {
+        clientId: actor.clientId, orderId, returnId: created.id, returnNumber: done.returnNumber, locationId,
+        customerId: sale.customer?.id ?? null, moneyMinor, creditBackMinor, method, reference, userId: actor.id, exchange
       });
-      if (method === 'CREDIT') {
-        await postCredit(tx, {
-          clientId: actor.clientId, customerId: sale.customer!.id!, kind: 'FROM_RETURN', amountPaise: moneyMinor,
-          onceKey: `FROM_RETURN:${created.id}`, salesOrderId: orderId, salesReturnId: created.id, createdById: actor.id,
-          note: exchange ? `Exchange: return ${done.returnNumber}` : `Return ${done.returnNumber}`
-        });
-      }
       await tx.salesReturn.update({
         where: { id: created.id },
-        data: { refundStatus: 'REFUNDED', refundMethod: method, refundedAt: new Date(), refundedById: actor.id }
+        data: { refundStatus: 'REFUNDED', refundMethod: recorded, refundedAt: new Date(), refundedById: actor.id }
       });
     }
     return created.id;
@@ -363,12 +414,15 @@ async function summary(clientId: string, returnId: string) {
     }
   });
   const money = Number(r.refundTotal);
+  // How it actually went back, from the refund rows: "₹1,000 in cash and ₹2,000 in store credit".
+  const rows = await prisma.salesOrderPayment.findMany({ where: { clientId, salesReturnId: r.id, kind: 'REFUND' }, select: { method: true, amount: true }, orderBy: { amount: 'asc' } });
+  const words = rows.map(x => `${rupees(toMinor(x.amount as any))} in ${METHOD_WORD[x.method as RefundMethod] ?? x.method}`).join(' and ');
   return {
     returnId: r.id, returnNumber: r.returnNumber, orderId: r.salesOrder.id, orderNumber: r.salesOrder.orderNumber,
     customer: r.salesOrder.customer ? { id: r.salesOrder.customer.id, name: r.salesOrder.customer.name, storeCredit: r.salesOrder.customer.storeCreditPaise / 100 } : null,
     pieces: r.items.reduce((s, i) => s + i.quantity, 0),
     backOnSale: r.items.filter(i => i.disposition === 'RESTOCK').reduce((s, i) => s + i.quantity, 0),
-    money, refundMethod: r.refundMethod, refundWords: r.refundMethod ? `${rupees(Math.round(money * 100))} in ${METHOD_WORD[r.refundMethod as RefundMethod]}` : null,
+    money, refundMethod: r.refundMethod, refundWords: words || null,
     pointsBack: r.pointsBack, pointsBackValue: Number(r.pointsBackValue), pointsTakenBack: r.pointsTakenBack
   };
 }
@@ -402,15 +456,12 @@ export async function recordRefund(actor: Actor, returnId: string, input: { meth
       data: { refundStatus: 'REFUNDED', refundMethod: method, refundedAt: new Date(), refundedById: actor.id }
     });
     if (claimed.count === 0) throw conflict('The money for this return has just been recorded by somebody else.');
-    await tx.salesOrderPayment.create({
-      data: { clientId: actor.clientId, salesOrderId: ret.salesOrderId, locationId, kind: 'REFUND', method, amount: fromMinor(moneyMinor), reference, salesReturnId: ret.id, receivedById: actor.id }
+    const creditBackMinor = await creditShare(tx, actor.clientId, ret.salesOrderId, moneyMinor, ret.id);
+    const recorded = await writeRefund(tx, {
+      clientId: actor.clientId, orderId: ret.salesOrderId, returnId: ret.id, returnNumber: ret.returnNumber, locationId,
+      customerId: ret.salesOrder.customerId, moneyMinor, creditBackMinor, method, reference, userId: actor.id
     });
-    if (method === 'CREDIT') {
-      await postCredit(tx, {
-        clientId: actor.clientId, customerId: ret.salesOrder.customerId!, kind: 'FROM_RETURN', amountPaise: moneyMinor,
-        onceKey: `FROM_RETURN:${ret.id}`, salesOrderId: ret.salesOrderId, salesReturnId: ret.id, createdById: actor.id, note: `Return ${ret.returnNumber}`
-      });
-    }
+    if (recorded !== method) await tx.salesReturn.update({ where: { id: ret.id }, data: { refundMethod: recorded } });
   }, { timeout: 20000, maxWait: 15000 });
   return summary(actor.clientId, ret.id);
 }

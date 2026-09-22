@@ -14,7 +14,7 @@ import { Prisma, StoreCreditKind } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest, forbidden, notFound } from '../../utils/httpError';
 import { grants, holdsEverything } from '../../config/permissions';
-import { fromMinor } from '../pricing';
+import { fromMinor, toMinor } from '../pricing';
 
 type Tx = Prisma.TransactionClient;
 export type Actor = { id: string; clientId: string; name?: string | null; permissions?: string[]; roles?: string[] };
@@ -53,7 +53,7 @@ export async function post(tx: Tx, e: Entry): Promise<number | null> {
   if (r?.held === null || r?.held === undefined) throw notFound('Customer not found');
   const already = await tx.storeCreditEntry.findUnique({ where: { onceKey: e.onceKey }, select: { id: true } });
   if (already) return null;
-  throw badRequest(`The customer has only ${rupees(Number(r.held))} of store credit. Take the rest another way.`);
+  throw badRequest(`The customer has only ${rupees(Number(r.held))} of store credit.${e.kind === 'USED' ? ' Take the rest another way.' : ''}`);
 }
 
 /** Inside the counter sale: take the credit spent on this bill. */
@@ -118,28 +118,46 @@ export async function payOut(actor: Actor, customerId: string, input: { amount: 
   if (!nonce) throw badRequest('Reload the page and try again.');
   const reference = typeof input.reference === 'string' && input.reference.trim() ? input.reference.trim().slice(0, 40) : null;
 
-  const source = await prisma.storeCreditEntry.findFirst({
-    where: { clientId: actor.clientId, customerId, kind: 'FROM_RETURN' }, orderBy: { createdAt: 'desc' },
-    select: { salesOrderId: true, salesReturnId: true }
-  });
-  if (!source?.salesOrderId) throw badRequest('This customer has no store credit from a return to pay out.');
-  const order = await prisma.salesOrder.findFirst({ where: { id: source.salesOrderId, clientId: actor.clientId }, select: { id: true, locationId: true } });
-  if (!order) throw notFound('The bill this credit came from was not found.');
-  const locationId = typeof input.locationId === 'string' && input.locationId ? input.locationId : order.locationId;
-  if (!locationId) throw badRequest('Choose the store you are paying out from.');
+  const chosenLocation = typeof input.locationId === 'string' && input.locationId ? input.locationId : null;
+  const method = input.method as 'CASH' | 'UPI';
 
   await prisma.$transaction(async tx => {
+    // The ledger row first: it locks the customer, so two payouts cannot both spend the same credit.
     const done = await post(tx, {
       clientId: actor.clientId, customerId, kind: 'PAID_OUT', amountPaise: -paise, onceKey: `PAID_OUT:${customerId}:${nonce}`,
-      salesOrderId: order.id, salesReturnId: source.salesReturnId, createdById: actor.id, note: `Paid out in ${input.method === 'CASH' ? 'cash' : 'UPI'}`
+      createdById: actor.id, note: `Paid out in ${method === 'CASH' ? 'cash' : 'UPI'}`
     });
     if (done === null) return;
-    await tx.salesOrderPayment.create({
-      data: {
-        clientId: actor.clientId, salesOrderId: order.id, locationId, kind: 'REFUND', method: input.method as any,
-        amount: fromMinor(paise), reference, salesReturnId: source.salesReturnId, receivedById: actor.id
-      }
+    // Paying out does not give back more for the returned goods -- it changes how part of what went
+    // back was given: store credit becomes money. So shrink the store-credit refund rows (newest
+    // first) and put a money row beside each on the same bill and return. Every bill's refunds still
+    // add up to what went back for its goods (a new row would push a part-returned bill to
+    // "Refunded"), and the Day Book sees the cash leave the drawer today.
+    const creditRows = await tx.salesOrderPayment.findMany({
+      where: { clientId: actor.clientId, kind: 'REFUND', method: 'CREDIT', salesOrder: { customerId } },
+      orderBy: [{ receivedAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, amount: true, salesOrderId: true, salesReturnId: true, locationId: true }
     });
+    let left = paise;
+    let first: { salesOrderId: string; salesReturnId: string | null } | null = null;
+    for (const row of creditRows) {
+      if (left <= 0) break;
+      const had = toMinor(row.amount as any);
+      const take = Math.min(left, had);
+      if (take === had) await tx.salesOrderPayment.delete({ where: { id: row.id } });
+      else await tx.salesOrderPayment.update({ where: { id: row.id }, data: { amount: fromMinor(had - take) } });
+      await tx.salesOrderPayment.create({
+        data: {
+          clientId: actor.clientId, salesOrderId: row.salesOrderId, locationId: chosenLocation ?? row.locationId, kind: 'REFUND', method,
+          amount: fromMinor(take), reference, salesReturnId: row.salesReturnId, receivedById: actor.id
+        }
+      });
+      first ??= { salesOrderId: row.salesOrderId, salesReturnId: row.salesReturnId };
+      left -= take;
+    }
+    if (left > 0) throw badRequest(`Only ${rupees(paise - left)} of this customer's credit came back on returns, so only that can be paid out.`);
+    // Link the ledger row to the bill it was paid against, for the customer's history.
+    await tx.storeCreditEntry.update({ where: { onceKey: `PAID_OUT:${customerId}:${nonce}` }, data: { salesOrderId: first!.salesOrderId, salesReturnId: first!.salesReturnId } });
   }, { timeout: 20000, maxWait: 15000 });
   return customerCredit(actor.clientId, customerId);
 }
