@@ -384,6 +384,34 @@ describe.skipIf(!hasTestDb)('worker resilience', () => {
     expect(await env.db.moduleEvent.count({ where: { type: 'contact.opted_out' } })).toBe(1);
   });
 
+  it('a STOP is answered once, and that is the only message the person ever gets again', async () => {
+    const stop = (id: string) =>
+      handleEngineEvent(env.ctx, {
+        event: 'messages.upsert',
+        instance: shop.instanceName,
+        data: { key: { remoteJid: '919876543222@s.whatsapp.net', fromMe: false, id }, message: { conversation: 'STOP' } },
+      });
+
+    await stop('Y1');
+    const ok = await env.db.message.findMany({ where: { kind: 'STOP_OK', toDigits: '919876543222' } });
+    expect(ok).toHaveLength(1);
+    expect(ok[0]!.text).toMatch(/will not get any more offers/i);
+    // Nothing suggests it can be undone, because it cannot.
+    expect(ok[0]!.text).not.toMatch(/reply|again|resubscribe|start/i);
+    // It belongs to no module: the service sent it, not a shop.
+    expect(ok[0]!.moduleId).toBeNull();
+
+    // Saying STOP twice must not send a second one.
+    await stop('Y2');
+    expect(await env.db.message.count({ where: { kind: 'STOP_OK', toDigits: '919876543222' } })).toBe(1);
+
+    await step();
+    expect(await status(ok[0]!.id)).toBe('SENT');
+    // That nothing else can reach them afterwards is checked over the real API in
+    // api.test.ts ("a person who replied STOP is not messaged"); the helper here writes rows
+    // straight to the database, so it would walk past the very check that matters.
+  });
+
   it('the canary account (ScaleEzy) sends through the same queue', async () => {
     const sc = await env.db.account.findFirstOrThrow({ where: { kind: 'SCALEEZY' } });
     const m = await queueMessage(env, sc.id, null, { kind: 'TEST' });

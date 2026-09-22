@@ -16,6 +16,20 @@ export interface EnginePayload {
 }
 
 const STOP_WORDS = new Set(['STOP', 'UNSUBSCRIBE', 'STOP ALL']);
+
+/**
+ * The one message allowed to somebody who has just asked us to stop.
+ *
+ * Silence reads as "it did not work": the person replies STOP again, or blocks the shop's number
+ * and reports it -- which is exactly the damage the slow sending rate exists to prevent. So we say
+ * once that we heard them, and nothing after that.
+ *
+ * The shop is not named. The service does not know shop names (it holds a client id, and
+ * displayName is usually empty), and the message lands inside the shop's own chat, so the person
+ * can already see whose number it is. Nothing here suggests it can be undone, because it cannot.
+ */
+const stopConfirmation = (shop: string | null) =>
+  `You will not get any more offers from ${shop?.trim() || 'this shop'}. Your bills and order updates have stopped too.`;
 /** How far back a send.message event may match a message we were sending (see onSendMessage). */
 const CORRELATE_WINDOW_MS = 10 * 60 * 1000;
 
@@ -161,6 +175,20 @@ async function onMessagesUpsert(ctx: Ctx, instance: string, data: Record<string,
   await ctx.db.$transaction(async (tx) => {
     const created = await tx.optOut.createMany({ data: [{ accountId: account.id, toDigits: from }], skipDuplicates: true });
     if (created.count > 0) {
+      // Queued here, not through queueMessage: that path refuses anything for a number which has
+      // opted out, which is the rule that makes "not even a bill" true. This is its one exception,
+      // and `created.count > 0` keeps it to the first STOP -- replying STOP twice sends nothing.
+      await tx.message.create({
+        data: {
+          accountId: account.id,
+          moduleId: null,
+          toDigits: from,
+          kind: 'STOP_OK',
+          idempotencyKey: `stop-ok:${account.id}:${from}`,
+          contentHash: `stop-ok:${account.id}:${from}`,
+          text: stopConfirmation(account.displayName),
+        },
+      });
       await enqueueForAllModules(tx, 'contact.opted_out', {
         accountId: account.id,
         clientId: account.clientId,

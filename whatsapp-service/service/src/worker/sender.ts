@@ -124,10 +124,17 @@ export class Sender {
     const now = new Date();
 
     // Old messages expire whether or not the number is connected: they are never sent late.
-    const oldest = await this.ctx.db.message.findFirst({
-      where: { accountId: account.id, status: 'QUEUED', nextAttemptAt: { lte: now } },
-      orderBy: { queuedAt: 'asc' },
-    });
+    // A STOP confirmation goes before anything else waiting for this number. Somebody who has
+    // just asked us to stop should not wait behind a queue of the messages they are stopping.
+    const oldest =
+      (await this.ctx.db.message.findFirst({
+        where: { accountId: account.id, status: 'QUEUED', kind: 'STOP_OK', nextAttemptAt: { lte: now } },
+        orderBy: { queuedAt: 'asc' },
+      })) ??
+      (await this.ctx.db.message.findFirst({
+        where: { accountId: account.id, status: 'QUEUED', nextAttemptAt: { lte: now } },
+        orderBy: { queuedAt: 'asc' },
+      }));
     if (!oldest) return;
     if (isExpired(oldest.queuedAt, now)) {
       await applyMessageStatus(this.ctx, oldest.id, 'EXPIRED');
@@ -144,7 +151,10 @@ export class Sender {
     const sentToday = await this.ctx.db.message.count({
       where: { accountId: account.id, sentAt: { gte: istDayStart(now) } },
     });
-    if (isOverCap(sentToday, cap)) {
+    // The cap exists so a number is not seen to blast messages. A STOP confirmation is the
+    // opposite of that, and making somebody wait until tomorrow to hear that we stopped is how a
+    // number gets reported. It is one message, and only ever one per person.
+    if (oldest.kind !== 'STOP_OK' && isOverCap(sentToday, cap)) {
       // Stays queued until the next Indian day; it is never dropped.
       if (!this.capLogged.has(account.id)) {
         this.ctx.log.warn({ accountId: account.id, cap }, 'daily cap reached; messages wait for tomorrow');

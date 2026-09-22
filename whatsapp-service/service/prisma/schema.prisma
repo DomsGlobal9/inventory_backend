@@ -77,6 +77,9 @@ enum MessageKind {
   C8
   /// A shop's loyalty notice: points earned after a sale.
   C9
+  /// The one message we send to somebody who replied STOP, telling them it worked. The only
+  /// message allowed to a number that has opted out, and only the first time they ask.
+  STOP_OK
   TEST
 }
 
