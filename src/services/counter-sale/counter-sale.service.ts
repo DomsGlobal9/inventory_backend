@@ -8,6 +8,7 @@ import { counterCustomer } from '../customer.service';
 import { normaliseManualDiscount, toMinor } from '../pricing';
 import { planPayments, paymentSummary, recordPayments } from '../payments';
 import { checkSale, settleSale } from '../loyalty';
+import { spendOnSale } from '../store-credit';
 import { recordOffersConsent } from '../campaigns/consent';
 import { afterCommit } from '../../lib/afterCommit';
 import { sendAfterSaleNotice } from '../campaigns/notices';
@@ -154,6 +155,12 @@ export class CounterSaleService {
           settings: loyaltyCheck.settings,
           // Known only for a customer chosen by id; one found by number is read inside.
           held: input.customer.id && input.customer.id === customer.id ? loyaltyCheck.held : undefined
+        });
+
+        // Store credit spent on the bill, taken in the same transaction (refused if they hold less).
+        await spendOnSale(tx, {
+          clientId, customerId: customer.id, orderId: order.id, userId: caller.userId,
+          paise: planned.filter(p => p.method === 'CREDIT').reduce((sum, p) => sum + p.amountMinor, 0)
         });
 
         // Only ever turned on here, when the cashier ticked that the customer agreed. Never off:

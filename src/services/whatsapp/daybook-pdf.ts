@@ -23,6 +23,15 @@ const lib = () => (pdfLib ??= loadEsm('@react-pdf/renderer'));
 const h = React.createElement;
 
 const money = (v: unknown) => `Rs. ${Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+
+/** Taken and paid back at the counter, one row per way of paying that was used. */
+const METHOD_NAMES: Record<string, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Loyalty points', CREDIT: 'Store credit' };
+function moneyRows(d: any): string[][] {
+  const taken = d.money?.taken ?? {}, back = d.money?.paidBack ?? {};
+  return Object.keys(METHOD_NAMES).filter(m => taken[m] || back[m]).map(m => [
+    METHOD_NAMES[m], taken[m] ? money(taken[m].amount) : '-', back[m] ? money(back[m].amount) : '-'
+  ]);
+}
 const num = (v: unknown) => Number(v || 0).toLocaleString('en-IN');
 const signed = (v: unknown) => (Number(v) >= 0 ? '+' : '') + num(v);
 
@@ -172,6 +181,14 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
           widths: ['20%', '20%', '30%', '12%', '18%'],
           align: ['left', 'left', 'left', 'right', 'right'],
           rows: (d.sales.orders || []).map((o: any) => [o.dispatchNumber, o.orderNumber, o.customer || '-', num(o.units), money(o.value)])
+        })) : null,
+
+      moneyRows(d).length > 0 ? Section({ title: 'Money at the counter', subtitle: `Cash in the drawer from these sales and returns: ${money(d.money.cashInDrawer)}` },
+        Table({
+          head: ['How', 'Taken', 'Paid back'],
+          widths: ['40%', '30%', '30%'],
+          align: ['left', 'right', 'right'],
+          rows: moneyRows(d)
         })) : null,
 
       isRange && d.days?.length > 0 ? h(View, { style: styles.section },

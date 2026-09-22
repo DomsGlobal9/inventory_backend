@@ -32,7 +32,7 @@ export const RBAC_DATA = {
         'offer:publish_external', 'offer:manual_discount_unlimited', 'offer:settings',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
         'admin:locations', 'admin:catalog', 'admin:users', 'team:view_password', 'whatsapp:manage',
-        'loyalty:manage', 'campaign:send'
+        'loyalty:manage', 'campaign:send', 'return:counter'
       ]
     },
 
@@ -43,6 +43,8 @@ export const RBAC_DATA = {
       permissions: [
         'sales_order:create', 'sales_order:update', 'sales_order:confirm',
         'sales_order:counter_sale',
+        // A customer bringing something back to the counter is the same person's job as selling it.
+        'return:counter',
         'customer:create', 'customer:update',
         'product:view',
         'dashboard:view',

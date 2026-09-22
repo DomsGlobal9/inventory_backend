@@ -414,9 +414,18 @@ async function main() {
     const listed = await sales.http.get('/campaigns');
     check('a salesperson cannot see campaigns (not in their role)', listed.status === 403, brief(listed));
 
-    const testSend = await campaigns.sendTest({ id: owner.id, clientId: SHOP, name: 'Owner Anand', permissions: ['*'], roles: ['SUPER_ADMIN'] }, { text: 'Hi {name}, {points} points' });
+    const me = { id: owner.id, clientId: SHOP, name: 'Owner Anand', permissions: ['*'], roles: ['SUPER_ADMIN'] };
+    // The live service masks every number it hands back (••••3162), so the shop's own number is not
+    // known here: the test goes to a number the person types.
+    account = { ...account, phone: '••••0001' };
+    const noNumber = await throws(() => campaigns.sendTest(me, { text: 'Hi {name}' }));
+    check('"send me a test" with no number asks for one, in words', noNumber?.statusCode === 400 && plain(noNumber.message), noNumber?.message);
+    const badNumber = await throws(() => campaigns.sendTest(me, { text: 'Hi {name}', to: '12345' }));
+    check('  ...and a number that is not a phone number is refused', badNumber?.statusCode === 400, badNumber?.message);
+    const testSend = await campaigns.sendTest(me, { text: 'Hi {name}, {points} points', to: '+91 90000 00001' });
     const lastTest = sent[sent.length - 1];
-    check('"send me a test" goes to the shop\'s own number only, marked [Test], with the sender\'s name', testSend.sent === true && lastTest.to === account.phone && /^\[Test\] Hi Owner, 250 points/.test(lastTest.text), JSON.stringify(lastTest));
+    check('"send me a test" goes to the number typed, marked [Test], with the sender\'s name', testSend.sent === true && lastTest.to === '919000000001' && testSend.to === '••••0001' && /^\[Test\] Hi Owner, 250 points/.test(lastTest.text), JSON.stringify(lastTest));
+    account = { ...account, phone: '919000000001' };
 
     // After-sale notice (in this process, so the recorder sees it).
     await own.put('/loyalty/settings', { notifyAfterSale: true });

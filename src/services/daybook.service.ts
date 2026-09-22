@@ -539,8 +539,29 @@ export class DayBookService {
         reason: label(m.reason), by: m.createdBy, at: m.createdAt
       }));
 
+    // ─── MONEY AT THE COUNTER ─────────────────────────────────────────────────
+    // What was taken and what was paid back, by how -- so the cash drawer can be checked against it.
+    // Points and store credit are listed but are not money in the drawer.
+    const payRows = await prisma.salesOrderPayment.groupBy({
+      by: ['kind', 'method'],
+      where: { clientId, receivedAt: { gte: start, lt: end }, ...(locationId ? { locationId } : {}) },
+      _sum: { amount: true },
+      _count: { _all: true }
+    });
+    const moneyOf = (kind: 'PAYMENT' | 'REFUND') => Object.fromEntries(
+      payRows.filter(r => r.kind === kind).map(r => [r.method, { amount: round(Number(r._sum.amount ?? 0)), count: r._count._all }])
+    ) as Record<string, { amount: number; count: number }>;
+    const taken = moneyOf('PAYMENT'), paidBack = moneyOf('REFUND');
+    const money = {
+      taken,
+      paidBack,
+      // Cash that should be in the drawer from today's counter: taken in cash less paid back in cash.
+      cashInDrawer: round((taken.CASH?.amount ?? 0) - (paidBack.CASH?.amount ?? 0))
+    };
+
     return {
       date: dayKey,
+      money,
       // Set for a range only: the days it covers, first and last included, and a row for each.
       range: isRange ? { from: fromKey, to: toKey, dayCount: perDay.size } : null,
       days: isRange ? [...perDay.values()] : null,

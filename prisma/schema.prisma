@@ -55,6 +55,9 @@ enum PaymentMethod {
   CARD
   /// Loyalty points spent on the bill. Money the shop already owed the customer, not money in.
   POINTS
+  /// Store credit: money the shop owes the customer from a return, spent on a bill (or given as
+  /// credit instead of money on a refund row).
+  CREDIT
 }
 
 enum TransferStatus {
@@ -1122,8 +1125,13 @@ model Customer {
   /// Last time points were earned or used -- points expire after a quiet spell, not by batch.
   loyaltyActiveAt DateTime? @map("loyalty_active_at")
 
-  salesOrders    SalesOrder[]
-  loyaltyEntries LoyaltyEntry[]
+  /// Store credit held, in paise: a return refunded as credit, or an exchange's value, waiting to
+  /// be spent. The sum of store_credit_entries, moved together with them.
+  storeCreditPaise Int @default(0) @map("store_credit_paise")
+
+  salesOrders        SalesOrder[]
+  loyaltyEntries     LoyaltyEntry[]
+  storeCreditEntries StoreCreditEntry[]
 
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -1390,16 +1398,27 @@ model SalesReturn {
   /// A return moved stock and nothing else until now, so nothing could say what a refund was
   /// worth -- and with discounts on a line the answer is emphatically not the list price. For a
   /// Shopify refund this is a RECORD: Shopify has already moved the money.
-  refundTotal      Decimal @default(0) @map("refund_total") @db.Decimal(10, 2)
+  refundTotal     Decimal @default(0) @map("refund_total") @db.Decimal(10, 2)
   /// NONE | PENDING | REFUNDED | FAILED
-  refundStatus     String  @default("NONE") @map("refund_status")
+  refundStatus    String  @default("NONE") @map("refund_status")
   /// Of what came back, the part the customer had paid with loyalty points goes back as points,
   /// not money: set when the return is completed, and refundTotal is then the money part only.
-  pointsBack       Int     @default(0) @map("points_back")
-  pointsBackValue  Decimal @default(0) @map("points_back_value") @db.Decimal(10, 2)
+  pointsBack      Int     @default(0) @map("points_back")
+  pointsBackValue Decimal @default(0) @map("points_back_value") @db.Decimal(10, 2)
   /// Points earned on the returned goods, taken back.
-  pointsTakenBack  Int     @default(0) @map("points_taken_back")
-  externalRefundId String? @map("external_refund_id")
+  pointsTakenBack Int     @default(0) @map("points_taken_back")
+
+  /// Taken back at the counter in one step (booked, checked and completed together).
+  atCounter        Boolean   @default(false) @map("at_counter")
+  /// The screen's own id for that one press, so a retried Complete is the same return.
+  counterKey       String?   @unique @map("counter_key")
+  /// The store it was handed back at.
+  locationId       String?   @map("location_id")
+  /// How the money went back: CASH | UPI | CARD | CREDIT (store credit), once recorded.
+  refundMethod     String?   @map("refund_method")
+  refundedAt       DateTime? @map("refunded_at")
+  refundedById     String?   @map("refunded_by_id")
+  externalRefundId String?   @map("external_refund_id")
 
   items SalesReturnItem[]
 
@@ -2148,6 +2167,11 @@ model ClientSettings {
 
   /// Printed at the bottom of a counter receipt: "Exchange within 7 days".
   receiptFooter String? @map("receipt_footer")
+
+  /// Days after a sale in which a return is accepted at the counter without a manager. Null: any time.
+  returnWindowDays Int?     @map("return_window_days")
+  /// The most a salesperson may pay back on one counter return without a manager. Null: no limit.
+  counterReturnMax Decimal? @map("counter_return_max") @db.Decimal(12, 2)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -3473,4 +3497,39 @@ model CampaignRecipient {
   @@index([campaignId, state])
   @@index([clientId, handedAt])
   @@map("campaign_recipients")
+}
+
+// ── Store credit ──────────────────────────────────────────────────────────────────────────
+
+enum StoreCreditKind {
+  /// A return refunded as credit, or an exchange.
+  FROM_RETURN
+  /// Spent on a bill.
+  USED
+  /// Paid out in money after all.
+  PAID_OUT
+  /// Changed by hand, with a reason.
+  ADJUSTED
+}
+
+/// Every change to a customer's store credit. customers.store_credit_paise is their sum.
+model StoreCreditEntry {
+  id           String          @id @default(uuid())
+  clientId     String          @map("client_id")
+  customerId   String          @map("customer_id")
+  customer     Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  kind         StoreCreditKind
+  /// Signed paise: + given, - used or paid out.
+  amountPaise  Int             @map("amount_paise")
+  balancePaise Int             @map("balance_paise")
+
+  salesOrderId  String?  @map("sales_order_id")
+  salesReturnId String?  @map("sales_return_id")
+  note          String?
+  createdById   String?  @map("created_by_id")
+  onceKey       String   @unique @map("once_key")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, customerId, createdAt])
+  @@map("store_credit_entries")
 }

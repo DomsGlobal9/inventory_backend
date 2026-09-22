@@ -24,6 +24,7 @@ import { prisma } from '../../lib/prisma';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/httpError';
 import { grants, holdsEverything } from '../../config/permissions';
 import { getShopSettings } from '../../lib/clientSettings';
+import { normalisePhone } from '../../lib/phone';
 import { getSettings as loyaltySettings, rupeesOf, valueOf } from '../loyalty';
 import { shopNumber } from '../whatsapp/service';
 import { whatsappClient, whatsappConfigured, WhatsAppServiceError } from '../whatsapp/client';
@@ -285,22 +286,29 @@ export async function personalise(clientId: string, text: string, customer: { na
 }
 
 /**
- * "Send me a test": the message, filled in with the sender's own name, to the shop's own linked
- * number -- never to a typed number, so this cannot be used to message anyone.
+ * "Send me a test": the message, filled in with the sender's own name, to a number the person types
+ * -- their own phone, usually. Typed rather than taken from the shop's link because the WhatsApp
+ * Service never hands the app a full phone number (it masks every one), so the shop's own number is
+ * not known here. The same as Settings > WhatsApp's test, and only for those who may send campaigns.
  */
-export async function sendTest(actor: Actor, input: { text?: unknown; campaignId?: unknown }) {
+export async function sendTest(actor: Actor, input: { text?: unknown; campaignId?: unknown; to?: unknown }) {
   requireMay(actor, 'campaign:send');
   const text = input.campaignId ? (await find(actor.clientId, String(input.campaignId))).text : checkText(input.text);
+  const typed = typeof input.to === 'string' ? input.to.trim() : '';
+  if (!typed) throw badRequest('Type the WhatsApp number to send the test to, for example your own.');
+  const phone = normalisePhone(typed);
+  if (!phone.ok) throw badRequest(phone.reason);
+  const to = phone.value.replace(/^\+/, '');
   const n = await shopNumber(actor.clientId);
-  if (n.status !== 'CONNECTED' || !n.digits) throw badRequest("Link the shop's WhatsApp in Settings → WhatsApp first. The test goes to that number.");
+  if (n.status !== 'CONNECTED') throw badRequest("Link the shop's WhatsApp in Settings → WhatsApp first. The test goes from that number.");
   const body = await personalise(actor.clientId, text, { name: actor.name ?? null, loyaltyPoints: 250 });
   const sent = await whatsappClient.send({
     from: { clientId: actor.clientId },
-    to: n.digits,
+    to,
     text: `[Test] ${body}`,
     kind: 'TEST',
     reference: 'CAMPAIGN_TEST',
     idempotencyKey: `CAMPAIGN_TEST:${actor.clientId}:${crypto.randomUUID()}`
   });
-  return { sent: true, status: sent.status, to: `••••${n.digits.slice(-4)}` };
+  return { sent: true, status: sent.status, to: `••••${to.slice(-4)}` };
 }

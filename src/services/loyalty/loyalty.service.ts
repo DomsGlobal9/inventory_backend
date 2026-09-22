@@ -247,15 +247,15 @@ export async function settleSale(tx: Tx, input: {
 
 // ── Returns ────────────────────────────────────────────────────────────────────────────────
 
-/** The points share of one return, worked out without writing anything. */
-async function returnShare(db: Tx | typeof prisma, clientId: string, returnId: string) {
-  const ret = await db.salesReturn.findFirst({
-    where: { id: returnId, clientId },
-    select: { id: true, returnNumber: true, refundTotal: true, salesOrderId: true, salesOrder: { select: { total: true, customerId: true } } }
-  });
-  if (!ret || !ret.salesOrder.customerId) return null;
+/**
+ * The points share of returning `thisMinor` of a bill's value, after the returns already completed
+ * (except `excludeReturnId`). Null for a bill with no points on it. Writes nothing.
+ */
+export async function shareOfBill(db: Tx | typeof prisma, clientId: string, salesOrderId: string, thisMinor: number, excludeReturnId?: string) {
+  const order = await db.salesOrder.findFirst({ where: { id: salesOrderId, clientId }, select: { total: true, customerId: true } });
+  if (!order?.customerId) return null;
   const orderEntries = await db.loyaltyEntry.findMany({
-    where: { clientId, salesOrderId: ret.salesOrderId, kind: { in: ['EARNED', 'USED'] } },
+    where: { clientId, salesOrderId, kind: { in: ['EARNED', 'USED'] } },
     select: { kind: true, points: true }
   });
   if (orderEntries.length === 0) return null;
@@ -263,24 +263,36 @@ async function returnShare(db: Tx | typeof prisma, clientId: string, returnId: s
   const used = -orderEntries.filter(e => e.kind === 'USED').reduce((a, e) => a + e.points, 0);
 
   const payments = await db.salesOrderPayment.findMany({
-    where: { clientId, salesOrderId: ret.salesOrderId, kind: 'PAYMENT', method: 'POINTS' }, select: { amount: true }
+    where: { clientId, salesOrderId, kind: 'PAYMENT', method: 'POINTS' }, select: { amount: true }
   });
   const pointsPaidMinor = payments.reduce((a, p) => a + toMinor(p.amount as any), 0);
-  const totalMinor = toMinor(ret.salesOrder.total as any);
+  const totalMinor = toMinor(order.total as any);
 
   // Value already back from earlier completed returns of this bill: money owed plus points given back.
   const earlier = await db.salesReturn.findMany({
-    where: { clientId, salesOrderId: ret.salesOrderId, status: 'COMPLETED', id: { not: ret.id } },
+    where: { clientId, salesOrderId, status: 'COMPLETED', ...(excludeReturnId ? { id: { not: excludeReturnId } } : {}) },
     select: { refundTotal: true, pointsBackValue: true }
   });
   const beforeMinor = earlier.reduce((a, r) => a + toMinor(r.refundTotal as any) + toMinor(r.pointsBackValue as any), 0);
-  const thisMinor = toMinor(ret.refundTotal as any);
   const afterMinor = beforeMinor + thisMinor;
 
   const back = shareBetween(used, totalMinor, beforeMinor, afterMinor);
   const backMinor = used > 0 ? Math.min(thisMinor, Math.round((back * pointsPaidMinor) / used)) : 0;
   const takeBack = shareBetween(earned, totalMinor, beforeMinor, afterMinor);
-  return { ret, customerId: ret.salesOrder.customerId, back, backMinor, takeBack, thisMinor };
+  return { customerId: order.customerId, back, backMinor, takeBack };
+}
+
+/** The points share of one return, worked out without writing anything. */
+async function returnShare(db: Tx | typeof prisma, clientId: string, returnId: string) {
+  const ret = await db.salesReturn.findFirst({
+    where: { id: returnId, clientId },
+    select: { id: true, returnNumber: true, refundTotal: true, salesOrderId: true }
+  });
+  if (!ret) return null;
+  const thisMinor = toMinor(ret.refundTotal as any);
+  const share = await shareOfBill(db, clientId, ret.salesOrderId, thisMinor, ret.id);
+  if (!share) return null;
+  return { ret, ...share, thisMinor };
 }
 
 /**

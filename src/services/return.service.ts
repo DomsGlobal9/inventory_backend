@@ -18,7 +18,18 @@ export class ReturnService {
     notes?: string,
     reason?: ReturnReason
   ) {
-    return prisma.$transaction(async (tx) => {
+    return prisma.$transaction(tx => this.createReturnIn(tx, clientId, salesOrderId, items, notes, reason), { timeout: 15000 });
+  }
+
+  /** The same, inside the caller's transaction (the counter return books and completes in one). */
+  async createReturnIn(
+    tx: Prisma.TransactionClient,
+    clientId: string,
+    salesOrderId: string,
+    items: { dispatchItemId: string; quantity: number }[],
+    notes?: string,
+    reason?: ReturnReason
+  ) {
       // Validate sales order
       const order = await tx.salesOrder.findFirst({
         where: { id: salesOrderId, clientId }
@@ -151,7 +162,6 @@ export class ReturnService {
         data: { refundTotal: fromMinor(totalMinor), refundStatus: totalMinor > 0 ? 'PENDING' : 'NONE' },
         include: { items: true }
       });
-    }, { timeout: 15000 });
   }
 
   /**
@@ -239,7 +249,15 @@ export class ReturnService {
    * Finalizes the return.
    */
   async completeReturn(clientId: string, id: string) {
-    return runTransaction(async (tx) => {
+    return runTransaction(tx => this.completeReturnIn(tx, clientId, id), {
+      label: 'complete a return',
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      tooSlowMessage: 'Finishing this return took too long, so nothing was recorded. Try again.'
+    });
+  }
+
+  /** The same, inside the caller's transaction. */
+  async completeReturnIn(tx: Prisma.TransactionClient, clientId: string, id: string, opts: { restockAt?: string } = {}) {
       const salesReturn = await tx.salesReturn.findFirst({
         where: { id, clientId },
         include: {
@@ -287,7 +305,8 @@ export class ReturnService {
           // Increase physical stock
           await inventoryMutationService.applyMovement({
             clientId,
-            locationId: item.dispatchItem.salesOrderItem.salesOrder.locationId!,
+            // Taken back at a counter: onto that store's stock, which may not be the one that sold it.
+            locationId: opts.restockAt ?? item.dispatchItem.salesOrderItem.salesOrder.locationId!,
             variantId: item.dispatchItem.salesOrderItem.variantId,
             movementType: 'IN',
             reason: 'CUSTOMER_RETURN',
@@ -311,11 +330,6 @@ export class ReturnService {
           completedAt: new Date()
         }
       });
-    }, {
-      label: 'complete a return',
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      tooSlowMessage: 'Finishing this return took too long, so nothing was recorded. Try again.'
-    });
   }
 
   /**

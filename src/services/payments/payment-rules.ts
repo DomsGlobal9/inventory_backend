@@ -22,7 +22,7 @@
 import { badRequest } from '../../utils/httpError';
 import { toMinor } from '../pricing';
 
-export type PaymentMethod = 'CASH' | 'UPI' | 'CARD' | 'POINTS';
+export type PaymentMethod = 'CASH' | 'UPI' | 'CARD' | 'POINTS' | 'CREDIT';
 
 export interface PaymentInput {
   method: PaymentMethod;
@@ -42,7 +42,7 @@ export interface PlannedPayment {
 export const MAX_PAYMENT_ROWS = 6;
 const REFERENCE_MAX = 40;
 
-const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Points' };
+const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Points', CREDIT: 'Store credit' };
 
 const rupees = (minor: number) =>
   `₹${(minor / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -85,6 +85,7 @@ export function planPayments(totalMinor: number, rows: PaymentInput[] | null | u
 
   let cashRows = 0;
   let pointsRows = 0;
+  let creditRows = 0;
   const planned = input.map((row): PlannedPayment => {
     const method = row.method;
     if (!(method in METHOD_LABEL)) throw badRequest('Choose Cash, UPI or Card.');
@@ -98,6 +99,13 @@ export function planPayments(totalMinor: number, rows: PaymentInput[] | null | u
 
     // Points: whether this customer holds them, and may spend that many here, is the loyalty
     // module's question, asked inside the sale's transaction. Here only the shape of the row.
+    // Store credit: whether they hold that much is the store-credit module's question, asked
+    // inside the sale's transaction. Here only the shape of the row.
+    if (method === 'CREDIT') {
+      creditRows += 1;
+      if (row.cashReceived !== null && row.cashReceived !== undefined) throw badRequest('Only cash has change. Enter the store credit amount exactly.');
+      return { method, amountMinor, cashReceivedMinor: null, changeMinor: null, reference: null };
+    }
     if (method === 'POINTS') {
       pointsRows += 1;
       if (row.cashReceived !== null && row.cashReceived !== undefined) throw badRequest('Only cash has change. Enter the points amount exactly.');
@@ -122,6 +130,7 @@ export function planPayments(totalMinor: number, rows: PaymentInput[] | null | u
 
   if (cashRows > 1) throw badRequest('Put all the cash in one row.');
   if (pointsRows > 1) throw badRequest('Use points once on a bill.');
+  if (creditRows > 1) throw badRequest('Use store credit once on a bill.');
 
   const paidMinor = planned.reduce((sum, p) => sum + p.amountMinor, 0);
   if (mode === 'FULL' && paidMinor !== totalMinor) {

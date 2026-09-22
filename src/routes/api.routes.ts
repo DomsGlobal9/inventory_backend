@@ -46,6 +46,7 @@ import dayBookRoutes from './daybook.routes';
 import whatsappRoutes, { whatsappEvents } from './whatsapp.routes';
 import campaignRoutes from './campaign.routes';
 import loyaltyRoutes from './loyalty.routes';
+import counterReturnRoutes from './counter-return.routes';
 import clientErrorRoutes from './client-error.routes';
 import supportTicketRoutes from './support-ticket.routes';
 import teamRoutes from './team.routes';
@@ -170,5 +171,7 @@ router.use('/team', teamRoutes);
 router.use('/whatsapp', whatsappRoutes);
 router.use('/campaigns', campaignRoutes);
 router.use('/loyalty', loyaltyRoutes);
+// Returns taken back at the counter, and store credit. Money only, never what the shop paid.
+router.use('/counter-returns', hideCost, counterReturnRoutes);
 
 export default router;

@@ -48,7 +48,7 @@ export const completeSaleSchema = z.object({
       message: 'The same item is in the basket twice. Change its quantity instead.'
     }),
   payments: z.array(z.object({
-    method: z.enum(['CASH', 'UPI', 'CARD', 'POINTS'], { errorMap: () => ({ message: 'Choose Cash, UPI, Card or Points.' }) }),
+    method: z.enum(['CASH', 'UPI', 'CARD', 'POINTS', 'CREDIT'], { errorMap: () => ({ message: 'Choose Cash, UPI, Card, Points or Store credit.' }) }),
     amount: money('Amount'),
     cashReceived: money('Cash received').optional().nullable(),
     reference: z.string().max(60).optional().nullable()

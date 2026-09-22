@@ -570,6 +570,7 @@ export class PlatformAdminService {
       `DELETE FROM campaign_recipients WHERE client_id = $1`,
       `DELETE FROM campaigns WHERE client_id = $1`,
       `DELETE FROM loyalty_entries WHERE client_id = $1`,
+      `DELETE FROM store_credit_entries WHERE client_id = $1`,
       `DELETE FROM loyalty_settings WHERE client_id = $1`,
       // Goods receipts point at locations (restrict), so they go before the orders and locations.
       `DELETE FROM purchase_receipt_items WHERE receipt_id IN (SELECT id FROM purchase_receipts WHERE client_id = $1)`,

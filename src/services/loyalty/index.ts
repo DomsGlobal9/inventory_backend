@@ -3,7 +3,7 @@
  * transactions; everything else is the shop's screens and the daily job.
  */
 export {
-  getSettings, saveSettings, post, forCounter, checkSale, settleSale, settleReturn, previewReturn, customerPoints, adjust,
+  getSettings, saveSettings, post, forCounter, checkSale, settleSale, settleReturn, previewReturn, shareOfBill, customerPoints, adjust,
   lapseQuietPoints, giveBirthdayPoints, afterSaleText, lapseDate, DEFAULT_BIRTHDAY_TEXT, DEFAULT_ANNIVERSARY_TEXT
 } from './loyalty.service';
 export type { LoyaltySettingsView, Actor, SaleCheck } from './loyalty.service';

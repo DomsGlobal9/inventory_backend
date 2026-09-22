@@ -158,6 +158,11 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'return:receive',  group: 'Selling', label: 'Mark a return as arrived',              implies: ['return:view'] },
   { key: 'return:inspect',  group: 'Selling', label: 'Decide whether a return goes back on the shelf', implies: ['return:view'] },
   { key: 'return:complete', group: 'Selling', label: 'Finish a return and put the stock back', implies: ['return:inspect'] },
+  // The counter: a customer hands a piece back and is paid back, in one go. Held by the person at
+  // the till; a manager's return:complete lifts the shop's return window and money limit.
+  { key: 'return:counter',  group: 'Selling', label: 'Take a return back at the counter and pay the money back',
+    implies: ['return:view', 'customer:view', 'sales_order:view'],
+    checkedInline: 'src/services/counter-return/counter-return.service.ts' },
 
   { key: 'customer:view',   group: 'Selling', label: 'See customers' },
   { key: 'customer:create', group: 'Selling', label: 'Add a customer',    implies: ['customer:view'] },
