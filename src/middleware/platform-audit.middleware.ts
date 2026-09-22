@@ -20,7 +20,7 @@ import { platformAuditService } from '../services/platform-audit.service';
  * Route to action, spelled out rather than inferred.
  *
  * The client-side logger infers names from the URL because it covers hundreds of routes. There
- * are seventeen here and each one deserves a name a person can read in a list, because the
+ * are nineteen here and each one deserves a name a person can read in a list, because the
  * list is what someone scans when they are worried.
  */
 const ROUTES: { method: string; pattern: RegExp; action: string; targetType: string }[] = [
@@ -40,7 +40,10 @@ const ROUTES: { method: string; pattern: RegExp; action: string; targetType: str
   { method: 'POST',   pattern: /^\/support-tickets\/([^/]+)\/messages$/, action: 'REPLY_SUPPORT_TICKET',          targetType: 'SUPPORT_TICKET' },
   { method: 'PATCH',  pattern: /^\/support-tickets\/([^/]+)$/,       action: 'UPDATE_SUPPORT_TICKET',         targetType: 'SUPPORT_TICKET' },
   { method: 'PATCH',  pattern: /^\/leads\/([^/]+)$/,                 action: 'UPDATE_LEAD',                   targetType: 'LEAD' },
-  { method: 'POST',   pattern: /^\/leads\/([^/]+)\/convert$/,        action: 'CONVERT_LEAD',                  targetType: 'LEAD' }
+  { method: 'POST',   pattern: /^\/leads\/([^/]+)\/convert$/,        action: 'CONVERT_LEAD',                  targetType: 'LEAD' },
+  // A short link switched off (a reported scam) or on again. The target is the link's code.
+  { method: 'POST',   pattern: /^\/links\/([A-Za-z0-9]{7})\/disable$/, action: 'DISABLE_SHORT_LINK',          targetType: 'SHORT_LINK' },
+  { method: 'POST',   pattern: /^\/links\/([A-Za-z0-9]{7})\/enable$/,  action: 'ENABLE_SHORT_LINK',           targetType: 'SHORT_LINK' }
 ];
 
 const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -68,6 +71,10 @@ async function labelFor(targetType: string, targetId?: string): Promise<string |
     if (targetType === 'SUPPORT_TICKET') {
       const t = await prisma.supportTicket.findUnique({ where: { id: targetId }, select: { ticketNumber: true, clientId: true } });
       return t ? `${t.ticketNumber ?? targetId} (${t.clientId})` : null;
+    }
+    if (targetType === 'SHORT_LINK') {
+      const s = await prisma.shortLink.findUnique({ where: { code: targetId }, select: { clientId: true } });
+      return s ? `go.scaleezy.com/${targetId} (${s.clientId})` : null;
     }
     // A CLIENT's id is already the name people use for it in this product.
     return targetId;
