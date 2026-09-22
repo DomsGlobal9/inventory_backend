@@ -172,8 +172,8 @@ services:
       - key: CANARY_HOUR_IST
         value: "9"
       # Folders pictures may be sent from, comma-separated, each ending in /. Set in the dashboard to
-      # the Inventory Supabase project's public whatsapp-media folder:
-      # https://<project>.supabase.co/storage/v1/object/public/whatsapp-media/
+      # the Inventory Supabase project's public inventory-images/whatsapp-media folder:
+      # https://<project>.supabase.co/storage/v1/object/public/inventory-images/whatsapp-media/
       # Empty: pictures are refused and GET /v1/capabilities says image: false.
       - key: MEDIA_URL_PREFIXES
         sync: false

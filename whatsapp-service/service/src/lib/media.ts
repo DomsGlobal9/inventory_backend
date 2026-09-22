@@ -19,7 +19,7 @@ function schemeAllowed(u: URL, production: boolean): boolean {
 
 /**
  * Reads MEDIA_URL_PREFIXES: comma-separated addresses of folders pictures may come from, e.g.
- * `https://<project>.supabase.co/storage/v1/object/public/whatsapp-media/`. Each must be a folder
+ * `https://<project>.supabase.co/storage/v1/object/public/inventory-images/whatsapp-media/`. Each must be a folder
  * (ends in `/`, not a whole site) with no password, query or fragment. Throws a message naming the
  * bad entry; config turns it into a refusal to start.
  */

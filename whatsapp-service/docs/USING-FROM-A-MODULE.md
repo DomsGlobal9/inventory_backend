@@ -303,7 +303,7 @@ Send body:
 
 - `from` is `{ "clientId": ... }` for a shop's number, or `"scaleezy"` for ScaleEzy's own.
 - `to` is digits with the country code. A 10-digit number is taken as Indian (+91).
-- A picture instead of the document: `"image": { "url": "https://<project>.supabase.co/storage/v1/object/public/whatsapp-media/m/8f3c….jpg" }`.
+- A picture instead of the document: `"image": { "url": "https://<project>.supabase.co/storage/v1/object/public/inventory-images/whatsapp-media/8f3c….jpg" }`.
   With text only, `"linkPreview": true` asks for WhatsApp's link card.
 
 Statuses go `QUEUED → SENDING → SENT → DELIVERED → READ`, or end at `FAILED` / `EXPIRED` with a

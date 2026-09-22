@@ -142,7 +142,7 @@ instances on one database (single sender), and a module webhook that fails or ne
 | `ENCRYPTION_KEY` | yes | 32 random bytes, base64. Encrypts module webhook secrets. **Never change it once modules exist.** |
 | `SCALEEZY_INSTANCE` | yes | Engine instance of the ScaleEzy number (`phase0-test` locally, `scaleezy` on Render). |
 | `SCALEEZY_DAILY_CAP` | no (150) | Messages per Indian day from the ScaleEzy number. |
-| `MEDIA_URL_PREFIXES` | no (empty) | Folders pictures may be sent from, comma-separated, each ending in `/` (e.g. `https://<project>.supabase.co/storage/v1/object/public/whatsapp-media/`). https only (plain http only to localhost outside production). Empty: pictures are refused. The worker re-checks it when sending, so removing a folder stops its waiting pictures. |
+| `MEDIA_URL_PREFIXES` | no (empty) | Folders pictures may be sent from, comma-separated, each ending in `/` (e.g. `https://<project>.supabase.co/storage/v1/object/public/inventory-images/whatsapp-media/`). https only (plain http only to localhost outside production). Empty: pictures are refused. The worker re-checks it when sending, so removing a folder stops its waiting pictures. |
 | `MESSAGE_RETENTION_DAYS` | no (30) | Finished messages are deleted after this many days (7–3650). Module events go after 7 days, number checks after 7, connection history and canary runs after 90. STOPs and messages still waiting are never deleted. |
 | `PORT` | no (18081; Render sets 10000) | |
 | `LOG_LEVEL` | no (info) | Logs never contain message text, documents, keys, or full numbers (last 4 digits only). |
