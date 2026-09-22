@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { shopifyInstallationService } from '../services/shopify-installation.service';
 import { shopifyPrivacyService } from '../services/shopify-privacy';
 import { fillService } from '../services/shelves/fill.service';
+import { links } from '../services/links';
 
 /**
  * Throwing away what has stopped meaning anything.
@@ -67,10 +68,14 @@ export class HousekeepingScheduler {
     const shelfFills = await fillService.remindForgotten(now)
       .catch(error => { console.error('[Housekeeping] shelf reminder failed:', (error as Error)?.message); return { reminded: 0, emails: 0 }; });
 
+    // Short links: each open's row after 180 days (the counts on the link stay), and test sends' links.
+    const shortLinks = await links.purge(now)
+      .catch(error => { console.error('[Housekeeping] short-link clean-up failed:', (error as Error)?.message); return { taps: 0, testLinks: 0 }; });
+
     return {
       unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried,
       whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded,
-      shelfSaveKeys: shelfSaveKeys.count
+      shelfSaveKeys: shelfSaveKeys.count, shortLinkTaps: shortLinks.taps, testShortLinks: shortLinks.testLinks
     };
   }
 

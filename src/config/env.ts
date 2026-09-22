@@ -168,6 +168,15 @@ const envSchema = z.object({
   // The ScaleEzy WhatsApp Service (its own repo and Render service). All optional: without them
   // the WhatsApp screens say it is not set up, and every Send button falls back to opening
   // WhatsApp on the person's own device with the message typed -- exactly as before.
+  /**
+   * Where short links live (services/links): `https://go.scaleezy.com` in production, where the
+   * whole host is short links; `http://localhost:4006/l` locally, a path on this server. Unset: no
+   * short links are made (a campaign cannot use {link}), and existing ones still open at /l/<code>.
+   * Set it only once the address really reaches this service, or every link sent will be dead.
+   */
+  LINK_BASE_URL: optionalStr(z.string().url("LINK_BASE_URL must be a valid URL, e.g. https://go.scaleezy.com")
+    .refine(v => !/[?#]/.test(v) && !v.endsWith('/'), "LINK_BASE_URL must not end in / or contain ? or #")),
+
   WHATSAPP_SERVICE_URL: optionalStr(z.string().url("WHATSAPP_SERVICE_URL must be a valid URL")),
   // This module's key, made once on the service (`npm run create-module`).
   WHATSAPP_SERVICE_KEY: optionalStr(z.string().min(16, "WHATSAPP_SERVICE_KEY should be at least 16 characters")),
@@ -277,6 +286,12 @@ const _env = envSchema.superRefine((val, ctx) => {
   if (!val.SUPABASE_URL || !(val.SUPABASE_SERVICE_ROLE_KEY || val.SUPABASE_ANON_KEY)) {
     require('SUPABASE_URL',
       "SUPABASE_URL plus SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY) are required in production -- product image upload silently fails without them");
+  }
+
+  // A short link is printed in a customer's WhatsApp for three months; it must be https and must
+  // be a place of its own, not the API's address with a path on it.
+  if (val.LINK_BASE_URL && !/^https:\/\/[^/]+$/.test(val.LINK_BASE_URL)) {
+    require('LINK_BASE_URL', "must be https:// and a whole host in production, e.g. https://go.scaleezy.com");
   }
 
   if (!val.DIRECT_URL) {

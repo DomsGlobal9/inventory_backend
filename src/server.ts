@@ -3,6 +3,7 @@ import express from 'express'; // Restart trigger 2
 import cors from 'cors';
 import { env } from './config/env';
 import { requestLogger } from './middleware/request-logger';
+import { linkHostGate, linkPathRouter } from './routes/link-open.routes';
 import { errorHandler } from './middleware/error.middleware';
 
 import { prisma } from './lib/prisma';
@@ -32,6 +33,11 @@ if (env.NODE_ENV === 'production') {
 
 // Global Middleware
 app.use(helmet()); // HTTP Security Headers
+
+// Short links. On go.scaleezy.com nothing else of this server is reachable; elsewhere /l/<code>.
+// Ahead of CORS, cookies and body parsing: opening a link needs none of them.
+app.use(linkHostGate);
+app.use('/l', linkPathRouter);
 // The app's own origin, and only it, may send cookies.
 const appCors = cors({
   origin: (origin, callback) => {

@@ -3533,3 +3533,89 @@ model StoreCreditEntry {
   @@index([clientId, customerId, createdAt])
   @@map("store_credit_entries")
 }
+
+// ── Short links (go.scaleezy.com) ─────────────────────────────────────────────────────────
+// A module of its own (services/links): no other code reads or writes these tables. A link knows
+// whose it is and where it goes, never who it was sent to -- recipient_ref is an opaque random
+// token that only the module that made it can match to a person.
+
+enum ShortLinkTarget {
+  /// A product page (the shop's website today, the ScaleEzy online shop later).
+  PRODUCT
+  /// The shop's own page.
+  SHOP
+  /// A page for one campaign (online shop, later).
+  CAMPAIGN
+  /// A chat with the shop on WhatsApp (wa.me).
+  WHATSAPP
+  /// Any other web address, typed by an owner or manager.
+  EXTERNAL
+}
+
+enum ShortLinkStatus {
+  ACTIVE
+  /// The shop switched it off; it can switch it on again.
+  DISABLED_BY_SHOP
+  /// ScaleEzy switched it off (a reported scam). Only ScaleEzy can switch it on again.
+  DISABLED_BY_PLATFORM
+}
+
+enum ShortLinkVisitor {
+  HUMAN
+  /// Link-preview robots, scanners, crawlers: counted apart, never as a tap.
+  BOT
+}
+
+model ShortLink {
+  id       String @id @default(uuid())
+  /// 7 random letters and digits: go.scaleezy.com/<code>.
+  code     String @unique
+  clientId String @map("client_id")
+
+  /// What made it and for what: e.g. 'campaigns' + the campaign id.
+  ownerModule  String  @map("owner_module")
+  ownerRef     String? @map("owner_ref")
+  /// Opaque random token from the owner, one per person, or null. Never a customer id, phone or name.
+  recipientRef String? @map("recipient_ref")
+
+  targetType ShortLinkTarget @map("target_type")
+  target     String          @db.Text
+  status     ShortLinkStatus @default(ACTIVE)
+  expiresAt  DateTime        @map("expires_at")
+  /// A test send's link: its taps are not counted in a campaign's numbers.
+  isTest     Boolean         @default(false) @map("is_test")
+
+  disabledAt   DateTime? @map("disabled_at")
+  disabledById String?   @map("disabled_by_id")
+  /// Why it was switched off. Kept for us; never shown to a visitor.
+  disabledNote String?   @map("disabled_note")
+
+  tapCount     Int       @default(0) @map("tap_count")
+  botOpenCount Int       @default(0) @map("bot_open_count")
+  firstTapAt   DateTime? @map("first_tap_at")
+  lastTapAt    DateTime? @map("last_tap_at")
+
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  taps ShortLinkTap[]
+
+  /// One link per person per thing, per shop: making links again for the same people returns the
+  /// same links, and one shop's references can never reach another shop's links.
+  @@unique([clientId, ownerModule, ownerRef, recipientRef])
+  @@index([expiresAt])
+  @@map("short_links")
+}
+
+/// One open of a link: when, and person or robot. Nothing else -- no address, no browser, no place.
+model ShortLinkTap {
+  id      String           @id @default(uuid())
+  linkId  String           @map("link_id")
+  link    ShortLink        @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  visitor ShortLinkVisitor
+  at      DateTime         @default(now())
+
+  @@index([linkId, at])
+  @@index([at])
+  @@map("short_link_taps")
+}

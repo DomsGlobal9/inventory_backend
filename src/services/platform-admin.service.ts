@@ -572,6 +572,8 @@ export class PlatformAdminService {
       `DELETE FROM loyalty_entries WHERE client_id = $1`,
       `DELETE FROM store_credit_entries WHERE client_id = $1`,
       `DELETE FROM loyalty_settings WHERE client_id = $1`,
+      // Short links: their opens go with them (cascade). Its links stop working with the shop.
+      `DELETE FROM short_links WHERE client_id = $1`,
       // Goods receipts point at locations (restrict), so they go before the orders and locations.
       `DELETE FROM purchase_receipt_items WHERE receipt_id IN (SELECT id FROM purchase_receipts WHERE client_id = $1)`,
       `DELETE FROM purchase_receipts WHERE client_id = $1`,

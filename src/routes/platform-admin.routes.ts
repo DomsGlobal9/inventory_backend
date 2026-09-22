@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { verifyPlatformAdmin } from '../middleware/platform-admin.middleware';
+import { links, LinkRuleError } from '../services/links';
 import {
   login,
   logout,
@@ -88,5 +89,23 @@ consoleRouter.post('/users/:id/password', setUserPassword);
 consoleRouter.get('/leads', listLeads);
 consoleRouter.patch('/leads/:id', updateLead);
 consoleRouter.post('/leads/:id/convert', convertLead);
+
+// Short links: look one up from a reported code, and switch it off (a scam) or on again. The
+// visitor then sees a plain "not available" page, never the reason.
+const linkAction = (fn: (req: any) => Promise<unknown>) => async (req: any, res: any, next: any) => {
+  try {
+    res.json({ success: true, data: await fn(req) });
+  } catch (e) {
+    if (e instanceof LinkRuleError) return res.status(400).json({ success: false, message: e.message });
+    next(e);
+  }
+};
+consoleRouter.get('/links/:code', linkAction(async req => {
+  const link = await links.describe(String(req.params.code));
+  if (!link) throw new LinkRuleError('No link has that code.');
+  return link;
+}));
+consoleRouter.post('/links/:code/disable', linkAction(req => links.platformDisable(String(req.params.code), req.platformAdmin.id, String(req.body?.note ?? ''))));
+consoleRouter.post('/links/:code/enable', linkAction(req => links.platformEnable(String(req.params.code))));
 
 export { authRouter as platformAdminAuthRoutes, consoleRouter as platformAdminConsoleRoutes };
