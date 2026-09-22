@@ -9,6 +9,8 @@ import { Errors } from '../lib/errors';
 import { normalisePhone } from '../lib/phone';
 import { route } from './errors';
 import { clientIdParam, linkBody, numbersCheckBody, sendBody } from './schemas';
+import { MAX_CAPTION } from '../domain/rules';
+import { IMAGE_MIME_TYPES, MAX_IMAGE_BYTES } from '../lib/media';
 
 export function v1Routes(ctx: Ctx): Router {
   const r = Router();
@@ -21,6 +23,22 @@ export function v1Routes(ctx: Ctx): Router {
     if (!(await mayModuleUseClient(ctx, req.module!, clientId))) throw Errors.forbidden('This module may not manage this shop’s WhatsApp.');
     return clientId;
   };
+
+  // What this service can send. A module checks it before offering a feature, so the module can be
+  // deployed before or after the service without breaking anything.
+  r.get(
+    '/capabilities',
+    route(async (_req, res) => {
+      const image = ctx.config.mediaUrlPrefixes.length > 0;
+      res.json({
+        text: true,
+        document: { mimeTypes: ['application/pdf'], maxBytes: 5 * 1024 * 1024 },
+        image: image ? { mimeTypes: IMAGE_MIME_TYPES, maxBytes: MAX_IMAGE_BYTES, maxCaption: MAX_CAPTION, urlPrefixes: ctx.config.mediaUrlPrefixes } : false,
+        linkPreview: true,
+        failCodes: ['NOT_ON_WHATSAPP', 'MEDIA_FETCH_FAILED', 'MEDIA_UNREADABLE', 'ENGINE_GAVE_UP', 'ENGINE_REJECTED', 'DELIVERY_FAILED', 'EXPIRED'],
+      });
+    }),
+  );
 
   r.post(
     '/accounts/client/:clientId/link',

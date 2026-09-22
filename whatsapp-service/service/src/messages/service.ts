@@ -1,8 +1,9 @@
 import { Prisma, type Account, type Message, type MessageKind, type ModuleClient } from '@prisma/client';
 import type { Ctx } from '../context';
-import { contentHash, isWithinDuplicateWindow, DUPLICATE_WINDOW_MS, dailyCapFor, isOverCap, istDayStart } from '../domain/rules';
+import { contentHash, isWithinDuplicateWindow, DUPLICATE_WINDOW_MS, dailyCapFor, isOverCap, istDayStart, MAX_CAPTION } from '../domain/rules';
 import { Errors } from '../lib/errors';
 import { decodePdf } from '../lib/pdf';
+import { checkMediaUrl } from '../lib/media';
 import { normalisePhone } from '../lib/phone';
 import { getScaleezyAccount } from '../accounts/service';
 import { mayModuleUseClient } from '../auth/allow';
@@ -12,6 +13,10 @@ export interface NewMessageInput {
   to: string;
   text?: string | null;
   document?: { fileName: string; mimeType: string; base64: string } | null;
+  /** A picture in ScaleEzy's picture storage, sent with the text as its caption. */
+  image?: { url: string } | null;
+  /** Show WhatsApp's link card for a link in the text (text-only messages). */
+  linkPreview?: boolean;
   kind: MessageKind;
   reference?: string | null;
   idempotencyKey: string;
@@ -56,15 +61,23 @@ export async function createMessage(ctx: Ctx, mod: ModuleClient, input: NewMessa
   if (!to) throw Errors.badRequest('This is not a valid phone number. Please check it and include the country code if it is not an Indian number.');
 
   const text = input.text?.trim() ? input.text : null;
+  if (input.document && input.image) throw Errors.badRequest('Send a picture or a PDF in one message, not both.');
   let document: Buffer | null = null;
   if (input.document) document = decodePdf(input.document.base64, input.document.mimeType);
-  if (!text && !document) throw Errors.badRequest('There is nothing to send: add a message or a PDF.');
+  const mediaUrl = input.image ? checkMediaUrl(input.image.url, ctx.config.mediaUrlPrefixes, ctx.config.NODE_ENV === 'production') : null;
+  if (!text && !document && !mediaUrl) throw Errors.badRequest('There is nothing to send: add a message, a picture or a PDF.');
   if (text && text.length > 4000) throw Errors.badRequest('This message is too long. Please keep it under 4,000 characters.');
+  if (mediaUrl && text && text.length > MAX_CAPTION) {
+    throw Errors.badRequest(`The words under a picture must be at most ${MAX_CAPTION.toLocaleString('en-IN')} characters. These are ${text.length.toLocaleString('en-IN')}.`);
+  }
+  if (input.linkPreview && (document || mediaUrl)) {
+    throw Errors.badRequest('A link card is shown only on a text message, not under a picture or a PDF.');
+  }
 
   const optedOut = await ctx.db.optOut.findUnique({ where: { accountId_toDigits: { accountId: account.id, toDigits: to } } });
   if (optedOut) throw Errors.forbidden('This person replied STOP, so WhatsApp messages are not sent to them from this number.');
 
-  const hash = contentHash(text, document);
+  const hash = contentHash(text, document, mediaUrl);
   const now = new Date();
 
   // 2. The 60 s rule: the same content to the same person from the same number (a double click)
@@ -95,9 +108,15 @@ export async function createMessage(ctx: Ctx, mod: ModuleClient, input: NewMessa
         document: document ? new Uint8Array(document) : null,
         fileName: document ? sanitiseFileName(input.document!.fileName) : null,
         mimeType: document ? 'application/pdf' : null,
+        mediaUrl,
+        mediaType: mediaUrl ? 'IMAGE' : null,
+        linkPreview: input.linkPreview === true,
       },
     });
-    ctx.log.info({ messageId: message.id, accountId: account.id, kind: message.kind, hasDocument: Boolean(document) }, 'message queued');
+    ctx.log.info(
+      { messageId: message.id, accountId: account.id, kind: message.kind, hasDocument: Boolean(document), hasImage: Boolean(mediaUrl) },
+      'message queued',
+    );
     return { message, existing: false };
   } catch (e) {
     // Two identical requests at the same moment: the unique key lets exactly one in.
@@ -123,6 +142,7 @@ export function publicMessageView(m: Message) {
     kind: m.kind,
     reference: m.reference,
     failReason: m.failReason,
+    failCode: m.failCode,
     queuedAt: m.queuedAt,
     sentAt: m.sentAt,
     engineConfirmedAt: m.engineConfirmedAt,

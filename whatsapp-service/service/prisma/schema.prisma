@@ -34,6 +34,29 @@ enum MessageStatus {
   EXPIRED
 }
 
+/// What a message carries besides its words. A document stays in `document` (bytes, wiped once sent).
+enum MediaType {
+  IMAGE
+}
+
+/// Why a message did not arrive, as a code a module can count. `failReason` says it in words.
+enum FailCode {
+  /// The person has no WhatsApp.
+  NOT_ON_WHATSAPP
+  /// The picture could not be fetched from media storage (gone, too big, not a picture, or storage down).
+  MEDIA_FETCH_FAILED
+  /// The picture was fetched but WhatsApp's engine could not read it as a picture.
+  MEDIA_UNREADABLE
+  /// The engine failed three times.
+  ENGINE_GAVE_UP
+  /// The engine refused this message; retrying will not help.
+  ENGINE_REJECTED
+  /// WhatsApp reported it could not deliver it.
+  DELIVERY_FAILED
+  /// Not sent within a day (number unlinked, or the daily limit used up), so never sent late.
+  EXPIRED
+}
+
 enum MessageKind {
   S1
   S2
@@ -130,8 +153,15 @@ model Message {
   document        Bytes?
   fileName        String?
   mimeType        String?
+  /// A picture, by address. The address, not the bytes: one photo to 1,000 people is one file.
+  /// Only addresses under MEDIA_URL_PREFIXES are accepted; the worker fetches it when sending.
+  mediaUrl        String?
+  mediaType       MediaType?
+  /// Show WhatsApp's link card (photo and title) for a link in the text. Text-only messages.
+  linkPreview     Boolean       @default(false)
   status          MessageStatus @default(QUEUED)
   failReason      String?
+  failCode        FailCode?
   tries           Int           @default(0)
   /// Not before this time (retry backoff).
   nextAttemptAt   DateTime      @default(now())

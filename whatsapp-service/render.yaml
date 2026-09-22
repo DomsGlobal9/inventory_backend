@@ -171,6 +171,12 @@ services:
         value: "false" # switch on once the ScaleEzy number is linked on Render
       - key: CANARY_HOUR_IST
         value: "9"
+      # Folders pictures may be sent from, comma-separated, each ending in /. Set in the dashboard to
+      # the Inventory Supabase project's public whatsapp-media folder:
+      # https://<project>.supabase.co/storage/v1/object/public/whatsapp-media/
+      # Empty: pictures are refused and GET /v1/capabilities says image: false.
+      - key: MEDIA_URL_PREFIXES
+        sync: false
       - key: LOG_LEVEL
         value: info
 

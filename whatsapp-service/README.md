@@ -57,8 +57,9 @@ Module calls carry `x-module-key`; the platform console uses `x-admin-key`. Ever
 | POST | `/v1/accounts/client/:clientId/link` | `{ method: 'qr' \| 'code', phone? }` → `{ status, qr?, pairingCode? }`. Never touches a connected number. |
 | GET | `/v1/accounts/client/:clientId` | `{ status, phone (masked), linkedAt, lastSeenAt }` |
 | POST | `/v1/accounts/client/:clientId/disconnect` | Logs the number out → `LOGGED_OUT`. |
-| POST | `/v1/messages` | `{ from: 'scaleezy' \| { clientId }, to, text?, document?: { fileName, mimeType: 'application/pdf', base64 }, kind, reference?, idempotencyKey }` → `202 { id, status }` (`duplicate: true` when an earlier message is returned). |
-| GET | `/v1/messages/:id` | Status and times (`sentAt`, `engineConfirmedAt`, `deliveredAt`, `readAt`, `failReason`). Own messages only. |
+| POST | `/v1/messages` | `{ from: 'scaleezy' \| { clientId }, to, text?, document?: { fileName, mimeType: 'application/pdf', base64 }, image?: { url }, linkPreview?, kind, reference?, idempotencyKey }` → `202 { id, status }` (`duplicate: true` when an earlier message is returned). |
+| GET | `/v1/messages/:id` | Status and times (`sentAt`, `engineConfirmedAt`, `deliveredAt`, `readAt`, `failReason`, `failCode`). Own messages only. |
+| GET | `/v1/capabilities` | What this service can send (pictures only when `MEDIA_URL_PREFIXES` is set). |
 | POST | `/v1/numbers/check` | `{ from, to }` → `{ onWhatsApp }` (cached 7 days). |
 | POST | `/engine/events/:secret` | The engine's webhook (secret compared in constant time). |
 | GET | `/admin/accounts`, `/admin/accounts/verify`, `/admin/messages?status=&since=`, `/admin/canary` | Console views. No message text, full numbers masked. |
@@ -141,6 +142,7 @@ instances on one database (single sender), and a module webhook that fails or ne
 | `ENCRYPTION_KEY` | yes | 32 random bytes, base64. Encrypts module webhook secrets. **Never change it once modules exist.** |
 | `SCALEEZY_INSTANCE` | yes | Engine instance of the ScaleEzy number (`phase0-test` locally, `scaleezy` on Render). |
 | `SCALEEZY_DAILY_CAP` | no (150) | Messages per Indian day from the ScaleEzy number. |
+| `MEDIA_URL_PREFIXES` | no (empty) | Folders pictures may be sent from, comma-separated, each ending in `/` (e.g. `https://<project>.supabase.co/storage/v1/object/public/whatsapp-media/`). https only (plain http only to localhost outside production). Empty: pictures are refused. The worker re-checks it when sending, so removing a folder stops its waiting pictures. |
 | `MESSAGE_RETENTION_DAYS` | no (30) | Finished messages are deleted after this many days (7–3650). Module events go after 7 days, number checks after 7, connection history and canary runs after 90. STOPs and messages still waiting are never deleted. |
 | `PORT` | no (18081; Render sets 10000) | |
 | `LOG_LEVEL` | no (info) | Logs never contain message text, documents, keys, or full numbers (last 4 digits only). |

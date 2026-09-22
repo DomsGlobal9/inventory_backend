@@ -32,6 +32,10 @@ export const sendBody = z
       .strict()
       .optional()
       .nullable(),
+    // A picture, by its address in ScaleEzy's picture storage (MEDIA_URL_PREFIXES); JPEG or PNG.
+    image: z.object({ url: z.string().min(1).max(2048) }).strict().optional().nullable(),
+    // WhatsApp's link card for a link in the text. Text-only messages.
+    linkPreview: z.boolean().optional(),
     kind: z.enum(kinds),
     reference: z.string().max(200).optional().nullable(),
     idempotencyKey: z.string().min(1).max(200),

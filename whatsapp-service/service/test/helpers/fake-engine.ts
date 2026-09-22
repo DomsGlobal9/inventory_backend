@@ -15,8 +15,16 @@ export interface RecordedSend {
   instance: string;
   number: string;
   engineMessageId: string;
-  type: 'text' | 'document';
+  type: 'text' | 'document' | 'image';
   fileName?: string;
+  mimeType?: string;
+  caption?: string;
+  /** Decoded size of the picture or document the engine was given. */
+  mediaBytes?: number;
+  /** First bytes of the media, hex (tests check they got the real picture). */
+  mediaHead?: string;
+  linkPreview?: boolean;
+  text?: string;
 }
 
 export class FakeEngine {
@@ -135,8 +143,19 @@ export class FakeEngine {
         instance,
         number,
         engineMessageId: `3EB0${randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase()}`,
-        type: m[1] === 'sendMedia' ? 'document' : 'text',
-        ...(m[1] === 'sendMedia' ? { fileName: String(body.fileName) } : {}),
+        type: m[1] === 'sendMedia' ? (body.mediatype === 'image' ? 'image' : 'document') : 'text',
+        ...(m[1] === 'sendMedia'
+          ? (() => {
+              const media = Buffer.from(String(body.media ?? ''), 'base64');
+              return {
+                fileName: String(body.fileName),
+                mimeType: String(body.mimetype),
+                mediaBytes: media.length,
+                mediaHead: media.subarray(0, 8).toString('hex'),
+                ...(typeof body.caption === 'string' ? { caption: body.caption } : {}),
+              };
+            })()
+          : { text: String(body.text), linkPreview: body.linkPreview === true }),
       };
       this.sends.push(rec);
       await this.onSend?.(rec);

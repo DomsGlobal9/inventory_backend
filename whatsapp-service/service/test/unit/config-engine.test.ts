@@ -52,6 +52,20 @@ describe('engine error classification', () => {
     expect(classify(400, { response: { message: ['Timed Out'] } }).kind).toBe('server');
     expect(classify(400, { response: { message: ['something else'] } }).kind).toBe('rejected');
   });
+  it('real Evolution 2.3.7 answers (22 Sep 2026): no live socket waits, an unreadable picture fails for good', () => {
+    // Instance with no WhatsApp socket: text and picture sends.
+    expect(classify(500, { status: 500, response: { message: "Cannot read properties of undefined (reading 'onWhatsApp')" } }).kind).toBe('not_connected');
+    expect(classify(500, { status: 500, response: { message: ["TypeError: Cannot read properties of undefined (reading 'waUploadToServer')"] } }).kind).toBe('not_connected');
+    // A picture the engine's image library cannot read.
+    const bad = classify(500, {
+      status: 500,
+      response: { message: ['Error: Input buffer has corrupt header: VipsJpeg: Corrupt JPEG data: 198 extraneous bytes before marker 0xd9\nVipsJpeg: JPEG datastream contains no image'] },
+    });
+    expect(bad.kind).toBe('bad_media');
+    expect(bad.transient).toBe(false);
+    // Any other undefined property is still an engine fault, retried.
+    expect(classify(500, { response: { message: "Cannot read properties of undefined (reading 'foo')" } }).kind).toBe('server');
+  });
   it('only server/timeout/unreachable are transient', () => {
     expect(new EngineError('server', '').transient).toBe(true);
     expect(new EngineError('timeout', '').transient).toBe(true);

@@ -4,6 +4,7 @@ import { EngineError } from '../engine/client';
 import { backoffMs, dailyCapFor, isExpired, isOverCap, istDayStart, MAX_TRIES, nextIstDayStart, randomGapMs, STALE_SENDING_MS } from '../domain/rules';
 import { applyMessageStatus, recordSent } from '../messages/status-apply';
 import { isOnWhatsApp } from '../numbers/service';
+import { checkMediaUrl, fetchImage, ImageCache, MediaFetchError, type FetchedImage } from '../lib/media';
 
 // Sends queued messages: one at a time per number, a human-like pause between two messages
 // from the same number, a daily cap per number. Runs only in the leader instance.
@@ -11,6 +12,7 @@ import { isOnWhatsApp } from '../numbers/service';
 const NOT_ON_WHATSAPP = 'This number is not on WhatsApp.';
 const GAVE_UP = 'WhatsApp could not send this after 3 tries. Please try again later.';
 const REFUSED = 'WhatsApp refused this message.';
+const PICTURE = 'The picture could not be sent';
 
 export interface SenderOptions {
   rand?: () => number;
@@ -25,6 +27,8 @@ export class Sender {
   readonly inFlight = new Set<string>();
   private stopping = false;
   private capLogged = new Set<string>();
+  /** One campaign picture goes to many people; it is fetched once, not once per message. */
+  private readonly images = new ImageCache();
 
   private readonly rand: () => number;
   /** How long to wait before looking again at a number that is not connected / an engine that is down. */
@@ -171,18 +175,24 @@ export class Sender {
     try {
       const onWa = await isOnWhatsApp(this.ctx, account, m.toDigits);
       if (!onWa) {
-        await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: NOT_ON_WHATSAPP });
+        await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: NOT_ON_WHATSAPP, failCode: 'NOT_ON_WHATSAPP' });
         return;
       }
 
-      const result = m.document
-        ? await engine.sendDocument(account.instanceName, m.toDigits, {
-            base64: Buffer.from(m.document).toString('base64'),
-            fileName: m.fileName ?? 'document.pdf',
-            mimeType: m.mimeType ?? 'application/pdf',
-            caption: m.text,
-          })
-        : await engine.sendText(account.instanceName, m.toDigits, m.text ?? '');
+      let result: { engineMessageId: string };
+      if (m.mediaUrl) {
+        const img = await this.picture(m.mediaUrl);
+        result = await engine.sendImage(account.instanceName, m.toDigits, { base64: img.bytes.toString('base64'), mimeType: img.mimeType, caption: m.text });
+      } else if (m.document) {
+        result = await engine.sendDocument(account.instanceName, m.toDigits, {
+          base64: Buffer.from(m.document).toString('base64'),
+          fileName: m.fileName ?? 'document.pdf',
+          mimeType: m.mimeType ?? 'application/pdf',
+          caption: m.text,
+        });
+      } else {
+        result = await engine.sendText(account.instanceName, m.toDigits, m.text ?? '', { linkPreview: m.linkPreview });
+      }
 
       await this.recordWithRetry(m.id, result.engineMessageId);
       this.ctx.log.info({ messageId: m.id, accountId: account.id }, 'message sent');
@@ -211,7 +221,39 @@ export class Sender {
     }
   }
 
+  /**
+   * The picture's bytes. The address is checked again here, not only when queued: a folder taken
+   * off MEDIA_URL_PREFIXES stops pictures from it even for messages already waiting.
+   */
+  private async picture(url: string): Promise<FetchedImage> {
+    try {
+      checkMediaUrl(url, this.ctx.config.mediaUrlPrefixes, this.ctx.config.NODE_ENV === 'production');
+    } catch {
+      throw new MediaFetchError(false, "Its address is no longer in ScaleEzy's picture storage.");
+    }
+    const cached = this.images.get(url);
+    if (cached) return cached;
+    const img = await fetchImage(url);
+    this.images.set(url, img);
+    return img;
+  }
+
   private async handleSendError(account: Account, m: Message, e: unknown): Promise<void> {
+    if (e instanceof MediaFetchError) {
+      // Nothing reached WhatsApp: the picture is fetched before the engine is called.
+      const tries = m.tries + 1;
+      if (!e.transient || tries >= MAX_TRIES) {
+        await this.ctx.db.message.update({ where: { id: m.id }, data: { tries } });
+        await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: `${PICTURE}: ${e.message}`, failCode: 'MEDIA_FETCH_FAILED' });
+        return;
+      }
+      this.ctx.log.warn({ messageId: m.id, tries, reason: e.message }, 'picture could not be fetched; will retry');
+      await this.ctx.db.message.updateMany({
+        where: { id: m.id, status: 'SENDING' },
+        data: { status: 'QUEUED', tries, nextAttemptAt: new Date(Date.now() + backoffMs(tries)) },
+      });
+      return;
+    }
     if (!(e instanceof EngineError)) {
       // Our own failure (e.g. database). Leave the row SENDING: if the send did not happen it is
       // requeued after 2 minutes; if it did, the engine's send event records it.
@@ -234,7 +276,7 @@ export class Sender {
           create: { toDigits: m.toDigits, onWhatsApp: false },
           update: { onWhatsApp: false, checkedAt: new Date() },
         });
-        await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: NOT_ON_WHATSAPP });
+        await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: NOT_ON_WHATSAPP, failCode: 'NOT_ON_WHATSAPP' });
         return;
       case 'unreachable':
       case 'not_connected':
@@ -250,16 +292,19 @@ export class Sender {
         const tries = m.tries + 1;
         if (tries >= MAX_TRIES) {
           await this.ctx.db.message.update({ where: { id: m.id }, data: { tries } });
-          await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: GAVE_UP });
+          await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: GAVE_UP, failCode: 'ENGINE_GAVE_UP' });
           return;
         }
         this.ctx.log.warn({ messageId: m.id, tries, reason: e.kind }, 'send failed; will retry');
         await requeue({ countTry: true, waitMs: backoffMs(tries) });
         return;
       }
+      case 'bad_media':
+        await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: `${PICTURE}: WhatsApp could not read it as a picture.`, failCode: 'MEDIA_UNREADABLE' });
+        return;
       case 'rejected':
       default:
-        await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: REFUSED });
+        await applyMessageStatus(this.ctx, m.id, 'FAILED', { failReason: REFUSED, failCode: 'ENGINE_REJECTED' });
         return;
     }
   }

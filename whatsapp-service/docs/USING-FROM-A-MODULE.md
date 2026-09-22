@@ -177,6 +177,20 @@ export async function sendReminder(actor: Actor, invoiceId: string, nonce: strin
 
   The same document to the same person within 60 s returns the earlier message instead, with
   `duplicate: true`.
+- **Pictures:** `image: { url }`, the address of a JPEG or PNG (at most 5 MB) in ScaleEzy's
+  picture storage. `text` becomes the caption, at most 1,024 characters.
+  - Only addresses under the service's `MEDIA_URL_PREFIXES` folders are accepted
+    (`GET /v1/capabilities` lists them). Anything else is refused with a sentence.
+  - Store each picture at a **new random address and never overwrite it**: the service caches a
+    picture for 10 minutes, and a campaign's history must show what was really sent.
+  - The service fetches the picture when the message is due, not when you queue it. If it has
+    gone by then, the message fails with `failCode: MEDIA_FETCH_FAILED`.
+  - A picture and a PDF in one message are refused; so is a caption over 1,024 characters.
+- **Link cards:** `linkPreview: true` shows WhatsApp's card (photo and title) for a link in a
+  text message. Off by default; refused with a picture or a PDF (WhatsApp shows no card there).
+- **Check before you offer it.** `GET /v1/capabilities` says what this service can send
+  (`image: false` when no picture folder is set up). Show a picture option only when it says
+  so; then your module can be deployed before or after the service.
 
 ### Step 4. The events webhook: ticks, drops, STOPs
 
@@ -203,7 +217,7 @@ router.post('/whatsapp/events', express.raw({ type: 'application/json', limit: '
 
 | Event | `data` | What to do |
 |---|---|---|
-| `message.status` | `messageId, reference, kind, status, failReason, sentAt, deliveredAt, readAt, failedAt` | Update your row. **Only ever move forward** (`QUEUED < SENDING < SENT < DELIVERED < READ`; `FAILED`/`EXPIRED` are final): ticks arrive out of order |
+| `message.status` | `messageId, reference, kind, status, failReason, failCode, sentAt, deliveredAt, readAt, failedAt` | Update your row. **Only ever move forward** (`QUEUED < SENDING < SENT < DELIVERED < READ`; `FAILED`/`EXPIRED` are final): ticks arrive out of order |
 | `account.connected` / `account.disconnected` / `account.status` | `accountId, kind (SCALEEZY/CLIENT), clientId, status, previousStatus, phone (masked), at` | Show it on your screens. Inventory already tells the owner (email + S4), so **don't send a second warning** |
 | `contact.opted_out` | `accountId, clientId, kind, contact (full digits), at` | Mark that contact "no WhatsApp" in your records, if you keep contacts |
 
@@ -269,7 +283,8 @@ Every call sends `x-module-key: <WHATSAPP_SERVICE_KEY>`. Bodies are JSON. Errors
 | `POST /v1/accounts/client/:clientId/link` | `{ "method": "qr" }` → `{ status, qr }`. The QR is a data-URL image that lasts about 20 s, so ask again every ~18 s while showing it. `{ "method": "code", "phone": "91…" }` → `{ status, pairingCode }`. A connected number is left alone: `{ status: "CONNECTED" }`. |
 | `POST /v1/accounts/client/:clientId/disconnect` | Unlink the shop's number (for every module). Ask the person to confirm first. |
 | `POST /v1/messages` | Send. `202 { id, status }`, or the existing message with `duplicate: true`. |
-| `GET  /v1/messages/:id` | Status, times, `failReason`, and `waitingFor` (`link` / `daily_limit`) with `waitingReason` while queued. Only your module's messages. |
+| `GET  /v1/capabilities` | What the service can send: `{ text, document, image: false \| { mimeTypes, maxBytes, maxCaption, urlPrefixes }, linkPreview, failCodes }`. |
+| `GET  /v1/messages/:id` | Status, times, `failReason`, `failCode`, and `waitingFor` (`link` / `daily_limit`) with `waitingReason` while queued. Only your module's messages. |
 | `POST /v1/numbers/check` | `{ from, to }` → `{ onWhatsApp }` (cached 7 days). Not needed before a send; the service checks by itself. |
 
 Send body:
@@ -288,7 +303,23 @@ Send body:
 
 - `from` is `{ "clientId": ... }` for a shop's number, or `"scaleezy"` for ScaleEzy's own.
 - `to` is digits with the country code. A 10-digit number is taken as Indian (+91).
+- A picture instead of the document: `"image": { "url": "https://<project>.supabase.co/storage/v1/object/public/whatsapp-media/m/8f3c….jpg" }`.
+  With text only, `"linkPreview": true` asks for WhatsApp's link card.
 
 Statuses go `QUEUED → SENDING → SENT → DELIVERED → READ`, or end at `FAILED` / `EXPIRED` with a
 `failReason`. They never go backwards. Anything not sent within 24 h is `EXPIRED`, never sent
 late.
+
+Every `FAILED` / `EXPIRED` message also has a `failCode`, for counting on your screens:
+
+| `failCode` | Meaning |
+|---|---|
+| `NOT_ON_WHATSAPP` | The person has no WhatsApp. |
+| `MEDIA_FETCH_FAILED` | The picture could not be fetched: gone, over 5 MB, not a JPEG/PNG, its folder no longer allowed, or storage down three times. |
+| `MEDIA_UNREADABLE` | The picture was fetched but WhatsApp's engine could not read it. |
+| `ENGINE_GAVE_UP` | The engine failed three times. |
+| `ENGINE_REJECTED` | The engine refused the message; retrying will not help. |
+| `DELIVERY_FAILED` | WhatsApp reported it could not deliver it. |
+| `EXPIRED` | Not sent within a day (number unlinked, or the daily limit used up). |
+
+A later delivered or read tick clears `failReason` and `failCode` (the tick proves it arrived).

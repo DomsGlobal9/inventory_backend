@@ -102,6 +102,8 @@ export function adminRoutes(ctx: Ctx): Router {
           reference: true,
           status: true,
           failReason: true,
+          failCode: true,
+          mediaType: true,
           tries: true,
           queuedAt: true,
           sentAt: true,

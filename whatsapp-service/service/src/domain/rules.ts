@@ -67,15 +67,25 @@ export function isNumberCheckFresh(checkedAt: Date, now: Date): boolean {
   return now.getTime() - checkedAt.getTime() < NUMBER_CHECK_TTL_MS;
 }
 
-/** Same words and same document hash the same, whatever order they arrive in. */
-export function contentHash(text: string | null | undefined, document: Buffer | null | undefined): string {
+/**
+ * Same words, same document and same picture hash the same. A message without a picture hashes
+ * exactly as it did before pictures existed, so the double-click rule holds across the upgrade.
+ */
+export function contentHash(text: string | null | undefined, document: Buffer | null | undefined, mediaUrl?: string | null): string {
   const h = createHash('sha256');
   h.update('t:');
   h.update(text ?? '', 'utf8');
   h.update('|d:');
   if (document) h.update(createHash('sha256').update(document).digest('hex'));
+  if (mediaUrl) {
+    h.update('|m:');
+    h.update(mediaUrl, 'utf8');
+  }
   return h.digest('hex');
 }
+
+/** WhatsApp's limit for the words under a picture. */
+export const MAX_CAPTION = 1024;
 
 /** Wait before retry n (1-based): 30 s, 2 min, 8 min. */
 export function backoffMs(tries: number): number {

@@ -1,4 +1,4 @@
-import type { Message, MessageStatus, Prisma } from '@prisma/client';
+import type { FailCode, Message, MessageStatus, Prisma } from '@prisma/client';
 import type { Ctx } from '../context';
 import { advanceStatus, mapEngineMessageStatus } from '../domain/status';
 import { enqueueForModule } from '../events/module-events';
@@ -7,6 +7,8 @@ type Tx = Prisma.TransactionClient;
 
 export interface ApplyOptions {
   failReason?: string;
+  /** Why, as a code. Defaults: FAILED -> DELIVERY_FAILED, EXPIRED -> EXPIRED. */
+  failCode?: FailCode;
   engineMessageId?: string;
   at?: Date;
   /** The change comes from an engine event (not just our send call returning). */
@@ -49,6 +51,7 @@ export async function applyInTx(tx: Tx, messageId: string, incoming: MessageStat
   if (next === 'SENT' || next === 'DELIVERED' || next === 'READ') {
     if (!existing.sentAt) data.sentAt = at;
     data.failReason = null;
+    data.failCode = null;
     data.failedAt = null;
   }
   if ((next === 'DELIVERED' || next === 'READ') && !existing.deliveredAt) data.deliveredAt = at;
@@ -56,6 +59,7 @@ export async function applyInTx(tx: Tx, messageId: string, incoming: MessageStat
   if (next === 'FAILED' || next === 'EXPIRED') {
     data.failedAt = at;
     data.failReason = opts.failReason ?? (next === 'EXPIRED' ? 'Not sent within a day, so it was not sent late.' : 'WhatsApp could not deliver this message.');
+    data.failCode = opts.failCode ?? (next === 'EXPIRED' ? 'EXPIRED' : 'DELIVERY_FAILED');
   }
   // The PDF is only kept until WhatsApp has it (or it will never be sent).
   if (next !== 'SENDING') data.document = null;
@@ -68,6 +72,7 @@ export async function applyInTx(tx: Tx, messageId: string, incoming: MessageStat
       kind: m.kind,
       status: m.status,
       failReason: m.failReason,
+      failCode: m.failCode,
       sentAt: m.sentAt?.toISOString() ?? null,
       deliveredAt: m.deliveredAt?.toISOString() ?? null,
       readAt: m.readAt?.toISOString() ?? null,

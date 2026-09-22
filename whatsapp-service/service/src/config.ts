@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseMediaPrefixes } from './lib/media';
 
 // Every setting is read and checked once, at start. A missing or malformed secret stops the
 // service with a message naming the variable: a service that starts with a guessed secret is
@@ -65,9 +66,12 @@ const schema = z.object({
   CANARY_ENABLED: bool(false),
   CANARY_TO: z.string().optional(),
   CANARY_HOUR_IST: int(9, 0, 23),
+
+  // Folders pictures may be sent from (comma-separated, each ending in /). Empty: no pictures.
+  MEDIA_URL_PREFIXES: z.string().optional(),
 });
 
-export type Config = z.infer<typeof schema> & { canaryTo: string | null };
+export type Config = z.infer<typeof schema> & { canaryTo: string | null; mediaUrlPrefixes: string[] };
 
 export class ConfigError extends Error {}
 
@@ -85,5 +89,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (c.SEND_GAP_MAX_MS < c.SEND_GAP_MIN_MS) {
     throw new ConfigError('The WhatsApp service cannot start: SEND_GAP_MAX_MS must not be below SEND_GAP_MIN_MS.');
   }
-  return { ...c, canaryTo: c.CANARY_TO?.trim() || null };
+  let mediaUrlPrefixes: string[];
+  try {
+    mediaUrlPrefixes = parseMediaPrefixes(c.MEDIA_URL_PREFIXES, c.NODE_ENV === 'production');
+  } catch (e) {
+    throw new ConfigError(`The WhatsApp service cannot start: some settings are missing or wrong.\n  MEDIA_URL_PREFIXES: ${(e as Error).message}`);
+  }
+  return { ...c, canaryTo: c.CANARY_TO?.trim() || null, mediaUrlPrefixes };
 }

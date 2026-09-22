@@ -1,7 +1,7 @@
 // Integration run against the REAL local engine and the linked ScaleEzy number.
 //
-//   npm run test:integration                   full run: 5 real messages to the ScaleEzy number itself
-//   npm run test:integration -- --skip-restart  3 real messages (no restart test)
+//   npm run test:integration                   full run: 6 real messages to the ScaleEzy number itself
+//   npm run test:integration -- --skip-restart  4 real messages (no restart test)
 //   npm run test:integration -- --no-send       everything that does not send a WhatsApp message
 //
 // Safety: every message goes ONLY to the ScaleEzy number (it shows as "Message yourself"),
@@ -15,6 +15,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
 import { loadDotEnv } from '../../src/lib/dotenv';
 import { encrypt, hashModuleKey, newModuleKey, newWebhookSecret, verifySignature } from '../../src/lib/crypto';
@@ -27,6 +28,9 @@ const SELF = '918142424642'; // the ScaleEzy number: the only allowed recipient
 const PORT = Number(process.env.PORT ?? 18081);
 const BASE = `http://127.0.0.1:${PORT}`;
 const HOOK_PORT = 18082;
+// A stand-in for picture storage on this computer (allowed outside production only).
+const MEDIA_PORT = 18083;
+const MEDIA_PREFIX = `http://127.0.0.1:${MEDIA_PORT}/whatsapp-media/`;
 const ENGINE = (process.env.ENGINE_URL ?? '').replace(/\/+$/, '');
 const ENGINE_KEY = process.env.ENGINE_API_KEY ?? '';
 const ADMIN = process.env.ADMIN_KEY ?? '';
@@ -77,6 +81,7 @@ function startService(): ChildProcess {
       SEND_GAP_MAX_MS: '13000',
       CANARY_ENABLED: 'false',
       LOG_LEVEL: 'info',
+      MEDIA_URL_PREFIXES: [process.env.MEDIA_URL_PREFIXES, MEDIA_PREFIX].filter(Boolean).join(','),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -171,6 +176,15 @@ async function main(): Promise<void> {
     });
   });
   await new Promise<void>((r) => hook.listen(HOOK_PORT, '127.0.0.1', r));
+
+  // --- picture storage stand-in: one real JPEG ---
+  const picture = readFileSync(resolve(__dirname, 'picture.jpg'));
+  const pictureServer: Server = createServer((req, res) => {
+    if (req.url === '/whatsapp-media/integration/picture.jpg') res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': String(picture.length) }).end(picture);
+    else res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => pictureServer.listen(MEDIA_PORT, '127.0.0.1', r));
+  pictureServer.unref();
 
   // --- modules: fresh keys every run ---
   const invKey = newModuleKey();
@@ -279,10 +293,26 @@ async function main(): Promise<void> {
   const wiped = await db.message.findUnique({ where: { id: d.body.id }, select: { document: true } });
   line(wiped?.document === null, 'PDF bytes wiped once sent');
 
+  // --- 2b. picture with a caption (Evolution reads it, makes a thumbnail, uploads it) ---
+  await respectSpacing();
+  const caps = await http('GET', '/v1/capabilities', undefined, inv);
+  line(Boolean(caps.body?.image) && caps.body.image.urlPrefixes.includes(MEDIA_PREFIX), 'capabilities: pictures on, with the local folder');
+  const p = await http(
+    'POST',
+    '/v1/messages',
+    { from: 'scaleezy', to: SELF, text: 'Integration test (picture). No reply needed.', image: { url: `${MEDIA_PREFIX}integration/picture.jpg` }, kind: 'TEST', reference: 'integration', idempotencyKey: `integration-picture-${randomUUID()}` },
+    inv,
+  );
+  line(p.status === 202, 'picture queued -> 202', `${picture.length} bytes`);
+  realSends.push({ id: p.body.id, label: 'picture' });
+  const pSent = await waitStatus(invKey, p.body.id, ['SENT', 'DELIVERED', 'READ'], 90_000);
+  line(['SENT', 'DELIVERED', 'READ'].includes(pSent?.status), 'picture SENT', `status ${pSent?.status}${pSent?.failReason ? `, ${pSent.failCode}: ${pSent.failReason}` : ''}`);
+  await confirmTicks(invKey, p.body.id, 'picture');
+
   // --- module webhooks ---
   await sleep(4000);
-  const mine = received.filter((e) => e.type === 'message.status' && [t.body.id, d.body.id].includes(e.data?.messageId));
-  line(mine.length >= 2 && mine.every((e) => e.signatureOk), 'module webhook got signed status events', mine.map((e) => `${e.data.status}`).join(','));
+  const mine = received.filter((e) => e.type === 'message.status' && [t.body.id, d.body.id, p.body.id].includes(e.data?.messageId));
+  line(mine.length >= 3 && mine.every((e) => e.signatureOk), 'module webhook got signed status events', mine.map((e) => `${e.data.status}`).join(','));
 
   // --- 3+4. restart mid-queue ---
   if (SKIP_RESTART) line(null, 'restart test skipped (--skip-restart)');

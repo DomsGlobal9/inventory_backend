@@ -8,6 +8,7 @@ export type EngineErrorKind =
   | 'not_connected' // the number is not connected right now: wait, do not count as a try
   | 'not_found' // no such instance
   | 'not_on_whatsapp' // the recipient has no WhatsApp
+  | 'bad_media' // the engine could not read the picture: retrying will not help
   | 'unauthorized' // wrong engine key: a configuration problem
   | 'rejected'; // any other 4xx: will not work by retrying
 
@@ -46,7 +47,12 @@ export interface Engine {
   connect(instance: string, number?: string): Promise<LinkInfo>;
   logout(instance: string): Promise<void>;
   deleteInstance(instance: string): Promise<void>;
-  sendText(instance: string, toDigits: string, text: string): Promise<{ engineMessageId: string }>;
+  sendText(instance: string, toDigits: string, text: string, opts?: { linkPreview?: boolean }): Promise<{ engineMessageId: string }>;
+  sendImage(
+    instance: string,
+    toDigits: string,
+    img: { base64: string; mimeType: string; caption?: string | null },
+  ): Promise<{ engineMessageId: string }>;
   sendDocument(
     instance: string,
     toDigits: string,
@@ -62,7 +68,13 @@ interface Options {
   sendTimeoutMs?: number;
 }
 
-const NOT_CONNECTED = /connection (closed|terminated|lost|failure)|not connected|instance is not connected|socket (closed|not open)|precondition required/i;
+// The last one: Evolution 2.3.7 on an instance with no live WhatsApp socket fails with a TypeError
+// before anything is sent (checked on the real engine, 22 Sep 2026).
+const NOT_CONNECTED =
+  /connection (closed|terminated|lost|failure)|not connected|instance is not connected|socket (closed|not open)|precondition required|reading '(onWhatsApp|waUploadToServer|sendMessage|relayMessage)'/i;
+// The engine turns every picture into a thumbnail first (sharp/libvips); a picture it cannot read
+// fails there with a 500, e.g. "Input buffer has corrupt header: VipsJpeg: ...".
+const BAD_MEDIA = /input buffer|vips|unsupported image format|corrupt (jpeg|png|header)/i;
 
 export class EvolutionEngine implements Engine {
   private readonly timeoutMs: number;
@@ -152,11 +164,34 @@ export class EvolutionEngine implements Engine {
     await this.call('DELETE', `/instance/delete/${encodeURIComponent(instance)}`);
   }
 
-  async sendText(instance: string, toDigits: string, text: string): Promise<{ engineMessageId: string }> {
+  async sendText(instance: string, toDigits: string, text: string, opts: { linkPreview?: boolean } = {}): Promise<{ engineMessageId: string }> {
     const body = await this.call(
       'POST',
       `/message/sendText/${encodeURIComponent(instance)}`,
-      { number: toDigits, text, delay: 1200, linkPreview: false },
+      { number: toDigits, text, delay: 1200, linkPreview: opts.linkPreview === true },
+      this.sendTimeoutMs,
+    );
+    return { engineMessageId: engineId(body) };
+  }
+
+  /** The bytes, not the address: the service fetched and checked the picture itself. */
+  async sendImage(
+    instance: string,
+    toDigits: string,
+    img: { base64: string; mimeType: string; caption?: string | null },
+  ): Promise<{ engineMessageId: string }> {
+    const body = await this.call(
+      'POST',
+      `/message/sendMedia/${encodeURIComponent(instance)}`,
+      {
+        number: toDigits,
+        mediatype: 'image',
+        mimetype: img.mimeType,
+        media: img.base64,
+        fileName: img.mimeType === 'image/png' ? 'picture.png' : 'picture.jpg',
+        ...(img.caption ? { caption: img.caption } : {}),
+        delay: 1200,
+      },
       this.sendTimeoutMs,
     );
     return { engineMessageId: engineId(body) };
@@ -241,6 +276,7 @@ export function classify(status: number, data: unknown): EngineError {
   const text = engineMessageText(data);
   if (status === 401 || status === 403) return new EngineError('unauthorized', 'The engine refused our key.', status);
   if (status === 404) return new EngineError('not_found', 'That WhatsApp instance does not exist in the engine.', status);
+  if (BAD_MEDIA.test(text)) return new EngineError('bad_media', 'The engine could not read the picture.', status);
   if (status >= 500) {
     if (NOT_CONNECTED.test(text)) return new EngineError('not_connected', 'The number is not connected.', status);
     return new EngineError('server', `The engine failed (${status}).`, status);
