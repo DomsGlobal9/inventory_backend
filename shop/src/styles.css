@@ -926,3 +926,58 @@ button.slide { cursor: pointer; }
   .motion .draw { stroke-dashoffset: 0; }
   .motion .ring { opacity: .28; transform: none; }
 }
+
+/* ── Motion where the bag is concerned ───────────────────────────────────────────────── */
+
+/*
+ * The jolt when something lands in the bag.
+ *
+ * "Add to bag" changes a number in the corner of the screen, which on a phone is easy to miss --
+ * so a shopper taps again and ends up with three of something they wanted one of. Short and
+ * small: this is a confirmation, not a celebration.
+ */
+@keyframes jolt {
+  0% { transform: scale(1) }
+  30% { transform: scale(1.22) rotate(-6deg) }
+  55% { transform: scale(.96) rotate(3deg) }
+  100% { transform: scale(1) }
+}
+.bagicon.jolt { animation: jolt .46s cubic-bezier(.34, 1.56, .64, 1); }
+
+@keyframes pop { 0% { transform: scale(0); opacity: 0 } 60% { transform: scale(1.25) } 100% { transform: scale(1); opacity: 1 } }
+.bagicon.jolt i { animation: pop .34s .06s cubic-bezier(.34, 1.56, .64, 1) both; }
+
+/* The button says it took, then goes quietly back to normal. */
+.go.done { color: var(--save); border-color: color-mix(in srgb, var(--save) 45%, var(--line)); }
+.motion.tick .draw { stroke-dasharray: 20; stroke-dashoffset: 20; animation: draw .3s ease-out forwards; }
+
+/*
+ * A line leaving the bag.
+ *
+ * Removed outright, the rest of the bag jumped up the screen and on a phone that reads as the
+ * wrong thing having gone. It collapses first, so the eye can follow what left.
+ */
+.baglines li { transition: opacity .2s ease, transform .2s ease; }
+.baglines li.going {
+  opacity: 0; transform: translateX(-14px);
+  pointer-events: none;
+}
+
+/* How close the bag is to the shop's free-delivery figure. */
+.toward {
+  display: block; height: 4px; border-radius: 999px; margin-top: 9px;
+  background: color-mix(in srgb, var(--save) 22%, transparent); overflow: hidden;
+}
+.toward i {
+  display: block; height: 100%; border-radius: 999px; background: var(--save);
+  transition: width .45s cubic-bezier(.22, .61, .36, 1);
+}
+
+/* A page arriving, once, gently. Enough to say "this is a new page" and no more. */
+@keyframes arrive { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+.grow > * { animation: arrive .22s ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bagicon.jolt, .bagicon.jolt i, .grow > *, .baglines li { animation: none !important; transition: none !important; }
+  .toward i { transition: none; }
+}

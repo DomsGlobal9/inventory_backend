@@ -49,6 +49,21 @@ export const NoMatch = () => (
   </svg>
 );
 
+/** A tick small enough to live inside a button, drawn once. */
+export const Ticked = () => (
+  <svg className="motion tick" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path className="draw" d="m3 8.5 3.2 3.2L13 4.6" stroke="currentColor" strokeWidth="2.2"
+      strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+/** How close a bag is to the shop's free-delivery figure. */
+export const Toward = ({ done }) => (
+  <span className="toward" aria-hidden="true">
+    <i style={{ width: `${Math.max(4, Math.min(100, Math.round(done * 100)))}%` }} />
+  </span>
+);
+
 /** Three dots, for the seconds a try-on takes. */
 export const Working = () => (
   <span className="motion dots" aria-hidden="true"><i /><i /><i /></span>

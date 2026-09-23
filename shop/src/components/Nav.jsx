@@ -14,15 +14,39 @@ import { bagCount, useBag } from '../bag';
  * bag are the only ways out of a long grid of photographs.
  */
 
-const Bag = ({ n }) => (
-  <span className="bagicon">
+/**
+ * The bag, and the little jolt it gives when something lands in it.
+ *
+ * "Add to bag" on a product page changes a number in the corner of the screen, which on a phone is
+ * easy to miss entirely -- so a shopper taps again, and again, and ends up with three of something
+ * they wanted one of. The jolt is the answer to "where did that go?", and it only fires when the
+ * count goes UP: bumping while somebody empties their bag would be cheerful about the wrong thing.
+ */
+const Bag = ({ n }) => {
+  const [jolt, setJolt] = useState(false);
+  const was = useRef(n);
+
+  useEffect(() => {
+    if (n > was.current) {
+      setJolt(true);
+      const t = setTimeout(() => setJolt(false), 460);
+      was.current = n;
+      return () => clearTimeout(t);
+    }
+    was.current = n;
+    return undefined;
+  }, [n]);
+
+  return (
+  <span className={`bagicon${jolt ? ' jolt' : ''}`}>
     <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
       <path d="M6 7h12l-1 13H7L6 7Z" strokeLinejoin="round" />
       <path d="M9 7a3 3 0 0 1 6 0" strokeLinecap="round" />
     </svg>
     {n > 0 ? <i aria-hidden="true">{n > 9 ? '9+' : n}</i> : null}
   </span>
-);
+  );
+};
 
 export default function Nav({ shop, compact = false }) {
   const { slug } = useParams();

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { priceBag, money } from '../api';
 import { useBag, setQuantity, removeFromBag } from '../bag';
 import { Say, Problem } from '../components/States';
-import { EmptyBag } from '../components/Motion';
+import { EmptyBag, Toward } from '../components/Motion';
 
 /**
  * The bag.
@@ -21,6 +21,18 @@ export default function BagPage({ shop }) {
   const nav = useNavigate();
   const lines = useBag(slug);
   const [state, setState] = useState({ loading: true, error: null, bag: null });
+  /*
+   * A line on its way out.
+   *
+   * Removing it outright made the rest of the bag jump up the screen, and on a phone that reads as
+   * the wrong thing having gone. It collapses first, then goes -- long enough to follow, short
+   * enough that nobody is waiting on it.
+   */
+  const [leaving, setLeaving] = useState(null);
+  const take = (variantCode) => {
+    setLeaving(variantCode);
+    window.setTimeout(() => { removeFromBag(slug, variantCode); setLeaving(null); }, 240);
+  };
 
   const key = lines.map(l => `${l.variantCode}:${l.quantity}`).join('|');
 
@@ -76,7 +88,7 @@ export default function BagPage({ shop }) {
           {lines.map(line => {
             const priced = bag?.lines?.find(l => l.variantCode === line.variantCode);
             return (
-              <li key={line.variantCode}>
+              <li key={line.variantCode} className={leaving === line.variantCode ? 'going' : undefined}>
                 <Link to={priced?.productCode ? `/${slug}/p/${encodeURIComponent(priced.productCode)}` : `/${slug}`}
                   className="shot" aria-hidden={!priced}>
                   {priced?.imageUrl
@@ -103,7 +115,7 @@ export default function BagPage({ shop }) {
                 <div className="cash">
                   <b>{priced ? money(priced.lineTotal, currency) : ''}</b>
                   {priced && priced.saved > 0 ? <span className="off">{money(priced.saved, currency)} off</span> : null}
-                  <button type="button" className="drop" onClick={() => removeFromBag(slug, line.variantCode)}>Remove</button>
+                  <button type="button" className="drop" onClick={() => take(line.variantCode)}>Remove</button>
                 </div>
               </li>
             );
@@ -131,8 +143,15 @@ export default function BagPage({ shop }) {
                 </ul>
               ) : null}
 
+              {/* A bar that fills as they add, because "add ₹400 more" is a fact and a bar that is
+                  nearly full is a reason. */}
               {toFree > 0 ? (
-                <p className="nudge">Add {money(toFree, currency)} more and delivery is free.</p>
+                <div className="nudge">
+                  Add {money(toFree, currency)} more and delivery is free.
+                  <Toward done={(bag.goods - bag.saved) / bag.freeDeliveryAbove} />
+                </div>
+              ) : bag.freeDeliveryAbove != null && bag.delivery === 0 && bag.goods > 0 ? (
+                <p className="nudge">You have free delivery.</p>
               ) : null}
               {short > 0 ? (
                 <p className="nudge warn">This shop sends orders of {money(bag.minOrderValue, currency)} and above.

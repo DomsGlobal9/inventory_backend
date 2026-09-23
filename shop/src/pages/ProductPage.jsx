@@ -4,6 +4,7 @@ import { getProduct, money, askOnWhatsApp } from '../api';
 import { addToBag, useBag } from '../bag';
 import { Problem, Say } from '../components/States';
 import TryOn from '../components/TryOn';
+import { Ticked } from '../components/Motion';
 import AlsoIn from '../components/AlsoIn';
 
 /**
@@ -331,8 +332,8 @@ export default function ProductPage({ slug, shop }) {
           <div ref={watch} className={`buyrow${canAdd ? '' : ' one'}`}>
             {canAdd ? (
               <>
-                <button type="button" className="go quiet" onClick={() => add(false)}>
-                  {added ? 'Added ✓' : inBag > 0 ? `In your bag (${inBag})` : 'Add to bag'}
+                <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)}>
+                  {added ? <><Ticked /> Added</> : inBag > 0 ? `In your bag (${inBag})` : 'Add to bag'}
                 </button>
                 <button type="button" className="go" onClick={() => add(true)}>Buy now</button>
               </>
@@ -413,8 +414,8 @@ export default function ProductPage({ slug, shop }) {
 
               {canAdd ? (
                 <>
-                  <button type="button" className="go quiet" onClick={() => add(false)}>
-                    {added ? 'Added ✓' : inBag > 0 ? `In your bag (${inBag})` : 'Add to bag'}
+                  <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)}>
+                    {added ? <><Ticked /> Added</> : inBag > 0 ? `In your bag (${inBag})` : 'Add to bag'}
                   </button>
                   <button type="button" className="go" onClick={() => add(true)}>Buy now</button>
                 </>
