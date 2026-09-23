@@ -29,8 +29,23 @@ const readAsDataUrl = (file) => new Promise((resolve, reject) => {
   r.readAsDataURL(file);
 });
 
+/*
+ * Whether this device has a camera worth offering.
+ *
+ * `pointer: coarse` is a better question than sniffing the user agent: it asks whether the thing
+ * being used is a finger, which on every phone and tablet also means there is a camera in it. A
+ * laptop gets the plain file picker, because "take a photo" on a desktop opens a webcam pointed at
+ * somebody's face from forty centimetres away, which is no use for a saree.
+ */
+const hasCamera = () => {
+  try { return window.matchMedia?.('(pointer: coarse)')?.matches === true; }
+  catch { return false; }
+};
+
 export default function TryOn({ slug, product, onClose }) {
   const fileRef = useRef(null);
+  const cameraRef = useRef(null);
+  const [onPhone] = useState(hasCamera);
   const [photo, setPhoto] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -105,8 +120,9 @@ export default function TryOn({ slug, product, onClose }) {
             <div className="tryshot"><img src={photo} alt="The photograph you chose" /></div>
             {said ? <p className="refused">{said}</p> : null}
             <div className="sheetrow">
-              <button type="button" className="go quiet" disabled={busy} onClick={() => fileRef.current?.click()}>
-                Choose another
+              <button type="button" className="go quiet" disabled={busy}
+                onClick={() => (onPhone ? cameraRef.current : fileRef.current)?.click()}>
+                {onPhone ? 'Retake' : 'Choose another'}
               </button>
               <button type="button" className="go" disabled={busy} onClick={go}>
                 {busy ? 'Working…' : 'See it on me'}
@@ -151,14 +167,43 @@ export default function TryOn({ slug, product, onClose }) {
               keep it.
             </p>
             {said ? <p className="refused">{said}</p> : null}
-            <button type="button" className="go" onClick={() => fileRef.current?.click()}>
-              Choose a photograph
-            </button>
+
+            {/* On a phone the camera comes first, because the photograph does not exist yet --
+                somebody deciding about a saree is far more likely to take one than to go hunting
+                through a gallery. On a laptop it is only ever the picker. */}
+            {onPhone ? (
+              <div className="sheetrow">
+                <button type="button" className="go quiet" onClick={() => fileRef.current?.click()}>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                    <rect x="3" y="5" width="18" height="15" rx="2.5" strokeLinejoin="round" />
+                    <path d="m3 16 5-5 4 4 3-3 6 6" strokeLinecap="round" strokeLinejoin="round" />
+                    <circle cx="9" cy="10" r="1.6" />
+                  </svg>
+                  Gallery
+                </button>
+                <button type="button" className="go" onClick={() => cameraRef.current?.click()}>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                    <path d="M4 8h3l1.6-2.4h6.8L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" strokeLinejoin="round" />
+                    <circle cx="12" cy="13.5" r="3.6" />
+                  </svg>
+                  Take a photo
+                </button>
+              </div>
+            ) : (
+              <button type="button" className="go" onClick={() => fileRef.current?.click()}>
+                Choose a photograph
+              </button>
+            )}
           </>
         )}
 
         <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp"
           onChange={choose} style={{ display: 'none' }} aria-label="Choose a photograph of yourself" />
+        {/* `capture` with no value lets the device offer whichever camera suits -- a full-length
+            try-on is usually somebody else holding the phone, which is the back one. Forcing the
+            front camera would make that impossible. */}
+        <input ref={cameraRef} type="file" accept="image/jpeg,image/png,image/webp" capture
+          onChange={choose} style={{ display: 'none' }} aria-label="Take a photograph" />
       </div>
     </div>
   );
