@@ -46,3 +46,7 @@ yarn-error.log*
 
 # Tenant snapshots taken before a purge. Real customer data -- never committed.
 backups/
+
+# The shopper-facing app (shop.scaleezy.com). Its source is committed; what a build makes is not.
+shop/node_modules/
+shop/dist/

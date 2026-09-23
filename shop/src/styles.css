@@ -1,0 +1,303 @@
+/*
+ * The shop, on a phone.
+ *
+ * Nearly every shopper arrives by tapping a link inside WhatsApp, on an Indian mobile network, on a
+ * mid-range Android. So: system fonts, no icon library, and images that reserve their space so the
+ * page does not jump under a thumb while photos load.
+ *
+ * It is built to look like the shops these customers already buy from -- a sticky bar that stays
+ * with them, a row of filters they swipe rather than a stack of dropdowns, big photographs, the
+ * saving stated plainly, and one confident button fixed to the bottom of a product page. A saree
+ * costs real money; a page that looks unfinished does not get that money.
+ */
+
+:root {
+  --ink: #16181d;
+  --muted: #6b7280;
+  --faint: #9aa1ad;
+  --line: #ececf0;
+  --bg: #ffffff;
+  --card: #ffffff;
+  --soft: #f7f7f9;
+  --accent: #8b1a2b;
+  --accent-ink: #ffffff;
+  --save: #0b8457;
+  --shadow: 0 1px 2px rgba(16, 18, 24, .05), 0 8px 24px -12px rgba(16, 18, 24, .18);
+  --r: 14px;
+  --max: 1180px;
+  --bar: 58px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --ink: #f2f4f8;
+    --muted: #a0a7b4;
+    --faint: #7c8492;
+    --line: #262b35;
+    --bg: #0f1115;
+    --card: #171a20;
+    --soft: #171a20;
+    --save: #34d399;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+  }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body, #root { min-height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+img { max-width: 100%; display: block; }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; }
+
+.wrap { max-width: var(--max); margin: 0 auto; padding: 0 14px; }
+
+/* ── The bar that stays with you ────────────────────────────────────────────────────── */
+
+.bar {
+  position: sticky; top: 0; z-index: 30;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.bar .row { display: flex; align-items: center; gap: 11px; height: var(--bar); }
+.bar .mark { width: 34px; height: 34px; border-radius: 9px; object-fit: cover; flex: 0 0 auto; }
+.bar .name { font-size: 16px; font-weight: 700; letter-spacing: -.01em; margin: 0; line-height: 1.1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar .sub { font-size: 11px; color: var(--muted); margin: 1px 0 0; }
+
+.icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; flex: 0 0 auto;
+  border: 0; background: transparent; color: inherit; cursor: pointer; border-radius: 10px;
+}
+.icon:hover { background: var(--soft); }
+
+/* ── The shop's own banners ─────────────────────────────────────────────────────────── */
+
+/*
+ * Swiped with the browser's own scroll snapping rather than a carousel library: it is smooth on a
+ * cheap Android, it follows the thumb exactly, and it weighs nothing. The shape is fixed by
+ * aspect-ratio so the rest of the page never jumps down when the photographs arrive.
+ */
+.banners { position: relative; background: var(--soft); }
+.strip {
+  display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.strip::-webkit-scrollbar { display: none; }
+
+.slide {
+  flex: 0 0 100%; scroll-snap-align: center; position: relative;
+  /* It is also a <button> when it goes somewhere, so its own styling has to be undone. */
+  margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: left;
+  display: block; width: 100%; cursor: default; font: inherit;
+}
+button.slide { cursor: pointer; }
+/* height:auto matters: an <img> with width and height attributes gets them as presentational
+   hints, and a fixed height beats aspect-ratio -- which rendered a 1600x1200 banner 1200px tall. */
+.slide img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); }
+@media (min-width: 720px) { .slide img { aspect-ratio: 21 / 7; } }
+
+/* Words over a photograph, on a gradient dark enough to read against anything the shop uploads. */
+.slide .over {
+  position: absolute; inset: auto 0 0 0; padding: 44px 16px 18px; color: #fff;
+  background: linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,.25) 55%, transparent);
+  pointer-events: none;
+}
+.slide .over h2 { font-size: 22px; line-height: 1.2; letter-spacing: -.02em; margin: 0; font-weight: 700; }
+.slide .over p { margin: 5px 0 0; font-size: 13.5px; opacity: .92; }
+.slide .cta {
+  display: inline-block; margin-top: 11px; padding: 8px 16px; border-radius: 999px;
+  background: #fff; color: #16181d; font-size: 13px; font-weight: 650;
+}
+@media (min-width: 720px) {
+  .slide .over { padding: 60px 26px 26px; }
+  .slide .over h2 { font-size: 30px; }
+  .slide .over p { font-size: 15px; }
+}
+
+/* The pips sit on the picture, so a banner with no words still fills its whole shape. */
+.banners .pips { position: absolute; inset: auto 0 10px 0; padding: 0; }
+.banners .pips i { background: rgba(255,255,255,.5); }
+.banners .pips i[data-on='true'] { background: #fff; }
+
+/* ── Looking for something ──────────────────────────────────────────────────────────── */
+
+.seek {
+  display: flex; align-items: center; gap: 9px;
+  background: var(--soft); border: 1px solid var(--line); border-radius: 999px;
+  padding: 0 16px; margin: 14px 0 12px;
+}
+.seek input {
+  flex: 1; min-width: 0; border: 0; background: transparent; color: inherit;
+  font: inherit; font-size: 15px; padding: 13px 0; outline: none;
+}
+.seek input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+/* Swiped, not stacked -- the way every shop these customers use already does it. */
+.rail {
+  display: flex; gap: 8px; overflow-x: auto; padding: 2px 14px 14px;
+  margin: 0 -14px; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.rail::-webkit-scrollbar { display: none; }
+
+.pill {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); background: var(--card); color: inherit;
+  border-radius: 999px; padding: 9px 15px; font-size: 13.5px; font-weight: 500; cursor: pointer;
+  white-space: nowrap;
+}
+.pill[aria-pressed='true'] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.pill select { border: 0; background: transparent; color: inherit; font: inherit; outline: none; cursor: pointer; }
+
+.count { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; }
+
+/* ── The pieces ─────────────────────────────────────────────────────────────────────── */
+
+.grid {
+  display: grid; gap: 12px 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-bottom: 30px;
+}
+@media (min-width: 620px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px 16px; } }
+@media (min-width: 940px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+.tile { display: block; color: inherit; }
+.tile .shot {
+  position: relative; aspect-ratio: 3 / 4; overflow: hidden;
+  border-radius: var(--r); background: var(--soft);
+}
+.tile .shot img { width: 100%; height: 100%; object-fit: cover; transition: transform .45s ease; }
+@media (hover: hover) { .tile:hover .shot img { transform: scale(1.045); } }
+
+.tile h2 { font-size: 13.5px; font-weight: 600; margin: 9px 0 2px; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.tile .sub { font-size: 12px; color: var(--muted); margin: 0 0 5px;
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.tile .row { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.tile .now { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.was { color: var(--faint); text-decoration: line-through; font-size: 12.5px; font-weight: 400; }
+.off { color: var(--save); font-size: 12.5px; font-weight: 700; }
+
+.tag {
+  position: absolute; left: 8px; top: 8px; z-index: 1;
+  background: var(--ink); color: var(--bg);
+  font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  padding: 4px 8px; border-radius: 6px;
+}
+.tag.out { background: rgba(22, 24, 29, .82); color: #fff; }
+.gone .shot img { opacity: .42; }
+
+.dots { display: flex; gap: 4px; margin-top: 7px; }
+.dots i { width: 11px; height: 11px; border-radius: 50%; border: 1px solid rgba(128,128,128,.35); display: block; }
+
+/* ── One piece ──────────────────────────────────────────────────────────────────────── */
+
+.piece { padding-bottom: calc(var(--bar) + 34px); }
+@media (min-width: 880px) {
+  .piece { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; padding-bottom: 48px; }
+}
+
+/* Full-bleed on a phone: the photograph is what sells a saree. */
+.gallery { margin: 0 -14px; }
+@media (min-width: 880px) { .gallery { margin: 0; position: sticky; top: calc(var(--bar) + 14px); } }
+
+.swipe {
+  display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.swipe::-webkit-scrollbar { display: none; }
+.swipe > figure {
+  flex: 0 0 100%; scroll-snap-align: center; margin: 0;
+  aspect-ratio: 3 / 4; background: var(--soft);
+}
+@media (min-width: 880px) { .swipe > figure { border-radius: var(--r); overflow: hidden; } }
+.swipe img { width: 100%; height: 100%; object-fit: cover; }
+
+.pips { display: flex; gap: 6px; justify-content: center; padding: 10px 0 0; }
+.pips i { width: 6px; height: 6px; border-radius: 50%; background: var(--line); transition: all .2s; }
+.pips i[data-on='true'] { background: var(--ink); width: 18px; border-radius: 3px; }
+
+.piece h1 { font-size: 21px; line-height: 1.25; letter-spacing: -.02em; margin: 18px 0 5px; }
+@media (min-width: 880px) { .piece h1 { font-size: 26px; margin-top: 0; } }
+.piece .of { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+
+.cost { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin-bottom: 4px; }
+.cost .now { font-size: 25px; font-weight: 700; letter-spacing: -.02em; }
+.cost .was { font-size: 15px; }
+.cost .off { font-size: 14px; }
+.tax { font-size: 12px; color: var(--faint); margin: 0 0 20px; }
+
+.pick { margin-bottom: 20px; }
+.pick > p { font-size: 12.5px; color: var(--muted); margin: 0 0 9px; font-weight: 500; }
+.pick > p b { color: var(--ink); font-weight: 600; }
+.opts { display: flex; gap: 8px; flex-wrap: wrap; }
+.opt {
+  min-width: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  border: 1.5px solid var(--line); background: var(--card); color: inherit;
+  border-radius: 10px; padding: 10px 14px; font-size: 13.5px; cursor: pointer;
+}
+.opt[aria-pressed='true'] { border-color: var(--ink); }
+.opt:disabled { opacity: .4; cursor: not-allowed; text-decoration: line-through; }
+.swatch { width: 15px; height: 15px; border-radius: 50%; border: 1px solid rgba(128,128,128,.4); }
+
+.why { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 18px; }
+.why h3 { font-size: 13px; margin: 0 0 7px; }
+.why p { margin: 0; font-size: 14px; color: var(--muted); white-space: pre-wrap; }
+
+.sure { display: flex; gap: 16px; flex-wrap: wrap; padding: 16px 0 0; }
+.sure div { font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+
+/* The button that is the whole of Phase 1's selling, kept under the thumb. */
+.dock {
+  position: fixed; inset: auto 0 0 0; z-index: 40;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(12px); border-top: 1px solid var(--line);
+  padding: 9px 14px calc(9px + env(safe-area-inset-bottom));
+}
+.dock .in { max-width: var(--max); margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+.dock .amt { flex: 0 0 auto; }
+.dock .amt b { display: block; font-size: 16px; letter-spacing: -.01em; }
+.dock .amt span { font-size: 11px; color: var(--muted); }
+@media (min-width: 880px) { .dock { position: static; background: none; border: 0; padding: 22px 0 0; backdrop-filter: none; } .dock .amt { display: none; } }
+
+.go {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  border: 0; border-radius: 12px; cursor: pointer;
+  font-size: 15.5px; font-weight: 650; padding: 15px 20px;
+  background: var(--accent); color: var(--accent-ink);
+}
+.go.quiet { background: transparent; color: inherit; border: 1.5px solid var(--line); font-weight: 500; }
+.go:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Saying something plainly ───────────────────────────────────────────────────────── */
+
+.say { text-align: center; padding: 64px 20px; color: var(--muted); }
+.say h2 { color: var(--ink); font-size: 19px; margin: 0 0 7px; letter-spacing: -.01em; }
+.say p { margin: 0 auto 20px; max-width: 30em; font-size: 14px; }
+
+.bone { background: var(--soft); border-radius: var(--r); }
+@keyframes breathe { 0%, 100% { opacity: 1 } 50% { opacity: .5 } }
+.bone { animation: breathe 1.5s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .bone { animation: none; } .tile:hover .shot img { transform: none; } }
+
+/* ── The shop's own details, which the law asks it to show ──────────────────────────── */
+
+.foot { border-top: 1px solid var(--line); margin-top: 20px; padding: 26px 0 40px; color: var(--muted); font-size: 12.5px; }
+.foot .cols { display: grid; gap: 20px; }
+@media (min-width: 640px) { .foot .cols { grid-template-columns: repeat(3, 1fr); } }
+.foot h3 { font-size: 11px; color: var(--ink); margin: 0 0 7px; text-transform: uppercase; letter-spacing: .06em; }
+.foot p { margin: 0 0 3px; white-space: pre-wrap; line-height: 1.55; }
+.foot .by { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 16px; font-size: 11.5px; color: var(--faint); }
+/* Room for the docked button, which floats over whatever is at the bottom of the page. Without
+   this the last lines of the shop's own legal details sit underneath it, unreadable. */
+@media (max-width: 879px) { .foot { padding-bottom: calc(var(--bar) + 46px); } }
+
+/* Anything only there to be tapped is at least 44px, for a thumb. */
+.go, .opt, .pill, .icon, .seek { min-height: 44px; }

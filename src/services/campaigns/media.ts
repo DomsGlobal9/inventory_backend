@@ -12,8 +12,8 @@
  * address says nothing about the shop, the campaign or the product. Choosing another picture makes
  * another; ones nothing uses any more are removed by the housekeeping job after a few days.
  */
-import sharp from 'sharp';
 import { randomBytes } from 'crypto';
+import { prepareImage as prep, type Prepared } from '../../lib/imagePrep';
 import { prisma } from '../../lib/prisma';
 import { supabase } from '../../lib/supabase';
 import { env } from '../../config/env';
@@ -25,55 +25,24 @@ export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 export const MAX_PIXELS = 40_000_000;
 export const MAX_SIDE = 1600;
 export const MAX_OUTPUT_BYTES = 1024 * 1024;
-const MIN_SIDE = 100;
 /** Unused pictures are removed after this long (a draft being written may not be saved yet). */
 export const UNUSED_RETENTION_MS = 2 * 86_400_000;
 
-const READABLE = new Set(['jpeg', 'png', 'webp', 'gif', 'avif', 'tiff']);
-
-export interface Prepared { jpeg: Buffer; width: number; height: number }
+export type { Prepared };
 
 /**
- * The conversion itself. Throws a 400 with a sentence for anything that is not a usable picture.
- * `limitInputPixels` makes libvips refuse a "decompression bomb" (a small file that unpacks to a
- * huge image) before decoding it.
+ * The conversion itself, with WhatsApp's limits.
+ *
+ * The work is in lib/imagePrep, shared with online-shop banners: the decompression-bomb guard and
+ * stripping GPS out of a photo before it is published are exactly the parts nobody should be
+ * writing twice. What is WhatsApp's alone is how big the result may be.
  */
-export async function prepareImage(input: Buffer): Promise<Prepared> {
-  if (!input?.length) throw badRequest('The picture is empty.');
-  if (input.length > MAX_UPLOAD_BYTES) throw badRequest('The picture is larger than 15 MB. Choose a smaller one.');
-  let meta: sharp.Metadata;
-  try {
-    meta = await sharp(input, { limitInputPixels: MAX_PIXELS, failOn: 'error' }).metadata();
-  } catch (e) {
-    if (/pixel limit/i.test(String((e as Error)?.message))) throw badRequest('The picture is too large (more than 40 megapixels). Choose a smaller one.');
-    throw badRequest('That file is not a picture ScaleEzy can read. Use a JPEG or PNG photo.');
-  }
-  if (meta.format === 'heif') throw badRequest('This is an iPhone HEIC photo. Share it as a JPEG (or set the camera to "Most Compatible") and choose it again.');
-  if (!meta.format || !READABLE.has(meta.format)) throw badRequest('That file is not a picture ScaleEzy can read. Use a JPEG or PNG photo.');
-  if (!meta.width || !meta.height) throw badRequest('That picture could not be read.');
-  if (meta.width * meta.height > MAX_PIXELS) throw badRequest('The picture is too large (more than 40 megapixels). Choose a smaller one.');
-  if (meta.width < MIN_SIDE || meta.height < MIN_SIDE) throw badRequest(`The picture is too small (${meta.width} × ${meta.height}). Use one at least ${MIN_SIDE} pixels wide and tall.`);
-
-  // Smaller and smaller until it fits under 1 MB; a normal photo fits at the first try.
-  const steps: Array<[number, number]> = [[MAX_SIDE, 82], [MAX_SIDE, 70], [1280, 72], [1024, 68], [800, 60]];
-  for (const [side, quality] of steps) {
-    let out: { data: Buffer; info: sharp.OutputInfo };
-    try {
-      out = await sharp(input, { limitInputPixels: MAX_PIXELS, failOn: 'error', pages: 1 })
-        .rotate() // upright by the camera's own note, before that note is dropped
-        .resize({ width: side, height: side, fit: 'inside', withoutEnlargement: true })
-        .flatten({ background: '#ffffff' }) // see-through parts become white, not black
-        .toColourspace('srgb') // CMYK print files look right on a phone
-        .jpeg({ quality, mozjpeg: true, chromaSubsampling: '4:2:0' })
-        .toBuffer({ resolveWithObject: true });
-    } catch {
-      throw badRequest('That picture is damaged and could not be read. Try another copy of it.');
-    }
-    // sharp writes no metadata unless asked (withMetadata), so GPS and camera data are gone.
-    if (out.data.length <= MAX_OUTPUT_BYTES) return { jpeg: out.data, width: out.info.width, height: out.info.height };
-  }
-  throw badRequest('That picture could not be made small enough for WhatsApp. Try a simpler photo.');
-}
+export const prepareImage = (input: Buffer) =>
+  prep(input, {
+    maxSide: MAX_SIDE,
+    maxBytes: MAX_OUTPUT_BYTES,
+    tooBig: 'That picture could not be made small enough for WhatsApp. Try a simpler photo.'
+  });
 
 export const mediaView = (m: { id: string; url: string; width: number; height: number; byteSize: number }) =>
   ({ id: m.id, url: m.url, width: m.width, height: m.height, byteSize: m.byteSize });

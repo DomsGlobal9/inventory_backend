@@ -3746,3 +3746,40 @@ model OnlineShopSlugHistory {
   @@index([clientId])
   @@map("online_shop_slug_history")
 }
+
+/// A banner across the top of a shop's own online shop: the picture, a few words over it, and
+/// where tapping it goes. A shop may have several, which the shopper swipes through.
+model OnlineShopBanner {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  imageUrl  String  @map("image_url") @db.Text
+  imagePath String? @map("image_path")
+  width     Int
+  height    Int
+
+  /// Words over the picture. Both optional: a photograph often says it better on its own.
+  heading String?
+  subtext String?
+
+  /// Where tapping it goes. SEARCH carries the words to search for, PRODUCT a product code, so a
+  /// banner can point at "Silk sarees" without anyone inventing a collections feature first.
+  linkKind  OnlineShopBannerLink @default(NONE) @map("link_kind")
+  linkValue String?              @map("link_value")
+
+  orderIndex Int     @default(0) @map("order_index")
+  active     Boolean @default(true)
+
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId, orderIndex])
+  @@map("online_shop_banners")
+}
+
+enum OnlineShopBannerLink {
+  NONE
+  SEARCH
+  PRODUCT
+}

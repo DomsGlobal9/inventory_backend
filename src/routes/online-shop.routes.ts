@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { onlineShop, OnlineShopRuleError } from '../services/online-shop';
+import { onlineShop, shopBanners, OnlineShopRuleError } from '../services/online-shop';
 import { requirePermission } from '../middleware/permission.middleware';
 
 /**
@@ -35,5 +35,16 @@ router.patch('/', handle(req => onlineShop.save(clientId(req), req.body ?? {})))
 /** Open the shop to customers, or close it again. */
 router.post('/open', handle(req => onlineShop.setLive(clientId(req), true)));
 router.post('/close', handle(req => onlineShop.setLive(clientId(req), false)));
+
+// ── Banners ───────────────────────────────────────────────────────────────────────────────
+// What a shop puts across the top of its own shop: a picture, a few words, and where tapping goes.
+
+const userId = (req: Request) => ((req as any).user?.id as string) ?? null;
+
+router.get('/banners', handle(req => shopBanners.listFor(clientId(req))));
+router.post('/banners', handle(req => shopBanners.add(clientId(req), userId(req), req.body ?? {})));
+router.patch('/banners/order', handle(req => shopBanners.reorder(clientId(req), req.body?.ids)));
+router.patch('/banners/:id', handle(req => shopBanners.edit(clientId(req), String(req.params.id), req.body ?? {})));
+router.delete('/banners/:id', handle(req => shopBanners.remove(clientId(req), String(req.params.id))));
 
 export default router;

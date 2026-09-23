@@ -4,5 +4,6 @@
  * products only through the storefront catalogue service, never the product tables directly.
  */
 export * as onlineShop from './shop.service';
+export * as shopBanners from './banners';
 export { OnlineShopRuleError } from './rules';
 export { checkSlug, RESERVED_SLUGS } from './rules';

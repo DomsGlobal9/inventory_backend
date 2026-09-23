@@ -4,6 +4,7 @@
  *   R  the address rules, on their own: what is tidied up, what is refused, what is kept back
  *   O  the owner's side: claiming an address, settings, what must exist before it opens
  *   P  the shopper's side through the running server: open, closed, unknown, the catalogue
+ *   N  the banners across the top: the limit, dead taps, order, hiding, another shop's
  *   X  what must never leak: cost price, another shop, a location that does not sell online
  *
  *   npx tsx src/scripts/verify-online-shop.ts      (needs the local backend running)
@@ -11,11 +12,12 @@
  * Makes only throwaway shops and deletes them afterwards. Sends nothing anywhere.
  */
 import axios from 'axios';
+import sharp from 'sharp';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { seedRolesForClient } from '../services/rbac-seed.service';
 import { platformAdminService } from '../services/platform-admin.service';
-import { onlineShop, OnlineShopRuleError, checkSlug, RESERVED_SLUGS } from '../services/online-shop';
+import { onlineShop, shopBanners, OnlineShopRuleError, checkSlug, RESERVED_SLUGS } from '../services/online-shop';
 
 const SERVER = (process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1').replace(/\/api\/v1\/?$/, '');
 const API = `${SERVER}/api/v1`;
@@ -189,6 +191,97 @@ async function main() {
   check('one product answers at its own address', one.status === 200 && one.data.data.title === 'Cotton Kurti', one.data);
   check('a product nobody has says so', (await http('/shop/lakshmi-silks/products/NO-SUCH-THING')).status === 404);
 
+
+  // ── N ─────────────────────────────────────────────────────────────────────────────────
+  // The banners across the top of the shop. A real JPEG is made here rather than kept as a
+  // fixture, so the whole path runs: shrink, strip, upload, row, and what a shopper is given.
+  console.log('\nN. THE BANNERS ACROSS THE TOP');
+  const picture = async (w = 1400, h = 800) =>
+    'data:image/jpeg;base64,' + (await sharp({ create: { width: w, height: h, channels: 3, background: '#8b1a2b' } })
+      .jpeg().toBuffer()).toString('base64');
+  const jpeg = await picture();
+
+  const noPic = await own.post('/online-shop/banners', { heading: 'Nothing to show' });
+  check('a banner with no picture is refused', noPic.status === 400 && /picture/i.test(noPic.data.message), noPic.data);
+
+  const b1 = await own.post('/online-shop/banners', { base64: jpeg, heading: 'Festival collection', subtext: 'New silks just in' });
+  check('a banner is added', b1.status === 200 && b1.data.data.length === 1, b1.data);
+  check('...and its words are kept', b1.data.data[0]?.heading === 'Festival collection' && b1.data.data[0]?.subtext === 'New silks just in', b1.data.data[0]);
+  check('...and it is shown unless the shop hides it', b1.data.data[0]?.active === true, b1.data.data[0]);
+  check('the picture is shrunk to what a phone can load',
+    b1.data.data[0]?.width <= 2000 && b1.data.data[0]?.width > 0, b1.data.data[0]);
+
+  const emptySearch = await own.post('/online-shop/banners', { base64: jpeg, linkKind: 'SEARCH', linkValue: '   ' });
+  check('a banner that searches for nothing is refused (it would be a dead tap)',
+    emptySearch.status === 400 && /search for/i.test(emptySearch.data.message), emptySearch.data);
+
+  const badCode = await own.post('/online-shop/banners', { base64: jpeg, linkKind: 'PRODUCT', linkValue: 'NO-SUCH-CODE' });
+  check('a banner pointing at a product nobody has is refused',
+    badCode.status === 400 && /NO-SUCH-CODE/.test(badCode.data.message), badCode.data);
+
+  const nonsenseKind = await own.post('/online-shop/banners', { base64: jpeg, linkKind: 'ANYWHERE', linkValue: 'x' });
+  check('a banner cannot go somewhere we do not offer', nonsenseKind.status === 400, nonsenseKind.data);
+
+  const b2 = await own.post('/online-shop/banners', { base64: jpeg, heading: 'Silk sarees', linkKind: 'SEARCH', linkValue: 'silk' });
+  check('a banner can point at a search', b2.status === 200 && b2.data.data.length === 2, b2.data);
+  const b3 = await own.post('/online-shop/banners', { base64: jpeg, heading: 'This kurti', linkKind: 'PRODUCT', linkValue: 'OS-KURTI-1' });
+  check('a banner can point at one real product', b3.status === 200 && b3.data.data.length === 3, b3.data);
+
+  const ids = b3.data.data.map((b: any) => b.id);
+  check('banners come back in the order they were added', b3.data.data[0]?.heading === 'Festival collection', b3.data.data.map((b: any) => b.heading));
+
+  const reordered = await own.patch('/online-shop/banners/order', { ids: [ids[2], ids[0], ids[1]] });
+  check('the shop can change the order', reordered.status === 200 && reordered.data.data[0]?.id === ids[2], reordered.data.data.map((b: any) => b.heading));
+  const shortOrder = await own.patch('/online-shop/banners/order', { ids: [ids[0]] });
+  check('a partial order is refused, not half-applied', shortOrder.status === 400, shortOrder.data);
+  const foreignOrder = await own.patch('/online-shop/banners/order', { ids: [ids[0], ids[1], 'not-a-banner-of-mine'] });
+  check("an order carrying somebody else's banner is refused", foreignOrder.status === 400, foreignOrder.data);
+
+  // What the shopper is actually given.
+  const withBanners = await http('/shop/lakshmi-silks');
+  const shown = withBanners.data.data.banners ?? [];
+  check('the shopper gets the banners, in the shop\'s order', shown.length === 3 && shown[0]?.heading === 'This kurti', shown.map((b: any) => b.heading));
+  check('a banner that goes nowhere says so plainly', shown.some((b: any) => b.link === null), shown.map((b: any) => b.link));
+  check('a banner that searches carries the words, not an id',
+    shown.some((b: any) => b.link?.kind === 'SEARCH' && b.link?.value === 'silk'), shown.map((b: any) => b.link));
+  check('the banner rows\' own ids are never sent to a shopper',
+    !JSON.stringify(shown).includes(ids[0]), Object.keys(shown[0] ?? {}));
+  check('the shape is sent with the picture, so the page does not jump',
+    shown.every((b: any) => b.width > 0 && b.height > 0), shown[0]);
+
+  const hidden = await own.patch(`/online-shop/banners/${ids[1]}`, { active: false });
+  check('a banner can be hidden without deleting it', hidden.status === 200 && hidden.data.data.find((b: any) => b.id === ids[1])?.active === false, hidden.data);
+  check('...and a hidden banner does not reach a shopper',
+    ((await http('/shop/lakshmi-silks')).data.data.banners ?? []).length === 2);
+  await own.patch(`/online-shop/banners/${ids[1]}`, { active: true });
+
+  // ids[1] is the one that searches for "silk". Editing its heading alone must not quietly turn
+  // it into a banner that goes nowhere -- that was the easy mistake in the update.
+  const worded = await own.patch(`/online-shop/banners/${ids[1]}`, { heading: 'Deepavali offers' });
+  const after = worded.data.data.find((b: any) => b.id === ids[1]);
+  check('changing only the words leaves where it goes alone',
+    after?.heading === 'Deepavali offers' && after?.linkKind === 'SEARCH' && after?.linkValue === 'silk', after);
+
+  // The limit. Three exist; three more fill it, and the seventh is refused.
+  for (let i = 0; i < 3; i++) await own.post('/online-shop/banners', { base64: jpeg, heading: `Filler ${i}` });
+  const seventh = await own.post('/online-shop/banners', { base64: jpeg, heading: 'One too many' });
+  check('a shop can have six banners and no more', seventh.status === 400 && /six|6/i.test(seventh.data.message), seventh.data);
+
+  // Another shop's banners are none of this shop's business.
+  const theirBanner = await refusalAsync(shopBanners.edit(OTHER, ids[0], { heading: 'Mine now' }));
+  check("one shop cannot edit another shop's banner", /not there any more/i.test(theirBanner), theirBanner);
+  const theirRemove = await refusalAsync(shopBanners.remove(OTHER, ids[0]));
+  check("one shop cannot remove another shop's banner", /not there any more/i.test(theirRemove), theirRemove);
+  check("...and the banner is still there", (await own.get('/online-shop/banners')).data.data.some((b: any) => b.id === ids[0]));
+
+  const gone = await own.delete(`/online-shop/banners/${ids[0]}`);
+  check('a banner can be removed', gone.status === 200 && !gone.data.data.some((b: any) => b.id === ids[0]), gone.data);
+  const goneTwice = await own.delete(`/online-shop/banners/${ids[0]}`);
+  check('removing it twice says so rather than breaking', goneTwice.status === 400, goneTwice.data);
+
+  const noLoginBanners = await axios.get(`${API}/online-shop/banners`, { validateStatus: () => true });
+  check('banners need a login too', noLoginBanners.status === 401, noLoginBanners.status);
+
   // ── X ─────────────────────────────────────────────────────────────────────────────────
   console.log('\nX. WHAT MUST NEVER LEAK');
   const body = JSON.stringify(list.data);
@@ -215,6 +308,12 @@ async function main() {
 main()
   .catch(e => { failures.push(`suite stopped: ${(e as Error).stack ?? e}`); console.log(`\nSTOPPED: ${(e as Error).message}`); })
   .finally(async () => {
+    // The banner pictures are files in storage, which deleting the client does not touch.
+    for (const c of [SHOP, OTHER]) {
+      for (const b of await shopBanners.listFor(c).catch(() => [])) {
+        await shopBanners.remove(c, b.id).catch(() => {});
+      }
+    }
     for (const c of [SHOP, OTHER]) await platformAdminService.deleteClientCompletely(c, c).catch(() => {});
     await prisma.onlineShopSlugHistory.deleteMany({ where: { clientId: { in: [SHOP, OTHER] } } }).catch(() => {});
     console.log(`\nRESULT: ${passed} passed | ${failures.length} failed`);

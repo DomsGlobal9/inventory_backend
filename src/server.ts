@@ -5,6 +5,7 @@ import { env } from './config/env';
 import { requestLogger } from './middleware/request-logger';
 import { linkHostGate, linkPathRouter } from './routes/link-open.routes';
 import shopPublicRoutes from './routes/shop-public.routes';
+import { shopHostGate } from './routes/shop-page.routes';
 import { errorHandler } from './middleware/error.middleware';
 
 import { prisma } from './lib/prisma';
@@ -39,6 +40,11 @@ app.use(helmet()); // HTTP Security Headers
 // Ahead of CORS, cookies and body parsing: opening a link needs none of them.
 app.use(linkHostGate);
 app.use('/l', linkPathRouter);
+
+// On shop.scaleezy.com this server IS the shop: the page a customer opens, with that shop's own
+// link-preview tags in it, and the app's own files. Ahead of CORS and cookies, like the short-link
+// host, because opening a shop needs none of them.
+app.use(shopHostGate);
 
 // Every shop's own online shop, read by a shopper's browser at shop.scaleezy.com/<slug>.
 // Ahead of the app's CORS on purpose: this is public, read-only and carries no cookies, so it is

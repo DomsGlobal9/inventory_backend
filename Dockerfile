@@ -23,6 +23,17 @@ COPY package.json package-lock.json ./
 # Lockfile exactly; the postinstall of @prisma/client needs the schema, which comes next.
 RUN npm ci --ignore-scripts
 
+# ── 1b. The shopper-facing app ──────────────────────────────────────────────────────────────
+# Its own stage, with its own packages: the shop app is a Vite build and shares nothing with the
+# server's dependencies, so a change to one does not throw away the other's cached layer.
+FROM node:${NODE_VERSION}-bookworm-slim AS shop
+WORKDIR /shop
+COPY shop/package.json shop/package-lock.json ./
+RUN npm ci
+COPY shop/index.html shop/vite.config.js ./
+COPY shop/src ./src
+RUN npm run build
+
 # ── 2. Build ────────────────────────────────────────────────────────────────────────────────
 FROM deps AS build
 COPY prisma ./prisma
@@ -49,6 +60,8 @@ COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/prisma ./prisma
+# Served by shop-page.routes.ts, which resolves it as ../../shop/dist from dist/routes.
+COPY --from=shop --chown=node:node /shop/dist ./shop/dist
 COPY --chown=node:node docker-entrypoint.sh ./docker-entrypoint.sh
 # A checkout on Windows can give the script CRLF endings, and /bin/sh then reports it "not found".
 RUN sed -i 's/\r$//' ./docker-entrypoint.sh && chmod +x ./docker-entrypoint.sh

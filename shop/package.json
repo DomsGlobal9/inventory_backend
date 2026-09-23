@@ -1,0 +1,21 @@
+{
+  "name": "scaleezy-shop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The shop a customer sees: shop.scaleezy.com/<shop>. Its own app, so a shopper never downloads a byte of the staff application.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.18.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.3",
+    "vite": "^8.1.1"
+  }
+}

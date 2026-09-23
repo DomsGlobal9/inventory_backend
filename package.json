@@ -6,10 +6,11 @@
   "scripts": {
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "prisma generate && prisma migrate deploy && tsc",
+    "build": "npm run build:shop && prisma generate && prisma migrate deploy && tsc",
     "snapshots:daily": "ts-node src/jobs/snapshot.job.ts",
     "snapshots:backfill": "ts-node src/jobs/backfill.job.ts",
-    "migrate:deploy": "prisma migrate deploy"
+    "migrate:deploy": "prisma migrate deploy",
+    "build:shop": "npm --prefix shop ci && npm --prefix shop run build"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

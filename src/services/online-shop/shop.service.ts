@@ -17,6 +17,7 @@ import { getShopSettings } from '../../lib/clientSettings';
 import { env } from '../../config/env';
 import { storefrontCatalogueService, type CatalogueScope } from '../storefront-catalogue.service';
 import { checkSlug, readyToGoLive, shopUrl, OnlineShopRuleError } from './rules';
+import * as banners from './banners';
 
 export { OnlineShopRuleError };
 
@@ -24,6 +25,34 @@ const fail = (statusCode: number, message: string) => Object.assign(new Error(me
 
 /** Where shops live. Unset in development, which simply means no address is shown yet. */
 export const shopBaseUrl = (): string | null => env.SHOP_BASE_URL ?? null;
+
+/**
+ * The host shops are served on (shop.scaleezy.com), or null.
+ *
+ * Null when SHOP_BASE_URL is unset, and also when it points at a path rather than a whole host --
+ * the gate that uses this must never half-apply, the same care taken for the short-link host.
+ */
+export function shopHost(): string | null {
+  if (!env.SHOP_BASE_URL) return null;
+  try {
+    const u = new URL(env.SHOP_BASE_URL);
+    if (u.pathname !== '/' && u.pathname !== '') return null;
+    const host = u.hostname.toLowerCase();
+
+    // Pointed at this service's own public name by mistake, the gate would answer every API call
+    // with a shop page and take the whole backend down -- the app, the till, every shop at once.
+    // Render tells each service its own name, so that mistake can be caught rather than suffered.
+    const ours = (process.env.RENDER_EXTERNAL_HOSTNAME ?? '').toLowerCase();
+    if (ours && host === ours) {
+      console.error(
+        `[online-shop] SHOP_BASE_URL points at this service's own address (${host}), which would ` +
+        'hide the API behind shop pages. Shops are switched off until it points at its own host.'
+      );
+      return null;
+    }
+    return host;
+  } catch { return null; }
+}
 
 /**
  * The shop's own details for the public page: logo, address, GSTIN.
@@ -35,7 +64,7 @@ export const shopBaseUrl = (): string | null => env.SHOP_BASE_URL ?? null;
 async function sellerDetails(clientId: string) {
   return prisma.clientSettings.findUnique({
     where: { clientId },
-    select: { logoUrl: true, businessAddress: true, gstNumber: true }
+    select: { logoUrl: true, businessAddress: true, gstNumber: true, businessPhone: true }
   }).catch(() => null);
 }
 
@@ -196,6 +225,9 @@ export async function publicShop(slugRaw: unknown): Promise<
   | { state: 'OPEN'; clientId: string; name: string; logoUrl: string | null; bannerUrl: string | null;
       accent: string | null; currency: string; hideOutOfStock: boolean; locationIds: string[];
       seller: { name: string | null; address: string | null; gstNumber: string | null };
+      /** The shop's own number, for "Ask on WhatsApp". Phase 1 has no basket: this IS the order. */
+      whatsapp: string | null;
+      banners: Awaited<ReturnType<typeof banners.publicFor>>;
       grievance: { name: string | null; phone: string | null; email: string | null };
       returnPolicy: string | null }
 > {
@@ -205,9 +237,10 @@ export async function publicShop(slugRaw: unknown): Promise<
   const shop = await prisma.onlineShop.findUnique({ where: { slug } });
   if (!shop) return { state: 'UNKNOWN' };
 
-  const [settings, seller] = await Promise.all([
+  const [settings, seller, shown] = await Promise.all([
     getShopSettings(shop.clientId).catch(() => null),
-    sellerDetails(shop.clientId)
+    sellerDetails(shop.clientId),
+    banners.publicFor(shop.clientId).catch(() => [])
   ]);
   const name = shop.displayName?.trim() || settings?.businessName?.trim() || 'This shop';
   if (!shop.isLive) return { state: 'CLOSED', name };
@@ -229,6 +262,10 @@ export async function publicShop(slugRaw: unknown): Promise<
       address: seller?.businessAddress ?? null,
       gstNumber: seller?.gstNumber ?? null
     },
+    // The shop's own number, which it already has to show as a contact under the Consumer
+    // Protection Rules. Nothing of a customer's is ever published here.
+    whatsapp: seller?.businessPhone ?? shop.grievancePhone ?? null,
+    banners: shown,
     grievance: { name: shop.grievanceName, phone: shop.grievancePhone, email: shop.grievanceEmail },
     returnPolicy: shop.returnPolicy
   };
