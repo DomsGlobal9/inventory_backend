@@ -752,6 +752,11 @@ button.slide { cursor: pointer; }
   display: flex; gap: 11px; overflow-x: auto; padding-bottom: 4px;
   margin: 0 -14px; padding-left: 14px; padding-right: 14px;
   scrollbar-width: none; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+  /* Without this the browser snaps the first card to the SCROLLPORT edge, quietly scrolling the
+     rail 14px to cancel the padding above -- so the row of photographs started hard against the
+     side of the phone while its own heading sat in the gutter. Snapping has to be told about the
+     gutter separately from the padding. */
+  scroll-padding-left: 14px; scroll-padding-right: 14px;
 }
 .reel::-webkit-scrollbar { display: none; }
 .small { flex: 0 0 43%; max-width: 168px; scroll-snap-align: start; color: inherit; }
