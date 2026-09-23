@@ -19,6 +19,7 @@ import { storefrontCatalogueService, type CatalogueScope } from '../storefront-c
 import { checkSlug, readyToGoLive, shopUrl, OnlineShopRuleError } from './rules';
 import * as banners from './banners';
 import { facetsFor, type Facets } from './facets';
+import { canVerify } from './otp';
 
 export { OnlineShopRuleError };
 
@@ -310,6 +311,8 @@ export async function publicShop(slugRaw: unknown): Promise<
       facets: Facets;
       /** Whether this shop offers "see it on you". */
       tryOn: boolean;
+      /** Whether this shop can send a code to prove a phone number, so the page offers it only where it works. */
+      canVerifyPhone: boolean;
       /** Whether a customer can actually buy here, and on what terms. */
       buying: {
         open: boolean;
@@ -327,14 +330,17 @@ export async function publicShop(slugRaw: unknown): Promise<
   const shop = await prisma.onlineShop.findUnique({ where: { slug } });
   if (!shop) return { state: 'UNKNOWN' };
 
-  const [settings, seller, shown, facets] = await Promise.all([
+  const [settings, seller, shown, facets, canProve] = await Promise.all([
     getShopSettings(shop.clientId).catch(() => null),
     sellerDetails(shop.clientId),
     banners.publicFor(shop.clientId).catch(() => []),
     // Sent with the shop itself rather than fetched separately: the nav and the filter rail are
     // part of the page's furniture, and a second round trip for them shows an empty nav first.
     facetsFor(shop.clientId, { locationIds: shop.locationIds, hideOutOfStock: shop.hideOutOfStock })
-      .catch(() => ({ categories: [], dressTypes: [], fabrics: [], brands: [], price: null, total: 0 }))
+      .catch(() => ({ categories: [], dressTypes: [], fabrics: [], brands: [], price: null, total: 0 })),
+    // Whether the shop's own WhatsApp is linked. Remembered for a minute inside canVerify, so this
+    // is not a call to another service on every page load.
+    canVerify(shop.clientId).catch(() => false)
   ]);
   const name = shop.displayName?.trim() || settings?.businessName?.trim() || 'This shop';
   if (!shop.isLive) return { state: 'CLOSED', name };
@@ -355,6 +361,12 @@ export async function publicShop(slugRaw: unknown): Promise<
      * is the shop's decision, and a page that guessed would offer a checkout that then refused.
      */
     tryOn: shop.tryOn && Boolean(env.SHOPPER_TRYON_GATEWAY_URL),
+    /*
+     * Same reason as the line above, and it was missing. The checkout offered "Send me a code" to
+     * every shopper of every shop, including shops with no WhatsApp linked, where the only
+     * possible outcome of pressing it was a refusal.
+     */
+    canVerifyPhone: canProve,
     buying: {
       open: shop.acceptsOrders && (shop.payOnDelivery || shop.payOnline),
       payWays: [

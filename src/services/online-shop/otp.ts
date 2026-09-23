@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../../lib/prisma';
 import { getShopSettings } from '../../lib/clientSettings';
-import { whatsappConfigured } from '../whatsapp/client';
+import { whatsappClient, whatsappConfigured } from '../whatsapp/client';
 import { normalisePhone } from '../../lib/phone';
 import { OnlineShopRuleError } from './rules';
 
@@ -57,10 +57,44 @@ const sameHash = (a: string, b: string) => {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 };
 
-/** Whether this shop can prove a number at all. A shop with no WhatsApp cannot. */
-export function canVerify(): boolean {
-  return whatsappConfigured();
+/**
+ * Whether THIS shop can prove a number at all.
+ *
+ * This used to ask only whether WhatsApp was set up for ScaleEzy, which is a fact about the
+ * platform and says nothing about the shop. A code goes out on the SHOP's own linked number, so a
+ * shop that has never linked one -- or whose phone has since been logged out -- cannot send a code
+ * at all, and every press of "Send me a code" went past this guard, wrote a code to the database,
+ * and then failed at the send with "Something went wrong at the shop".
+ *
+ * Asked of the WhatsApp service, because it is the only thing that knows. Remembered for a minute
+ * because this is a network hop and it is now asked on every checkout page load from the open
+ * internet; a shop that links its number waits at most that long for its own button to appear.
+ */
+const LINK_REMEMBERED_MS = 60_000;
+const linkSeen = new Map<string, { can: boolean; at: number }>();
+
+export async function canVerify(clientId: string): Promise<boolean> {
+  if (!whatsappConfigured()) return false;
+
+  const seen = linkSeen.get(clientId);
+  if (seen && Date.now() - seen.at < LINK_REMEMBERED_MS) return seen.can;
+
+  let can = false;
+  try {
+    // CONNECTED and nothing else. A queued message is fine for a bill and useless for a code that
+    // dies in ten minutes, so "it will go out when the phone comes back" is not good enough here.
+    can = (await whatsappClient.account(clientId)).status === 'CONNECTED';
+  } catch {
+    // The WhatsApp service being unreachable is neither the shop's fault nor the shopper's. It
+    // means "cannot prove a number just now", not "break the checkout page".
+    can = false;
+  }
+  linkSeen.set(clientId, { can, at: Date.now() });
+  return can;
 }
+
+/** Forget what we believed about a shop's link, so the next ask is a real one. */
+const forgetLink = (clientId: string) => { linkSeen.delete(clientId); };
 
 /**
  * Send a code to the number, or refuse and say why.
@@ -70,7 +104,7 @@ export function canVerify(): boolean {
  * a number. Nothing here says whether that number has ever shopped here before.
  */
 export async function sendCode(clientId: string, rawPhone: unknown) {
-  if (!canVerify()) {
+  if (!(await canVerify(clientId))) {
     throw new OnlineShopRuleError('This shop cannot send a code just now. Place your order and it will ring you.');
   }
   const phone = asPhone(rawPhone);
@@ -95,6 +129,53 @@ export async function sendCode(clientId: string, rawPhone: unknown) {
   const code = String(crypto.randomInt(0, 10 ** DIGITS)).padStart(DIGITS, '0');
   const expiresAt = new Date(now.getTime() + GOOD_FOR_MS);
 
+  const settings = await getShopSettings(clientId).catch(() => null);
+  const shop = await prisma.onlineShop.findUnique({ where: { clientId }, select: { displayName: true } });
+  const name = shop?.displayName?.trim() || settings?.businessName?.trim() || 'the shop';
+
+  /*
+   * SENT FIRST, AND RECORDED ONLY IF IT WENT.
+   *
+   * The other way round -- which is how this was written -- counted a code against the shopper
+   * that had never left the building. A shop whose WhatsApp was not linked failed at the send
+   * every time, but each attempt still wrote a row and raised `sentCount`, so after three presses
+   * the shopper was told "a few codes have already gone to that number" about a number that had
+   * received nothing, and was then locked out of trying again once the link came back.
+   *
+   * The cap is not weakened by this: only a code that really went out is counted, which is what
+   * the cap was always meant to count. The per-caller limiter on the route covers the rest.
+   */
+  const { sendShopText } = await import('../whatsapp/service');
+  try {
+    await sendShopText({
+      clientId,
+      to: digitsOnly(phone),
+      /*
+       * Short, and it says what the code is for. A bare number arriving from a shop is the shape of
+       * every scam message these customers are warned about; naming the shop and the reason is what
+       * makes it believable, and the warning not to pass it on is the one line that matters.
+       */
+      text: `${code} is your code to confirm your order with ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`,
+      kind: 'ORDER_UPDATE',
+      referenceId: null,
+      // One code, one send, however many times the request is retried.
+      idempotencyKey: `SHOP:OTP:${clientId}:${phone}:${Math.floor(now.getTime() / 1000)}`,
+      sentBy: null,
+      linkPreview: false
+    });
+  } catch (e) {
+    /*
+     * The service refusing -- the shop logged out on its phone since we last asked, the number is
+     * not on WhatsApp, the service is down -- is not a crash to show somebody halfway through an
+     * order. It is a sentence, and it points at the way round: the order can still be placed.
+     */
+    forgetLink(clientId);
+    console.warn('[online-shop] a code could not be sent:', (e as Error)?.message);
+    throw new OnlineShopRuleError(
+      'That code could not be sent just now. Place your order and the shop will ring you to confirm it.'
+    );
+  }
+
   await prisma.onlineShopPhoneCode.upsert({
     where: { clientId_phone: { clientId, phone } },
     create: { clientId, phone, codeHash: hash(code, phone), expiresAt, tries: 0, sentCount: 1 },
@@ -106,28 +187,6 @@ export async function sendCode(clientId: string, rawPhone: unknown) {
       sentCount: fresh ? { increment: 1 } : 1,
       verifiedAt: null
     }
-  });
-
-  const settings = await getShopSettings(clientId).catch(() => null);
-  const shop = await prisma.onlineShop.findUnique({ where: { clientId }, select: { displayName: true } });
-  const name = shop?.displayName?.trim() || settings?.businessName?.trim() || 'the shop';
-
-  const { sendShopText } = await import('../whatsapp/service');
-  await sendShopText({
-    clientId,
-    to: digitsOnly(phone),
-    /*
-     * Short, and it says what the code is for. A bare number arriving from a shop is the shape of
-     * every scam message these customers are warned about; naming the shop and the reason is what
-     * makes it believable, and the warning not to pass it on is the one line that matters.
-     */
-    text: `${code} is your code to confirm your order with ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`,
-    kind: 'ORDER_UPDATE',
-    referenceId: null,
-    // One code, one send, however many times the request is retried.
-    idempotencyKey: `SHOP:OTP:${clientId}:${phone}:${Math.floor(now.getTime() / 1000)}`,
-    sentBy: null,
-    linkPreview: false
   });
 
   return { sent: true, alreadyVerified: false, expiresInSeconds: Math.round(GOOD_FOR_MS / 1000) };

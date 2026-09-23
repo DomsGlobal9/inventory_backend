@@ -507,7 +507,25 @@ async function main() {
   check('a checkout is not a place to try fifty codes',
     tooManyCodes.status === 200 && (tooManyCodes.data.data.codesRefused ?? []).length <= 5, (tooManyCodes.data.data.codesRefused ?? []).length);
 
-  // Proving a phone number.
+  /*
+   * Proving a phone number.
+   *
+   * This shop has no WhatsApp linked -- which is the ordinary state of a new shop, and was the
+   * state of a real shop whose checkout answered every press of "Send me a code" with
+   * "Something went wrong at the shop". A shop that cannot send a code must say so as a sentence,
+   * must not offer the button at all, and must not count a code it never sent.
+   */
+  check('a shop with no WhatsApp linked says so, so the page never offers the button',
+    (await http('/shop/lakshmi-silks')).data.data.canVerifyPhone === false,
+    (await http('/shop/lakshmi-silks')).data.data.canVerifyPhone);
+
+  const cannotSend = await post('/shop/lakshmi-silks/verify/send', { phone: '9989000333' });
+  check('...and asking anyway is a sentence, not a crash',
+    cannotSend.status === 400 && !/something went wrong/i.test(String(cannotSend.data.message)), cannotSend.data);
+  check('...that points at the way round', /place your order/i.test(String(cannotSend.data.message)), cannotSend.data.message);
+  check('...and nothing is written down about a code that never went',
+    (await prisma.onlineShopPhoneCode.count({ where: { clientId: SHOP, phone: { contains: '9989000333' } } })) === 0);
+
   const badNumber = await post('/shop/lakshmi-silks/verify/send', { phone: '123' });
   check('a code cannot be sent to something that is not a number', badNumber.status === 400, badNumber.data);
   const wrongCode = await refusalAsync(shopOtp.checkCode(SHOP, '9989000111', '000000'));

@@ -200,8 +200,12 @@ export default function CheckoutPage({ shop }) {
             no WhatsApp linked simply takes the order and rings. The code is what lets this order
             be attached to the customer's real record rather than a new one, and what stops a
             made-up number holding the shop's stock.
+
+            `canVerifyPhone` is the shop telling us, not this page guessing. Until it existed this
+            comment described something that was never true: the block rendered for every shop, and
+            a shop with no linked number answered every press with "Something went wrong".
           */}
-          {proved ? (
+          {!shop?.canVerifyPhone ? null : proved ? (
             <p className="proved">✓ {form.phone} confirmed</p>
           ) : (
             <div className="verify">
