@@ -1,4 +1,4 @@
-import express, { Router, Request, Response } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { onlineShop, shopCheckout, shopOtp, shopTryOn, OnlineShopRuleError } from '../services/online-shop';
 
@@ -41,9 +41,22 @@ router.use(browseLimiter);
  * and both are ahead of the app's own express.json(). Put here, neither mount can forget it and
  * leave a checkout quietly reading an empty body.
  *
- * 32kb: the largest thing a shopper ever sends is twenty lines and an address. A checkout open to
- * the whole internet has no reason to accept a megabyte.
+ * TWO SIZES, because there are two kinds of thing a shopper sends.
+ *
+ * A try-on carries a photograph of them, which off a phone camera is megabytes; everything else is
+ * twenty lines and an address, and a checkout open to the whole internet has no business accepting
+ * a megabyte of it. Mounting the small one alone -- which is what this did at first -- meant the
+ * try-on worked on a made-up test image and would have failed on the first real photograph.
+ *
+ * The larger parser is mounted on its own path first; body-parser marks the body as read, so the
+ * small one below simply passes it through rather than parsing twice.
  */
+router.use('/:slug/products/:productCode/tryon', express.json({ limit: '21mb' }),
+  (err: any, _req: Request, res: Response, next: NextFunction) =>
+    err?.type === 'entity.too.large'
+      ? res.status(413).json({ success: false, message: 'That photograph is too large. Take another one.' })
+      : next(err));
+
 router.use(express.json({ limit: '32kb' }));
 
 /** Nothing here may be cached by a shared cache with another shop's answer. */

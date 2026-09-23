@@ -10,6 +10,9 @@
  *
  *   gateway.service   the outbound call to the gateway, and the garment-category mapping
  *   product.service   turning a scanned code into a garment, and refusing to leak anything else
+ *   wear.service      putting a garment on a photograph somebody HANDED us -- the shop page and
+ *                     the counter both have one and nowhere to put it, and one copy of the
+ *                     allowance check, the EXIF stripping and the deletion is the whole point
  *
  * Credentials and usage metering are deliberately NOT duplicated here -- both services share
  * `services/tryon`, because "which key do we present" and "how much have they used" are the
@@ -20,4 +23,6 @@
 export { shopperTryOnGatewayService, categoryFor } from './gateway.service';
 export type { TryOnCategory, ShopperTryOnResult } from './gateway.service';
 export { shopperTryOnProductService } from './product.service';
+export { wearIt, allowanceFor, TryOnWearError } from './wear.service';
+export type { WearGarment } from './wear.service';
 export type { ScannedGarment, ScanUrlOptions } from './product.service';

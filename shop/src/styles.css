@@ -798,3 +798,38 @@ button.slide { cursor: pointer; }
 
 /* More of the shop sits under BOTH columns, not under the photograph. */
 .alsoin { clear: both; }
+
+/* ── The front page on a wide screen ────────────────────────────────────────────────── */
+
+/*
+ * The banner was full-bleed while everything under it sat in a 1180px column, so on a laptop the
+ * page read as an enormous picture with a shop hiding underneath it -- and a shop that uploads a
+ * square photograph got six hundred pixels of it, cropped through the middle. On a phone
+ * full-bleed is right, because the phone IS the column. On anything wider the banner joins the
+ * page: same width as the products, rounded like everything else, and capped so it can never
+ * take more than its share.
+ */
+@media (min-width: 720px) {
+  .banners {
+    max-width: var(--max);
+    margin: 20px auto 0;
+    padding: 0 14px;
+    background: transparent;
+  }
+  .strip { border-radius: 16px; overflow: hidden; }
+  .slide img { aspect-ratio: 21 / 8; max-height: 400px; }
+  .banners .pips { inset: auto 0 14px 0; }
+}
+
+/*
+ * Air between the banner and the filters.
+ *
+ * They were touching: the filter pills began one pixel under the picture, which made them read as
+ * part of it rather than as the top of the list. A shop's own sections should be told apart by
+ * space before anything else.
+ */
+.rail { margin-top: 18px; }
+@media (min-width: 720px) { .rail { margin-top: 26px; padding-bottom: 16px; } }
+
+/* The count belongs with the products it counts, not floating between two sections. */
+.count { margin: 2px 0 14px; }

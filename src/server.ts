@@ -136,6 +136,27 @@ app.use('/api/v1/campaigns/media', carriesLogin, express.json({ limit: '21mb' })
       ? res.status(413).json({ success: false, message: 'The picture is larger than 15 MB. Choose a smaller one.' })
       : next(err));
 
+/*
+ * Two more paths that carry a photograph, and one bug they shared.
+ *
+ * A banner and a counter try-on both travel as base64 inside JSON, so 15 MB of photo is about
+ * 20 MB encoded -- and both were mounted with nothing but the 100kb default below, which every
+ * real photograph exceeds. The symptom was a bare "request entity too large" with no hint of
+ * which limit or why. Scoped to their own paths, like every other large body above, so nothing
+ * else gains a bigger one; and each answers in words rather than with a bare 413.
+ */
+const tooBigIsSaidPlainly = (what: string) =>
+  (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) =>
+    err?.type === 'entity.too.large'
+      ? res.status(413).json({ success: false, message: what })
+      : next(err);
+
+app.use('/api/v1/online-shop/banners', carriesLogin, express.json({ limit: '21mb' }),
+  tooBigIsSaidPlainly('That picture is larger than 15 MB. Choose a smaller one.'));
+
+app.use('/api/v1/tryon', carriesLogin, express.json({ limit: '21mb' }),
+  tooBigIsSaidPlainly('That photograph is larger than 15 MB. Take another one.'));
+
 app.use(express.json());
 
 /*

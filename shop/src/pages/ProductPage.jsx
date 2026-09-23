@@ -200,17 +200,29 @@ export default function ProductPage({ slug, shop }) {
   if (!p) return <Say title="That is no longer in this shop" />;
 
   /*
-   * The photographs of the colour being looked at, if the shop took any. A shop that photographed
-   * each colour gets a gallery that follows the choice; one that photographed the piece once gets
-   * the same photographs whatever is chosen, which is exactly right for a single-colour saree.
+   * EVERY photograph the shop took, with the ones of the chosen colour first.
+   *
+   * This used to pick one group and show only that, which meant a piece with five photographs
+   * showed ONE of them the moment a single photograph happened to be attached to the chosen
+   * variant -- the other four simply vanished, with no way for the shopper to reach them. A shop
+   * that photographs each colour still gets a gallery that follows the choice, because those
+   * photographs come first; nothing is hidden to achieve it.
    */
   const all = p.images ?? [];
-  const ofChosen = chosen ? all.filter(i => i.variantCode === chosen.variantCode) : [];
-  const ofColour = colour
-    ? all.filter(i => choices.variants.some(v => v.colour === colour && v.variantCode === i.variantCode))
+  const forColour = colour
+    ? choices.variants.filter(v => v.colour === colour).map(v => v.variantCode)
     : [];
-  const general = all.filter(i => !i.variantCode);
-  const photos = (ofChosen.length ? ofChosen : ofColour.length ? ofColour : general.length ? general : all);
+  const rank = (img) => {
+    if (chosen && img.variantCode === chosen.variantCode) return 0;   // this exact size and colour
+    if (img.variantCode && forColour.includes(img.variantCode)) return 1; // this colour
+    if (!img.variantCode) return 2;                                    // the piece as a whole
+    return 3;                                                          // another colour
+  };
+  const photos = [...all]
+    .map((img, i) => ({ img, i, r: rank(img) }))
+    // Stable inside each group, so the shop's own ordering is kept.
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .map(x => x.img);
 
   const currency = chosen?.currency ?? 'INR';
   const ask = askOnWhatsApp(shop?.whatsapp, shop?.name, p);

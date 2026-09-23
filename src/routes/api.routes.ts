@@ -38,6 +38,7 @@ import leadRoutes from './lead.routes';
 import storefrontPublicRoutes from './storefront-public.routes';
 import shopifyPublicRoutes from './shopify-public.routes';
 import shopperTryOnPublicRoutes from './shopper-tryon-public.routes';
+import tryOnCounterRoutes from './tryon-counter.routes';
 import shopifyMerchantRoutes from './shopify-merchant.routes';
 import serviceCatalogueRoutes from './service-catalogue.routes';
 import storefrontConnectionRoutes from './storefront-connection.routes';
@@ -96,6 +97,8 @@ router.use('/shopify', shopifyPublicRoutes);
 // caller on this service, so it is also the most tightly limited. It reads only what is
 // already printed on the tag, and the shop's gateway key never leaves the server.
 router.use('/public/tryon', shopperTryOnPublicRoutes);
+// Try-on at the counter: signed in, the shop's own staff, the shop's own allowance.
+router.use('/tryon', tryOnCounterRoutes);
 
 // Delivery ticks and account changes from the ScaleEzy WhatsApp Service. Ahead of the gate: the
 // service has no session, and proves itself with a signature checked before anything is read.

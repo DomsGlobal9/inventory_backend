@@ -84,10 +84,26 @@ async function main() {
   const { serviceCredentialService, tryOnUsageService } = await import('../services/tryon');
   const { shopperTryOnProductService } = await import('../services/shopper-tryon');
   const publicRoutes = (await import('../routes/shopper-tryon-public.routes')).default;
+  const counterRoutes = (await import('../routes/tryon-counter.routes')).default;
 
   const app = express();
   app.use(express.json());
   app.use('/public/tryon', publicRoutes);
+
+  /*
+   * The counter's try-on, behind a stand-in for the sign-in.
+   *
+   * Whoever is signed in is decided by a header here rather than by a real session: what is being
+   * tested is the ROUTE -- which garment it resolves, whose shop it charges, what it refuses --
+   * and the sign-in itself is proved, thoroughly, by the security sweep and the permissions suite.
+   * The permission check is left in place and exercised, because that is this route's own rule.
+   */
+  app.use('/tryon', (req: any, _res, next) => {
+    const who = String(req.headers['x-test-client'] ?? '');
+    const may = req.headers['x-test-may'] !== 'no';
+    if (who) req.user = { id: 'tester', clientId: who, permissions: may ? ['product:view'] : [], roles: [] };
+    next();
+  }, counterRoutes);
   const server = app.listen(0, '127.0.0.1');
   await new Promise(r => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/public/tryon`;
@@ -279,6 +295,105 @@ async function main() {
     const path = url!.replace('https://www.tryon2buy.com/try/', '');
     const echo = await fetch(`${base}/${path}`);
     check('and the path it carries resolves here', echo.status === 200, String(echo.status));
+
+
+  // ── THE COUNTER ───────────────────────────────────────────────────────────────────────
+  // A customer standing in front of a salesperson. Same gateway, same allowance, same meter as
+  // the scanned tag -- what differs is who is holding the photograph.
+  console.log('\nTHE COUNTER');
+
+  const counter = `http://127.0.0.1:${(server.address() as AddressInfo).port}/tryon`;
+  const asStaff = (clientId: string, may = true) => ({
+    headers: { 'x-test-client': clientId, ...(may ? {} : { 'x-test-may': 'no' }) }
+  });
+  /* Plain fetch, as the rest of this suite uses. */
+  const hit = async (url: string, init: RequestInit = {}) => {
+    const res = await fetch(url, init);
+    const data = await res.json().catch(() => null);
+    return { status: res.status, data, message: (data as any)?.message };
+  };
+  const counterPost = (path: string, body: unknown, clientId: string, may = true) =>
+    hit(`${counter}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...asStaff(clientId, may).headers },
+      body: JSON.stringify(body)
+    });
+
+  /* A real JPEG, because the counter route decodes and shrinks what it is given. */
+  const sharp = (await import('sharp')).default;
+  const PERSON_B64 = (await sharp({
+    create: { width: 600, height: 900, channels: 3, background: '#dfe3ea' }
+  }).jpeg().toBuffer()).toString('base64');
+
+  const counterGarment = await makeProduct(SHOP, `CNT-${Date.now()}`, 'ACTIVE');
+  const draftGarment = await makeProduct(SHOP, `CNTD-${Date.now()}`, 'DRAFT');
+  const noPhoto = await makeProduct(SHOP, `CNTN-${Date.now()}`, 'ACTIVE', false);
+  const theirs = await makeProduct(OTHER_SHOP, `CNTO-${Date.now()}`, 'ACTIVE');
+
+  const anon = await hit(`${counter}/${counterGarment.id}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo: PERSON_B64 })
+  });
+  check('the counter try-on needs somebody signed in', anon.status === 401 || anon.status === 403, anon.status);
+
+  const notAllowed = await counterPost(`/${counterGarment.id}`, { photo: PERSON_B64 }, SHOP, false);
+  check('...and the permission to look at a product', notAllowed.status === 403, notAllowed.status);
+
+  const noPic = await counterPost(`/${counterGarment.id}`, {}, SHOP);
+  check('a try-on with no photograph is refused', noPic.status === 400 && /photograph/i.test(String(noPic.message)), noPic.data);
+
+  const nothingToWear = await counterPost(`/${noPhoto.id}`, { photo: PERSON_B64 }, SHOP);
+  check('a product with no photograph says so, rather than failing at the gateway',
+    nothingToWear.status === 400 && /no photograph/i.test(String(nothingToWear.message)), nothingToWear.data);
+
+  const someoneElses = await counterPost(`/${theirs.id}`, { photo: PERSON_B64 }, SHOP);
+  check("one shop cannot try on another shop's product", someoneElses.status === 404, someoneElses.status);
+
+  const madeUp = await counterPost('/11111111-1111-1111-1111-111111111111', { photo: PERSON_B64 }, SHOP);
+  check('a product that does not exist is not found', madeUp.status === 404, madeUp.status);
+
+  /*
+   * A DRAFT product still works at the counter, and that is deliberate: the shopper-facing scan
+   * refuses one because a stranger must not learn what a shop has not published, but the
+   * salesperson holding it is the shop.
+   */
+  const draftRun = await counterPost(`/${draftGarment.id}`, { photo: PERSON_B64 }, SHOP);
+  check('a draft can be tried on at the counter, though a stranger cannot scan it',
+    draftRun.status === 200, draftRun.data);
+
+  const meterBefore = await tryOnUsageService.summary(SHOP, undefined, 'SHOPPER_TRYON');
+  const good = await counterPost(`/${counterGarment.id}`, { photo: PERSON_B64 }, SHOP);
+  check('a counter try-on produces a picture', good.status === 200 && typeof good.data.data.imageUrl === 'string', good.data);
+  check('...and says which piece it was', good.data.data.title === counterGarment.title, good.data.data.title);
+
+  const meterAfter = await settle(SHOP, 'SHOPPER_TRYON', s => s.generations > meterBefore.generations);
+  check('...and is counted against this shop, so it can be charged for',
+    meterAfter.generations === meterBefore.generations + 1,
+    { before: meterBefore.generations, after: meterAfter.generations });
+  check('...on the shopper try-on meter, not the catalogue one',
+    (await tryOnUsageService.summary(SHOP, undefined, 'CATALOG_TRYON')).generations === 0);
+
+  /*
+   * The garment is the product's own, never the request's. Asking for another URL must not make
+   * this shop pay to composite it.
+   */
+  const smuggled = await counterPost(`/${counterGarment.id}`,
+    { photo: PERSON_B64, imageUrl: 'https://example.com/not-ours.jpg' }, SHOP);
+  check('a counter try-on cannot name its own garment', smuggled.status === 200, smuggled.data);
+  check('...and the gateway was given the shop\'s own photograph',
+    gateway.seen.at(-1)?.body?.garmentImageUrl === GARMENT, gateway.seen.at(-1)?.body?.garmentImageUrl);
+
+  // The shop's allowance holds here too.
+  await prisma.clientServiceLimit.upsert({
+    where: { uq_client_service_limit: { clientId: SHOP, service: 'SHOPPER_TRYON' } },
+    create: { clientId: SHOP, service: 'SHOPPER_TRYON', monthlyLimit: 1, updatedByAdmin: 'verify' },
+    update: { monthlyLimit: 1 }
+  });
+  const overspent = await counterPost(`/${counterGarment.id}`, { photo: PERSON_B64 }, SHOP);
+  check('a shop out of try-ons is refused at the counter as well', overspent.status === 429, overspent.status);
+  const allowance = await hit(`${counter}/allowance`, { headers: asStaff(SHOP).headers });
+  check('...and the screen can see how many are left before anybody takes a photograph',
+    allowance.status === 200 && allowance.data.data.limit === 1, allowance.data);
+  await prisma.clientServiceLimit.deleteMany({ where: { clientId: SHOP, service: 'SHOPPER_TRYON' } });
 
     console.log(`\n================ RESULT: ${passed} passed | ${failed} failed ================`);
     if (failures.length) {
