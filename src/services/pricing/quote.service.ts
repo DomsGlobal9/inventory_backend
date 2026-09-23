@@ -62,7 +62,20 @@ export class PricingQuoteService {
    * shop's, or one that is not for sale at this location. Those are errors in the request and are
    * said plainly, because the caller is a till or a website and needs to know which line is wrong.
    */
-  async quote(clientId: string, req: QuoteRequest): Promise<any> {
+  async quote(
+    clientId: string,
+    req: QuoteRequest,
+    /*
+     * `persist: false` prices the basket and keeps nothing.
+     *
+     * A till asks for a quote once, when the cashier is ready. A shopper's basket re-prices on
+     * every "+" and every item removed, from the open internet -- persisting each one would write
+     * a row per tap for anybody who cared to tap, and none of them would ever become an order.
+     * The saved quote is the one made at checkout, which is the one the order is written against.
+     */
+    opts: { persist?: boolean } = {}
+  ): Promise<any> {
+    const persist = opts.persist !== false;
     if (!req.locationId) throw badRequest('Say which location this is selling from.');
     if (!Array.isArray(req.lines) || req.lines.length === 0) {
       throw badRequest('There is nothing in this basket.');
@@ -165,7 +178,7 @@ export class PricingQuoteService {
     const { currency } = await getShopSettings(clientId);
     const expiresAt = new Date(Date.now() + QUOTE_TTL_MS);
 
-    const saved = await prisma.pricingQuote.create({
+    const saved = persist ? await prisma.pricingQuote.create({
       data: {
         clientId,
         locationId: req.locationId,
@@ -178,9 +191,10 @@ export class PricingQuoteService {
         total: fromMinor(priced.totalMinor),
         expiresAt
       }
-    });
+    }) : null;
 
-    return { quoteId: saved.id, expiresAt, ...this.asJson(priced, currency) };
+    // No id means this price was not kept, so no order can be written against it.
+    return { quoteId: saved?.id ?? null, expiresAt: saved ? expiresAt : null, ...this.asJson(priced, currency) };
   }
 
   /**

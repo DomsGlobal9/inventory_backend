@@ -46,11 +46,13 @@ app.use('/l', linkPathRouter);
 // host, because opening a shop needs none of them.
 app.use(shopHostGate);
 
-// Every shop's own online shop, read by a shopper's browser at shop.scaleezy.com/<slug>.
-// Ahead of the app's CORS on purpose: this is public, read-only and carries no cookies, so it is
-// open to any origin -- the shop app today, a shop's own domain later. `credentials: false` is the
-// whole safety of that: a browser will not attach anyone's session to these calls.
-app.use('/shop', cors({ origin: '*', credentials: false, methods: ['GET'] }), shopPublicRoutes);
+// Every shop's own online shop, as a shopper's browser uses it at shop.scaleezy.com/<slug>.
+// Ahead of the app's CORS on purpose: this carries no cookies, so it is open to any origin -- the
+// shop app today, a shop's own domain later. `credentials: false` is the whole safety of that: a
+// browser will not attach anyone's session to these calls, so nothing here can act as anybody.
+// POST is allowed because a customer buys here; what stops that being abused is the rate limit on
+// those routes and the fact that placing an order proves nothing about who is asking.
+app.use('/shop', cors({ origin: '*', credentials: false, methods: ['GET', 'POST'] }), shopPublicRoutes);
 // The app's own origin, and only it, may send cookies.
 const appCors = cors({
   origin: (origin, callback) => {

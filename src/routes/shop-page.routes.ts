@@ -175,8 +175,15 @@ router.get('/', (_req, res) => {
 
 router.get('/:slug', page);
 router.get('/:slug/p/:productCode', page);
-/** Any other path inside a shop is still that shop's app, which sends it to the front page. */
-router.get('/:slug/*splat', page);
+/*
+ * Any other path inside a shop is still that shop's app -- the bag, the checkout, a customer's own
+ * order -- and the app decides what to show.
+ *
+ * `'/:slug/*'`, not `'/:slug/*splat'`. This server runs Express 4, where the wildcard is a bare
+ * `*`; the named form belongs to Express 5. Written the other way it matched nothing, and every
+ * page but the front page and a product answered "Cannot GET".
+ */
+router.get('/:slug/*', page);
 
 /**
  * On shop.scaleezy.com, this server is the shop and nothing else.
@@ -188,7 +195,17 @@ router.get('/:slug/*splat', page);
 export function shopHostGate(req: Request, res: Response, next: NextFunction) {
   const host = onlineShop.shopHost();
   if (!host || req.hostname?.toLowerCase() !== host) return next();
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
+
+  /*
+   * Everything a shopper LOOKS at is a GET. The one thing they SEND is a purchase -- pricing the
+   * bag and placing the order -- and that is a POST to this host's own little API. Without this
+   * the gate refused every checkout on shop.scaleezy.com with a bare 405, while the same calls
+   * worked on the API host: the shop would have looked perfect and sold nothing.
+   *
+   * Nothing else on this host takes anything but a GET.
+   */
+  const buying = req.method === 'POST' && req.path.startsWith('/_api/shop/');
+  if (!buying && req.method !== 'GET' && req.method !== 'HEAD') {
     return res.status(405).type('text/plain').send('Not allowed here.');
   }
   return router(req, res, next);

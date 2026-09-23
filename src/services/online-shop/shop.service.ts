@@ -18,6 +18,7 @@ import { env } from '../../config/env';
 import { storefrontCatalogueService, type CatalogueScope } from '../storefront-catalogue.service';
 import { checkSlug, readyToGoLive, shopUrl, OnlineShopRuleError } from './rules';
 import * as banners from './banners';
+import { facetsFor, type Facets } from './facets';
 
 export { OnlineShopRuleError };
 
@@ -92,6 +93,12 @@ export async function settingsFor(clientId: string) {
     accent: shop?.accent ?? null,
     locationIds: shop?.locationIds ?? [],
     hideOutOfStock: shop?.hideOutOfStock ?? false,
+    acceptsOrders: shop?.acceptsOrders ?? false,
+    payOnDelivery: shop?.payOnDelivery ?? true,
+    payOnline: shop?.payOnline ?? false,
+    deliveryFee: Number(shop?.deliveryFee ?? 0),
+    freeDeliveryAbove: shop?.freeDeliveryAbove == null ? null : Number(shop.freeDeliveryAbove),
+    minOrderValue: shop?.minOrderValue == null ? null : Number(shop.minOrderValue),
     returnPolicy: shop?.returnPolicy ?? null,
     grievanceName: shop?.grievanceName ?? null,
     grievancePhone: shop?.grievancePhone ?? null,
@@ -140,11 +147,43 @@ export async function chooseSlug(clientId: string, raw: unknown) {
 export async function save(clientId: string, input: {
   displayName?: unknown; accent?: unknown; locationIds?: unknown; hideOutOfStock?: unknown;
   returnPolicy?: unknown; grievanceName?: unknown; grievancePhone?: unknown; grievanceEmail?: unknown;
+  acceptsOrders?: unknown; payOnDelivery?: unknown; payOnline?: unknown;
+  deliveryFee?: unknown; freeDeliveryAbove?: unknown; minOrderValue?: unknown;
 }) {
   const shop = await prisma.onlineShop.findUnique({ where: { clientId } });
   if (!shop) throw new OnlineShopRuleError('Choose a web address for your shop first.');
 
   const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) || null : undefined);
+
+  /*
+   * Money the owner typed. Blank means "no figure", which is a real answer for "free delivery
+   * above" and for "smallest order" -- not zero, which would mean free delivery on everything and
+   * a minimum of nothing. Anything that is not a number at all is left alone rather than saved as
+   * a zero the shop never meant.
+   */
+  const money = (v: unknown, { nullable }: { nullable: boolean }) => {
+    if (v === undefined) return undefined;
+    if (v === null || v === '') return nullable ? null : undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return undefined;
+    return Math.round(n * 100) / 100;
+  };
+
+  /*
+   * A shop cannot take orders with no way to pay: the customer would reach the last step of a
+   * checkout and find nothing to press. Said here rather than discovered there.
+   */
+  const wantsOrders = input.acceptsOrders === true;
+  if (wantsOrders) {
+    const onDelivery = input.payOnDelivery === undefined ? shop.payOnDelivery : input.payOnDelivery === true;
+    const online = input.payOnline === undefined ? shop.payOnline : input.payOnline === true;
+    if (!onDelivery && !online) {
+      throw new OnlineShopRuleError('Choose at least one way customers can pay before you take orders.');
+    }
+    if (!shop.locationIds.length && input.locationIds === undefined) {
+      throw new OnlineShopRuleError('Choose which store sells online before you take orders.');
+    }
+  }
 
   // Only locations this shop actually has, and only ones that can sell: a godown quietly added by
   // hand must not put its stock in front of customers.
@@ -161,6 +200,10 @@ export async function save(clientId: string, input: {
     locationIds = real.map(l => l.id);
   }
 
+  const fee = money(input.deliveryFee, { nullable: false });
+  const freeAbove = money(input.freeDeliveryAbove, { nullable: true });
+  const minOrder = money(input.minOrderValue, { nullable: true });
+
   await prisma.onlineShop.update({
     where: { clientId },
     data: {
@@ -168,6 +211,12 @@ export async function save(clientId: string, input: {
       accent: typeof input.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(input.accent.trim()) ? input.accent.trim() : undefined,
       ...(locationIds !== undefined ? { locationIds } : {}),
       ...(input.hideOutOfStock !== undefined ? { hideOutOfStock: input.hideOutOfStock === true } : {}),
+      ...(input.acceptsOrders !== undefined ? { acceptsOrders: input.acceptsOrders === true } : {}),
+      ...(input.payOnDelivery !== undefined ? { payOnDelivery: input.payOnDelivery === true } : {}),
+      ...(input.payOnline !== undefined ? { payOnline: input.payOnline === true } : {}),
+      ...(fee !== undefined && fee !== null ? { deliveryFee: fee } : {}),
+      ...(freeAbove !== undefined ? { freeDeliveryAbove: freeAbove } : {}),
+      ...(minOrder !== undefined ? { minOrderValue: minOrder } : {}),
       returnPolicy: text(input.returnPolicy, 4000),
       grievanceName: text(input.grievanceName, 80),
       grievancePhone: text(input.grievancePhone, 20),
@@ -228,6 +277,16 @@ export async function publicShop(slugRaw: unknown): Promise<
       /** The shop's own number, for "Ask on WhatsApp". Phase 1 has no basket: this IS the order. */
       whatsapp: string | null;
       banners: Awaited<ReturnType<typeof banners.publicFor>>;
+      /** What this shop actually sells: the nav, the filter rail and the price range, from its own catalogue. */
+      facets: Facets;
+      /** Whether a customer can actually buy here, and on what terms. */
+      buying: {
+        open: boolean;
+        payWays: ('ON_DELIVERY' | 'ONLINE')[];
+        deliveryFee: number;
+        freeDeliveryAbove: number | null;
+        minOrderValue: number | null;
+      };
       grievance: { name: string | null; phone: string | null; email: string | null };
       returnPolicy: string | null }
 > {
@@ -237,10 +296,14 @@ export async function publicShop(slugRaw: unknown): Promise<
   const shop = await prisma.onlineShop.findUnique({ where: { slug } });
   if (!shop) return { state: 'UNKNOWN' };
 
-  const [settings, seller, shown] = await Promise.all([
+  const [settings, seller, shown, facets] = await Promise.all([
     getShopSettings(shop.clientId).catch(() => null),
     sellerDetails(shop.clientId),
-    banners.publicFor(shop.clientId).catch(() => [])
+    banners.publicFor(shop.clientId).catch(() => []),
+    // Sent with the shop itself rather than fetched separately: the nav and the filter rail are
+    // part of the page's furniture, and a second round trip for them shows an empty nav first.
+    facetsFor(shop.clientId, { locationIds: shop.locationIds, hideOutOfStock: shop.hideOutOfStock })
+      .catch(() => ({ categories: [], dressTypes: [], fabrics: [], brands: [], price: null, total: 0 }))
   ]);
   const name = shop.displayName?.trim() || settings?.businessName?.trim() || 'This shop';
   if (!shop.isLive) return { state: 'CLOSED', name };
@@ -255,6 +318,20 @@ export async function publicShop(slugRaw: unknown): Promise<
     currency: settings?.currency ?? 'INR',
     hideOutOfStock: shop.hideOutOfStock,
     locationIds: shop.locationIds,
+    /*
+     * Told to the page rather than worked out there: whether the Add to bag button exists at all
+     * is the shop's decision, and a page that guessed would offer a checkout that then refused.
+     */
+    buying: {
+      open: shop.acceptsOrders && (shop.payOnDelivery || shop.payOnline),
+      payWays: [
+        ...(shop.payOnDelivery ? ['ON_DELIVERY' as const] : []),
+        ...(shop.payOnline ? ['ONLINE' as const] : [])
+      ],
+      deliveryFee: Number(shop.deliveryFee),
+      freeDeliveryAbove: shop.freeDeliveryAbove == null ? null : Number(shop.freeDeliveryAbove),
+      minOrderValue: shop.minOrderValue == null ? null : Number(shop.minOrderValue)
+    },
     // The Consumer Protection (E-Commerce) Rules 2020 require the seller's own details on the
     // page: the shop is the seller, not ScaleEzy.
     seller: {
@@ -266,6 +343,7 @@ export async function publicShop(slugRaw: unknown): Promise<
     // Protection Rules. Nothing of a customer's is ever published here.
     whatsapp: seller?.businessPhone ?? shop.grievancePhone ?? null,
     banners: shown,
+    facets,
     grievance: { name: shop.grievanceName, phone: shop.grievancePhone, email: shop.grievanceEmail },
     returnPolicy: shop.returnPolicy
   };
@@ -316,6 +394,9 @@ function forShopper(p: Awaited<ReturnType<typeof storefrontCatalogueService.getP
     ...p,
     variants: p.variants.map(v => ({
       sku: v.sku, variantCode: v.variantCode, size: v.size, colour: v.colour,
+      // The shade the shop recorded, so a swatch on the page is the colour in the photograph
+      // rather than whatever a browser makes of the word "maroon".
+      colourHex: v.colourHex,
       price: v.price, compareAtPrice: v.compareAtPrice, currency: v.currency,
       sellable: v.stock.sellable
     }))

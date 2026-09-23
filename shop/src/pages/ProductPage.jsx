@@ -1,20 +1,28 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getProduct, money, askOnWhatsApp } from '../api';
+import { addToBag, useBag } from '../bag';
 import { Problem, Say } from '../components/States';
 
 /**
- * One piece: its photographs, its colours and sizes, and the way to ask about it.
+ * One piece: its photographs, the colours and sizes it comes in, and the way to buy it.
  *
- * Phase 1 has no basket and no payment. "Ask on WhatsApp" IS the order -- it opens a chat with the
- * shop with the piece and its code already typed, which is how these shops already sell. So that
- * button is the most important thing on the page: it is docked to the bottom of the screen, under
- * the thumb, and it stays useful even when the piece is sold out, because "do you have this in
- * red?" is exactly the conversation a shop wants.
+ * COLOUR IS REAL HERE. The swatch is the shade the shop itself recorded against that variant, and
+ * the photographs change with it, because a shop that took a photograph of the green saree meant
+ * it to be seen when green is chosen. Where a shop recorded no shade, the word alone is shown --
+ * guessing a colour from its name would put a browser's idea of "maroon" next to a photograph of
+ * the shop's maroon, and they are not the same colour.
+ *
+ * Sizes and colours a customer cannot actually buy are struck through rather than hidden: a shop
+ * that stocks S, M and L and has sold out of M should look like a shop that stocks three sizes.
  */
 
-/** A colour name a browser understands, for the little dot; anything else just gets the word. */
-const SWATCHES = /^(?:[a-z]+|#[0-9a-f]{3,8})$/i;
+/** The WhatsApp mark, used wherever the shop offers a chat. */
+const Wa = () => (
+  <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2Zm0 18.13h-.01a8.2 8.2 0 0 1-4.19-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.22 8.22 0 0 1-1.26-4.36c0-4.54 3.7-8.23 8.25-8.23 2.2 0 4.27.86 5.83 2.41a8.18 8.18 0 0 1 2.41 5.83c0 4.54-3.7 8.21-8.24 8.21Zm4.52-6.16c-.25-.12-1.47-.72-1.69-.81-.23-.08-.39-.12-.56.13-.17.24-.64.8-.79.97-.14.16-.29.18-.54.06-.25-.13-1.05-.39-1.99-1.23-.74-.66-1.23-1.47-1.38-1.72-.14-.25-.01-.38.11-.5.11-.11.25-.29.37-.43.13-.15.17-.25.25-.41.08-.17.04-.31-.02-.43-.06-.12-.56-1.34-.76-1.84-.2-.48-.41-.42-.56-.43h-.48c-.17 0-.43.06-.66.31-.23.25-.86.85-.86 2.07 0 1.22.89 2.4 1.01 2.56.12.17 1.75 2.67 4.23 3.74.59.26 1.05.41 1.41.52.59.19 1.13.16 1.56.1.48-.07 1.47-.6 1.67-1.18.21-.58.21-1.07.15-1.18-.06-.11-.23-.17-.48-.29Z" />
+  </svg>
+);
 
 /** What is worth saying about the saving: shoppers compare the percentage, not the difference. */
 function saving(now, was) {
@@ -28,8 +36,13 @@ function Gallery({ photos, title }) {
   const strip = useRef(null);
   const [at, setAt] = useState(0);
 
-  // A piece with no photograph is a real state, not a page still loading. A breathing skeleton
-  // that never resolves tells a shopper the shop is broken, so it says what is true instead.
+  // Back to the first photograph whenever the set changes -- choosing green should show the green
+  // one, not photograph four of the red.
+  useEffect(() => {
+    setAt(0);
+    if (strip.current) strip.current.scrollLeft = 0;
+  }, [photos.map(p => p.url).join('|')]);
+
   if (!photos.length) {
     return (
       <div className="gallery">
@@ -64,15 +77,33 @@ function Gallery({ photos, title }) {
 
 export default function ProductPage({ slug, shop }) {
   const { code } = useParams();
+  const nav = useNavigate();
+  const bag = useBag(slug);
   const [state, setState] = useState({ loading: true, error: null, product: null });
   const [nonce, setNonce] = useState(0);
   const [colour, setColour] = useState(null);
   const [size, setSize] = useState(null);
+  const [added, setAdded] = useState(false);
+
+  /*
+   * The sticky bar exists for the shopper who has scrolled past the buttons, and for nobody else.
+   * Shown always, it repeated the price three centimetres below where the page already said it,
+   * which on a short page reads as a mistake rather than as help.
+   */
+  const buttons = useRef(null);
+  const [dock, setDock] = useState(false);
+  const watch = useCallback((node) => {
+    buttons.current = node;
+    if (!node || typeof IntersectionObserver !== 'function') return;
+    const eye = new IntersectionObserver(([e]) => setDock(!e.isIntersecting), { rootMargin: '-70px 0px 0px 0px' });
+    eye.observe(node);
+    return () => eye.disconnect();
+  }, []);
 
   useEffect(() => {
     const ac = new AbortController();
     setState({ loading: true, error: null, product: null });
-    setColour(null); setSize(null);
+    setColour(null); setSize(null); setAdded(false);
     window.scrollTo({ top: 0 });
     getProduct(slug, code, { signal: ac.signal })
       .then(product => setState({ loading: false, error: null, product }))
@@ -82,13 +113,22 @@ export default function ProductPage({ slug, shop }) {
 
   const p = state.product;
 
-  /** The colours and sizes this piece comes in, in the order the shop entered them. */
+  /**
+   * The colours and sizes this piece comes in, in the order the shop entered them.
+   *
+   * A colour carries the shop's own shade, taken from the first variant of that colour that has
+   * one -- a shop usually records it once and leaves the other sizes blank.
+   */
   const choices = useMemo(() => {
     const variants = p?.variants ?? [];
     const colours = [];
     const sizes = [];
     for (const v of variants) {
-      if (v.colour && !colours.includes(v.colour)) colours.push(v.colour);
+      if (v.colour && !colours.some(c => c.name === v.colour)) colours.push({ name: v.colour, hex: v.colourHex ?? null });
+      else if (v.colour && v.colourHex) {
+        const found = colours.find(c => c.name === v.colour);
+        if (found && !found.hex) found.hex = v.colourHex;
+      }
       if (v.size && !sizes.includes(v.size)) sizes.push(v.size);
     }
     return { variants, colours, sizes };
@@ -131,17 +171,44 @@ export default function ProductPage({ slug, shop }) {
 
   if (!p) return <Say title="That is no longer in this shop" />;
 
-  const photos = p.images?.length ? p.images : [];
+  /*
+   * The photographs of the colour being looked at, if the shop took any. A shop that photographed
+   * each colour gets a gallery that follows the choice; one that photographed the piece once gets
+   * the same photographs whatever is chosen, which is exactly right for a single-colour saree.
+   */
+  const all = p.images ?? [];
+  const ofChosen = chosen ? all.filter(i => i.variantCode === chosen.variantCode) : [];
+  const ofColour = colour
+    ? all.filter(i => choices.variants.some(v => v.colour === colour && v.variantCode === i.variantCode))
+    : [];
+  const general = all.filter(i => !i.variantCode);
+  const photos = (ofChosen.length ? ofChosen : ofColour.length ? ofColour : general.length ? general : all);
+
   const currency = chosen?.currency ?? 'INR';
   const ask = askOnWhatsApp(shop?.whatsapp, shop?.name, p);
   const soldOut = !choices.variants.some(v => v.sellable);
   const was = chosen && Number(chosen.compareAtPrice) > Number(chosen.price) ? chosen.compareAtPrice : null;
   const off = was ? saving(chosen.price, was) : null;
 
+  const buying = shop?.buying?.open === true;
+  const inBag = chosen ? bag.find(l => l.variantCode === chosen.variantCode)?.quantity ?? 0 : 0;
+  const canAdd = buying && chosen && chosen.sellable;
+
+  const add = (thenGo) => {
+    if (!canAdd) return;
+    addToBag(slug, chosen.variantCode, 1, {
+      title: p.title, size: chosen.size, colour: chosen.colour, colourHex: chosen.colourHex
+    });
+    if (thenGo) nav(`/${slug}/bag`);
+    else { setAdded(true); window.setTimeout(() => setAdded(false), 2200); }
+  };
+
   return (
     <>
-      <p style={{ margin: '12px 0 0', fontSize: 13 }}>
-        <Link to={`/${slug}`} style={{ color: 'var(--muted)' }}>← Everything in the shop</Link>
+      <p className="crumbs">
+        <Link to={`/${slug}`}>Everything in the shop</Link>
+        {p.category ? <> <span>›</span> <Link to={`/${slug}?category=${encodeURIComponent(p.category)}`}>
+          {p.category.charAt(0) + p.category.slice(1).toLowerCase()}</Link></> : null}
       </p>
 
       <div className="piece">
@@ -153,10 +220,10 @@ export default function ProductPage({ slug, shop }) {
 
           {chosen && (
             <>
-              <div className="cost">
+              <div className="pricebox">
                 <span className="now">{money(chosen.price, currency)}</span>
                 {was ? <span className="was">{money(was, currency)}</span> : null}
-                {off ? <span className="off">{off}% off</span> : null}
+                {off ? <span className="cut">{off}% OFF</span> : null}
               </div>
               <p className="tax">Inclusive of all taxes</p>
             </>
@@ -173,20 +240,21 @@ export default function ProductPage({ slug, shop }) {
               <p>Colour{colour ? <>: <b>{colour}</b></> : ''}</p>
               <div className="opts">
                 {choices.colours.map(c => (
-                  <button key={c} type="button" className="opt" aria-pressed={colour === c}
-                    disabled={!soldOut && !canBuy(c, size) && !canBuy(c, null)}
+                  <button key={c.name} type="button" className="opt" aria-pressed={colour === c.name}
+                    disabled={!soldOut && !canBuy(c.name, size) && !canBuy(c.name, null)}
                     onClick={() => {
-                      setColour(c);
+                      setColour(c.name);
                       // Moving to a colour that does not come in the chosen size would leave the
                       // page showing a combination nobody can buy: take the size that does exist.
-                      if (size != null && !canBuy(c, size)) {
-                        const fits = choices.variants.find(v => v.colour === c && v.sellable)
-                          ?? choices.variants.find(v => v.colour === c);
+                      if (size != null && !canBuy(c.name, size)) {
+                        const fits = choices.variants.find(v => v.colour === c.name && v.sellable)
+                          ?? choices.variants.find(v => v.colour === c.name);
                         setSize(fits?.size ?? null);
                       }
                     }}>
-                    {SWATCHES.test(c) ? <span className="swatch" style={{ background: c.toLowerCase() }} /> : null}
-                    {c}
+                    {/* The shop's own shade, or nothing at all rather than a guess. */}
+                    {c.hex ? <span className="swatch" style={{ background: c.hex }} /> : null}
+                    {c.name}
                   </button>
                 ))}
               </div>
@@ -206,35 +274,82 @@ export default function ProductPage({ slug, shop }) {
             </div>
           )}
 
-          {p.description ? (
-            <div className="why">
-              <h3>About this piece</h3>
-              <p>{p.description}</p>
-            </div>
-          ) : null}
+          {/* The buttons where a shop puts them: under the size, not floating over the page. */}
+          <div ref={watch} className={`buyrow${canAdd ? '' : ' one'}`}>
+            {canAdd ? (
+              <>
+                <button type="button" className="go quiet" onClick={() => add(false)}>
+                  {added ? 'Added ✓' : inBag > 0 ? `In your bag (${inBag})` : 'Add to bag'}
+                </button>
+                <button type="button" className="go" onClick={() => add(true)}>Buy now</button>
+              </>
+            ) : buying && chosen && !chosen.sellable ? (
+              <>
+                <button type="button" className="go" disabled>Sold out</button>
+                {ask ? <a className="go quiet" href={ask} target="_blank" rel="noopener noreferrer">Ask the shop</a> : null}
+              </>
+            ) : ask ? (
+              <a className="go" href={ask} target="_blank" rel="noopener noreferrer">
+                <Wa /> {soldOut ? 'Ask if it is coming back' : 'Ask on WhatsApp'}
+              </a>
+            ) : (
+              <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0 }}>
+                This shop has not given a number to chat on yet.
+              </p>
+            )}
+          </div>
 
-          {/* The quiet promises every shop these customers use already makes on its product page. */}
-          <div className="sure">
-            <div>✓ Sold by {shop?.name || 'the shop'}</div>
-            <div>✓ Ask before you buy</div>
-            <div>✓ Code {p.productCode}</div>
+          {/* What the shop promises about getting it there -- its own terms, read from its own
+              settings, so a shop that changes them changes this. */}
+          <div className="promise">
+            {buying ? (
+              <div>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                  <path d="M3 7h11v9H3zM14 10h4l3 3v3h-7z" strokeLinejoin="round" />
+                  <circle cx="7" cy="18" r="1.6" /><circle cx="17.5" cy="18" r="1.6" />
+                </svg>
+                <div style={{ display: 'block' }}>
+                  <b>{shop.buying.deliveryFee > 0 ? `Delivery ${money(shop.buying.deliveryFee, currency)}` : 'Free delivery'}</b>
+                  <span>
+                    {shop.buying.deliveryFee > 0 && shop.buying.freeDeliveryAbove
+                      ? `Free on orders over ${money(shop.buying.freeDeliveryAbove, currency)}`
+                      : 'Delivered to your address'}
+                    {shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Pay when it arrives' : ''}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+            <div>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                <path d="M12 3l7 3v5.5c0 4-3 7.5-7 8.5-4-1-7-4.5-7-8.5V6l7-3Z" strokeLinejoin="round" />
+              </svg>
+              <div style={{ display: 'block' }}>
+                <b>Sold by {shop?.seller?.name || shop?.name}</b>
+                <span>{shop?.returnPolicy ? 'Returns as set out at the bottom of this page' : 'Ask the shop before you buy'}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* What it is, as rows. A shopper scanning for "is this real silk" should find it. */}
+          <div className="spec">
+            <h3>Details</h3>
+            <dl>
+              {p.fabric ? <><dt>Fabric</dt><dd>{p.fabric}</dd></> : null}
+              {p.dressType ? <><dt>Type</dt><dd>{p.dressType}</dd></> : null}
+              {p.brand ? <><dt>Brand</dt><dd>{p.brand}</dd></> : null}
+              {chosen?.colour ? <><dt>Colour</dt><dd>{chosen.colour}</dd></> : null}
+              {chosen?.size ? <><dt>Size</dt><dd>{chosen.size}</dd></> : null}
+              <dt>Code</dt><dd>{p.productCode}</dd>
+            </dl>
+            {p.description ? <p>{p.description}</p> : null}
           </div>
 
           {/*
-            The whole of Phase 1's selling, in one button, kept under the thumb. The price is
-            repeated beside it because by the time a shopper has scrolled to the description the
-            figure has gone off the top of the screen.
+            The bar under the thumb. What it offers depends on the shop: one that takes orders gets
+            a real Add to bag and Buy now; one that does not gets the WhatsApp chat that Phase 1
+            sold with, because for that shop the chat IS the order.
           */}
-          {/* No number to chat on means there is nothing for a docked button to do, so the bar is
-              not shown at all -- an empty bar across the bottom of every page would only take up
-              the screen and make the shop look broken. The shopper is told instead. */}
-          {!ask ? (
-            <p className="tax" style={{ marginTop: 18 }}>
-              This shop has not given a number to chat on yet. Its details are at the bottom of
-              this page.
-            </p>
-          ) : (
-          <div className="dock">
+          <div className="dock" data-show={dock}>
             <div className="in">
               {chosen ? (
                 <div className="amt">
@@ -242,15 +357,30 @@ export default function ProductPage({ slug, shop }) {
                   {was ? <span>{money(was, currency)} · {off}% off</span> : <span>Inclusive of taxes</span>}
                 </div>
               ) : null}
-              <a className="go" href={ask} target="_blank" rel="noopener noreferrer">
-                  <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2Zm0 18.13h-.01a8.2 8.2 0 0 1-4.19-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.22 8.22 0 0 1-1.26-4.36c0-4.54 3.7-8.23 8.25-8.23 2.2 0 4.27.86 5.83 2.41a8.18 8.18 0 0 1 2.41 5.83c0 4.54-3.7 8.21-8.24 8.21Zm4.52-6.16c-.25-.12-1.47-.72-1.69-.81-.23-.08-.39-.12-.56.13-.17.24-.64.8-.79.97-.14.16-.29.18-.54.06-.25-.13-1.05-.39-1.99-1.23-.74-.66-1.23-1.47-1.38-1.72-.14-.25-.01-.38.11-.5.11-.11.25-.29.37-.43.13-.15.17-.25.25-.41.08-.17.04-.31-.02-.43-.06-.12-.56-1.34-.76-1.84-.2-.48-.41-.42-.56-.43h-.48c-.17 0-.43.06-.66.31-.23.25-.86.85-.86 2.07 0 1.22.89 2.4 1.01 2.56.12.17 1.75 2.67 4.23 3.74.59.26 1.05.41 1.41.52.59.19 1.13.16 1.56.1.48-.07 1.47-.6 1.67-1.18.21-.58.21-1.07.15-1.18-.06-.11-.23-.17-.48-.29Z" />
-                  </svg>
-                  {soldOut ? 'Ask if it is coming back' : 'Ask on WhatsApp'}
-              </a>
+
+              {canAdd ? (
+                <>
+                  <button type="button" className="go quiet" onClick={() => add(false)}>
+                    {added ? 'Added ✓' : inBag > 0 ? `In your bag (${inBag})` : 'Add to bag'}
+                  </button>
+                  <button type="button" className="go" onClick={() => add(true)}>Buy now</button>
+                </>
+              ) : buying && chosen && !chosen.sellable ? (
+                <>
+                  <button type="button" className="go" disabled>Sold out</button>
+                  {ask ? <a className="go quiet" href={ask} target="_blank" rel="noopener noreferrer">Ask the shop</a> : null}
+                </>
+              ) : ask ? (
+                <a className="go" href={ask} target="_blank" rel="noopener noreferrer">
+                  <Wa /> {soldOut ? 'Ask if it is coming back' : 'Ask on WhatsApp'}
+                </a>
+              ) : (
+                <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0 }}>
+                  This shop has not given a number to chat on yet.
+                </p>
+              )}
             </div>
           </div>
-          )}
         </div>
       </div>
     </>

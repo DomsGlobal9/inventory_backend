@@ -33,6 +33,8 @@ export interface StorefrontVariant {
   barcode: string | null;
   size: string | null;
   colour: string | null;
+  /** The shade the shop recorded for this colour, as #rrggbb, or null if it did not record one. */
+  colourHex: string | null;
   price: number;
   compareAtPrice: number | null;
   currency: string;
@@ -55,7 +57,7 @@ export interface StorefrontProduct {
   brand: string | null;
   publishedAt: string | null;
   updatedAt: string;
-  images: { url: string; isPrimary: boolean; position: number }[];
+  images: { url: string; isPrimary: boolean; position: number; variantCode: string | null }[];
   variants: StorefrontVariant[];
 }
 
@@ -74,7 +76,7 @@ export interface StorefrontProduct {
  * whether to show it is the storefront's decision, made from `sellable` rather than by us
  * hiding the product and leaving a dead link behind.
  */
-const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = {
+export const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = {
   status: 'ACTIVE',
   trashedAt: null
 };
@@ -154,12 +156,28 @@ function resolveStock(
   return { quantity, reserved, available, sellable: availableSomewhere && available > 0 };
 }
 
+/*
+ * A colour is going into `style="background: ..."` on a page, so only a real hex leaves here.
+ * Shops type these by hand: "#8B1A2B", "8b1a2b" and "#8b1a2b " are all meant, and anything that
+ * is not a colour at all becomes null rather than something a browser has to guess at.
+ */
+function normaliseHex(raw: unknown): string | null {
+  const v = typeof raw === 'string' ? raw.trim().replace(/^#/, '') : '';
+  if (!/^[0-9a-f]{3}$|^[0-9a-f]{6}$/i.test(v)) return null;
+  const full = v.length === 3 ? v.split('').map(c => c + c).join('') : v;
+  return `#${full.toLowerCase()}`;
+}
+
 const VARIANT_SELECT = {
+  id: true,
   sku: true,
   variantCode: true,
   barcode: true,
   size: true,
   colorName: true,
+  // The shade the shop recorded against this variant. A saree shop's "Maroon" is its own maroon,
+  // and a swatch guessed from the word is a different colour from the one in the photograph.
+  hexCode: true,
   sellingPrice: true,
   compareAtPrice: true,
   stocks: { select: { locationId: true, quantity: true, reservedQty: true } },
@@ -178,6 +196,7 @@ function toStorefrontVariant(
     barcode: variant.barcode ?? null,
     size: variant.size ?? null,
     colour: variant.colorName ?? null,
+    colourHex: normaliseHex(variant.hexCode),
     price: resolvePrice({ sellingPrice: variant.sellingPrice, product: { basePrice } },
       variant.locationProfiles, scopedLocationIds),
     compareAtPrice: variant.compareAtPrice === null ? null : Number(variant.compareAtPrice),
@@ -198,7 +217,9 @@ const PRODUCT_SELECT = {
   category: true, productType: true, dressType: true, fabric: true, brand: true,
   basePrice: true, publishedAt: true, createdAt: true, updatedAt: true,
   images: {
-    select: { url: true, isPrimary: true, orderIndex: true },
+    // variantId: a photograph may belong to one colour rather than to the product as a whole,
+    // which is how a shop shows the green saree when green is chosen.
+    select: { url: true, isPrimary: true, orderIndex: true, variantId: true },
     where: { imageType: { in: ['COVER', 'GALLERY'] as const } },
     orderBy: { orderIndex: 'asc' as const }
   },
@@ -209,6 +230,7 @@ type ProductRow = Prisma.ProductGetPayload<{ select: typeof PRODUCT_SELECT }>;
 
 /** One row, as everything outside this service sees it. */
 function toStorefrontProduct(p: ProductRow, scoped: Set<string>, currency: string): StorefrontProduct {
+  const byVariantId = new Map(p.variants.map(v => [v.id, v.variantCode]));
   return {
     productCode: p.productCode,
     title: p.title,
@@ -220,7 +242,16 @@ function toStorefrontProduct(p: ProductRow, scoped: Set<string>, currency: strin
     brand: p.brand ?? null,
     publishedAt: p.publishedAt ? p.publishedAt.toISOString() : null,
     updatedAt: p.updatedAt.toISOString(),
-    images: p.images.map(i => ({ url: i.url, isPrimary: i.isPrimary, position: i.orderIndex })),
+    /*
+     * `variantCode` rather than the variant's id, because a receiver outside this building should
+     * never need one of our ids to make sense of an answer -- the code is what it already has.
+     */
+    images: p.images.map(i => ({
+      url: i.url,
+      isPrimary: i.isPrimary,
+      position: i.orderIndex,
+      variantCode: i.variantId ? (byVariantId.get(i.variantId) ?? null) : null
+    })),
     variants: p.variants.map(v => toStorefrontVariant(v, p.basePrice, scoped, currency))
   };
 }

@@ -21,14 +21,19 @@ const BASE = (import.meta.env.VITE_API_URL || '/_api').replace(/\/+$/, '');
 export class ShopError extends Error {
   constructor(kind, message) {
     super(message);
-    this.kind = kind; // 'UNKNOWN_SHOP' | 'CLOSED' | 'GONE' | 'OFFLINE' | 'BROKEN'
+    this.kind = kind; // 'UNKNOWN_SHOP' | 'CLOSED' | 'GONE' | 'OFFLINE' | 'BROKEN' | 'RULE'
   }
 }
 
-async function get(path, { signal } = {}) {
+async function get(path, { signal, send, method } = {}) {
   let res;
   try {
-    res = await fetch(`${BASE}${path}`, { credentials: 'omit', signal });
+    res = await fetch(`${BASE}${path}`, {
+      credentials: 'omit',
+      signal,
+      method: method ?? (send ? 'POST' : 'GET'),
+      ...(send ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(send) } : {})
+    });
   } catch (e) {
     // A cancelled request is the page moving on, not a problem to report.
     if (e?.name === 'AbortError') throw e;
@@ -42,6 +47,12 @@ async function get(path, { signal } = {}) {
   }
 
   const body = await res.json().catch(() => ({}));
+  /*
+   * A rule the shopper can do something about -- "Add a little more to your bag", "That phone
+   * number does not look right" -- comes back as 400 with the sentence to show. It is not a
+   * failure of the shop, so it is not dressed up as one.
+   */
+  if (res.status === 400 && body?.message) throw new ShopError('RULE', body.message);
   if (res.status === 404 && body?.state === 'UNKNOWN') throw new ShopError('UNKNOWN_SHOP', 'There is no shop at this address.');
   if (res.status === 503 && body?.state === 'CLOSED') throw new ShopError('CLOSED', body.message || 'This shop is not open just now.');
   if (res.status === 404) throw new ShopError('GONE', body?.message || 'That is no longer in this shop.');
@@ -62,6 +73,23 @@ export const getProducts = (slug, query, opts) => {
 
 export const getProduct = (slug, code, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(code)}`, opts);
+
+/*
+ * ── Buying ────────────────────────────────────────────────────────────────────────────────
+ *
+ * The bag is priced by the shop, never in here. The shop's own prices, the shop's own offers and
+ * the shop's own delivery terms are all decided in one place, and a page that worked out its own
+ * totals would sooner or later show a figure the checkout disagreed with.
+ */
+
+export const priceBag = (slug, lines, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/bag`, { ...opts, send: { lines } });
+
+export const placeOrder = (slug, order, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/orders`, { ...opts, send: order });
+
+export const getOrder = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/orders/${encodeURIComponent(token)}`, opts);
 
 /** Money as an Indian shopper reads it: ₹8,500, and ₹8,500.50 only when there are paise. */
 export const money = (amount, currency = 'INR') => {

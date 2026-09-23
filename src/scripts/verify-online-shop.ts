@@ -5,6 +5,8 @@
  *   O  the owner's side: claiming an address, settings, what must exist before it opens
  *   P  the shopper's side through the running server: open, closed, unknown, the catalogue
  *   N  the banners across the top: the limit, dead taps, order, hiding, another shop's
+ *   F  the nav and the filters: read from the shop's whole catalogue, not one page of it
+ *   C  buying: the bag, the price, the order, the stock held, and what may never be bought
  *   X  what must never leak: cost price, another shop, a location that does not sell online
  *
  *   npx tsx src/scripts/verify-online-shop.ts      (needs the local backend running)
@@ -17,7 +19,7 @@ import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { seedRolesForClient } from '../services/rbac-seed.service';
 import { platformAdminService } from '../services/platform-admin.service';
-import { onlineShop, shopBanners, OnlineShopRuleError, checkSlug, RESERVED_SLUGS } from '../services/online-shop';
+import { onlineShop, shopBanners, shopCheckout, OnlineShopRuleError, checkSlug, RESERVED_SLUGS } from '../services/online-shop';
 
 const SERVER = (process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1').replace(/\/api\/v1\/?$/, '');
 const API = `${SERVER}/api/v1`;
@@ -281,6 +283,177 @@ async function main() {
 
   const noLoginBanners = await axios.get(`${API}/online-shop/banners`, { validateStatus: () => true });
   check('banners need a login too', noLoginBanners.status === 401, noLoginBanners.status);
+
+
+  // ── F ─────────────────────────────────────────────────────────────────────────────────
+  console.log('\nF. WHAT THIS SHOP SELLS (the nav and the filters)');
+  const withFacets = await http('/shop/lakshmi-silks');
+  const facets = withFacets.data.data.facets;
+  check('the shop says what it sells, from its whole catalogue', facets?.total === 3, facets);
+  check('...its categories, for the nav', facets.categories?.[0]?.value === 'WOMEN' && facets.categories[0].label === 'Women', facets.categories);
+  check('...what kinds of thing, most-stocked first', facets.dressTypes?.[0]?.value === 'Saree' && facets.dressTypes[0].count === 2, facets.dressTypes);
+  check('...every fabric it stocks, not just the ones on page one',
+    facets.fabrics?.length === 3 && facets.fabrics.every((f: any) => f.count >= 1), facets.fabrics);
+  check('...and the range its prices really run over',
+    facets.price?.min <= 1400 && facets.price?.max >= 12000, facets.price);
+  check('a shop is never asked to name its own categories', !JSON.stringify(facets).includes('undefined'));
+
+  // ── C ─────────────────────────────────────────────────────────────────────────────────
+  console.log('\nC. BUYING');
+  const post = (path: string, body: unknown) =>
+    axios.post(`${SERVER}${path}`, body, { validateStatus: () => true, headers: { 'Content-Type': 'application/json' } });
+
+  const codeOf = async (productCode: string) => {
+    const one = await http(`/shop/lakshmi-silks/products/${productCode}`);
+    return one.data.data.variants[0].variantCode as string;
+  };
+  const sareeCode = await codeOf('OS-SAREE-1');
+  const kurtiCode = await codeOf('OS-KURTI-1');
+
+  // A shop that has not switched ordering on is a shop that only shows and tells.
+  const tooEarly = await post('/shop/lakshmi-silks/bag', { lines: [{ variantCode: sareeCode, quantity: 1 }] });
+  check('a shop that has not opened ordering takes no orders', tooEarly.status === 400, tooEarly.data);
+  check("...and says so in a way a shopper can act on", /not taking orders/i.test(String(tooEarly.data.message)), tooEarly.data.message);
+
+  const noWay = await own.patch('/online-shop', { acceptsOrders: true, payOnDelivery: false, payOnline: false });
+  check('ordering cannot be switched on with no way to pay', noWay.status === 400 && /way customers can pay/i.test(noWay.data.message), noWay.data);
+
+  const terms = await own.patch('/online-shop', {
+    acceptsOrders: true, payOnDelivery: true, deliveryFee: 79, freeDeliveryAbove: 50000, minOrderValue: 2000
+  });
+  check('the shop opens for orders on its own terms', terms.status === 200 && terms.data.data.acceptsOrders === true
+    && terms.data.data.deliveryFee === 79 && terms.data.data.minOrderValue === 2000, terms.data.data);
+  check('...and the shopper is told those terms', (await http('/shop/lakshmi-silks')).data.data.buying?.open === true);
+
+  const noLines = await post('/shop/lakshmi-silks/bag', { lines: [] });
+  check('an empty bag is refused kindly', noLines.status === 400 && /nothing in your bag/i.test(noLines.data.message), noLines.data);
+
+  const bag = await post('/shop/lakshmi-silks/bag', { lines: [{ variantCode: sareeCode, quantity: 1 }] });
+  check('a bag is priced', bag.status === 200 && bag.data.data.goods === 12000, bag.data.data);
+  check('...at the shop\'s own price, not one the browser sent', bag.data.data.lines[0].unitPrice === 12000, bag.data.data.lines);
+  check('...with the shop\'s own delivery charge', bag.data.data.delivery === 79, bag.data.data);
+  check('...and the shape of it: pieces, saving, delivery, to pay',
+    bag.data.data.total === 12079, bag.data.data);
+  check('the bag carries the colour the shop recorded, for the swatch',
+    bag.data.data.lines[0].colour === 'Maroon', bag.data.data.lines[0]);
+
+  const twoOfOne = await post('/shop/lakshmi-silks/bag', {
+    lines: [{ variantCode: sareeCode, quantity: 1 }, { variantCode: sareeCode, quantity: 2 }]
+  });
+  check('the same piece twice is three of it, not a refusal',
+    twoOfOne.status === 200 && twoOfOne.data.data.lines.length === 1 && twoOfOne.data.data.lines[0].quantity === 3, twoOfOne.data.data);
+
+  const tooMany = await post('/shop/lakshmi-silks/bag', { lines: [{ variantCode: sareeCode, quantity: 999 }] });
+  check('a bag cannot ask for more than a person buys', tooMany.status === 400 || tooMany.data.data.lines[0].quantity <= 10, tooMany.data);
+
+  const nonsense = await post('/shop/lakshmi-silks/bag', { lines: [{ variantCode: 'NOT-A-PIECE', quantity: 1 }] });
+  check('something not in this shop is refused', nonsense.status === 400 && /no longer in this shop/i.test(nonsense.data.message), nonsense.data);
+
+  // Ordering itself.
+  const key = () => `verify-${STAMP}-${Math.random().toString(36).slice(2)}aaaaaaaaaa`;
+  const details = {
+    name: 'Anita Rao', phone: '9989000111',
+    address: '3-6-218 Flat 402, Himayatnagar, Hyderabad, Telangana 500029',
+    payWay: 'ON_DELIVERY'
+  };
+
+  const tooSmall = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: key(), lines: [{ variantCode: kurtiCode, quantity: 1 }]
+  });
+  check('an order below what the shop will send is refused, with the figure',
+    tooSmall.status === 400 && /2000/.test(String(tooSmall.data.message)), tooSmall.data);
+
+  const noName = await post('/shop/lakshmi-silks/orders', {
+    ...details, name: '', placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('an order with no name is refused', noName.status === 400 && /your name/i.test(noName.data.message), noName.data);
+
+  const badPhone = await post('/shop/lakshmi-silks/orders', {
+    ...details, phone: '123', placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('an order with a number nobody could ring is refused', badPhone.status === 400 && /phone/i.test(badPhone.data.message), badPhone.data);
+
+  const noAddress = await post('/shop/lakshmi-silks/orders', {
+    ...details, address: 'x', placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('an order with no real address is refused', noAddress.status === 400 && /address/i.test(noAddress.data.message), noAddress.data);
+
+  const badWay = await post('/shop/lakshmi-silks/orders', {
+    ...details, payWay: 'BITCOIN', placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('an order cannot invent a way to pay the shop does not take', badWay.status === 400, badWay.data);
+
+  const thisKey = key();
+  const order = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: thisKey, lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('an order is placed', order.status === 200 && /^SO-/.test(String(order.data.data.orderNumber)), order.data);
+  check('...and the customer is told what it came to', order.data.data.total === 12079, order.data.data);
+  check('...and where it is going', /Himayatnagar/.test(String(order.data.data.address)), order.data.data.address);
+  check('...and that it is not paid yet', order.data.data.paid === false && order.data.data.payWay === 'ON_DELIVERY');
+
+  const token = order.data.data.token as string;
+  check('the link to the order is a secret, not a number to count from', token.length >= 30, token.length);
+
+  // The order really is an inventory order, on the ONLINE channel, holding real stock.
+  const written = await prisma.salesOrder.findFirst({
+    where: { clientId: SHOP, externalOrderId: thisKey },
+    select: {
+      orderNumber: true, channel: true, status: true, sourceSystem: true, locationId: true,
+      total: true, shippingAmount: true, customerPhone: true,
+      items: { select: { quantity: true, variantId: true } }
+    }
+  });
+  check('the order is an ordinary inventory order', written?.channel === 'ONLINE' && written?.status === 'CONFIRMED', written);
+  check('...from this shop', written?.sourceSystem === 'SCALEEZY_SHOP');
+  check('...sold from the store the shop chose to sell online', written?.locationId === store.id, written?.locationId);
+  check('...with the delivery charge on it', Number(written?.shippingAmount) === 79, written?.shippingAmount);
+  check('...and the customer\'s number on it, for the shop to ring',
+    String(written?.customerPhone ?? '').includes('9989000111'), written?.customerPhone);
+
+  const held = await prisma.inventoryStock.findFirst({
+    where: { clientId: SHOP, locationId: store.id, variantId: written!.items[0].variantId },
+    select: { quantity: true, reservedQty: true }
+  });
+  check('the stock is really held for this customer', held?.reservedQty === 1, held);
+
+  // The same order twice.
+  const again = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: thisKey, lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('pressing order twice makes one order, not two',
+    again.status === 200 && again.data.data.orderNumber === order.data.data.orderNumber, again.data.data);
+  const howMany = await prisma.salesOrder.count({ where: { clientId: SHOP, externalOrderId: thisKey } });
+  check('...and there is exactly one order in the books', howMany === 1, howMany);
+  const stillHeld = await prisma.inventoryStock.findFirst({
+    where: { clientId: SHOP, locationId: store.id, variantId: written!.items[0].variantId },
+    select: { reservedQty: true }
+  });
+  check('...and the stock was held once, not twice', stillHeld?.reservedQty === 1, stillHeld);
+
+  // The customer's own order, and nobody else's.
+  const mine = await http(`/shop/lakshmi-silks/orders/${token}`);
+  check('the customer can see their own order', mine.status === 200 && mine.data.data.orderNumber === order.data.data.orderNumber);
+  const guessed = await http('/shop/lakshmi-silks/orders/not-a-real-token-at-all-aaaaaaa');
+  check('a guessed link shows nothing', guessed.status === 400 || guessed.status === 404, guessed.status);
+  // Straight at the service, because there is only one live shop here and the point is the scope:
+  // a token is looked up on its own and then checked against the shop asking for it.
+  const theirRead = await refusalAsync(shopCheckout.summary(OTHER, token));
+  check("one shop cannot read another shop's order, even holding the link",
+    /could not be found/i.test(theirRead), theirRead);
+
+  const orderBody = JSON.stringify(mine.data);
+  for (const word of ['costPrice', 'averageCost', 'clientId', 'locationId', 'variantId']) {
+    check(`an order never carries ${word}`, !orderBody.includes(word));
+  }
+
+  // What cannot be bought.
+  await own.patch('/online-shop', { acceptsOrders: false });
+  const shut = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('a shop that stops taking orders stops taking orders', shut.status === 400, shut.data);
+  await own.patch('/online-shop', { acceptsOrders: true });
 
   // ── X ─────────────────────────────────────────────────────────────────────────────────
   console.log('\nX. WHAT MUST NEVER LEAK');

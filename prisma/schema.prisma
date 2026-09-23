@@ -1207,6 +1207,9 @@ model SalesOrder {
   discounts  SalesOrderDiscount[]
   payments   SalesOrderPayment[]
 
+  /// Set only when this order was placed on the shop's own online shop.
+  onlineShopOrder OnlineShopOrder?
+
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
@@ -3721,6 +3724,24 @@ model OnlineShop {
   /// A piece with no stock: hide it, or show it greyed as sold out. The shop's choice.
   hideOutOfStock Boolean @default(false) @map("hide_out_of_stock")
 
+  /// Whether a customer can actually place an order, or only look and ask on WhatsApp.
+  ///
+  /// Off by default, and on is a decision: taking an order holds the shop's real stock and
+  /// promises a real delivery. A shop opens its shop first, sees who looks, and turns this on
+  /// when it is ready to pack boxes.
+  acceptsOrders Boolean @default(false) @map("accepts_orders")
+
+  /// How a customer may pay. Both off means no order can be placed, whatever acceptsOrders says.
+  /// Paying online needs the shop's own gateway keys; paying on delivery needs nothing.
+  payOnDelivery Boolean @default(true) @map("pay_on_delivery")
+  payOnline     Boolean @default(false) @map("pay_online")
+
+  /// Delivery, the shop's own terms. Free above a figure, if the shop wants that.
+  deliveryFee       Decimal  @default(0) @map("delivery_fee") @db.Decimal(10, 2)
+  freeDeliveryAbove Decimal? @map("free_delivery_above") @db.Decimal(10, 2)
+  /// The smallest order the shop will send out. Null means it will send any.
+  minOrderValue     Decimal? @map("min_order_value") @db.Decimal(10, 2)
+
   /// Required on every page by the Consumer Protection (E-Commerce) Rules 2020: the shop is the
   /// seller, so its own details must be reachable. Filled from ClientSettings where they exist.
   returnPolicy   String? @map("return_policy") @db.Text
@@ -3745,6 +3766,59 @@ model OnlineShopSlugHistory {
 
   @@index([clientId])
   @@map("online_shop_slug_history")
+}
+
+/// How a customer paid for an online order.
+enum OnlineShopPayWay {
+  /// Money when the goods arrive, or when they are collected. Needs no gateway and no keys, and
+  /// is how most shops of this size already sell.
+  ON_DELIVERY
+  /// Money now, through the shop's own payment gateway.
+  ONLINE
+}
+
+/// An order placed on a shop's own online shop.
+///
+/// The order itself is an ordinary SalesOrder on the ONLINE channel -- the same row a counter sale
+/// or a Shopify order becomes, holding the same stock, priced by the same offers. This row holds
+/// only what is true of an order that came from OUR shop page and nowhere else: the secret in the
+/// customer's link, what the browser sent so a double tap makes one order, and how it was paid.
+model OnlineShopOrder {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  salesOrderId String     @unique @map("sales_order_id")
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+
+  /// What the customer's browser sent when it placed this. One per basket, so a double tap, a
+  /// retry after a timeout and two requests racing all become the one order.
+  placementKey String @map("placement_key")
+
+  /// The secret in the link a customer follows to see their own order.
+  ///
+  /// Long and random, because it is the ONLY thing between one customer's order -- their name,
+  /// their address, their phone -- and anybody who tries the next number along.
+  token String @unique
+
+  /// The number the customer typed, kept here as well as on the order: this is who the shop
+  /// rings, and it must survive whatever later happens to the customer record.
+  customerPhone String? @map("customer_phone")
+  /// Whether that number was proved to be theirs before the order was taken.
+  phoneVerified Boolean @default(false) @map("phone_verified")
+
+  payWay OnlineShopPayWay @map("pay_way")
+  paid   Boolean          @default(false)
+
+  /// The gateway's own ids, for finding this payment again in the gateway's dashboard.
+  gatewayOrderId   String? @map("gateway_order_id")
+  gatewayPaymentId String? @map("gateway_payment_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, placementKey])
+  @@index([clientId, createdAt])
+  @@map("online_shop_orders")
 }
 
 /// A banner across the top of a shop's own online shop: the picture, a few words over it, and
