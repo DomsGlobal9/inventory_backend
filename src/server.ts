@@ -4,6 +4,7 @@ import cors from 'cors';
 import { env } from './config/env';
 import { requestLogger } from './middleware/request-logger';
 import { linkHostGate, linkPathRouter } from './routes/link-open.routes';
+import shopPublicRoutes from './routes/shop-public.routes';
 import { errorHandler } from './middleware/error.middleware';
 
 import { prisma } from './lib/prisma';
@@ -38,6 +39,12 @@ app.use(helmet()); // HTTP Security Headers
 // Ahead of CORS, cookies and body parsing: opening a link needs none of them.
 app.use(linkHostGate);
 app.use('/l', linkPathRouter);
+
+// Every shop's own online shop, read by a shopper's browser at shop.scaleezy.com/<slug>.
+// Ahead of the app's CORS on purpose: this is public, read-only and carries no cookies, so it is
+// open to any origin -- the shop app today, a shop's own domain later. `credentials: false` is the
+// whole safety of that: a browser will not attach anyone's session to these calls.
+app.use('/shop', cors({ origin: '*', credentials: false, methods: ['GET'] }), shopPublicRoutes);
 // The app's own origin, and only it, may send cookies.
 const appCors = cors({
   origin: (origin, callback) => {

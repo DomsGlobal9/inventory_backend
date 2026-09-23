@@ -3378,17 +3378,17 @@ model LoyaltySettings {
   birthdayPoints   Int     @default(0) @map("birthday_points")
 
   /// After a counter sale, tell the customer on WhatsApp what they earned and hold.
-  notifyAfterSale Boolean @default(false) @map("notify_after_sale")
+  notifyAfterSale    Boolean @default(false) @map("notify_after_sale")
   /// Automatic wishes, sent from the shop's own number to customers who agreed to offers.
-  birthdayWish    Boolean @default(false) @map("birthday_wish")
-  birthdayText    String? @map("birthday_text") @db.Text
-  anniversaryWish Boolean @default(false) @map("anniversary_wish")
-  anniversaryText String? @map("anniversary_text") @db.Text
+  birthdayWish       Boolean @default(false) @map("birthday_wish")
+  birthdayText       String? @map("birthday_text") @db.Text
+  anniversaryWish    Boolean @default(false) @map("anniversary_wish")
+  anniversaryText    String? @map("anniversary_text") @db.Text
   /// A picture above the wishes (CampaignMedia ids), or none.
   birthdayMediaId    String? @map("birthday_media_id")
   anniversaryMediaId String? @map("anniversary_media_id")
   /// A week before points lapse, remind the customer to use them.
-  expiryReminder  Boolean @default(false) @map("expiry_reminder")
+  expiryReminder     Boolean @default(false) @map("expiry_reminder")
 
   /// The last shop-local day ("YYYY-MM-DD") the automatic messages were prepared for.
   autoPreparedFor String? @map("auto_prepared_for")
@@ -3468,15 +3468,15 @@ model Campaign {
   source   String         @default("MANUAL")
 
   /// The picture sent above the words (CampaignMedia, never changed once made).
-  mediaId String?         @map("media_id")
-  media   CampaignMedia?  @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+  mediaId      String?        @map("media_id")
+  media        CampaignMedia? @relation(fields: [mediaId], references: [id], onDelete: Restrict)
   /// Where {link} goes: { type: WHATSAPP | PRODUCT | SHOP | EXTERNAL, target, days, productName? }.
-  link    Json?
+  link         Json?
   /// What was sent, fixed at Start: words, picture, link, shop name. The page shows this, never
   /// today's product or settings. Null for a draft.
-  snapshot Json?
+  snapshot     Json?
   /// Why making the links has not finished yet (PREPARING), in words; cleared once it has.
-  prepareError String? @map("prepare_error")
+  prepareError String?        @map("prepare_error")
 
   /// Not before this moment.
   startAt    DateTime? @map("start_at")
@@ -3685,4 +3685,64 @@ model CampaignTemplate {
 
   @@unique([clientId, name])
   @@map("campaign_templates")
+}
+
+// ── The shop's own online shop (PLAN-online-shop.md) ────────────────────────────────────────
+
+/// What a shopper sees when they open `shop.scaleezy.com/<slug>`.
+///
+/// One row per shop, made the moment an owner opens Settings -> Online shop, switched on only when
+/// they have chosen a name and at least one location that sells online. The slug is the shop's
+/// address for good: it goes into QR codes, and into WhatsApp messages that live 90 days and cannot
+/// be edited afterwards, so it is never reused for a different shop even after deletion.
+model OnlineShop {
+  id       String @id @default(uuid())
+  clientId String @unique @map("client_id")
+
+  /// The address: lower-case letters, digits and single hyphens, 3-40 characters. Unique across
+  /// every shop on ScaleEzy, because it is the whole address.
+  slug String @unique
+
+  /// Off until the owner is ready. Off means the link says the shop is not open, not 404: a
+  /// customer who saved the link should be told, not left guessing.
+  isLive Boolean @default(false) @map("is_live")
+
+  /// What the shopper sees at the top. Falls back to the shop's business name and logo.
+  displayName String? @map("display_name")
+  logoUrl     String? @map("logo_url")
+  bannerUrl   String? @map("banner_url")
+  bannerPath  String? @map("banner_path")
+  accent      String? // one hex colour; the rest of the palette is derived
+
+  /// Which locations' stock may be sold online. Empty means none, so a shop cannot go live by
+  /// accident and start selling the stock of a godown it never meant to offer.
+  locationIds String[] @map("location_ids")
+
+  /// A piece with no stock: hide it, or show it greyed as sold out. The shop's choice.
+  hideOutOfStock Boolean @default(false) @map("hide_out_of_stock")
+
+  /// Required on every page by the Consumer Protection (E-Commerce) Rules 2020: the shop is the
+  /// seller, so its own details must be reachable. Filled from ClientSettings where they exist.
+  returnPolicy   String? @map("return_policy") @db.Text
+  grievanceName  String? @map("grievance_name")
+  grievancePhone String? @map("grievance_phone")
+  grievanceEmail String? @map("grievance_email")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("online_shops")
+}
+
+/// A slug that has been used, so it is never given to a different shop. Kept even when a shop is
+/// deleted: a QR code printed on a poster outlives the shop that printed it, and pointing it at
+/// somebody else's sarees would be worse than pointing it at nothing.
+model OnlineShopSlugHistory {
+  slug       String    @id
+  clientId   String    @map("client_id")
+  takenAt    DateTime  @default(now()) @map("taken_at")
+  releasedAt DateTime? @map("released_at")
+
+  @@index([clientId])
+  @@map("online_shop_slug_history")
 }

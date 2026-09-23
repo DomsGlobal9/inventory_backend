@@ -202,6 +202,9 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'admin:users',     group: 'The shop', label: 'Manage the team and their roles', sensitive: true },
   { key: 'admin:locations', group: 'The shop', label: 'Add and change shops and warehouses' },
   { key: 'admin:catalog',   group: 'The shop', label: 'Manage sizes, colours and categories', implies: ['product:view'] },
+  // Opening the shop's own online shop puts its catalogue and prices in front of the public, so it
+  // sits with the other decisions only someone running the shop should make.
+  { key: 'admin:online_shop', group: 'The shop', label: 'Set up and open the online shop', sensitive: true, implies: ['product:view'] },
 
   // Reading a colleague's password in plain text. Its own key, never implied by managing the
   // team, and every use is recorded -- see team.routes.

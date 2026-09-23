@@ -177,6 +177,15 @@ const envSchema = z.object({
   LINK_BASE_URL: optionalStr(z.string().url("LINK_BASE_URL must be a valid URL, e.g. https://go.scaleezy.com")
     .refine(v => !/[?#]/.test(v) && !v.endsWith('/'), "LINK_BASE_URL must not end in / or contain ? or #")),
 
+  /**
+   * Where every shop's own online shop lives: https://shop.scaleezy.com, with each shop at
+   * /<its-slug>. Unset means no shop can be opened yet, and the settings screen says so rather
+   * than showing an owner an address that would not load. Like LINK_BASE_URL, set it only once
+   * the address really reaches this service -- a shop's address ends up on printed QR codes.
+   */
+  SHOP_BASE_URL: optionalStr(z.string().url("SHOP_BASE_URL must be a valid URL, e.g. https://shop.scaleezy.com")
+    .refine(v => !/[?#]/.test(v) && !v.endsWith('/'), "SHOP_BASE_URL must not end in / or contain ? or #")),
+
   WHATSAPP_SERVICE_URL: optionalStr(z.string().url("WHATSAPP_SERVICE_URL must be a valid URL")),
   // This module's key, made once on the service (`npm run create-module`).
   WHATSAPP_SERVICE_KEY: optionalStr(z.string().min(16, "WHATSAPP_SERVICE_KEY should be at least 16 characters")),
