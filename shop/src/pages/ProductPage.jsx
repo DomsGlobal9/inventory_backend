@@ -322,7 +322,7 @@ export default function ProductPage({ slug, shop }) {
             {canAdd ? (
               <>
                 <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)}>
-                  {added ? <><Ticked /> Added</> : inBag > 0 ? `In your bag (${inBag})` : 'Add to bag'}
+                  {added ? <><Ticked /> Added</> : inBag > 0 ? `In bag · ${inBag}` : 'Add to bag'}
                 </button>
                 <button type="button" className="go" onClick={() => add(true)}>Buy now</button>
               </>
@@ -420,22 +420,26 @@ export default function ProductPage({ slug, shop }) {
           */}
           <div className="dock" data-show={dock}>
             <div className="in">
-              {chosen ? (
-                <div className="amt">
-                  <b>{money(chosen.price, currency)}</b>
-                  {was ? <span>{money(was, currency)} · {off}% off</span> : <span>Inclusive of taxes</span>}
-                </div>
-              ) : null}
+              {/*
+                THE PRICE IS NOT REPEATED HERE.
 
+                The bar used to carry its own price block, so on a short page a shopper saw
+                ₹3,500 in the page and ₹3,500 again three centimetres below it, which reads as a
+                mistake rather than as help. It also took a third of a 393px bar, which is what
+                squeezed the buttons until their labels wrapped and the bar changed height.
+
+                The amount now rides on the button that needs it -- somebody who has scrolled past
+                the price and is about to press Buy now is exactly who wants reminding, and it is
+                the only place it can be said without saying it twice.
+              */}
               {canAdd ? (
                 <>
-                  {/* Short on purpose. "In your bag (2)" wrapped to three lines in the bar, and
-                      because the label changed length as the bag changed, the bar grew and shrank
-                      under the shopper's thumb. */}
                   <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)}>
                     {added ? <><Ticked /> Added</> : inBag > 0 ? `In bag · ${inBag}` : 'Add to bag'}
                   </button>
-                  <button type="button" className="go" onClick={() => add(true)}>Buy now</button>
+                  <button type="button" className="go" onClick={() => add(true)}>
+                    Buy now{chosen ? <span className="amt"> · {money(chosen.price, currency)}</span> : null}
+                  </button>
                 </>
               ) : buying && chosen && !chosen.sellable ? (
                 <>

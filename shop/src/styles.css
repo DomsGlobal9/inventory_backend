@@ -319,10 +319,7 @@ button.slide { cursor: pointer; }
   padding: 9px 14px calc(9px + env(safe-area-inset-bottom));
 }
 .dock .in { max-width: var(--max); margin: 0 auto; display: flex; align-items: center; gap: 12px; }
-.dock .amt { flex: 0 0 auto; }
-.dock .amt b { display: block; font-size: 16px; letter-spacing: -.01em; }
-.dock .amt span { font-size: 11px; color: var(--muted); }
-@media (min-width: 880px) { .dock { position: static; background: none; border: 0; padding: 22px 0 0; backdrop-filter: none; } .dock .amt { display: none; } }
+@media (min-width: 880px) { .dock { position: static; background: none; border: 0; padding: 22px 0 0; backdrop-filter: none; } }
 
 .go {
   flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 9px;
@@ -1001,8 +998,20 @@ button.slide { cursor: pointer; }
   transition: width .45s cubic-bezier(.22, .61, .36, 1);
 }
 
-/* A page arriving, once, gently. Enough to say "this is a new page" and no more. */
-@keyframes arrive { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+/*
+ * A page arriving, once, gently.
+ *
+ * OPACITY ONLY, and that is not a style choice. This animated `transform` as well, and an
+ * animation with `fill-mode: both` leaves the final transform applied -- an identity matrix, but
+ * a transform all the same. ANY transform on an element makes it the containing block for
+ * `position: fixed` descendants, so the buy bar stopped being pinned to the bottom of the screen
+ * and started being pinned to the bottom of the product, which put it in the middle of the page
+ * next to the price it was meant to repeat only once the price had scrolled away. It read as the
+ * price being shown twice, because it was.
+ *
+ * A fade says "new page" perfectly well and creates no containing block.
+ */
+@keyframes arrive { from { opacity: 0 } to { opacity: 1 } }
 .grow > * { animation: arrive .22s ease-out both; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1531,11 +1540,27 @@ body { overflow-x: hidden; }
   font-size: 14px;
   min-width: 0;
 }
-.dock .amt { min-width: 0; }
-.dock .amt b { white-space: nowrap; }
 @media (max-width: 420px) {
-  /* At this width the price, two buttons and their padding do not all fit honestly. The price is
-     already large further up the page, and the bar exists to carry the BUTTONS down the page. */
-  .dock .amt span { display: none; }
+  /* Narrower phones: the labels give up a little size rather than the bar giving up its height. */
   .dock .go { font-size: 13.5px; padding-left: 10px; padding-right: 10px; }
 }
+
+/*
+ * The bar carries buttons, and nothing else.
+ *
+ * It used to carry its own price block as well, so on a short page a shopper saw ₹3,500 on the
+ * page and ₹3,500 again three centimetres below -- and the block took a third of a 393px bar,
+ * which is what squeezed the labels until they wrapped and the bar changed height. The amount
+ * rides on Buy now now, which is the one place it can be said without saying it twice.
+ */
+.dock .in { display: flex; gap: 10px; }
+.dock .go { flex: 1 1 0; white-space: nowrap; }
+.dock .go .amt { font-weight: 600; opacity: .92; }
+@media (max-width: 380px) {
+  /* On the narrowest phones still sold, the amount comes off the button rather than wrapping. */
+  .dock .go .amt { display: none; }
+}
+
+/* Nothing in either row of buttons wraps: a label that wraps changes the height of the thing
+   underneath a thumb that is already moving towards it. */
+.buyrow .go { white-space: nowrap; }
