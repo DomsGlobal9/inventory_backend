@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { respondWithError } from '../utils/respondWithError';
 import { InventoryAlertService } from '../services/inventory-alert.service';
@@ -21,14 +22,37 @@ export const getAlerts = async (req: Request, res: Response) => {
       where.locationId = locationId;
     }
 
-    const alerts = await prisma.inventoryAlert.findMany({
+    /*
+     * `type` and `severity` are read as TEXT, not as Prisma enums, and that is not a style choice.
+     *
+     * A value added to a Postgres enum is written by whichever build is newest and then READ by
+     * every build, including ones generated before that value existed -- and an older Prisma
+     * client throws on the row rather than skipping it. That is not hypothetical: adding
+     * ONLINE_ORDER for the online shop's "new order" alert took the whole alerts endpoint down
+     * with a 500 for a shop whose only fault was receiving an order, because the running build
+     * had never heard of the value. One unreadable row should not cost a shopkeeper their bell.
+     *
+     * Read as text, an unknown value is simply a string: the alert still lists, still says what
+     * it says, and only the rules that name a specific type stop applying to it.
+     */
+    const rows = await prisma.inventoryAlert.findMany({
       where,
       orderBy: [
         { isPinned: 'desc' }, // Pinned alerts float to the top
-        { severity: 'asc' }, // CRITICAL before WARNING before INFO
+        { severity: 'asc' }, // CRITICAL before WARNING before INFO -- ordered by Postgres, never read here
         { updatedAt: 'desc' }
       ],
-      include: {
+      select: {
+        id: true,
+        title: true,
+        message: true,
+        currentQuantity: true,
+        threshold: true,
+        isRead: true,
+        isResolved: true,
+        isPinned: true,
+        createdAt: true,
+        updatedAt: true,
         variant: {
           select: {
             id: true,
@@ -51,6 +75,21 @@ export const getAlerts = async (req: Request, res: Response) => {
         }
       }
     });
+
+    const labels = rows.length
+      ? await prisma.$queryRaw<{ id: string; type: string; severity: string }[]>`
+          SELECT id, type::text AS type, severity::text AS severity
+          FROM inventory_alerts
+          WHERE id IN (${Prisma.join(rows.map(r => r.id))})
+        `
+      : [];
+    const labelOf = new Map(labels.map(l => [l.id, l]));
+    // The order above is kept; only the two words come from the second read.
+    const alerts = rows.map(r => ({
+      ...r,
+      type: labelOf.get(r.id)?.type ?? 'SYSTEM_ERROR',
+      severity: labelOf.get(r.id)?.severity ?? 'INFO'
+    }));
 
     /*
      * Read against the item's reorder level NOW, not the one stored when the alert was raised.
@@ -122,8 +161,12 @@ export const markAsRead = async (req: Request, res: Response) => {
     const { clientId, id: userId } = (req as any).user;
     const { id } = req.params;
 
+    // Only the two things this needs, so the row's enum columns are never read. See the note in
+    // getAlerts: a value added to an enum by a newer build makes the whole row unreadable to an
+    // older one, and "mark as read" has no business caring what type of alert it is.
     const alert = await prisma.inventoryAlert.findFirst({
-      where: { id: id as string, clientId }
+      where: { id: id as string, clientId },
+      select: { id: true, isPinned: true }
     });
 
     if (!alert) {
@@ -172,8 +215,12 @@ export const togglePin = async (req: Request, res: Response) => {
     const { clientId } = (req as any).user;
     const { id } = req.params;
 
+    // Only the two things this needs, so the row's enum columns are never read. See the note in
+    // getAlerts: a value added to an enum by a newer build makes the whole row unreadable to an
+    // older one, and "mark as read" has no business caring what type of alert it is.
     const alert = await prisma.inventoryAlert.findFirst({
-      where: { id: id as string, clientId }
+      where: { id: id as string, clientId },
+      select: { id: true, isPinned: true }
     });
 
     if (!alert) {
@@ -196,8 +243,12 @@ export const deleteAlert = async (req: Request, res: Response) => {
     const { clientId } = (req as any).user;
     const { id } = req.params;
 
+    // Only the two things this needs, so the row's enum columns are never read. See the note in
+    // getAlerts: a value added to an enum by a newer build makes the whole row unreadable to an
+    // older one, and "mark as read" has no business caring what type of alert it is.
     const alert = await prisma.inventoryAlert.findFirst({
-      where: { id: id as string, clientId }
+      where: { id: id as string, clientId },
+      select: { id: true, isPinned: true }
     });
 
     if (!alert) {
