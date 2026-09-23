@@ -72,7 +72,23 @@ router.use((_req, res, next) => {
  * real stock. So these are counted separately and much more tightly than looking at pages -- a
  * person buying does this a handful of times, and anything doing it hundreds of times a minute is
  * not a person buying.
+ *
+ * PRICING AND ORDERING ARE COUNTED SEPARATELY, and that is not tidiness. They shared one count of
+ * twenty a minute, and pricing is what every "+" and every "-" on the bag does: taking one line
+ * from one to ten is nine of them, and a second line finishes the twenty. An ordinary shopper
+ * adjusting their own bag was locked out of it -- and, because the count was shared, locked out of
+ * PLACING the order too. The two have nothing in common. Pricing is read-only and changes nothing;
+ * placing an order holds a shop's stock, and twenty of those a minute from one address is already
+ * far more than a person.
  */
+const priceLimiter = rateLimit({
+  windowMs: 60_000,
+  max: relaxed ? 2000 : 90,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'That is a lot of changes at once. Wait a moment and try again.' }
+});
+
 const buyLimiter = rateLimit({
   windowMs: 60_000,
   max: relaxed ? 2000 : 20,
@@ -146,7 +162,7 @@ router.get('/:slug/products/:productCode', async (req: Request, res: Response) =
  */
 
 /** Price what is in the bag. Kept nowhere: the price an order is written against is made below. */
-router.post('/:slug/bag', buyLimiter, buying(async (req) => {
+router.post('/:slug/bag', priceLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   return shopCheckout.priceBag(shop.clientId, req.body?.lines, req.body?.couponCodes);
@@ -165,7 +181,7 @@ router.post('/:slug/orders', buyLimiter, buying(async (req) => {
  * The token is the whole of the permission, which is why it is 24 random bytes rather than an
  * order number somebody could count upwards from.
  */
-router.get('/:slug/orders/:token', buyLimiter, buying(async (req) => {
+router.get('/:slug/orders/:token', priceLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   return shopCheckout.summary(shop.clientId, req.params.token);

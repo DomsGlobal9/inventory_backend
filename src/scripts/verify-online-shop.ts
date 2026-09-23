@@ -460,6 +460,77 @@ async function main() {
   check('a shop that stops taking orders stops taking orders', shut.status === 400, shut.data);
   await own.patch('/online-shop', { acceptsOrders: true });
 
+  /*
+   * TWO PEOPLE AT ONCE.
+   *
+   * Everything above happens one press at a time, which is not how a shop open to the internet is
+   * used. Both of these answered "Something went wrong at the shop. Please try again." -- the one
+   * sentence that is untrue in both cases, because in one the order had already been placed and in
+   * the other the piece was never coming back.
+   */
+  const kurtiVariant = await prisma.productVariant.findFirstOrThrow({
+    where: { clientId: SHOP, variantCode: `${'OS-KURTI-1'}-VC` }, select: { id: true }
+  });
+  // Exactly one free, so there is something for two shoppers to disagree about.
+  await prisma.inventoryStock.update({
+    where: { variantId_locationId: { variantId: kurtiVariant.id, locationId: store.id } },
+    data: { quantity: 1, reservedQty: 0 }
+  });
+  // Above the shop's minimum, so it is the STOCK that decides this and not the order value.
+  await own.patch('/online-shop', { minOrderValue: null });
+
+  const bothWant = { ...details, lines: [{ variantCode: kurtiCode, quantity: 1 }] };
+  const [raceA, raceB] = await Promise.all([
+    post('/shop/lakshmi-silks/orders', { ...bothWant, placementKey: key() }),
+    post('/shop/lakshmi-silks/orders', { ...bothWant, placementKey: key() })
+  ]);
+  const won = [raceA, raceB].filter(r => r.status === 200);
+  const lost = [raceA, raceB].find(r => r.status !== 200);
+  check('two shoppers wanting the last piece: exactly one gets it', won.length === 1,
+    [raceA.status, raceB.status]);
+  check('...and the other is told it has gone, not that the shop broke',
+    lost?.status === 400 && /bought by someone else/i.test(String(lost?.data?.message)), lost?.data);
+  check('...naming the piece, so they know what to take out',
+    /Cotton Kurti/.test(String(lost?.data?.message)), lost?.data?.message);
+  const kurtiShelf = await prisma.inventoryStock.findFirstOrThrow({
+    where: { clientId: SHOP, variantId: kurtiVariant.id, locationId: store.id },
+    select: { quantity: true, reservedQty: true }
+  });
+  check('...and the one piece was held once, never twice',
+    kurtiShelf.quantity === 1 && kurtiShelf.reservedQty === 1, kurtiShelf);
+
+  /*
+   * A double tap on a slow line. The guard at the top of `place` catches a second press that
+   * arrives after the first FINISHED; two in flight together both sail past it and the loser dies
+   * on the unique key -- telling a customer to try again for an order that is already placed.
+   */
+  const sameKey = key();
+  const bothPresses = { ...details, placementKey: sameKey, lines: [{ variantCode: sareeCode, quantity: 1 }] };
+  const [pressA, pressB] = await Promise.all([
+    post('/shop/lakshmi-silks/orders', bothPresses),
+    post('/shop/lakshmi-silks/orders', bothPresses)
+  ]);
+  check('pressing order twice at the same moment answers twice, not once and a crash',
+    pressA.status === 200 && pressB.status === 200, [pressA.status, pressB.status]);
+  check('...with the same order both times',
+    pressA.data?.data?.orderNumber && pressA.data.data.orderNumber === pressB.data?.data?.orderNumber,
+    [pressA.data?.data?.orderNumber, pressB.data?.data?.orderNumber]);
+  check('...and one order in the books, holding stock once',
+    (await prisma.salesOrder.count({ where: { clientId: SHOP, externalOrderId: sameKey } })) === 1);
+
+  /*
+   * Put the shelf back. These two tests place real orders that hold real stock, and what comes
+   * after counts what is held -- a test that leaves the world heavier than it found it breaks the
+   * next one, which is exactly what happened the first time this block was written.
+   */
+  await post(`/shop/lakshmi-silks/orders/${pressA.data.data.token}/cancel`, {});
+  for (const r of won) await post(`/shop/lakshmi-silks/orders/${r.data.data.token}/cancel`, {});
+  await prisma.inventoryStock.update({
+    where: { variantId_locationId: { variantId: kurtiVariant.id, locationId: store.id } },
+    data: { quantity: 5, reservedQty: 0 }
+  });
+  await own.patch('/online-shop', { minOrderValue: 2000 });
+
 
   // ── G ─────────────────────────────────────────────────────────────────────────────────
   console.log('\nG. THE GAPS CLOSED');

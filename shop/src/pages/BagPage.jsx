@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { priceBag, money } from '../api';
 import { useBag, setQuantity, removeFromBag } from '../bag';
@@ -48,10 +48,19 @@ export default function BagPage({ shop }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, key]);
 
+  /*
+   * The first look is immediate; every change after it waits a moment.
+   *
+   * Each "+" re-prices, and the old request was aborted in the browser but had already been SENT.
+   * Taking one line from one to ten is nine calls to the shop, and the shop counts them: a shopper
+   * adjusting their own bag could be refused by it. A third of a second is below noticing and turns
+   * a run of taps into one request.
+   */
+  const priced = useRef(false);
   useEffect(() => {
     const ac = new AbortController();
-    reprice(ac.signal);
-    return () => ac.abort();
+    const t = window.setTimeout(() => { priced.current = true; reprice(ac.signal); }, priced.current ? 350 : 0);
+    return () => { window.clearTimeout(t); ac.abort(); };
   }, [reprice]);
 
   if (lines.length === 0) {

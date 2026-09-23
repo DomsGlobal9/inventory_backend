@@ -420,7 +420,9 @@ export async function place(clientId: string, input: PlaceInput) {
   const fullAddress = address.includes(pincode) ? address : `${address}\n${pincode}`;
   const token = crypto.randomBytes(24).toString('base64url');
 
-  const salesOrderId = await prisma.$transaction(async (tx) => {
+  let salesOrderId: string;
+  try {
+  salesOrderId = await prisma.$transaction(async (tx) => {
     let customerId: string;
     let phoneOnOrder = phone.value;
 
@@ -507,6 +509,54 @@ export async function place(clientId: string, input: PlaceInput) {
 
     return order.id as string;
   }, { timeout: 30000, maxWait: 15000 });
+  } catch (e: any) {
+    /*
+     * TWO THINGS THAT HAPPEN TO REAL SHOPPERS AND ARE NOT CRASHES.
+     *
+     * Everything thrown out of here that is not an OnlineShopRuleError becomes
+     * "Something went wrong at the shop. Please try again." Both of the following threw exactly
+     * that, and both are ordinary: the first tells a customer to retry an order that actually
+     * succeeded, and the second tells them to retry for a piece that will never come back.
+     */
+
+    /*
+     * (a) THE SAME ORDER, TWICE, AT THE SAME MOMENT -- a double tap, or a slow line and an
+     * impatient thumb. The check at the top of `place` catches a second press that arrives after
+     * the first finished; two presses IN FLIGHT together both pass it, and the loser dies on the
+     * unique key. The order is on the shop's screen either way, so the answer to "place this
+     * order" is the same as it is anywhere else here: the order.
+     *
+     * Read by the key rather than by the error code on purpose -- whatever went wrong locally, a
+     * row under this key means the order is written, and that is what the customer needs to see.
+     */
+    const placed = await prisma.onlineShopOrder.findUnique({
+      where: { clientId_placementKey: { clientId, placementKey } },
+      select: { token: true }
+    }).catch(() => null);
+    if (placed) return summary(clientId, placed.token);
+
+    /*
+     * (b) SOMEBODY ELSE TOOK IT WHILE THIS ONE WAS BEING WRITTEN. The bag was priced against stock
+     * read before the transaction; the hold is taken inside it, under a row lock. Between the two,
+     * the last piece can go -- which is not a fault, it is a shop with one of something and two
+     * people who want it. `reserveStock` says so in the shop's own words ("Insufficient stock:
+     * only 0 of ... free at ..."), which is written for a cashier standing at a till, not for a
+     * stranger on a phone who has just typed out their address.
+     */
+    const outOfStock = e?.details?.code === 'OUT_OF_STOCK'
+      || (e?.statusCode === 409 && /insufficient stock/i.test(String(e?.message ?? '')));
+    if (outOfStock) {
+      const gone = items.find(i => i.variantId === e?.details?.variantId);
+      throw new OnlineShopRuleError(
+        gone
+          ? `${gone.title}${gone.size ? ` (${gone.size})` : ''} has just been bought by someone else. ` +
+            'Take it out of your bag, or ask for fewer.'
+          : 'Something in your bag has just been bought by someone else. Refresh the page and try again.'
+      );
+    }
+
+    throw e;
+  }
 
 
   // Only once the order is really there. Inside the transaction these could tell a customer and a
