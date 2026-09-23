@@ -1370,3 +1370,132 @@ button.slide { cursor: pointer; }
   .sheetin { animation: none; }
   .tryshot .under { transition: none; }
 }
+
+/* ── Fixes from the phone audit ──────────────────────────────────────────────────────── */
+
+/*
+ * Letting the page be as narrow as the phone.
+ *
+ * #root became a flex column so the footer would stop climbing up short pages, which made `main` a
+ * flex item -- and a flex item's min-width defaults to `auto`, so it refuses to shrink below its
+ * own min-content. This page has several horizontal scrollers inside it (the filter rail, the
+ * departments, the "more from this shop" reel) and any one of them could have pushed the whole
+ * page wider than the screen. It does not today; `min-width: 0` is what keeps it that way, and it
+ * is the thing to remember about every flex container: the child has to be ALLOWED to be smaller
+ * than what is inside it.
+ *
+ * overflow-x on the body is a net rather than a fix -- nothing overflows now, and if something
+ * ever does, a customer gets a slightly clipped page instead of one that slides sideways under
+ * their thumb. Checked that it does not break the sticky bar, which it can in some browsers.
+ */
+#root > * { min-width: 0; }
+body { overflow-x: hidden; }
+
+/*
+ * A 7px dot is not something anybody can tap.
+ *
+ * The banner pips were drawn at the size they should LOOK, which is the size they became. The dot
+ * stays small; the button around it is 28px with the dot drawn inside, so a thumb has something to
+ * aim at without the row turning into a line of buttons.
+ */
+.banners .pips { gap: 0; }
+.banners .pips button {
+  width: 28px; height: 28px; padding: 0; border-radius: 50%; background: transparent;
+  display: grid; place-items: center; box-shadow: none;
+}
+.banners .pips button::after {
+  content: ''; display: block; width: 7px; height: 7px; border-radius: 50%;
+  background: rgba(255,255,255,.55); box-shadow: 0 0 3px rgba(0,0,0,.3); transition: all .2s;
+}
+.banners .pips button[data-on='true'] { background: transparent; width: 34px; }
+.banners .pips button[data-on='true']::after { background: #fff; width: 20px; border-radius: 4px; }
+
+/* Links in the footer, far enough apart to hit the right one. */
+.foot li { margin-bottom: 0; }
+.foot li a { display: inline-block; padding: 7px 0; }
+
+/*
+ * The thumbnail rail belongs to a mouse, and to nothing else.
+ *
+ * It was styled only inside the wide-screen block, so on a phone it fell back to an unstyled div:
+ * five full-width photographs stacked on top of each other, 2212px of them, which pushed the price
+ * and the Add to bag button about three THOUSAND pixels down the page. A shopper would have given
+ * up long before reaching the thing they came to press.
+ *
+ * On a phone the photographs are swiped and the pips say where you are; there is nothing for
+ * thumbnails to add and no room for them to do it in.
+ */
+.rolls { display: none; }
+@media (min-width: 880px) { .rolls { display: flex; } }
+
+/* Breadcrumbs a thumb can actually hit. */
+.crumbs a { display: inline-block; padding: 6px 0; }
+.alsoin .head a { display: inline-block; padding: 6px 0 6px 10px; }
+
+/*
+ * 16px on every box somebody types into, on a phone.
+ *
+ * Safari on iOS zooms the whole page in when a field with text smaller than 16px takes focus, and
+ * then leaves it zoomed -- so tapping "Your name" on a checkout throws the layout sideways and the
+ * customer has to pinch back out to carry on. Nothing about the design wanted 15px here; it was
+ * inherited, and the cost of it is a checkout that feels broken on half the phones in India.
+ */
+@media (max-width: 719px) {
+  .ask input, .ask textarea, .find input, .seek input, .codebox input, .verify input {
+    font-size: 16px;
+  }
+}
+
+/* ── The footer's logo, and the product's frame ──────────────────────────────────────── */
+
+/*
+ * Same fault as the bar had: a shop's logo is usually a WORDMARK, and `object-fit: cover` in a
+ * 40x40 square showed the middle third of it with the rest cut off. Contained, and allowed to be
+ * wider than it is tall.
+ */
+.foot .who .mark {
+  width: auto; height: 38px; max-width: 150px;
+  object-fit: contain; object-position: left center; border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+/*
+ * The photographs, framed.
+ *
+ * Full-bleed on a phone was raw: the picture ran into the edges of the screen and into the words
+ * under it, so nothing said where the product began. A frame -- the page's own gutter around it,
+ * the same corner radius as everything else, and a shadow that lifts it off the page -- makes it
+ * read as a photograph of something being sold rather than as a background.
+ *
+ * And the thumbnails come back on a phone, lying down. They were hidden because they stacked
+ * vertically and pushed the page to three thousand pixels; as a row under the picture they do
+ * what they are for -- say how many photographs there are and let somebody jump between them.
+ */
+.gallery { margin: 0; }
+
+.frame {
+  border-radius: var(--r);
+  overflow: hidden;
+  box-shadow: var(--lift);
+  background: var(--soft);
+}
+.swipe > figure { border-radius: 0; }
+
+/* Thumbnails: a row under the picture on a phone, a column beside it on a laptop. */
+@media (max-width: 879px) {
+  .rolls {
+    display: flex; gap: 8px; margin-top: 10px;
+    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+  }
+  .rolls::-webkit-scrollbar { display: none; }
+  .rolls button {
+    flex: 0 0 auto; width: 56px; padding: 0; aspect-ratio: 3 / 4; scroll-snap-align: start;
+    border: 1.5px solid transparent; border-radius: 9px; overflow: hidden;
+    background: var(--soft); cursor: pointer;
+  }
+  .rolls button img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .rolls button[aria-selected='true'] { border-color: var(--ink); }
+  /* With a strip to tap, the pips would be saying the same thing twice. */
+  .gallery[data-many='true'] .pips { display: none; }
+}
