@@ -833,3 +833,96 @@ button.slide { cursor: pointer; }
 
 /* The count belongs with the products it counts, not floating between two sections. */
 .count { margin: 2px 0 14px; }
+
+/* ── A page that fills the window, so the footer stops climbing ──────────────────────── */
+
+/*
+ * A shop with four pieces made a page shorter than the window, and the footer came up to meet the
+ * last row -- which reads as the page having failed to load the rest. The body becomes a column,
+ * the main part takes whatever is left over, and the footer sits where a footer should.
+ */
+#root { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+.grow { flex: 1 0 auto; }
+.foot { flex: 0 0 auto; }
+
+/* ── A bar with a bit more presence ──────────────────────────────────────────────────── */
+
+/*
+ * On a laptop the bar was 58px of thin line with a small mark in it -- the shop's own name, which
+ * is the one thing on the page that belongs to them, read as the smallest thing on it. Taller,
+ * with a bigger mark and the name given its proper size. The phone keeps the short bar, where
+ * every pixel of height is a pixel of saree nobody can see.
+ */
+@media (min-width: 720px) {
+  :root { --bar: 76px; }
+  .brand .mark { width: 46px; height: 46px; border-radius: 12px; }
+  .brand .name { font-size: 20px; letter-spacing: -.02em; }
+  .brand .sub { font-size: 11.5px; }
+  .bar .row { gap: 16px; }
+  .find { height: 44px; font-size: 15px; max-width: 560px; }
+  .icon { width: 44px; height: 44px; }
+  .depts { padding-bottom: 12px; gap: 6px; }
+  .depts button { font-size: 14px; padding: 8px 14px; }
+}
+
+/* ── Moving the banners by hand, where there is no thumb ─────────────────────────────── */
+
+.banners .pips { display: flex; gap: 6px; justify-content: center; }
+.banners .pips button {
+  width: 7px; height: 7px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+  background: rgba(255,255,255,.55); box-shadow: 0 0 3px rgba(0,0,0,.25); transition: all .2s;
+}
+.banners .pips button[data-on='true'] { background: #fff; width: 20px; border-radius: 4px; }
+
+/* Arrows only where there is a pointer to use them. Named `arrow`, not `nudge`: the bag already
+   has a `.nudge` -- the "add a little more for free delivery" line -- and turning that into a
+   38px circle was a collision waiting to happen. */
+.arrow {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 38px; height: 38px; border: 0; border-radius: 50%; cursor: pointer;
+  display: none; place-items: center;
+  background: rgba(255,255,255,.88); color: #16181d;
+  box-shadow: 0 2px 10px rgba(0,0,0,.14);
+}
+.arrow.back { left: 22px; }
+.arrow.on { right: 22px; }
+.arrow:hover { background: #fff; }
+@media (hover: hover) and (min-width: 720px) {
+  .banners:hover .arrow { display: grid; }
+}
+
+/* ── The small drawings ──────────────────────────────────────────────────────────────── */
+
+.say .art { display: flex; justify-content: center; margin-bottom: 4px; color: var(--faint); }
+.motion { overflow: visible; }
+
+/* An empty bag, swaying as though just put down. */
+@keyframes sway { 0%, 100% { transform: rotate(-3deg) } 50% { transform: rotate(3deg) } }
+.motion.sway { transform-origin: 48px 22px; animation: sway 3.2s ease-in-out infinite; }
+@keyframes breathe-dot { 0%, 100% { opacity: .2 } 50% { opacity: .55 } }
+.motion.sway .spark { animation: breathe-dot 2.4s ease-in-out infinite; }
+
+/* A tick that draws itself once, inside a ring that settles. */
+@keyframes draw { to { stroke-dashoffset: 0 } }
+@keyframes settle { 0% { transform: scale(.82); opacity: 0 } 60% { transform: scale(1.04) } 100% { transform: scale(1); opacity: .28 } }
+.motion .draw { stroke-dasharray: 40; stroke-dashoffset: 40; animation: draw .45s .18s ease-out forwards; }
+.motion .ring { transform-origin: 32px 32px; animation: settle .5s ease-out both; }
+
+/* A magnifier sweeping over nothing. */
+@keyframes sweep { 0%, 100% { transform: translate(0, 0) } 50% { transform: translate(5px, -4px) } }
+.motion.sweep { animation: sweep 2.8s ease-in-out infinite; }
+
+/* Three dots, for the seconds a try-on takes. */
+.motion.dots { display: inline-flex; gap: 4px; vertical-align: middle; margin-left: 3px; }
+.motion.dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .3; }
+@keyframes hop { 0%, 80%, 100% { opacity: .25; transform: translateY(0) } 40% { opacity: .9; transform: translateY(-3px) } }
+.motion.dots i { animation: hop 1.1s ease-in-out infinite; }
+.motion.dots i:nth-child(2) { animation-delay: .15s; }
+.motion.dots i:nth-child(3) { animation-delay: .3s; }
+
+/* Anyone who asked their device for less motion gets the drawing, still. */
+@media (prefers-reduced-motion: reduce) {
+  .motion, .motion * { animation: none !important; }
+  .motion .draw { stroke-dashoffset: 0; }
+  .motion .ring { opacity: .28; transform: none; }
+}

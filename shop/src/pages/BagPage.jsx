@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { priceBag, money } from '../api';
 import { useBag, setQuantity, removeFromBag } from '../bag';
 import { Say, Problem } from '../components/States';
+import { EmptyBag } from '../components/Motion';
 
 /**
  * The bag.
@@ -26,7 +27,9 @@ export default function BagPage({ shop }) {
   const reprice = useCallback((signal) => {
     if (lines.length === 0) { setState({ loading: false, error: null, bag: null }); return; }
     setState(s => ({ ...s, loading: true, error: null }));
-    priceBag(slug, lines.map(l => ({ variantCode: l.variantCode, quantity: l.quantity })), { signal })
+    // No codes on the bag page -- they are typed at the checkout -- but the argument has to be
+    // there, or the abort signal lands in its place and leaving the page cancels nothing.
+    priceBag(slug, lines.map(l => ({ variantCode: l.variantCode, quantity: l.quantity })), [], { signal })
       .then(bag => setState({ loading: false, error: null, bag }))
       .catch(e => { if (e?.name !== 'AbortError') setState({ loading: false, error: e, bag: null }); });
     // `key` rather than `lines`: the same bag in a new array should not re-price.
@@ -41,7 +44,7 @@ export default function BagPage({ shop }) {
 
   if (lines.length === 0) {
     return (
-      <Say title="Your bag is empty"
+      <Say title="Your bag is empty" art={<EmptyBag />}
         action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
         Anything you add is kept here until you order it, even if you close the page.
       </Say>

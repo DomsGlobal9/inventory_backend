@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { priceBag, placeOrder, sendCode, checkCode, money } from '../api';
 import { useBag, emptyBag, placementKey, clearPlacementKey } from '../bag';
 import { Say, Problem } from '../components/States';
+import { EmptyBag } from '../components/Motion';
 
 /**
  * Where a customer actually buys.
@@ -73,7 +74,7 @@ export default function CheckoutPage({ shop }) {
 
   if (lines.length === 0) {
     return (
-      <Say title="Your bag is empty"
+      <Say title="Your bag is empty" art={<EmptyBag />}
         action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
         Put something in it and you can order from here.
       </Say>

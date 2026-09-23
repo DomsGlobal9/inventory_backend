@@ -9,9 +9,12 @@ import React from 'react';
  * never ends teaches a customer that the shop is broken.
  */
 
-export function Say({ title, children, action }) {
+export function Say({ title, children, action, art }) {
   return (
     <div className="say">
+      {/* A small drawing above the words, where one helps. Optional on purpose: most of these
+          screens are better plain, and an animation on every refusal becomes noise. */}
+      {art ? <div className="art">{art}</div> : null}
       <h2>{title}</h2>
       {children ? <p>{children}</p> : null}
       {action}

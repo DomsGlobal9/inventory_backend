@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { getOrder, cancelOrder, money, askOnWhatsApp } from '../api';
 import { Problem, Say } from '../components/States';
+import { Landed } from '../components/Motion';
 
 /**
  * The customer's own order.
@@ -94,11 +95,7 @@ export default function OrderPage({ shop }) {
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M8 8l8 8M16 8l-8 8" strokeLinecap="round" />
             </svg>
-          ) : (
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-              <path d="m5 12.5 4.5 4.5L19 7.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          )}
+          ) : <Landed />}
         </div>
         <h1>{said.title}</h1>
         <p>{said.note}</p>

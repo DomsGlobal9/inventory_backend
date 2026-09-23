@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { getProducts, money } from '../api';
 import { GridSkeleton, Problem, Say } from '../components/States';
+import { NoMatch } from '../components/Motion';
 
 /**
  * The shop, as a customer sees it after tapping a link in WhatsApp.
@@ -189,7 +190,7 @@ export default function ShopHome({ slug, shop }) {
       {state.data && !state.error ? (
         total === 0 ? (
           chosen.length ? (
-            <Say title="Nothing matched that"
+            <Say title="Nothing matched that" art={<NoMatch />}
               action={<button className="go quiet" style={{ flex: '0 0 auto' }} onClick={() => setParams(new URLSearchParams())}>Show everything</button>}>
               Try a shorter word, or have a look at everything {shop?.name || 'the shop'} has.
             </Say>

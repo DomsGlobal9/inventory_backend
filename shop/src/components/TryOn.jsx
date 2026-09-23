@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { tryOn } from '../api';
+import { Working } from '../components/Motion';
 
 /**
  * "See it on you."
@@ -87,7 +88,7 @@ export default function TryOn({ slug, product, onClose }) {
                 {busy ? 'Putting it on you…' : 'See it on me'}
               </button>
             </div>
-            {busy ? <p className="tiny">This takes a few seconds.</p> : null}
+            {busy ? <p className="tiny">Putting it on you <Working /></p> : null}
           </>
         ) : (
           <>

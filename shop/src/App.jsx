@@ -80,7 +80,7 @@ function Shop({ page }) {
 
       {page === 'home' ? <Banners slug={slug} banners={banners} /> : null}
 
-      <main className="wrap">
+      <main className="wrap grow">
         {page === 'product' ? <ProductPage slug={slug} shop={shop} />
           : page === 'bag' ? <BagPage shop={shop} />
           : page === 'checkout' ? <CheckoutPage shop={shop} />

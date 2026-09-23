@@ -27,5 +27,14 @@ export const createImageSchema = z.object({
 export const updateImageSchema = z.object({
   altText: z.string().optional(),
   isPrimary: z.boolean().optional(),
-  orderIndex: z.number().int().optional()
+  orderIndex: z.number().int().optional(),
+  /*
+   * Moving a photograph between "shown in the shop" and "kept as a reference".
+   *
+   * A product whose views Try-On generated keeps the flat-lay it was generated from as
+   * RAW_UPLOAD, and the shop shows only COVER and GALLERY -- so five photographs here are four
+   * online, correctly. A merchant who wants that fifth one shown after all had no way to say so:
+   * the type could be set when a photograph was created and never afterwards.
+   */
+  imageType: z.nativeEnum(ProductImageType).optional()
 });
