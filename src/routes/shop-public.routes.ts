@@ -52,9 +52,18 @@ router.get('/:slug', async (req: Request, res: Response) => {
 router.get('/:slug/products', async (req: Request, res: Response) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') return notOpen(res, shop.state, (shop as { name?: string }).name);
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
   const page = await onlineShop.publicProducts(shop, {
-    cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
-    limit: Number(req.query.limit) || undefined
+    q: str(req.query.q),
+    category: str(req.query.category),
+    fabric: str(req.query.fabric),
+    dressType: str(req.query.dressType),
+    minPrice: num(req.query.minPrice),
+    maxPrice: num(req.query.maxPrice),
+    sort: str(req.query.sort),
+    page: num(req.query.page),
+    limit: num(req.query.limit)
   });
   res.json({ success: true, data: page });
 });

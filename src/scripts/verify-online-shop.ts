@@ -69,6 +69,31 @@ async function main() {
   const store = await prisma.stockLocation.create({ data: { clientId: SHOP, name: 'Main Store', code: 'MAIN', type: 'STORE', active: true } });
   const godown = await prisma.stockLocation.create({ data: { clientId: SHOP, name: 'Godown', code: 'GD', type: 'WAREHOUSE', active: true } });
   const theirs = await prisma.stockLocation.create({ data: { clientId: OTHER, name: 'Theirs', code: 'TH', type: 'STORE', active: true } });
+  // Real pieces to browse, so search, filters and sorting are tested against a catalogue rather
+  // than an empty one. Prices are far apart so "cheapest first" cannot pass by luck.
+  const pieces = [
+    { code: 'OS-SAREE-1', title: 'Kanchipuram Silk Saree', fabric: 'Silk',   dress: 'Saree', price: 12000, colour: 'Maroon' },
+    { code: 'OS-SAREE-2', title: 'Mysore Crepe Saree',     fabric: 'Crepe',  dress: 'Saree', price: 6400,  colour: 'Green'  },
+    { code: 'OS-KURTI-1', title: 'Cotton Kurti',           fabric: 'Cotton', dress: 'Kurti', price: 1450,  colour: 'Blue'   }
+  ];
+  for (const [i, piece] of pieces.entries()) {
+    const prod = await prisma.product.create({
+      data: {
+        clientId: SHOP, productCode: piece.code, title: piece.title, slug: `os-${STAMP}-${i}`,
+        category: 'WOMEN', productType: 'READY_TO_WEAR', basePrice: piece.price, status: 'ACTIVE',
+        fabric: piece.fabric, dressType: piece.dress, publishedAt: new Date(Date.now() - i * 60_000)
+      }
+    });
+    const v = await prisma.productVariant.create({
+      data: {
+        clientId: SHOP, productId: prod.id, sku: `${piece.code}-V`, variantCode: `${piece.code}-VC`,
+        size: 'Free Size', colorName: piece.colour, sellingPrice: piece.price, averageCost: 1
+      }
+    });
+    // Stock in the store that sells online, so the pieces are sellable.
+    await prisma.inventoryStock.create({ data: { clientId: SHOP, variantId: v.id, locationId: store.id, quantity: 5, reservedQty: 0 } });
+  }
+
   const u = await prisma.user.create({ data: { clientId: SHOP, email: `owner-${SHOP}@example.com`, name: 'Owner', password: 'unused', status: 'ACTIVE' } });
   await prisma.userRole.create({ data: { userId: u.id, roleId: roles.SUPER_ADMIN } });
   const own = axios.create({
@@ -127,6 +152,42 @@ async function main() {
 
   const list = await http('/shop/lakshmi-silks/products');
   check('the catalogue answers', list.status === 200 && Array.isArray(list.data.data.products), list.data);
+
+  console.log('\nB. BROWSING THE CATALOGUE');
+  const all = await http('/shop/lakshmi-silks/products');
+  check('every piece is offered', all.data.data.total === 3, all.data.data);
+  check('newest first by default', all.data.data.products[0]?.title === 'Kanchipuram Silk Saree', all.data.data.products.map((p: any) => p.title));
+
+  const cheapest = await http('/shop/lakshmi-silks/products?sort=PRICE_LOW');
+  check('cheapest first when asked', cheapest.data.data.products[0]?.title === 'Cotton Kurti', cheapest.data.data.products.map((p: any) => p.title));
+  const dearest = await http('/shop/lakshmi-silks/products?sort=PRICE_HIGH');
+  check('dearest first when asked', dearest.data.data.products[0]?.title === 'Kanchipuram Silk Saree');
+  check('a sort nobody offers falls back, it does not break',
+    (await http('/shop/lakshmi-silks/products?sort=CHEAPEST_PLEASE')).status === 200);
+
+  const searched = await http('/shop/lakshmi-silks/products?q=kanchipuram');
+  check('searching by name finds it', searched.data.data.total === 1 && searched.data.data.products[0].title === 'Kanchipuram Silk Saree', searched.data.data);
+  check('searching does not care about capitals', (await http('/shop/lakshmi-silks/products?q=KANCHIPURAM')).data.data.total === 1);
+  check('searching by fabric works', (await http('/shop/lakshmi-silks/products?q=cotton')).data.data.total === 1);
+  check('searching by colour works (it is on the variant, not the product)',
+    (await http('/shop/lakshmi-silks/products?q=maroon')).data.data.total === 1);
+  check('a search that matches nothing says so, plainly',
+    (await http('/shop/lakshmi-silks/products?q=zzzznothing')).data.data.total === 0);
+
+  check('filtering by fabric works', (await http('/shop/lakshmi-silks/products?fabric=Silk')).data.data.total === 1);
+  check('filtering by what it is works', (await http('/shop/lakshmi-silks/products?dressType=Saree')).data.data.total === 2);
+  const priced = await http('/shop/lakshmi-silks/products?minPrice=2000&maxPrice=7000');
+  check('filtering by price works', priced.data.data.total === 1 && priced.data.data.products[0].title === 'Mysore Crepe Saree', priced.data.data);
+
+  const paged = await http('/shop/lakshmi-silks/products?limit=2&page=1');
+  check('a page holds what was asked for, and says there is more', paged.data.data.products.length === 2 && paged.data.data.hasMore === true, paged.data.data);
+  const page2 = await http('/shop/lakshmi-silks/products?limit=2&page=2');
+  check('the second page holds the rest and says so', page2.data.data.products.length === 1 && page2.data.data.hasMore === false, page2.data.data);
+  check('a page past the end is empty, not an error', (await http('/shop/lakshmi-silks/products?limit=2&page=99')).data.data.products.length === 0);
+
+  const one = await http('/shop/lakshmi-silks/products/OS-KURTI-1');
+  check('one product answers at its own address', one.status === 200 && one.data.data.title === 'Cotton Kurti', one.data);
+  check('a product nobody has says so', (await http('/shop/lakshmi-silks/products/NO-SUCH-THING')).status === 404);
 
   // ── X ─────────────────────────────────────────────────────────────────────────────────
   console.log('\nX. WHAT MUST NEVER LEAK');

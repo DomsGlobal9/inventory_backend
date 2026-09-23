@@ -241,28 +241,48 @@ export async function publicShop(slugRaw: unknown): Promise<
  * and a merchant's own website answer from one place and cannot drift apart. What this adds is the
  * shop's own choices: only its online locations, and whether a sold-out piece is hidden.
  */
+/**
+ * The shop's catalogue as a shopper browses it: search, filters, sorting, page by page.
+ *
+ * Built on the catalogue service's browse query rather than reading products here, so the online
+ * shop and a merchant's own website answer from one place. What this adds is the shop's own
+ * choices -- only its online locations, and whether a sold-out piece is hidden.
+ */
 export async function publicProducts(
   shop: { clientId: string; locationIds: string[]; hideOutOfStock: boolean },
-  opts: { cursor?: string; limit?: number } = {}
+  opts: {
+    q?: string; category?: string; fabric?: string; dressType?: string;
+    minPrice?: number; maxPrice?: number; sort?: string; page?: number; limit?: number;
+  } = {}
 ) {
   const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds };
-  const page = await storefrontCatalogueService.listProducts(scope, {
-    cursor: opts.cursor,
-    limit: Math.min(Math.max(Number(opts.limit) || 24, 1), 48)
-  });
+  const sort = ['NEW', 'PRICE_LOW', 'PRICE_HIGH', 'NAME'].includes(String(opts.sort))
+    ? (opts.sort as 'NEW' | 'PRICE_LOW' | 'PRICE_HIGH' | 'NAME')
+    : 'NEW';
 
-  const products = (page.products ?? []).map(p => ({
+  const page = await storefrontCatalogueService.browseProducts(scope, { ...opts, sort });
+
+  const products = page.products.map(forShopper)
+    .filter(p => (shop.hideOutOfStock ? p.variants.some(v => v.sellable) : true));
+
+  return { products, page: page.page, limit: page.limit, total: page.total, hasMore: page.hasMore };
+}
+
+/**
+ * What a shopper is allowed to see of a product.
+ *
+ * A shopper is told whether they can buy a piece, never how many are left: a stock count is the
+ * shop's business, and "only 2 left" is a decision for the shop to make, not a leak.
+ */
+function forShopper(p: Awaited<ReturnType<typeof storefrontCatalogueService.getProduct>> & object) {
+  return {
     ...p,
     variants: p.variants.map(v => ({
       sku: v.sku, variantCode: v.variantCode, size: v.size, colour: v.colour,
       price: v.price, compareAtPrice: v.compareAtPrice, currency: v.currency,
-      // A shopper is told whether they can buy it, never how many are left: a stock count is the
-      // shop's business, and "only 2 left" is a decision for the shop to make, not a leak.
       sellable: v.stock.sellable
     }))
-  })).filter(p => (shop.hideOutOfStock ? p.variants.some(v => v.sellable) : true));
-
-  return { products, nextCursor: page.nextCursor ?? null };
+  };
 }
 
 /** One product, by the code its page is addressed with. */
@@ -274,13 +294,5 @@ export async function publicProduct(
   if (!code) throw fail(400, 'Which product is missing.');
   const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds };
   const p = await storefrontCatalogueService.getProduct(scope, code);
-  if (!p) return null;
-  return {
-    ...p,
-    variants: p.variants.map(v => ({
-      sku: v.sku, variantCode: v.variantCode, size: v.size, colour: v.colour,
-      price: v.price, compareAtPrice: v.compareAtPrice, currency: v.currency,
-      sellable: v.stock.sellable
-    }))
-  };
+  return p ? forShopper(p) : null;
 }

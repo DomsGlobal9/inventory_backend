@@ -186,6 +186,45 @@ function toStorefrontVariant(
   };
 }
 
+/**
+ * Everything a product page needs, in one place.
+ *
+ * The sync feed, the shopper's browse and the single-product read must all return the same shape:
+ * when the select was written out at each call site they drifted, and a field added for one was
+ * quietly missing from the others.
+ */
+const PRODUCT_SELECT = {
+  id: true, productCode: true, title: true, description: true,
+  category: true, productType: true, dressType: true, fabric: true, brand: true,
+  basePrice: true, publishedAt: true, createdAt: true, updatedAt: true,
+  images: {
+    select: { url: true, isPrimary: true, orderIndex: true },
+    where: { imageType: { in: ['COVER', 'GALLERY'] as const } },
+    orderBy: { orderIndex: 'asc' as const }
+  },
+  variants: { select: VARIANT_SELECT }
+} satisfies Prisma.ProductSelect;
+
+type ProductRow = Prisma.ProductGetPayload<{ select: typeof PRODUCT_SELECT }>;
+
+/** One row, as everything outside this service sees it. */
+function toStorefrontProduct(p: ProductRow, scoped: Set<string>, currency: string): StorefrontProduct {
+  return {
+    productCode: p.productCode,
+    title: p.title,
+    description: p.description ?? null,
+    category: String(p.category),
+    productType: String(p.productType),
+    dressType: p.dressType ?? null,
+    fabric: p.fabric ?? null,
+    brand: p.brand ?? null,
+    publishedAt: p.publishedAt ? p.publishedAt.toISOString() : null,
+    updatedAt: p.updatedAt.toISOString(),
+    images: p.images.map(i => ({ url: i.url, isPrimary: i.isPrimary, position: i.orderIndex })),
+    variants: p.variants.map(v => toStorefrontVariant(v, p.basePrice, scoped, currency))
+  };
+}
+
 export class StorefrontCatalogueService {
   /**
    * The shop's currency, stated on every price so a receiver never has to assume.
@@ -239,36 +278,13 @@ export class StorefrontCatalogueService {
       where,
       orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
       take: limit + 1, // one extra, purely to know whether another page exists
-      select: {
-        id: true, productCode: true, title: true, description: true,
-        category: true, productType: true, dressType: true, fabric: true, brand: true,
-        basePrice: true, publishedAt: true, updatedAt: true,
-        images: {
-          select: { url: true, isPrimary: true, orderIndex: true },
-          where: { imageType: { in: ['COVER', 'GALLERY'] } },
-          orderBy: { orderIndex: 'asc' }
-        },
-        variants: { select: VARIANT_SELECT }
-      }
+      select: PRODUCT_SELECT
     });
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
 
-    const products: StorefrontProduct[] = page.map(p => ({
-      productCode: p.productCode,
-      title: p.title,
-      description: p.description ?? null,
-      category: String(p.category),
-      productType: String(p.productType),
-      dressType: p.dressType ?? null,
-      fabric: p.fabric ?? null,
-      brand: p.brand ?? null,
-      publishedAt: p.publishedAt ? p.publishedAt.toISOString() : null,
-      updatedAt: p.updatedAt.toISOString(),
-      images: p.images.map(i => ({ url: i.url, isPrimary: i.isPrimary, position: i.orderIndex })),
-      variants: p.variants.map(v => toStorefrontVariant(v, p.basePrice, scoped, currency))
-    }));
+    const products: StorefrontProduct[] = page.map(p => toStorefrontProduct(p, scoped, currency));
 
     const last = page[page.length - 1];
     return {
@@ -277,6 +293,85 @@ export class StorefrontCatalogueService {
       // Present even on the last page: a storefront stores it and passes it back later as
       // `since` to ask what has changed, which is how reconciliation and recovery work.
       nextCursor: last ? encodeCursor(last.updatedAt, last.id) : (opts.cursor ?? null)
+    };
+  }
+
+  /**
+   * The catalogue as a SHOPPER browses it, for the shop's own online shop.
+   *
+   * Deliberately not `listProducts` with extra arguments. That one is a synchronisation feed: it
+   * is ordered by `updatedAt` so a website can page through with a cursor and later ask "what
+   * changed since". Ordered that way, a shopper's first page is whatever the shop last edited,
+   * which means nothing to them. So this asks a different question of the same data -- and shares
+   * everything that must not diverge: which products are eligible, the variant shape, the prices
+   * and stock for the scope, and the mapping.
+   *
+   * Offset paging rather than a cursor, because a shopper jumps to page 3 and back, and the set
+   * they are paging is filtered and sorted by their own choices, not by a changing clock.
+   */
+  async browseProducts(scope: CatalogueScope, opts: {
+    q?: string; category?: string; fabric?: string; dressType?: string;
+    minPrice?: number; maxPrice?: number;
+    sort?: 'NEW' | 'PRICE_LOW' | 'PRICE_HIGH' | 'NAME';
+    page?: number; limit?: number;
+  } = {}) {
+    const limit = Math.min(Math.max(opts.limit ?? 24, 1), 48);
+    const page = Math.max(Number(opts.page) || 1, 1);
+    const [locationIds, currency] = await Promise.all([
+      resolveLocationIds(scope),
+      this.getCurrency(scope.clientId)
+    ]);
+    const scoped = new Set(locationIds);
+
+    const q = (opts.q ?? '').trim().slice(0, 60);
+    const where: Prisma.ProductWhereInput = {
+      clientId: scope.clientId,
+      ...ELIGIBLE_PRODUCT,
+      ...(opts.category ? { category: opts.category as never } : {}),
+      ...(opts.fabric ? { fabric: { equals: opts.fabric, mode: 'insensitive' } } : {}),
+      ...(opts.dressType ? { dressType: { equals: opts.dressType, mode: 'insensitive' } } : {}),
+      ...(opts.minPrice != null || opts.maxPrice != null
+        ? { basePrice: { ...(opts.minPrice != null ? { gte: opts.minPrice } : {}), ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {}) } }
+        : {}),
+      // What a shopper actually types: a name, a fabric, a colour, or the code off a tag.
+      ...(q
+        ? {
+            OR: [
+              { title: { contains: q, mode: 'insensitive' } },
+              { fabric: { contains: q, mode: 'insensitive' } },
+              { dressType: { contains: q, mode: 'insensitive' } },
+              { brand: { contains: q, mode: 'insensitive' } },
+              { productCode: { contains: q, mode: 'insensitive' } },
+              { variants: { some: { colorName: { contains: q, mode: 'insensitive' } } } }
+            ]
+          }
+        : {})
+    };
+
+    const orderBy: Prisma.ProductOrderByWithRelationInput[] =
+      opts.sort === 'PRICE_LOW' ? [{ basePrice: 'asc' }, { id: 'asc' }]
+      : opts.sort === 'PRICE_HIGH' ? [{ basePrice: 'desc' }, { id: 'asc' }]
+      : opts.sort === 'NAME' ? [{ title: 'asc' }, { id: 'asc' }]
+      // Newest first is what a returning customer wants to see, and what "new arrivals" means.
+      : [{ publishedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'asc' }];
+
+    const [total, rows] = await Promise.all([
+      prisma.product.count({ where }),
+      prisma.product.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
+        select: PRODUCT_SELECT
+      })
+    ]);
+
+    return {
+      products: rows.map(p => toStorefrontProduct(p, scoped, currency)),
+      page,
+      limit,
+      total,
+      hasMore: page * limit < total
     };
   }
 
@@ -293,34 +388,10 @@ export class StorefrontCatalogueService {
 
     const p = await prisma.product.findFirst({
       where: { clientId: scope.clientId, productCode, ...ELIGIBLE_PRODUCT },
-      select: {
-        productCode: true, title: true, description: true,
-        category: true, productType: true, dressType: true, fabric: true, brand: true,
-        basePrice: true, publishedAt: true, updatedAt: true,
-        images: {
-          select: { url: true, isPrimary: true, orderIndex: true },
-          where: { imageType: { in: ['COVER', 'GALLERY'] } },
-          orderBy: { orderIndex: 'asc' }
-        },
-        variants: { select: VARIANT_SELECT }
-      }
+      select: PRODUCT_SELECT
     });
     if (!p) return null;
-
-    return {
-      productCode: p.productCode,
-      title: p.title,
-      description: p.description ?? null,
-      category: String(p.category),
-      productType: String(p.productType),
-      dressType: p.dressType ?? null,
-      fabric: p.fabric ?? null,
-      brand: p.brand ?? null,
-      publishedAt: p.publishedAt ? p.publishedAt.toISOString() : null,
-      updatedAt: p.updatedAt.toISOString(),
-      images: p.images.map(i => ({ url: i.url, isPrimary: i.isPrimary, position: i.orderIndex })),
-      variants: p.variants.map(v => toStorefrontVariant(v, p.basePrice, scoped, currency))
-    };
+    return toStorefrontProduct(p, scoped, currency);
   }
 
   /**
