@@ -278,19 +278,6 @@ export default function ProductPage({ slug, shop }) {
             </p>
           ) : null}
 
-          {/* Offered only where the shop switched it on and the platform can do it, so the button
-              never exists unless pressing it would work. */}
-          {shop?.tryOn && photos.length > 0 ? (
-            <button type="button" className="tryonbtn" onClick={() => setTrying(true)}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                <path d="M9 4 5 6v5h2.5v7h9v-7H19V6l-4-2" strokeLinejoin="round" />
-                <path d="M9 4a3 3 0 0 0 6 0" strokeLinecap="round" />
-              </svg>
-              See it on you
-              <em>free</em>
-            </button>
-          ) : null}
-
           {choices.colours.length > 1 && (
             <div className="pick">
               <p>Colour{colour ? <>: <b>{colour}</b></> : ''}</p>
@@ -354,6 +341,32 @@ export default function ProductPage({ slug, shop }) {
               </p>
             )}
           </div>
+
+          {/*
+            Under the buttons, not floating above the sizes.
+            
+            On its own it was an outlined pill with nothing to relate to, and its FREE badge
+            outweighed its own label. Here it is what it actually is: the thing to do BEFORE
+            deciding, grouped with the deciding, and plainly not a third Buy now.
+          */}
+          {shop?.tryOn && photos.length > 0 ? (
+            <button type="button" className="tryonbtn" onClick={() => setTrying(true)}>
+              <span className="mark">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                  <path d="M9 4 5 6v5h2.5v7h9v-7H19V6l-4-2" strokeLinejoin="round" />
+                  <path d="M9 4a3 3 0 0 0 6 0" strokeLinecap="round" />
+                </svg>
+              </span>
+              <span className="words">
+                See it on you
+                <small>Put this piece on your own photo</small>
+              </span>
+              <em>Free</em>
+              <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="m9.5 5 7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          ) : null}
 
           {/* What the shop promises about getting it there -- its own terms, read from its own
               settings, so a shop that changes them changes this. */}
