@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { getOrder, money } from '../api';
 import { Say } from '../components/States';
+import { EmptyOrders } from '../components/Motion';
 
 /**
  * The orders placed from this phone, at this shop.
@@ -47,7 +48,7 @@ export default function MyOrdersPage({ shop }) {
 
   if (!rows.length) {
     return (
-      <Say title="No orders from this phone yet"
+      <Say title="No orders from this phone yet" art={<EmptyOrders />}
         action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
         Orders you place here are kept on this phone. If you ordered from another phone, open the
         link {shop?.name || 'the shop'} sent you on WhatsApp.

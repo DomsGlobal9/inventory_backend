@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { getProducts, money } from '../api';
 import { GridSkeleton, Problem, Say } from '../components/States';
 import { NoMatch } from '../components/Motion';
+import Shot from '../components/Shot';
 
 /**
  * The shop, as a customer sees it after tapping a link in WhatsApp.
@@ -53,11 +54,10 @@ function Tile({ slug, p }) {
 
   return (
     <Link className={`tile${sellable ? '' : ' gone'}`} to={`/${slug}/p/${encodeURIComponent(p.productCode)}`}>
-      <div className="shot">
+      <Shot src={photo?.url} alt={p.title}>
         {off ? <span className="tag">{off}% off</span> : null}
         {!sellable ? <span className="tag out">Sold out</span> : null}
-        {photo ? <img src={photo.url} alt={p.title} loading="lazy" decoding="async" /> : null}
-      </div>
+      </Shot>
       <h2>{p.title}</h2>
       <p className="sub">{[p.fabric, p.dressType].filter(Boolean).join(' · ') || ' '}</p>
       {from != null && (
@@ -86,30 +86,85 @@ export default function ShopHome({ slug, shop }) {
   const [nonce, setNonce] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
 
+  /*
+   * Everything shown so far, and how far in we are.
+   *
+   * A phone shopper going through sixty sarees should not be turning pages -- they scroll, and the
+   * next lot arrives before they reach the bottom. The filters and the search stay in the ADDRESS,
+   * because that is the part worth forwarding to your sister; how many pages deep somebody has
+   * scrolled is not, and a link that reopened at page four of a scroll would be stranger than one
+   * that starts at the top.
+   */
+  const [shown, setShown] = useState([]);
+  const [deeper, setDeeper] = useState(1);
+  const [fetchingMore, setFetchingMore] = useState(false);
+  const edge = useRef(null);
+
   const q = params.get('q') ?? '';
   const sort = params.get('sort') ?? 'NEW';
   const category = params.get('category') ?? '';
   const fabric = params.get('fabric') ?? '';
   const dressType = params.get('dressType') ?? '';
   const maxPrice = params.get('maxPrice') ?? '';
-  const page = Number(params.get('page')) || 1;
+
+  /* Anything chosen starts the list again from the top. */
+  useEffect(() => { setDeeper(1); setShown([]); }, [slug, q, sort, category, fabric, dressType, maxPrice, nonce]);
 
   useEffect(() => {
     const ac = new AbortController();
-    setState(s => ({ ...s, loading: true, error: null }));
-    getProducts(slug, { q, sort, category, fabric, dressType, maxPrice, page, limit: 24 }, { signal: ac.signal })
-      .then(data => setState({ loading: false, error: null, data }))
-      .catch(e => { if (e?.name !== 'AbortError') setState({ loading: false, error: e, data: null }); });
+    const first = deeper === 1;
+    if (first) setState(s => ({ ...s, loading: true, error: null }));
+    else setFetchingMore(true);
+
+    getProducts(slug, { q, sort, category, fabric, dressType, maxPrice, page: deeper, limit: 24 }, { signal: ac.signal })
+      .then(data => {
+        setState({ loading: false, error: null, data });
+        setShown(was => {
+          if (first) return data.products ?? [];
+          // Guarded against a page arriving twice -- a fast scroll can ask before the last
+          // answer has landed, and a saree shown twice in one grid is a shop that looks broken.
+          const seen = new Set(was.map(p => p.productCode));
+          return [...was, ...(data.products ?? []).filter(p => !seen.has(p.productCode))];
+        });
+        setFetchingMore(false);
+      })
+      .catch(e => {
+        if (e?.name === 'AbortError') return;
+        setFetchingMore(false);
+        if (first) setState({ loading: false, error: e, data: null });
+      });
     return () => ac.abort();
-  }, [slug, q, sort, category, fabric, dressType, maxPrice, page, nonce]);
+  }, [slug, q, sort, category, fabric, dressType, maxPrice, deeper, nonce]);
+
+  /*
+   * The next lot, fetched before the bottom is reached.
+   *
+   * 600px of margin, so on a phone the grid has usually grown by the time a thumb gets there --
+   * the point is that it never feels like waiting. The button below stays, for a keyboard, for a
+   * screen reader, and for the browser where this observer does not exist.
+   */
+  const more = useCallback(() => {
+    if (fetchingMore || !state.data?.hasMore) return;
+    setDeeper(n => n + 1);
+  }, [fetchingMore, state.data?.hasMore]);
+
+  useEffect(() => {
+    const node = edge.current;
+    if (!node || typeof IntersectionObserver !== 'function') return undefined;
+    const eye = new IntersectionObserver(
+      ([e]) => { if (e.isIntersecting) more(); },
+      { rootMargin: '600px 0px' }
+    );
+    eye.observe(node);
+    return () => eye.disconnect();
+  }, [more]);
 
   /** Changing anything goes back to page 1: page 3 of a different search is nonsense. */
   const setParam = (key, value) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value); else next.delete(key);
-    if (key !== 'page') next.delete('page');
+    next.delete('page');
     setParams(next, { replace: key === 'q' });
-    if (key === 'page') window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // The shop's own catalogue, not this page of it.
@@ -201,17 +256,30 @@ export default function ShopHome({ slug, shop }) {
           )
         ) : (
           <>
-            <p className="count">{total === 1 ? '1 piece' : `${total} pieces`}</p>
-            <div className="grid" style={state.loading ? { opacity: .45 } : undefined}>
-              {state.data.products.map(p => <Tile key={p.productCode} slug={slug} p={p} />)}
+            <p className="count">
+              {total === 1 ? '1 piece' : `${total} pieces`}
+              {shown.length < total ? <span> · showing {shown.length}</span> : null}
+            </p>
+            <div className="grid">
+              {shown.map(p => <Tile key={p.productCode} slug={slug} p={p} />)}
+              {/* The shape of the next lot, while it is on its way. */}
+              {fetchingMore ? Array.from({ length: 4 }, (_, i) => (
+                <div key={`more-${i}`} className="tile">
+                  <div className="shot bone" style={{ aspectRatio: '3 / 4' }} />
+                </div>
+              )) : null}
             </div>
-            {(state.data.hasMore || page > 1) && (
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'center', padding: '0 0 36px' }}>
-                <button className="go quiet" style={{ flex: '0 0 auto' }} disabled={page <= 1} onClick={() => setParam('page', String(page - 1))}>Back</button>
-                <span style={{ alignSelf: 'center', color: 'var(--muted)', fontSize: 13 }}>Page {page}</span>
-                <button className="go quiet" style={{ flex: '0 0 auto' }} disabled={!state.data.hasMore} onClick={() => setParam('page', String(page + 1))}>More</button>
-              </div>
-            )}
+
+            {/* What the observer watches for, and what anybody without one can press. */}
+            <div ref={edge} className="edge">
+              {state.data.hasMore ? (
+                <button className="go quiet" style={{ flex: '0 0 auto' }} disabled={fetchingMore} onClick={more}>
+                  {fetchingMore ? 'Fetching…' : 'Show more'}
+                </button>
+              ) : shown.length > 12 ? (
+                <p className="tiny">That is everything {shop?.name || 'this shop'} has online.</p>
+              ) : null}
+            </div>
           </>
         )
       ) : null}

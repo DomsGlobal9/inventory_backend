@@ -1,12 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, useParams, Navigate } from 'react-router-dom';
 import { getShop } from './api';
 import ShopHome from './pages/ShopHome';
 import ProductPage from './pages/ProductPage';
-import BagPage from './pages/BagPage';
-import CheckoutPage from './pages/CheckoutPage';
-import OrderPage from './pages/OrderPage';
-import MyOrdersPage from './pages/MyOrdersPage';
+/*
+ * Split off, because most shoppers never open them.
+ *
+ * Somebody who taps a link in WhatsApp to look at a saree downloads the shop and a product page.
+ * The bag, the checkout, the order and the order list are a third of this app and belong to the
+ * minority who buy -- and they are fetched the instant one of them is needed, on a connection the
+ * shopper has already proved by loading the shop. What arrives first is what they came for.
+ */
+const BagPage = lazy(() => import('./pages/BagPage'));
+const CheckoutPage = lazy(() => import('./pages/CheckoutPage'));
+const OrderPage = lazy(() => import('./pages/OrderPage'));
+const MyOrdersPage = lazy(() => import('./pages/MyOrdersPage'));
 import Nav from './components/Nav';
 import Footer from './components/Footer';
 import Banners from './components/Banners';
@@ -81,12 +89,16 @@ function Shop({ page }) {
       {page === 'home' ? <Banners slug={slug} banners={banners} /> : null}
 
       <main className="wrap grow">
-        {page === 'product' ? <ProductPage slug={slug} shop={shop} />
-          : page === 'bag' ? <BagPage shop={shop} />
-          : page === 'checkout' ? <CheckoutPage shop={shop} />
-          : page === 'order' ? <OrderPage shop={shop} />
-          : page === 'orders' ? <MyOrdersPage shop={shop} />
-          : <ShopHome slug={slug} shop={shop} />}
+        {/* The shape of what is coming, not a spinner: these arrive in a few hundred
+            milliseconds and a spinner for that long is worse than a quiet pause. */}
+        <Suspense fallback={<div className="bone" style={{ height: 320, borderRadius: 14, margin: '20px 0' }} />}>
+          {page === 'product' ? <ProductPage slug={slug} shop={shop} />
+            : page === 'bag' ? <BagPage shop={shop} />
+            : page === 'checkout' ? <CheckoutPage shop={shop} />
+            : page === 'order' ? <OrderPage shop={shop} />
+            : page === 'orders' ? <MyOrdersPage shop={shop} />
+            : <ShopHome slug={slug} shop={shop} />}
+        </Suspense>
       </main>
 
       <Footer shop={shop} />

@@ -101,6 +101,7 @@ export async function settingsFor(clientId: string) {
     minOrderValue: shop?.minOrderValue == null ? null : Number(shop.minOrderValue),
     deliverPincodes: shop?.deliverPincodes ?? [],
     tryOn: shop?.tryOn ?? false,
+    showAllPhotos: shop?.showAllPhotos ?? true,
     /** Whether the platform can do try-on at all, so the screen can say why the switch is off. */
     tryOnAvailable: Boolean(env.SHOPPER_TRYON_GATEWAY_URL),
     returnPolicy: shop?.returnPolicy ?? null,
@@ -153,7 +154,7 @@ export async function save(clientId: string, input: {
   returnPolicy?: unknown; grievanceName?: unknown; grievancePhone?: unknown; grievanceEmail?: unknown;
   acceptsOrders?: unknown; payOnDelivery?: unknown; payOnline?: unknown;
   deliveryFee?: unknown; freeDeliveryAbove?: unknown; minOrderValue?: unknown;
-  deliverPincodes?: unknown; tryOn?: unknown;
+  deliverPincodes?: unknown; tryOn?: unknown; showAllPhotos?: unknown;
 }) {
   const shop = await prisma.onlineShop.findUnique({ where: { clientId } });
   if (!shop) throw new OnlineShopRuleError('Choose a web address for your shop first.');
@@ -242,6 +243,7 @@ export async function save(clientId: string, input: {
       ...(minOrder !== undefined ? { minOrderValue: minOrder } : {}),
       ...(deliverPincodes !== undefined ? { deliverPincodes } : {}),
       ...(input.tryOn !== undefined ? { tryOn: input.tryOn === true } : {}),
+      ...(input.showAllPhotos !== undefined ? { showAllPhotos: input.showAllPhotos === true } : {}),
       returnPolicy: text(input.returnPolicy, 4000),
       grievanceName: text(input.grievanceName, 80),
       grievancePhone: text(input.grievancePhone, 20),
@@ -298,6 +300,8 @@ export async function publicShop(slugRaw: unknown): Promise<
   | { state: 'CLOSED'; name: string }
   | { state: 'OPEN'; clientId: string; name: string; logoUrl: string | null; bannerUrl: string | null;
       accent: string | null; currency: string; hideOutOfStock: boolean; locationIds: string[];
+      /** Whether this shop shows every photograph or only the finished ones. */
+      allPhotos: boolean;
       seller: { name: string | null; address: string | null; gstNumber: string | null };
       /** The shop's own number, for "Ask on WhatsApp". Phase 1 has no basket: this IS the order. */
       whatsapp: string | null;
@@ -345,6 +349,7 @@ export async function publicShop(slugRaw: unknown): Promise<
     currency: settings?.currency ?? 'INR',
     hideOutOfStock: shop.hideOutOfStock,
     locationIds: shop.locationIds,
+    allPhotos: shop.showAllPhotos,
     /*
      * Told to the page rather than worked out there: whether the Add to bag button exists at all
      * is the shop's decision, and a page that guessed would offer a checkout that then refused.
@@ -392,13 +397,15 @@ export async function publicShop(slugRaw: unknown): Promise<
  * choices -- only its online locations, and whether a sold-out piece is hidden.
  */
 export async function publicProducts(
-  shop: { clientId: string; locationIds: string[]; hideOutOfStock: boolean },
+  shop: { clientId: string; locationIds: string[]; hideOutOfStock: boolean; allPhotos?: boolean },
   opts: {
     q?: string; category?: string; fabric?: string; dressType?: string;
     minPrice?: number; maxPrice?: number; sort?: string; page?: number; limit?: number;
   } = {}
 ) {
-  const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds };
+  const scope: CatalogueScope = {
+    clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: shop.allPhotos !== false
+  };
   const sort = ['NEW', 'PRICE_LOW', 'PRICE_HIGH', 'NAME'].includes(String(opts.sort))
     ? (opts.sort as 'NEW' | 'PRICE_LOW' | 'PRICE_HIGH' | 'NAME')
     : 'NEW';
@@ -433,12 +440,14 @@ function forShopper(p: Awaited<ReturnType<typeof storefrontCatalogueService.getP
 
 /** One product, by the code its page is addressed with. */
 export async function publicProduct(
-  shop: { clientId: string; locationIds: string[] },
+  shop: { clientId: string; locationIds: string[]; allPhotos?: boolean },
   productCode: unknown
 ) {
   const code = typeof productCode === 'string' ? productCode.trim() : '';
   if (!code) throw fail(400, 'Which product is missing.');
-  const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds };
+  const scope: CatalogueScope = {
+    clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: shop.allPhotos !== false
+  };
   const p = await storefrontCatalogueService.getProduct(scope, code);
   return p ? forShopper(p) : null;
 }

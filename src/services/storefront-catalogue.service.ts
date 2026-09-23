@@ -22,6 +22,12 @@ import { Prisma } from '@prisma/client';
  */
 
 export interface CatalogueScope {
+  /**
+   * Show every photograph a product has, including the flat-lay references a generated set was
+   * made from. Off unless asked, so the sync feed a merchant's website reads never changes shape
+   * under it.
+   */
+  allPhotos?: boolean;
   clientId: string;
   /** Empty means every location the tenant has. */
   locationIds: string[];
@@ -57,7 +63,7 @@ export interface StorefrontProduct {
   brand: string | null;
   publishedAt: string | null;
   updatedAt: string;
-  images: { url: string; isPrimary: boolean; position: number; variantCode: string | null }[];
+  images: { url: string; isPrimary: boolean; position: number; variantCode: string | null; kind: string }[];
   variants: StorefrontVariant[];
 }
 
@@ -219,8 +225,12 @@ const PRODUCT_SELECT = {
   images: {
     // variantId: a photograph may belong to one colour rather than to the product as a whole,
     // which is how a shop shows the green saree when green is chosen.
-    select: { url: true, isPrimary: true, orderIndex: true, variantId: true },
-    where: { imageType: { in: ['COVER', 'GALLERY'] as const } },
+    //
+    // imageType comes back so the CALLER can decide. RAW_UPLOAD is the flat-lay Try-On generated a
+    // product's views from; a merchant's own website has always received only the finished ones and
+    // still does, while a shop that wants to show everything it uploaded can say so. Filtering here
+    // meant neither could choose.
+    select: { url: true, isPrimary: true, orderIndex: true, variantId: true, imageType: true },
     orderBy: { orderIndex: 'asc' as const }
   },
   variants: { select: VARIANT_SELECT }
@@ -228,9 +238,20 @@ const PRODUCT_SELECT = {
 
 type ProductRow = Prisma.ProductGetPayload<{ select: typeof PRODUCT_SELECT }>;
 
-/** One row, as everything outside this service sees it. */
-function toStorefrontProduct(p: ProductRow, scoped: Set<string>, currency: string): StorefrontProduct {
+/**
+ * One row, as everything outside this service sees it.
+ *
+ * `allPhotos` defaults to false so that every existing caller -- above all a merchant's own website
+ * reading the sync feed -- receives exactly what it always has: the finished photographs only.
+ * The shop's own page passes true unless its owner has said otherwise.
+ */
+function toStorefrontProduct(
+  p: ProductRow, scoped: Set<string>, currency: string, allPhotos = false
+): StorefrontProduct {
   const byVariantId = new Map(p.variants.map(v => [v.id, v.variantCode]));
+  const shown = allPhotos
+    ? p.images
+    : p.images.filter(i => i.imageType === 'COVER' || i.imageType === 'GALLERY');
   return {
     productCode: p.productCode,
     title: p.title,
@@ -246,11 +267,13 @@ function toStorefrontProduct(p: ProductRow, scoped: Set<string>, currency: strin
      * `variantCode` rather than the variant's id, because a receiver outside this building should
      * never need one of our ids to make sense of an answer -- the code is what it already has.
      */
-    images: p.images.map(i => ({
+    images: shown.map(i => ({
       url: i.url,
       isPrimary: i.isPrimary,
       position: i.orderIndex,
-      variantCode: i.variantId ? (byVariantId.get(i.variantId) ?? null) : null
+      variantCode: i.variantId ? (byVariantId.get(i.variantId) ?? null) : null,
+      /** COVER, GALLERY, or the RAW_UPLOAD a generated set was made from. */
+      kind: String(i.imageType)
     })),
     variants: p.variants.map(v => toStorefrontVariant(v, p.basePrice, scoped, currency))
   };
@@ -315,6 +338,11 @@ export class StorefrontCatalogueService {
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
 
+    /*
+     * The sync feed keeps the shape it has always had, deliberately: a merchant's own website is
+     * built against these photographs, and quietly adding flat-lay references to it would put a
+     * garment on a table onto somebody's product page without them asking.
+     */
     const products: StorefrontProduct[] = page.map(p => toStorefrontProduct(p, scoped, currency));
 
     const last = page[page.length - 1];
@@ -398,7 +426,7 @@ export class StorefrontCatalogueService {
     ]);
 
     return {
-      products: rows.map(p => toStorefrontProduct(p, scoped, currency)),
+      products: rows.map(p => toStorefrontProduct(p, scoped, currency, scope.allPhotos === true)),
       page,
       limit,
       total,
@@ -422,7 +450,7 @@ export class StorefrontCatalogueService {
       select: PRODUCT_SELECT
     });
     if (!p) return null;
-    return toStorefrontProduct(p, scoped, currency);
+    return toStorefrontProduct(p, scoped, currency, scope.allPhotos === true);
   }
 
   /**

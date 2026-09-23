@@ -3746,6 +3746,15 @@ model OnlineShop {
   /// The smallest order the shop will send out. Null means it will send any.
   minOrderValue     Decimal? @map("min_order_value") @db.Decimal(10, 2)
 
+  /// Whether a product's every photograph is shown, or only its finished ones.
+  ///
+  /// When Try-On generates a product's views, the flat-lay it was generated from is kept as a
+  /// RAW_UPLOAD reference -- so a product can have five photographs and four "finished" ones. Most
+  /// shops want all five: they took them, and a flat lay of the fabric is worth seeing. A shop that
+  /// would rather show only the studio views turns this off ONCE, here, for its whole catalogue --
+  /// nobody is going to set that on four hundred products one at a time.
+  showAllPhotos Boolean @default(true) @map("show_all_photos")
+
   /// Whether this shop offers "see it on you" on its product pages.
   ///
   /// The shop's choice, because every try-on spends a generation from its own allowance. Off

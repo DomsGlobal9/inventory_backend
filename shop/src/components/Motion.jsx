@@ -1,51 +1,102 @@
 import React from 'react';
 
 /**
- * The little animations: an empty bag that sways, a tick that draws itself, a search that sweeps.
+ * The drawings, and the way they move.
  *
- * WHY THESE ARE DRAWN HERE RATHER THAN LOADED AS LOTTIE FILES. Two reasons, and both are about
- * this shop's customers rather than about taste.
+ * WHY THESE ARE DRAWN HERE RATHER THAN LOADED AS LOTTIE FILES. Two reasons, both about this shop's
+ * customers rather than about taste. The page is served with `default-src 'self'`, so a Lottie
+ * fetched from anywhere is blocked before it starts; and bundling the player costs about 70 KB
+ * gzipped on a 98 KB page whose shoppers are on mid-range Androids over mobile data. These are a
+ * few hundred bytes each, animate on the compositor, and start instantly.
  *
- * The first is the page's own rules. A shop page is served with `default-src 'self'` and
- * `connect-src 'self'`, so a Lottie fetched from lottiefiles.com -- or anywhere else -- is blocked
- * before it starts. Bundling the player instead costs about 70 KB gzipped on a page that is
- * currently 98 KB in total, and nearly every shopper arrives on a mid-range Android over an Indian
- * mobile network, having tapped a link inside WhatsApp. Doubling the page so an empty bag can
- * wobble is not a trade worth making for them.
+ * They are built the way a Lottie would be: several parts, each with its own timing, moving
+ * against each other. A single element rocking back and forth reads as a loading spinner; a bag
+ * that swings while its shadow shortens, its handle lags behind and two things drift down past it
+ * reads as a drawing. The stagger is the whole difference, and it costs nothing.
  *
- * The second is that these are small enough to draw. They are a few hundred bytes of SVG each,
- * they animate in CSS on the compositor, and they cost nothing to start. Anyone who has asked
- * their device for less motion gets the same drawing, still.
- *
- * If a real Lottie is ever wanted, the file would have to be bundled rather than fetched, and
- * these are the four places to put one.
+ * Every one of them holds still for anyone who has asked their device for less motion.
  */
 
-/** An empty bag, swaying as though just put down. */
+/**
+ * An empty bag: swinging, with its shadow shortening as it lifts and two pieces drifting past --
+ * the shape of "nothing in here yet" rather than "loading".
+ */
 export const EmptyBag = () => (
-  <svg className="motion sway" width="96" height="96" viewBox="0 0 96 96" fill="none" aria-hidden="true">
-    <path d="M26 32h44l-4 44H30L26 32Z" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
-    <path className="handle" d="M38 32a10 10 0 0 1 20 0" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-    <circle className="spark" cx="48" cy="54" r="3" fill="currentColor" opacity=".35" />
+  <svg className="art-bag" width="128" height="128" viewBox="0 0 128 128" fill="none" aria-hidden="true">
+    {/* The floor it swings over. Shortening as the bag lifts is what sells the weight. */}
+    <ellipse className="shadow" cx="64" cy="112" rx="26" ry="4" fill="currentColor" opacity=".16" />
+
+    {/* Things that could be in it, drifting down past and fading. */}
+    <g className="drift">
+      <rect className="d1" x="38" y="16" width="13" height="16" rx="2.5" fill="currentColor" opacity=".22" />
+      <circle className="d2" cx="86" cy="22" r="6" fill="currentColor" opacity=".18" />
+      <rect className="d3" x="66" y="10" width="9" height="9" rx="2" fill="currentColor" opacity=".2" />
+    </g>
+
+    <g className="swing">
+      {/* The handle lags a touch behind the body, the way a real one would. */}
+      <path className="handle" d="M52 48a12 12 0 0 1 24 0" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+      <path className="body" d="M40 48h48l-4.5 50h-39L40 48Z" stroke="currentColor" strokeWidth="3" strokeLinejoin="round" />
+      <path className="seam" d="M52 62h24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" opacity=".3" />
+    </g>
   </svg>
 );
 
-/** A tick that draws itself once, inside a ring that settles. */
+/**
+ * No orders yet: a parcel that has not gone anywhere, over a route that draws itself and clears.
+ * The parcel stays still and the road moves, which is the honest way round.
+ */
+export const EmptyOrders = () => (
+  <svg className="art-parcel" width="132" height="120" viewBox="0 0 132 120" fill="none" aria-hidden="true">
+    {/* The journey it has not made. Drawn, held, then rubbed out again. */}
+    <path className="road" d="M12 96c22 0 22-22 44-22s22 22 44 22" stroke="currentColor" strokeWidth="2.5"
+      strokeLinecap="round" strokeDasharray="7 9" opacity=".32" />
+    <circle className="pip" r="3.5" fill="currentColor" opacity=".55">
+      <animateMotion dur="3.4s" repeatCount="indefinite" path="M12 96c22 0 22-22 44-22s22 22 44 22" />
+    </circle>
+
+    <g className="parcel">
+      <path className="lid" d="M28 40l38-16 38 16-38 15-38-15Z" stroke="currentColor" strokeWidth="2.8" strokeLinejoin="round" />
+      <path d="M28 40v30l38 16V55L28 40Z" stroke="currentColor" strokeWidth="2.8" strokeLinejoin="round" />
+      <path d="M104 40v30L66 86V55l38-15Z" stroke="currentColor" strokeWidth="2.8" strokeLinejoin="round" opacity=".55" />
+      {/* The tape, drawn once each time round. */}
+      <path className="tape" d="M66 55v31" stroke="currentColor" strokeWidth="2.5" opacity=".4" />
+    </g>
+  </svg>
+);
+
+/**
+ * An order placed: the ring settles, the tick draws, and six sparks go out and fade.
+ * The one screen in the shop where a little celebration is the right thing.
+ */
 export const Landed = () => (
-  <svg className="motion" width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-    <circle className="ring" cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="2.5" opacity=".28" />
-    <path className="draw" d="m19 33 9 9 17-19" stroke="currentColor" strokeWidth="4"
+  <svg className="art-landed" width="76" height="76" viewBox="0 0 76 76" fill="none" aria-hidden="true">
+    <g className="sparks" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+      <path d="M38 8v-6" /><path d="M58 16l4-4" /><path d="M68 38h6" />
+      <path d="M18 16l-4-4" /><path d="M8 38H2" /><path d="M38 68v6" />
+    </g>
+    <circle className="halo" cx="38" cy="38" r="30" stroke="currentColor" strokeWidth="2" opacity="0" />
+    <circle className="ring" cx="38" cy="38" r="26" stroke="currentColor" strokeWidth="2.5" opacity=".26" />
+    <path className="draw" d="m24 39 9.5 9.5L53 29" stroke="currentColor" strokeWidth="4.5"
       strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
-/** A magnifier sweeping, for a search that found nothing. */
+/**
+ * A search that found nothing: the glass sweeps across, its glint travelling with it, over three
+ * lines that stay stubbornly empty.
+ */
 export const NoMatch = () => (
-  <svg className="motion sweep" width="88" height="88" viewBox="0 0 88 88" fill="none" aria-hidden="true">
-    <circle cx="38" cy="38" r="20" stroke="currentColor" strokeWidth="2.5" />
-    <path d="m53 53 14 14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-    <path className="glint" d="M30 32a10 10 0 0 1 8-6" stroke="currentColor" strokeWidth="2.5"
-      strokeLinecap="round" opacity=".5" />
+  <svg className="art-look" width="120" height="96" viewBox="0 0 120 96" fill="none" aria-hidden="true">
+    <g className="lines" stroke="currentColor" strokeWidth="3" strokeLinecap="round" opacity=".18">
+      <path className="l1" d="M18 70h34" /><path className="l2" d="M18 80h58" /><path className="l3" d="M18 60h22" />
+    </g>
+    <g className="glass">
+      <circle cx="52" cy="34" r="20" stroke="currentColor" strokeWidth="3" />
+      <path d="m67 49 14 14" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+      <path className="glint" d="M43 28a11 11 0 0 1 9-7" stroke="currentColor" strokeWidth="3"
+        strokeLinecap="round" opacity=".45" />
+    </g>
   </svg>
 );
 

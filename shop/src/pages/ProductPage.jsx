@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getProduct, money, askOnWhatsApp } from '../api';
 import { addToBag, useBag } from '../bag';
 import { Problem, Say } from '../components/States';
-import TryOn from '../components/TryOn';
+/* Fetched only when somebody presses the button: most shoppers never do, and it carries a
+   file reader and a whole sheet with it. */
+const TryOn = lazy(() => import('../components/TryOn'));
 import { Ticked } from '../components/Motion';
 import AlsoIn from '../components/AlsoIn';
 
@@ -441,7 +443,11 @@ export default function ProductPage({ slug, shop }) {
       {/* The page carries on being a shop rather than stopping at the description. */}
       <AlsoIn slug={slug} product={p} shop={shop} />
 
-      {trying ? <TryOn slug={slug} product={p} onClose={() => setTrying(false)} /> : null}
+      {trying ? (
+        <Suspense fallback={null}>
+          <TryOn slug={slug} product={p} onClose={() => setTrying(false)} />
+        </Suspense>
+      ) : null}
     </>
   );
 }
