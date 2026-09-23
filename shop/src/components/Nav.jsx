@@ -92,6 +92,12 @@ export default function Nav({ shop, compact = false }) {
             </svg>
           </button>
 
+          <Link to={`/${slug}/orders`} className="icon" aria-label="Your orders" title="Your orders">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+              <path d="M5 4h11l3 3v13H5z" strokeLinejoin="round" />
+              <path d="M8.5 11h7M8.5 15h4" strokeLinecap="round" />
+            </svg>
+          </Link>
           <Link to={`/${slug}/bag`} className="icon" aria-label={count ? `Your bag, ${count} pieces` : 'Your bag'}>
             <Bag n={count} />
           </Link>

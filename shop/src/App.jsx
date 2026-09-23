@@ -6,6 +6,7 @@ import ProductPage from './pages/ProductPage';
 import BagPage from './pages/BagPage';
 import CheckoutPage from './pages/CheckoutPage';
 import OrderPage from './pages/OrderPage';
+import MyOrdersPage from './pages/MyOrdersPage';
 import Nav from './components/Nav';
 import Footer from './components/Footer';
 import Banners from './components/Banners';
@@ -84,6 +85,7 @@ function Shop({ page }) {
           : page === 'bag' ? <BagPage shop={shop} />
           : page === 'checkout' ? <CheckoutPage shop={shop} />
           : page === 'order' ? <OrderPage shop={shop} />
+          : page === 'orders' ? <MyOrdersPage shop={shop} />
           : <ShopHome slug={slug} shop={shop} />}
       </main>
 
@@ -110,6 +112,7 @@ export default function App() {
         <Route path="/:slug/p/:code" element={<Shop page="product" />} />
         <Route path="/:slug/bag" element={<Shop page="bag" />} />
         <Route path="/:slug/checkout" element={<Shop page="checkout" />} />
+        <Route path="/:slug/orders" element={<Shop page="orders" />} />
         <Route path="/:slug/order/:token" element={<Shop page="order" />} />
         {/* Anything else inside a shop is that shop's front page, not a dead end. */}
         <Route path="/:slug/*" element={<Navigate to="." replace />} />

@@ -4,6 +4,7 @@ import { shopifyPrivacyService } from '../services/shopify-privacy';
 import { fillService } from '../services/shelves/fill.service';
 import { links } from '../services/links';
 import { purgeUnusedCampaignMedia } from '../services/campaigns';
+import { shopCheckout, shopOtp } from '../services/online-shop';
 
 /**
  * Throwing away what has stopped meaning anything.
@@ -38,6 +39,9 @@ export class HousekeepingScheduler {
 
   /** How long a handled WhatsApp event's id is remembered. */
   static readonly WHATSAPP_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+  /** How long a spent or expired checkout code is kept. A day is far more than anybody needs. */
+  static readonly PHONE_CODE_RETENTION_MS = 24 * 60 * 60 * 1000;
 
   /**
    * How long a shelf's "this save already happened" key is kept. It exists so a phone that lost the
@@ -77,11 +81,27 @@ export class HousekeepingScheduler {
     const campaignPictures = await purgeUnusedCampaignMedia(now)
       .catch(error => { console.error('[Housekeeping] campaign picture clean-up failed:', (error as Error)?.message); return 0; });
 
+    /*
+     * Online orders whose number was never proved, still holding the shop's stock a day later.
+     *
+     * This is the one chore here that gives something BACK rather than throwing something away. A
+     * shop open to the internet can otherwise be emptied by somebody typing a made-up number into
+     * a checkout twenty times: every order holds real stock, and until this, nothing returned it.
+     * An order whose number was proved has no expiry and is never touched.
+     */
+    const staleHolds = await shopCheckout.releaseExpiredHolds(now)
+      .catch(error => { console.error('[Housekeeping] stale online holds not released:', (error as Error)?.message); return 0; });
+
+    // Codes nobody will ever type again. They are hashed, but a row per checkout still grows.
+    const phoneCodes = await shopOtp.forgetOldCodes(new Date(now.getTime() - this.PHONE_CODE_RETENTION_MS))
+      .catch(error => { console.error('[Housekeeping] phone code clean-up failed:', (error as Error)?.message); return 0; });
+
     return {
       unusedCampaignPictures: campaignPictures,
       unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried,
       whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded,
-      shelfSaveKeys: shelfSaveKeys.count, shortLinkTaps: shortLinks.taps, testShortLinks: shortLinks.testLinks
+      shelfSaveKeys: shelfSaveKeys.count, shortLinkTaps: shortLinks.taps, testShortLinks: shortLinks.testLinks,
+      staleHolds, phoneCodes
     };
   }
 
@@ -93,6 +113,9 @@ export class HousekeepingScheduler {
         const removed = await this.runOnce();
         if (removed.privacyRequestsRetried) {
           console.log(`[Housekeeping] finished ${removed.privacyRequestsRetried} Shopify privacy request(s) that had failed`);
+        }
+        if (removed.staleHolds) {
+          console.log(`[Housekeeping] let go of ${removed.staleHolds} online order(s) whose number was never proved`);
         }
         if (removed.unusedQuotes || removed.oauthStates) {
           console.log(

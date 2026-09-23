@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { priceBag, placeOrder, money } from '../api';
+import { priceBag, placeOrder, sendCode, checkCode, money } from '../api';
 import { useBag, emptyBag, placementKey, clearPlacementKey } from '../bag';
 import { Say, Problem } from '../components/States';
 
@@ -28,16 +28,26 @@ export default function CheckoutPage({ shop }) {
   const lines = useBag(slug);
 
   const [state, setState] = useState({ loading: true, error: null, bag: null });
-  const [form, setForm] = useState({ name: '', phone: '', email: '', address: '', payWay: '' });
+  const [form, setForm] = useState({ name: '', phone: '', email: '', address: '', pincode: '', payWay: '' });
   const [placing, setPlacing] = useState(false);
   const [refused, setRefused] = useState(null);
+
+  /* Codes the shop printed on a card. Applied by the shop, never worked out here. */
+  const [codes, setCodes] = useState([]);
+  const [typedCode, setTypedCode] = useState('');
+
+  /*
+   * Proving the number. `proof.state` is where this checkout has got to, not what the server
+   * believes -- the server is asked again when the order is placed, so nothing here can skip it.
+   */
+  const [proof, setProof] = useState({ state: 'none', code: '', busy: false, said: null, forPhone: '' });
 
   const key = lines.map(l => `${l.variantCode}:${l.quantity}`).join('|');
 
   const reprice = useCallback((signal) => {
     if (lines.length === 0) { setState({ loading: false, error: null, bag: null }); return; }
     setState(s => ({ ...s, loading: true, error: null }));
-    priceBag(slug, lines.map(l => ({ variantCode: l.variantCode, quantity: l.quantity })), { signal })
+    priceBag(slug, lines.map(l => ({ variantCode: l.variantCode, quantity: l.quantity })), codes, { signal })
       .then(bag => {
         setState({ loading: false, error: null, bag });
         // The shop's first way to pay, chosen for them: one fewer decision, and they can change it.
@@ -45,7 +55,7 @@ export default function CheckoutPage({ shop }) {
       })
       .catch(e => { if (e?.name !== 'AbortError') setState({ loading: false, error: e, bag: null }); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, key]);
+  }, [slug, key, codes.join(',')]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -81,10 +91,43 @@ export default function CheckoutPage({ shop }) {
   const missing = () => {
     if (form.name.trim().length < 2) return 'Tell the shop your name.';
     if (form.phone.replace(/\D/g, '').length < 10) return 'The shop needs a phone number to reach you on.';
-    if (form.address.trim().length < 10) return 'Write out the full address, with the area and the PIN code.';
+    if (form.address.trim().length < 10) return 'Write out the full address, with the house, the street and the area.';
+    if (!/^[1-9][0-9]{5}$/.test(form.pincode.replace(/\D/g, ''))) return 'That PIN code does not look right. It is six digits.';
     if (!form.payWay) return 'Choose how you would like to pay.';
     return null;
   };
+
+  /*
+   * The code. Asked for only when the shop can send one and the number has changed -- a shopper
+   * who proves their number and then fixes a typo in their name should not be asked again.
+   */
+  const askForCode = async () => {
+    const wrong = form.phone.replace(/\D/g, '').length < 10 ? 'The shop needs a phone number to reach you on.' : null;
+    if (wrong) { setRefused(wrong); return; }
+    setProof(p => ({ ...p, busy: true, said: null }));
+    try {
+      const out = await sendCode(slug, form.phone);
+      setProof({
+        state: out.alreadyVerified ? 'done' : 'sent',
+        code: '', busy: false, forPhone: form.phone,
+        said: out.alreadyVerified ? 'This number is already confirmed.' : 'We have sent a code to your WhatsApp.'
+      });
+    } catch (err) {
+      setProof(p => ({ ...p, busy: false, said: err?.message ?? 'That could not be sent.' }));
+    }
+  };
+
+  const confirmCode = async () => {
+    setProof(p => ({ ...p, busy: true, said: null }));
+    try {
+      await checkCode(slug, form.phone, proof.code);
+      setProof(p => ({ ...p, state: 'done', busy: false, said: 'Number confirmed.', forPhone: form.phone }));
+    } catch (err) {
+      setProof(p => ({ ...p, busy: false, said: err?.message ?? 'That code was not right.' }));
+    }
+  };
+
+  const proved = proof.state === 'done' && proof.forPhone === form.phone;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -96,15 +139,17 @@ export default function CheckoutPage({ shop }) {
     try {
       try {
         window.localStorage.setItem(`scaleezy.you.${slug}`, JSON.stringify({
-          name: form.name, phone: form.phone, email: form.email, address: form.address
+          name: form.name, phone: form.phone, email: form.email,
+          address: form.address, pincode: form.pincode
         }));
       } catch { /* fine */ }
 
       const order = await placeOrder(slug, {
         placementKey: placementKey(slug),
         lines: lines.map(l => ({ variantCode: l.variantCode, quantity: l.quantity })),
+        couponCodes: codes,
         name: form.name, phone: form.phone, email: form.email,
-        address: form.address, payWay: form.payWay
+        address: form.address, pincode: form.pincode, payWay: form.payWay
       });
 
       // Only once the shop has it. Emptying the bag before this would lose the order on a refusal.
@@ -137,7 +182,7 @@ export default function CheckoutPage({ shop }) {
               </label>
               <label>
                 <span>Phone</span>
-                <input value={form.phone} onChange={e => set('phone', e.target.value)}
+                <input value={form.phone} onChange={e => { set('phone', e.target.value); setProof(p => ({ ...p, said: null })); }}
                   type="tel" inputMode="tel" autoComplete="tel" maxLength={20} placeholder="98480 22338" />
                 <small>The shop rings this to arrange delivery.</small>
               </label>
@@ -149,14 +194,59 @@ export default function CheckoutPage({ shop }) {
             </div>
           </section>
 
+          {/*
+            Confirming the number. Shown only where the shop can actually send a code; a shop with
+            no WhatsApp linked simply takes the order and rings. The code is what lets this order
+            be attached to the customer's real record rather than a new one, and what stops a
+            made-up number holding the shop's stock.
+          */}
+          {proved ? (
+            <p className="proved">✓ {form.phone} confirmed</p>
+          ) : (
+            <div className="verify">
+              {proof.state === 'sent' ? (
+                <>
+                  <label>
+                    <span>The code we sent to your WhatsApp</span>
+                    <input value={proof.code} onChange={e => setProof(p => ({ ...p, code: e.target.value }))}
+                      inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456" />
+                  </label>
+                  <div className="row">
+                    <button type="button" className="go quiet" disabled={proof.busy || proof.code.replace(/\D/g, '').length !== 6}
+                      onClick={confirmCode}>{proof.busy ? 'Checking…' : 'Confirm'}</button>
+                    <button type="button" className="again" disabled={proof.busy} onClick={askForCode}>Send it again</button>
+                  </div>
+                </>
+              ) : (
+                <div className="row">
+                  <span>Confirm your number so the shop knows the order is real.</span>
+                  <button type="button" className="go quiet" disabled={proof.busy} onClick={askForCode}>
+                    {proof.busy ? 'Sending…' : 'Send me a code'}
+                  </button>
+                </div>
+              )}
+              {proof.said ? <p className="said">{proof.said}</p> : null}
+            </div>
+          )}
+
           <section className="ask">
             <h2><i>2</i> Where does it go?</h2>
-            <label className="wide">
-              <span>Full address</span>
-              <textarea value={form.address} onChange={e => set('address', e.target.value)}
-                rows={4} maxLength={500} autoComplete="street-address"
-                placeholder={'House / flat, street\nArea, landmark\nCity, State — PIN code'} />
-            </label>
+            <div className="fields">
+              <label className="wide">
+                <span>Full address</span>
+                <textarea value={form.address} onChange={e => set('address', e.target.value)}
+                  rows={4} maxLength={500} autoComplete="street-address"
+                  placeholder={'House / flat, street\nArea, landmark\nCity, State'} />
+              </label>
+              <label>
+                <span>PIN code</span>
+                <input value={form.pincode} onChange={e => set('pincode', e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  inputMode="numeric" autoComplete="postal-code" maxLength={6} placeholder="500029" />
+                {bag && bag.deliversEverywhere === false
+                  ? <small>This shop delivers to some areas only.</small>
+                  : null}
+              </label>
+            </div>
           </section>
 
           <section className="ask">
@@ -189,6 +279,40 @@ export default function CheckoutPage({ shop }) {
                   </li>
                 ))}
               </ul>
+              {/* A code the shop printed on a card. The engine has always taken these; until now
+                  the shop's own page was the one place that offered nowhere to type one. */}
+              <div className="codebox">
+                <input value={typedCode} onChange={e => setTypedCode(e.target.value.toUpperCase())}
+                  maxLength={32} placeholder="Discount code" aria-label="Discount code"
+                  onKeyDown={e => {
+                    if (e.key !== 'Enter') return;
+                    e.preventDefault();
+                    const c = typedCode.trim().toUpperCase();
+                    if (c && !codes.includes(c)) setCodes(list => [...list, c].slice(0, 5));
+                    setTypedCode('');
+                  }} />
+                <button type="button" disabled={!typedCode.trim()} onClick={() => {
+                  const c = typedCode.trim().toUpperCase();
+                  if (c && !codes.includes(c)) setCodes(list => [...list, c].slice(0, 5));
+                  setTypedCode('');
+                }}>Apply</button>
+              </div>
+              {codes.length > 0 && (
+                <ul className="codes">
+                  {codes.map(c => {
+                    const bad = bag.codesRefused?.find(r => r.code === c);
+                    return (
+                      <li key={c} data-bad={!!bad}>
+                        <b>{c}</b>
+                        <span>{bad ? bad.why : 'Applied'}</span>
+                        <button type="button" aria-label={`Take off ${c}`}
+                          onClick={() => setCodes(list => list.filter(x => x !== c))}>✕</button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+
               <dl>
                 <div><dt>Pieces</dt><dd>{money(bag.goods, currency)}</dd></div>
                 {bag.saved > 0 ? <div className="good"><dt>You save</dt><dd>−{money(bag.saved, currency)}</dd></div> : null}

@@ -99,6 +99,10 @@ export async function settingsFor(clientId: string) {
     deliveryFee: Number(shop?.deliveryFee ?? 0),
     freeDeliveryAbove: shop?.freeDeliveryAbove == null ? null : Number(shop.freeDeliveryAbove),
     minOrderValue: shop?.minOrderValue == null ? null : Number(shop.minOrderValue),
+    deliverPincodes: shop?.deliverPincodes ?? [],
+    tryOn: shop?.tryOn ?? false,
+    /** Whether the platform can do try-on at all, so the screen can say why the switch is off. */
+    tryOnAvailable: Boolean(env.SHOPPER_TRYON_GATEWAY_URL),
     returnPolicy: shop?.returnPolicy ?? null,
     grievanceName: shop?.grievanceName ?? null,
     grievancePhone: shop?.grievancePhone ?? null,
@@ -149,6 +153,7 @@ export async function save(clientId: string, input: {
   returnPolicy?: unknown; grievanceName?: unknown; grievancePhone?: unknown; grievanceEmail?: unknown;
   acceptsOrders?: unknown; payOnDelivery?: unknown; payOnline?: unknown;
   deliveryFee?: unknown; freeDeliveryAbove?: unknown; minOrderValue?: unknown;
+  deliverPincodes?: unknown; tryOn?: unknown;
 }) {
   const shop = await prisma.onlineShop.findUnique({ where: { clientId } });
   if (!shop) throw new OnlineShopRuleError('Choose a web address for your shop first.');
@@ -200,6 +205,24 @@ export async function save(clientId: string, input: {
     locationIds = real.map(l => l.id);
   }
 
+  /*
+   * Where the shop will deliver. Empty means everywhere, which is what most shops mean when they
+   * have not thought about it -- so a list that is typed and then emptied goes back to everywhere
+   * rather than to nowhere. Only six-digit PIN codes, because a list with "Hyd" in it would refuse
+   * every real customer silently.
+   */
+  let deliverPincodes: string[] | undefined;
+  if (input.deliverPincodes !== undefined) {
+    const asked = Array.isArray(input.deliverPincodes) ? input.deliverPincodes : [];
+    const good = [...new Set(asked
+      .map(v => String(v ?? '').replace(/\D/g, ''))
+      .filter(v => /^[1-9][0-9]{5}$/.test(v)))].slice(0, 500);
+    if (asked.length && !good.length) {
+      throw new OnlineShopRuleError('Those do not look like PIN codes. A PIN code is six digits.');
+    }
+    deliverPincodes = good;
+  }
+
   const fee = money(input.deliveryFee, { nullable: false });
   const freeAbove = money(input.freeDeliveryAbove, { nullable: true });
   const minOrder = money(input.minOrderValue, { nullable: true });
@@ -217,6 +240,8 @@ export async function save(clientId: string, input: {
       ...(fee !== undefined && fee !== null ? { deliveryFee: fee } : {}),
       ...(freeAbove !== undefined ? { freeDeliveryAbove: freeAbove } : {}),
       ...(minOrder !== undefined ? { minOrderValue: minOrder } : {}),
+      ...(deliverPincodes !== undefined ? { deliverPincodes } : {}),
+      ...(input.tryOn !== undefined ? { tryOn: input.tryOn === true } : {}),
       returnPolicy: text(input.returnPolicy, 4000),
       grievanceName: text(input.grievanceName, 80),
       grievancePhone: text(input.grievancePhone, 20),
@@ -279,6 +304,8 @@ export async function publicShop(slugRaw: unknown): Promise<
       banners: Awaited<ReturnType<typeof banners.publicFor>>;
       /** What this shop actually sells: the nav, the filter rail and the price range, from its own catalogue. */
       facets: Facets;
+      /** Whether this shop offers "see it on you". */
+      tryOn: boolean;
       /** Whether a customer can actually buy here, and on what terms. */
       buying: {
         open: boolean;
@@ -322,6 +349,7 @@ export async function publicShop(slugRaw: unknown): Promise<
      * Told to the page rather than worked out there: whether the Add to bag button exists at all
      * is the shop's decision, and a page that guessed would offer a checkout that then refused.
      */
+    tryOn: shop.tryOn && Boolean(env.SHOPPER_TRYON_GATEWAY_URL),
     buying: {
       open: shop.acceptsOrders && (shop.payOnDelivery || shop.payOnline),
       payWays: [

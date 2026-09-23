@@ -36,6 +36,7 @@ export default function Banners({ slug, banners }) {
   const go = (b) => {
     if (!b.link) return;
     if (b.link.kind === 'SEARCH') nav(`/${slug}?q=${encodeURIComponent(b.link.value)}`);
+    else if (b.link.kind === 'CATEGORY') nav(`/${slug}?category=${encodeURIComponent(b.link.value)}`);
     else if (b.link.kind === 'PRODUCT') nav(`/${slug}/p/${encodeURIComponent(b.link.value)}`);
   };
 

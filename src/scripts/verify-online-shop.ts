@@ -7,6 +7,8 @@
  *   N  the banners across the top: the limit, dead taps, order, hiding, another shop's
  *   F  the nav and the filters: read from the shop's whole catalogue, not one page of it
  *   C  buying: the bag, the price, the order, the stock held, and what may never be bought
+ *   G  the gaps closed: codes, a PIN code, proving a number, calling it off, stale holds
+ *   T  see it on you: who may, what is refused, and that the photograph does not linger
  *   X  what must never leak: cost price, another shop, a location that does not sell online
  *
  *   npx tsx src/scripts/verify-online-shop.ts      (needs the local backend running)
@@ -15,11 +17,13 @@
  */
 import axios from 'axios';
 import sharp from 'sharp';
+import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { seedRolesForClient } from '../services/rbac-seed.service';
 import { platformAdminService } from '../services/platform-admin.service';
-import { onlineShop, shopBanners, shopCheckout, OnlineShopRuleError, checkSlug, RESERVED_SLUGS } from '../services/online-shop';
+import { onlineShop, shopBanners, shopCheckout, shopOtp, shopTryOn, OnlineShopRuleError, checkSlug, RESERVED_SLUGS } from '../services/online-shop';
+import { HousekeepingScheduler } from '../jobs/housekeeping.scheduler';
 
 const SERVER = (process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1').replace(/\/api\/v1\/?$/, '');
 const API = `${SERVER}/api/v1`;
@@ -353,7 +357,8 @@ async function main() {
   const key = () => `verify-${STAMP}-${Math.random().toString(36).slice(2)}aaaaaaaaaa`;
   const details = {
     name: 'Anita Rao', phone: '9989000111',
-    address: '3-6-218 Flat 402, Himayatnagar, Hyderabad, Telangana 500029',
+    address: '3-6-218 Flat 402, Himayatnagar, Hyderabad, Telangana',
+    pincode: '500029',
     payWay: 'ON_DELIVERY'
   };
 
@@ -454,6 +459,186 @@ async function main() {
   });
   check('a shop that stops taking orders stops taking orders', shut.status === 400, shut.data);
   await own.patch('/online-shop', { acceptsOrders: true });
+
+
+  // ── G ─────────────────────────────────────────────────────────────────────────────────
+  console.log('\nG. THE GAPS CLOSED');
+
+  // A PIN code the shop can actually check.
+  const noPin = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }], pincode: ''
+  });
+  check('an order with no PIN code is refused', noPin.status === 400 && /PIN code/i.test(noPin.data.message), noPin.data);
+  const oddPin = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }], pincode: '012345'
+  });
+  check('a PIN code that could not exist is refused', oddPin.status === 400, oddPin.data);
+
+  await own.patch('/online-shop', { deliverPincodes: ['500029'] });
+  const wrongArea = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }], pincode: '110001'
+  });
+  check('a shop that lists where it delivers refuses the rest, by name',
+    wrongArea.status === 400 && /110001/.test(String(wrongArea.data.message)), wrongArea.data);
+  check('...and says the shop may still be able to help', /WhatsApp/i.test(String(wrongArea.data.message)));
+  const rightArea = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }], pincode: '500029'
+  });
+  check('...and takes the ones it does deliver to', rightArea.status === 200, rightArea.data);
+  check('the PIN code goes onto the order, where the shop packs from',
+    /500029/.test(String(rightArea.data.data.address)), rightArea.data.data.address);
+  await own.patch('/online-shop', { deliverPincodes: [] });
+  check('a shop that lists none delivers everywhere',
+    (await post('/shop/lakshmi-silks/bag', { lines: [{ variantCode: sareeCode, quantity: 1 }] })).data.data.deliversEverywhere === true);
+
+  // Codes the shop printed on a card.
+  const madeUp = await post('/shop/lakshmi-silks/bag', {
+    lines: [{ variantCode: sareeCode, quantity: 1 }], couponCodes: ['NOTACODE']
+  });
+  check('a code nobody has is refused without breaking the bag', madeUp.status === 200, madeUp.data);
+  check('...and the bag says which code and why',
+    madeUp.data.data.codesRefused?.[0]?.code === 'NOTACODE' && !!madeUp.data.data.codesRefused[0].why,
+    madeUp.data.data.codesRefused);
+  check('...and nothing came off for it', madeUp.data.data.saved === 0, madeUp.data.data.saved);
+  const tooManyCodes = await post('/shop/lakshmi-silks/bag', {
+    lines: [{ variantCode: sareeCode, quantity: 1 }],
+    couponCodes: Array.from({ length: 50 }, (_, i) => `C${i}`)
+  });
+  check('a checkout is not a place to try fifty codes',
+    tooManyCodes.status === 200 && (tooManyCodes.data.data.codesRefused ?? []).length <= 5, (tooManyCodes.data.data.codesRefused ?? []).length);
+
+  // Proving a phone number.
+  const badNumber = await post('/shop/lakshmi-silks/verify/send', { phone: '123' });
+  check('a code cannot be sent to something that is not a number', badNumber.status === 400, badNumber.data);
+  const wrongCode = await refusalAsync(shopOtp.checkCode(SHOP, '9989000111', '000000'));
+  check('a code nobody asked for cannot be confirmed', /run out|not right/i.test(wrongCode), wrongCode);
+  check('a number nobody proved is not proved', (await shopOtp.isVerified(SHOP, '9989000111')) === false);
+
+  // Proving it for real, by writing the row this shop would have written, since the test has no
+  // WhatsApp to read a code from.
+  const proofPhone = '+919989000222';
+  const proofCode = '424242';
+  const proofHash = crypto.createHash('sha256').update(`${proofPhone}:${proofCode}`).digest('hex');
+  await prisma.onlineShopPhoneCode.create({
+    data: { clientId: SHOP, phone: proofPhone, codeHash: proofHash, expiresAt: new Date(Date.now() + 600_000) }
+  });
+  const tooShort = await refusalAsync(shopOtp.checkCode(SHOP, proofPhone, '4242'));
+  check('a code of the wrong length is refused before anything is looked up', /6 digits/i.test(tooShort), tooShort);
+  const guess = await refusalAsync(shopOtp.checkCode(SHOP, proofPhone, '111111'));
+  check('a wrong code says how many tries are left', /tries left|try left/i.test(guess), guess);
+  await shopOtp.checkCode(SHOP, proofPhone, proofCode);
+  check('the right code proves the number', (await shopOtp.isVerified(SHOP, proofPhone)) === true);
+
+  // A proved order is the shop's real customer, and holds stock with no expiry.
+  const provedKey = key();
+  const provedOrder = await post('/shop/lakshmi-silks/orders', {
+    ...details, phone: proofPhone, placementKey: provedKey, pincode: '500029',
+    lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('an order with a proved number is placed', provedOrder.status === 200, provedOrder.data);
+  const provedRow = await prisma.onlineShopOrder.findFirst({ where: { clientId: SHOP, placementKey: provedKey } });
+  check('...and is recorded as proved', provedRow?.phoneVerified === true, provedRow?.phoneVerified);
+  check('...and its hold never runs out', provedRow?.holdExpiresAt === null, provedRow?.holdExpiresAt);
+
+  const unprovedRow = await prisma.onlineShopOrder.findFirst({ where: { clientId: SHOP, placementKey: thisKey } });
+  check('an order nobody proved holds the stock only for a while', unprovedRow?.holdExpiresAt instanceof Date, unprovedRow?.holdExpiresAt);
+
+  // A second order from the same proved number is the SAME customer, not a new one.
+  const againKey = key();
+  await post('/shop/lakshmi-silks/orders', {
+    ...details, phone: proofPhone, placementKey: againKey, pincode: '500029',
+    lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  const theirOrders = await prisma.salesOrder.findMany({
+    where: { clientId: SHOP, externalOrderId: { in: [provedKey, againKey] } },
+    select: { customerId: true }
+  });
+  check('a proved customer buying twice is one customer, not two',
+    theirOrders.length === 2 && theirOrders[0].customerId === theirOrders[1].customerId, theirOrders);
+
+  // The shop is told.
+  const told = await prisma.inventoryAlert.findFirst({
+    where: { clientId: SHOP, type: 'ONLINE_ORDER' }, orderBy: { createdAt: 'desc' }
+  });
+  check('the shop is told an order arrived', !!told, told?.title);
+  check('...with what it came to and who it is for', /₹/.test(String(told?.message)), told?.message);
+  check('...and not as something being wrong', told?.severity === 'INFO', told?.severity);
+
+  // The customer calling it off.
+  const callable = rightArea.data.data.token as string;
+  check('a customer is told they may still call it off', rightArea.data.data.mayCancel === true);
+  const called = await post(`/shop/lakshmi-silks/orders/${callable}/cancel`, {});
+  check('a customer can call their own order off', called.status === 200 && called.data.data.state === 'CANCELLED', called.data);
+  check('...and cannot call it off twice into a mess', (await post(`/shop/lakshmi-silks/orders/${callable}/cancel`, {})).status === 200);
+  const cancelled = await prisma.salesOrder.findFirst({
+    where: { clientId: SHOP, externalOrderId: { not: null } , onlineShopOrder: { token: callable } },
+    select: { status: true, items: { select: { variantId: true } } }
+  });
+  check('...and the order really is cancelled in the books', cancelled?.status === 'CANCELLED', cancelled?.status);
+  const backOnShelf = await prisma.inventoryStock.findFirst({
+    where: { clientId: SHOP, locationId: store.id, variantId: cancelled!.items[0].variantId },
+    select: { reservedQty: true }
+  });
+  check('...and the stock went back on the shelf', (backOnShelf?.reservedQty ?? 99) < 4, backOnShelf);
+
+  const foreignCancel = await refusalAsync(shopCheckout.cancel(OTHER, callable));
+  check("one shop cannot cancel another shop's order", /could not be found/i.test(foreignCancel), foreignCancel);
+
+  // Stale holds let go.
+  await prisma.onlineShopOrder.updateMany({
+    where: { clientId: SHOP, placementKey: thisKey },
+    data: { holdExpiresAt: new Date(Date.now() - 60_000) }
+  });
+  const swept = await HousekeepingScheduler.runOnce();
+  check('housekeeping lets go of a hold nobody proved', (swept as any).staleHolds >= 1, (swept as any).staleHolds);
+  const letGo = await prisma.salesOrder.findFirst({ where: { clientId: SHOP, externalOrderId: thisKey }, select: { status: true } });
+  check('...and that order is cancelled, not left holding stock', letGo?.status === 'CANCELLED', letGo?.status);
+  const provedStill = await prisma.salesOrder.findFirst({ where: { clientId: SHOP, externalOrderId: provedKey }, select: { status: true } });
+  check('...while a proved order is left alone', provedStill?.status === 'CONFIRMED', provedStill?.status);
+
+  // A banner can point at a department the shop really has. Section N filled the shop to its six,
+  // so two come off first -- the limit is already proved there.
+  const roomFor = await own.get('/online-shop/banners');
+  for (const b of (roomFor.data.data ?? []).slice(0, 2)) await own.delete(`/online-shop/banners/${b.id}`);
+  const jpeg2 = await picture();
+  const deptBanner = await own.post('/online-shop/banners', { base64: jpeg2, heading: 'Womenswear', linkKind: 'CATEGORY', linkValue: 'WOMEN' });
+  check('a banner can point at a department', deptBanner.status === 200, deptBanner.data);
+  const noSuchDept = await own.post('/online-shop/banners', { base64: jpeg2, heading: 'Menswear', linkKind: 'CATEGORY', linkValue: 'MEN' });
+  check('...but not at one the shop has nothing in', noSuchDept.status === 400 && /empty page/i.test(noSuchDept.data.message), noSuchDept.data);
+
+  // ── T ─────────────────────────────────────────────────────────────────────────────────
+  // Nothing here spends a real try-on: a generation is GPU time the shop pays for, so the suite
+  // proves the gate and the refusals and leaves the generating to a person.
+  console.log('\nT. SEE IT ON YOU');
+
+  check('a shop that has not asked for try-on does not offer it', (await shopTryOn.offersTryOn(SHOP)) === false);
+  const notOffered = await post('/shop/lakshmi-silks/products/OS-SAREE-1/tryon', { photo: 'AAAA' });
+  check('...and refuses one, in words a shopper can read',
+    notOffered.status === 400 && /does not offer try-on/i.test(notOffered.data.message), notOffered.data);
+
+  await own.patch('/online-shop', { tryOn: true });
+  const settings = await own.get('/online-shop');
+  check('a shop can switch try-on on', settings.data.data.tryOn === true, settings.data.data.tryOn);
+  check('...and the shopper is told, so the button exists only where it would work',
+    (await http('/shop/lakshmi-silks')).data.data.tryOn === true);
+
+  const noPhoto = await post('/shop/lakshmi-silks/products/OS-SAREE-1/tryon', {});
+  check('a try-on with no photograph is refused', noPhoto.status === 400 && /photograph/i.test(noPhoto.data.message), noPhoto.data);
+  const noSuchPiece = await post('/shop/lakshmi-silks/products/NOT-A-PIECE/tryon', { photo: 'AAAA' });
+  check('a try-on of something this shop does not sell is refused', noSuchPiece.status === 400, noSuchPiece.data);
+
+  /*
+   * The garment is resolved from the code, never taken from the request. Proved by asking for a
+   * piece with no photograph: if the picture could come from the body, this would succeed.
+   */
+  const noArt = await post('/shop/lakshmi-silks/products/OS-KURTI-1/tryon', {
+    photo: 'AAAA', garmentImageUrl: 'https://example.com/anything.jpg'
+  });
+  check('a try-on cannot name its own garment', noArt.status === 400, noArt.data);
+
+  const leftBehind = await refusalAsync(shopTryOn.seeItOn(SHOP, 'OS-SAREE-1', 'not base64 at all %%%'));
+  check('a photograph that did not arrive intact is refused', leftBehind.length > 0, leftBehind);
+  await own.patch('/online-shop', { tryOn: false });
 
   // ── X ─────────────────────────────────────────────────────────────────────────────────
   console.log('\nX. WHAT MUST NEVER LEAK');

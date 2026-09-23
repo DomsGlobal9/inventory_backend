@@ -1,6 +1,6 @@
 import express, { Router, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import { onlineShop, shopCheckout, OnlineShopRuleError } from '../services/online-shop';
+import { onlineShop, shopCheckout, shopOtp, shopTryOn, OnlineShopRuleError } from '../services/online-shop';
 
 /**
  * What a shopper's browser asks for at `shop.scaleezy.com/<slug>`.
@@ -18,9 +18,15 @@ const router = Router();
  * A shopper browsing taps quickly -- a category, a filter, the next page -- so this is generous.
  * It is here to stop a scraper pulling a whole catalogue in a loop, not to slow a person down.
  */
+/*
+ * Settable, the same way the app's own limiter is (middleware/rate-limiter.middleware.ts), so a
+ * test server can run a whole shop's worth of traffic in a few seconds without tripping it.
+ */
+const relaxed = Number(process.env.RATE_LIMIT_MAX) > 0;
+
 const browseLimiter = rateLimit({
   windowMs: 60_000,
-  max: 120,
+  max: relaxed ? 2000 : 120,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests just now. Please wait a moment.' }
@@ -56,7 +62,7 @@ router.use((_req, res, next) => {
  */
 const buyLimiter = rateLimit({
   windowMs: 60_000,
-  max: 20,
+  max: relaxed ? 2000 : 20,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many attempts just now. Please wait a moment and try again.' }
@@ -130,7 +136,7 @@ router.get('/:slug/products/:productCode', async (req: Request, res: Response) =
 router.post('/:slug/bag', buyLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
-  return shopCheckout.priceBag(shop.clientId, req.body?.lines);
+  return shopCheckout.priceBag(shop.clientId, req.body?.lines, req.body?.couponCodes);
 }));
 
 /** Place the order. */
@@ -150,6 +156,62 @@ router.get('/:slug/orders/:token', buyLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   return shopCheckout.summary(shop.clientId, req.params.token);
+}));
+
+/** The customer calling their own order off, while it is still sitting at the shop. */
+router.post('/:slug/orders/:token/cancel', buyLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopCheckout.cancel(shop.clientId, req.params.token);
+}));
+
+/*
+ * ── Seeing it on you ───────────────────────────────────────────────────────────────────
+ *
+ * A try-on is GPU time that the SHOP pays for, so this is counted far more tightly than anything
+ * else here -- enough for somebody to try a few photographs and change their mind, nowhere near
+ * enough for one address to spend a shop's month in an afternoon. The same sizing the in-shop
+ * try-on uses, for the same reason.
+ */
+const tryOnLimiter = rateLimit({
+  windowMs: 10 * 60_000,
+  max: relaxed ? 2000 : 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'That is a lot of try-ons in a short time. Please wait a few minutes.' }
+});
+
+router.post('/:slug/products/:productCode/tryon', tryOnLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopTryOn.seeItOn(shop.clientId, req.params.productCode, req.body?.photo);
+}));
+
+/*
+ * ── Proving a phone number ─────────────────────────────────────────────────────────────
+ *
+ * Counted far more tightly than anything else here, and per number as well as per caller: a code
+ * goes to somebody else's phone, so this must never become a way to ring a stranger. The per-number
+ * cap lives in the service, which is the only place that knows how many have already gone.
+ */
+const codeLimiter = rateLimit({
+  windowMs: 10 * 60_000,
+  max: relaxed ? 2000 : 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts just now. Wait a few minutes and try again.' }
+});
+
+router.post('/:slug/verify/send', codeLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopOtp.sendCode(shop.clientId, req.body?.phone);
+}));
+
+router.post('/:slug/verify/check', codeLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopOtp.checkCode(shop.clientId, req.body?.phone, req.body?.code);
 }));
 
 export default router;

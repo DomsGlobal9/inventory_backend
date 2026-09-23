@@ -7,5 +7,7 @@ export * as onlineShop from './shop.service';
 export * as shopBanners from './banners';
 export * as shopCheckout from './checkout';
 export { facetsFor, forgetFacets } from './facets';
+export * as shopOtp from './otp';
+export * as shopTryOn from './tryon';
 export { OnlineShopRuleError } from './rules';
 export { checkSlug, RESERVED_SLUGS } from './rules';

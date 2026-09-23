@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { getOrder, money, askOnWhatsApp } from '../api';
+import { getOrder, cancelOrder, money, askOnWhatsApp } from '../api';
 import { Problem, Say } from '../components/States';
 
 /**
@@ -35,6 +35,9 @@ function remember(slug, token, orderNumber) {
 export default function OrderPage({ shop }) {
   const { slug, token } = useParams();
   const [state, setState] = useState({ loading: true, error: null, order: null });
+  /* 'no' -> 'asking' -> 'doing'. Asked properly, because a cancelled order cannot be un-cancelled. */
+  const [calling, setCalling] = useState('no');
+  const [refused, setRefused] = useState(null);
 
   const load = useCallback((signal) => {
     setState(s => ({ ...s, loading: true, error: null }));
@@ -163,6 +166,43 @@ export default function OrderPage({ shop }) {
             </a>
           ) : null}
           <Link className="go quiet" to={`/${slug}`}>Keep shopping</Link>
+
+          {/*
+            Calling it off, while it is still sitting at the shop. Offered rather than hidden: a
+            customer who cannot cancel rings the shop, and the shop cancels it anyway -- with the
+            stock held in between. Once any of it has been sent this is a return, which is a
+            conversation, so the button goes and the chat stays.
+          */}
+          {o.mayCancel && (
+            calling === 'asking' ? (
+              <div className="callingoff">
+                <p>Cancel {o.orderNumber}? The shop puts everything back and nothing is owed.</p>
+                {refused ? <p className="refused">{refused}</p> : null}
+                <div className="row">
+                  <button type="button" className="go quiet" onClick={() => { setCalling('no'); setRefused(null); }}>
+                    Keep it
+                  </button>
+                  <button type="button" className="go danger" onClick={async () => {
+                    setCalling('doing');
+                    try {
+                      const after = await cancelOrder(slug, token);
+                      setState({ loading: false, error: null, order: after });
+                      setCalling('no');
+                    } catch (err) {
+                      setRefused(err?.message ?? 'That could not be cancelled. Message the shop.');
+                      setCalling('asking');
+                    }
+                  }}>Yes, cancel it</button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" className="drop wide" disabled={calling === 'doing'}
+                onClick={() => setCalling('asking')}>
+                {calling === 'doing' ? 'Cancelling…' : 'Cancel this order'}
+              </button>
+            )
+          )}
+
           <p className="tiny">Keep this link — it is how you check on your order.</p>
         </aside>
       </div>

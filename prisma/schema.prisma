@@ -1832,6 +1832,10 @@ enum InventoryAlertType {
   REORDER_REQUIRED
   STOCK_DISCREPANCY
   SYSTEM_ERROR
+  /// Somebody bought something on the shop's own online shop. It lands in the Alert Centre the
+  /// shop already watches, so an order that arrives at nine at night is not found at nine the
+  /// next morning.
+  ONLINE_ORDER
 }
 
 enum InventoryAlertSeverity {
@@ -3742,6 +3746,17 @@ model OnlineShop {
   /// The smallest order the shop will send out. Null means it will send any.
   minOrderValue     Decimal? @map("min_order_value") @db.Decimal(10, 2)
 
+  /// Whether this shop offers "see it on you" on its product pages.
+  ///
+  /// The shop's choice, because every try-on spends a generation from its own allowance. Off
+  /// unless it says otherwise, and shown only where the platform has a try-on gateway at all.
+  tryOn Boolean @default(false) @map("try_on")
+
+  /// The PIN codes this shop delivers to. Empty means everywhere, which is what most shops mean
+  /// when they have not thought about it. A shop that lists some is refusing the rest, and the
+  /// customer is told before they have typed an address nobody will deliver to.
+  deliverPincodes String[] @map("deliver_pincodes")
+
   /// Required on every page by the Consumer Protection (E-Commerce) Rules 2020: the shop is the
   /// seller, so its own details must be reachable. Filled from ClientSettings where they exist.
   returnPolicy   String? @map("return_policy") @db.Text
@@ -3806,6 +3821,14 @@ model OnlineShopOrder {
   /// Whether that number was proved to be theirs before the order was taken.
   phoneVerified Boolean @default(false) @map("phone_verified")
 
+  /// When an UNPROVED order stops holding the shop's stock.
+  ///
+  /// A shop open to the internet can be emptied by somebody typing a made-up number into a
+  /// checkout twenty times: every order holds real stock, and nothing ever gave it back. An order
+  /// whose number was proved has no expiry -- it is a real customer, and only the shop decides
+  /// when to let it go.
+  holdExpiresAt DateTime? @map("hold_expires_at")
+
   payWay OnlineShopPayWay @map("pay_way")
   paid   Boolean          @default(false)
 
@@ -3818,7 +3841,43 @@ model OnlineShopOrder {
 
   @@unique([clientId, placementKey])
   @@index([clientId, createdAt])
+  @@index([holdExpiresAt])
   @@map("online_shop_orders")
+}
+
+/// A code sent to a shopper's WhatsApp to prove the number they typed is theirs.
+///
+/// Without this anybody can order to any number, and every made-up order holds real stock the shop
+/// cannot sell. With it the number is proved, which also means the order can be attached to the
+/// shop's REAL customer record rather than making a new one each time -- so a regular buying
+/// online is the same person the till knows, and earns their points.
+///
+/// The code itself is never stored. Only a hash of it, so a copy of this table is not a list of
+/// live codes for every checkout in progress.
+model OnlineShopPhoneCode {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  /// In the one stored form, the same as everywhere else.
+  phone    String
+  codeHash String @map("code_hash")
+
+  /// Wrong guesses, and how many codes have gone to this number in this window. Both are what
+  /// stops this being a way to send a stranger a hundred messages, or to guess a six-digit code.
+  tries     Int @default(0)
+  sentCount Int @default(1) @map("sent_count")
+
+  /// Set once the code was typed back correctly. The proof lasts a little while, so a shopper who
+  /// proves their number and then spends ten minutes choosing is not asked again.
+  verifiedAt DateTime? @map("verified_at")
+
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, phone])
+  @@index([expiresAt])
+  @@map("online_shop_phone_codes")
 }
 
 /// A banner across the top of a shop's own online shop: the picture, a few words over it, and
@@ -3856,4 +3915,7 @@ enum OnlineShopBannerLink {
   NONE
   SEARCH
   PRODUCT
+  /// One of the shop's own departments, as the nav lists them (WOMEN, MEN...). A shop with a
+  /// menswear banner should be able to send a tap there without searching for the word.
+  CATEGORY
 }

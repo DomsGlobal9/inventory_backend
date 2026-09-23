@@ -82,14 +82,40 @@ export const getProduct = (slug, code, opts) =>
  * totals would sooner or later show a figure the checkout disagreed with.
  */
 
-export const priceBag = (slug, lines, opts) =>
-  get(`/shop/${encodeURIComponent(slug)}/bag`, { ...opts, send: { lines } });
+export const priceBag = (slug, lines, couponCodes, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/bag`, { ...opts, send: { lines, couponCodes } });
 
 export const placeOrder = (slug, order, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/orders`, { ...opts, send: order });
 
 export const getOrder = (slug, token, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/orders/${encodeURIComponent(token)}`, opts);
+
+export const cancelOrder = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/orders/${encodeURIComponent(token)}/cancel`, { ...opts, send: {} });
+
+/*
+ * Proving the number typed at the checkout belongs to whoever typed it.
+ *
+ * The page never decides this. It asks for a code and sends back what was typed; whether the
+ * number counts as proved is the server's answer, read again when the order is placed -- a page
+ * that could claim "verified" would make the whole thing decorative.
+ */
+/**
+ * "See it on you": the shop puts this piece on a photograph of the shopper.
+ *
+ * The photograph is sent once and deleted by the shop as soon as the picture is made. It is never
+ * kept here either -- it lives in this page's memory until the sheet is closed.
+ */
+export const tryOn = (slug, productCode, photo, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(productCode)}/tryon`,
+    { ...opts, send: { photo } });
+
+export const sendCode = (slug, phone, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/verify/send`, { ...opts, send: { phone } });
+
+export const checkCode = (slug, phone, code, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/verify/check`, { ...opts, send: { phone, code } });
 
 /** Money as an Indian shopper reads it: ₹8,500, and ₹8,500.50 only when there are paise. */
 export const money = (amount, currency = 'INR') => {

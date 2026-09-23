@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getProduct, money, askOnWhatsApp } from '../api';
 import { addToBag, useBag } from '../bag';
 import { Problem, Say } from '../components/States';
+import TryOn from '../components/TryOn';
+import AlsoIn from '../components/AlsoIn';
 
 /**
  * One piece: its photographs, the colours and sizes it comes in, and the way to buy it.
@@ -31,7 +33,13 @@ function saving(now, was) {
   return Math.round(((b - a) / b) * 100);
 }
 
-/** The photographs, swiped, with the shape reserved before any of them arrive. */
+/**
+ * The photographs.
+ *
+ * One strip, read two ways. On a phone it is swiped and the pips say where you are; on a wide
+ * screen the same strip gets a column of thumbnails beside it, because a mouse has no thumb and
+ * because that vertical space is otherwise wasted next to a tall photograph.
+ */
 function Gallery({ photos, title }) {
   const strip = useRef(null);
   const [at, setAt] = useState(0);
@@ -55,22 +63,41 @@ function Gallery({ photos, title }) {
     );
   }
 
+  const show = (i) => {
+    const el = strip.current;
+    if (!el) return;
+    el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
+  };
+
   return (
-    <div className="gallery">
-      <div className="swipe" ref={strip}
-        onScroll={e => setAt(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}>
-        {photos.map((img, i) => (
-          <figure key={img.url}>
-            <img src={img.url} alt={i === 0 ? title : ''}
-              loading={i === 0 ? 'eager' : 'lazy'} decoding="async" />
-          </figure>
-        ))}
-      </div>
+    <div className="gallery" data-many={photos.length > 1}>
       {photos.length > 1 && (
-        <div className="pips" aria-label={`Photo ${at + 1} of ${photos.length}`}>
-          {photos.map((_, i) => <i key={i} data-on={i === at} />)}
+        <div className="rolls" role="tablist" aria-label="Photographs">
+          {photos.map((img, i) => (
+            <button key={img.url} type="button" role="tab" aria-selected={i === at}
+              aria-label={`Photograph ${i + 1}`} onClick={() => show(i)}>
+              <img src={img.url} alt="" loading="lazy" decoding="async" />
+            </button>
+          ))}
         </div>
       )}
+
+      <div className="frame">
+        <div className="swipe" ref={strip}
+          onScroll={e => setAt(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}>
+          {photos.map((img, i) => (
+            <figure key={img.url}>
+              <img src={img.url} alt={i === 0 ? title : ''}
+                loading={i === 0 ? 'eager' : 'lazy'} decoding="async" />
+            </figure>
+          ))}
+        </div>
+        {photos.length > 1 && (
+          <div className="pips" aria-label={`Photo ${at + 1} of ${photos.length}`}>
+            {photos.map((_, i) => <i key={i} data-on={i === at} />)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -84,6 +111,7 @@ export default function ProductPage({ slug, shop }) {
   const [colour, setColour] = useState(null);
   const [size, setSize] = useState(null);
   const [added, setAdded] = useState(false);
+  const [trying, setTrying] = useState(false);
 
   /*
    * The sticky bar exists for the shopper who has scrolled past the buttons, and for nobody else.
@@ -103,7 +131,7 @@ export default function ProductPage({ slug, shop }) {
   useEffect(() => {
     const ac = new AbortController();
     setState({ loading: true, error: null, product: null });
-    setColour(null); setSize(null); setAdded(false);
+    setColour(null); setSize(null); setAdded(false); setTrying(false);
     window.scrollTo({ top: 0 });
     getProduct(slug, code, { signal: ac.signal })
       .then(product => setState({ loading: false, error: null, product }))
@@ -233,6 +261,19 @@ export default function ProductPage({ slug, shop }) {
             <p className="tax" style={{ color: 'var(--muted)', marginTop: -12 }}>
               Sold out just now — ask the shop, they may be getting more.
             </p>
+          ) : null}
+
+          {/* Offered only where the shop switched it on and the platform can do it, so the button
+              never exists unless pressing it would work. */}
+          {shop?.tryOn && photos.length > 0 ? (
+            <button type="button" className="tryonbtn" onClick={() => setTrying(true)}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                <path d="M9 4 5 6v5h2.5v7h9v-7H19V6l-4-2" strokeLinejoin="round" />
+                <path d="M9 4a3 3 0 0 0 6 0" strokeLinecap="round" />
+              </svg>
+              See it on you
+              <em>free</em>
+            </button>
           ) : null}
 
           {choices.colours.length > 1 && (
@@ -383,6 +424,11 @@ export default function ProductPage({ slug, shop }) {
           </div>
         </div>
       </div>
+
+      {/* The page carries on being a shop rather than stopping at the description. */}
+      <AlsoIn slug={slug} product={p} shop={shop} />
+
+      {trying ? <TryOn slug={slug} product={p} onClose={() => setTrying(false)} /> : null}
     </>
   );
 }

@@ -1,14 +1,14 @@
 import crypto from 'crypto';
 import { prisma } from '../../lib/prisma';
 import { salesOrderService } from '../sales-order.service';
-import { storefrontCatalogueService } from '../storefront-catalogue.service';
 import { pricingQuoteService, fingerprint, toMinor, fromMinor } from '../pricing';
 import { phoneForOutsideCustomer } from '../customer.service';
 import { generateSequentialCode } from '../../utils/codeGenerator';
 import { normalisePhone } from '../../lib/phone';
 import { afterCommit } from '../../lib/afterCommit';
 import { OnlineShopRuleError } from './rules';
-import { sendOrderPlacedNotice } from './notices';
+import { sendOrderPlacedNotice, emailOrderPlaced, tellTheShop } from './notices';
+import { isVerified } from './otp';
 
 /**
  * A customer buying from a shop's own online shop.
@@ -44,7 +44,8 @@ export async function orderingFor(clientId: string) {
     select: {
       isLive: true, locationIds: true,
       acceptsOrders: true, payOnDelivery: true, payOnline: true,
-      deliveryFee: true, freeDeliveryAbove: true, minOrderValue: true
+      deliveryFee: true, freeDeliveryAbove: true, minOrderValue: true,
+      deliverPincodes: true
     }
   });
   if (!shop) return null;
@@ -195,7 +196,22 @@ function deliveryMinor(shop: { deliveryFee: any; freeDeliveryAbove: any }, goods
  * open internet. The price that an order is written against is made once, at the moment of
  * ordering, by `place` below.
  */
-export async function priceBag(clientId: string, rawLines: unknown) {
+/**
+ * Codes the shopper typed, tidied.
+ *
+ * The pricing engine has always taken these -- a shop that prints "DIWALI20" on a card was
+ * authoring a code its own online shop had no way to accept. At most a handful: a checkout is not
+ * a place to try three hundred codes.
+ */
+function codes(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  return [...new Set(list
+    .filter((c): c is string => typeof c === 'string')
+    .map(c => c.trim().toUpperCase())
+    .filter(c => c && c.length <= 64))].slice(0, 5);
+}
+
+export async function priceBag(clientId: string, rawLines: unknown, rawCodes?: unknown) {
   const shop = await orderingFor(clientId);
   if (!shop) throw new OnlineShopRuleError('This shop is not taking orders.');
   /*
@@ -213,10 +229,12 @@ export async function priceBag(clientId: string, rawLines: unknown) {
   const items = await resolve(clientId, lines);
   const locationId = chooseStore(shop.locationIds, items);
 
+  const couponCodes = codes(rawCodes);
   const quote = await pricingQuoteService.quote(clientId, {
     locationId,
     channel: 'ONLINE',
-    lines: items.map(i => ({ variantId: i.variantId, quantity: i.quantity }))
+    lines: items.map(i => ({ variantId: i.variantId, quantity: i.quantity })),
+    couponCodes
   }, { persist: false });
 
   return view(shop, items, quote, locationId);
@@ -257,8 +275,18 @@ function view(
     currency: quote.currency ?? 'INR',
     /** Why a discount came off, in the shop's own words, so the page can show it. */
     offers: (quote.discounts ?? []).map((d: any) => ({ name: d.title ?? 'Offer', saved: Number(d.amount ?? 0) })),
+    /*
+     * A code that did not work, said as what it is. "There is no offer with that code" to somebody
+     * holding a card the shop printed starts an argument at the counter; the engine already tells
+     * the difference between a code that is unknown, one already spent and one that is real but
+     * does not apply here, and all three are worth passing on.
+     */
+    codesRefused: (quote.rejected ?? []).map((r: any) => ({ code: r.code, why: r.reason })),
+    codesAccepted: (quote.discounts ?? []).filter((d: any) => d.code).map((d: any) => String(d.code)),
     minOrderValue: shop.minOrderValue === null ? null : Number(shop.minOrderValue),
     freeDeliveryAbove: shop.freeDeliveryAbove === null ? null : Number(shop.freeDeliveryAbove),
+    /** Empty means everywhere. A shop that lists some is refusing the rest, and says so early. */
+    deliversEverywhere: shop.deliverPincodes.length === 0,
     payWays: shop.payWays
   };
 }
@@ -266,16 +294,29 @@ function view(
 export type PlaceInput = {
   placementKey?: unknown;
   lines?: unknown;
+  couponCodes?: unknown;
   name?: unknown;
   phone?: unknown;
   email?: unknown;
   address?: unknown;
+  pincode?: unknown;
   payWay?: unknown;
-  /** Set only when the number was proved to be theirs; see otp.ts. */
-  phoneVerified?: boolean;
 };
 
+/** A PIN code as India writes them: six digits, and never starting at zero. */
+const PINCODE = /^[1-9][0-9]{5}$/;
+
+/**
+ * How long an unproved order may hold the shop's stock.
+ *
+ * A day: long enough that a real customer whose WhatsApp was off still gets their order, short
+ * enough that a prankster cannot keep a shop's window empty over a weekend. A PROVED order has no
+ * expiry at all -- that is a real person, and only the shop decides when to let it go.
+ */
+const UNPROVED_HOLD_MS = 24 * 60 * 60 * 1000;
+
 const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const digitsOnly = (v: unknown) => String(v ?? '').replace(/\D/g, '');
 
 /**
  * Place the order.
@@ -317,13 +358,30 @@ export async function place(clientId: string, input: PlaceInput) {
 
   const address = text(input.address, 500);
   if (address.length < 10) {
-    throw new OnlineShopRuleError('Write out the full address, with the area and the PIN code.');
+    throw new OnlineShopRuleError('Write out the full address, with the house, the street and the area.');
   }
+
+  /*
+   * The PIN code, asked for on its own rather than hoped for inside the address.
+   *
+   * It is the one part of an address a shop can actually check, and the only way to say "we do not
+   * deliver there" before a customer has finished typing. Buried in a paragraph it can be checked
+   * by nobody.
+   */
+  const pincode = digitsOnly(input.pincode);
+  if (!PINCODE.test(pincode)) throw new OnlineShopRuleError('That PIN code does not look right. It is six digits.');
+  if (shop.deliverPincodes.length && !shop.deliverPincodes.includes(pincode)) {
+    throw new OnlineShopRuleError(
+      `This shop does not deliver to ${pincode} just now. Ask them on WhatsApp -- they may still be able to help.`
+    );
+  }
+
   const email = text(input.email, 120) || null;
 
   const lines = tidy(input.lines);
   const items = await resolve(clientId, lines);
   const locationId = chooseStore(shop.locationIds, items);
+  const couponCodes = codes(input.couponCodes);
 
   /*
    * The price the order is written against, made now and kept.
@@ -334,7 +392,8 @@ export async function place(clientId: string, input: PlaceInput) {
    */
   const quoteReq = {
     locationId, channel: 'ONLINE',
-    lines: items.map(i => ({ variantId: i.variantId, quantity: i.quantity }))
+    lines: items.map(i => ({ variantId: i.variantId, quantity: i.quantity })),
+    couponCodes
   };
   const quote = await pricingQuoteService.quote(clientId, quoteReq);
   const bag = view(shop, items, quote, locationId);
@@ -347,39 +406,73 @@ export async function place(clientId: string, input: PlaceInput) {
     );
   }
 
+  /*
+   * Whether this number was PROVED, read from what this shop actually sent and what was actually
+   * typed back -- never from a flag the browser sends. A page claiming "verified: true" would
+   * otherwise undo the whole point of asking.
+   */
+  const proved = await isVerified(clientId, phone.value);
+  /*
+   * The PIN code goes on the address only when the customer has not already written it there.
+   * Asking for it separately is right -- it is the one part of an address a shop can check -- but
+   * appending it blindly printed "Telangana - 500029" and then "500029" again on the packing slip.
+   */
+  const fullAddress = address.includes(pincode) ? address : `${address}\n${pincode}`;
   const token = crypto.randomBytes(24).toString('base64url');
 
   const salesOrderId = await prisma.$transaction(async (tx) => {
-    /*
-     * The customer, by the shop's own rule for somebody arriving from outside: the number is kept
-     * on the customer only when it belongs to nobody else. A number typed at a checkout is not
-     * proof of who they are, and matching on it would put a stranger's order on a regular's page.
-     * Once the number has been proved (an OTP over WhatsApp), that changes -- see otp.ts.
-     */
-    const resolvedPhone = await phoneForOutsideCustomer(tx as any, clientId, phone.value);
-    const existing = input.phoneVerified
-      ? await tx.customer.findFirst({ where: { clientId, phone: phone.value, deletedAt: null }, select: { id: true } })
-      : null;
+    let customerId: string;
+    let phoneOnOrder = phone.value;
 
-    const customerId = existing?.id ?? (await tx.customer.create({
-      data: {
-        clientId,
-        customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any),
-        name,
-        email,
-        phone: resolvedPhone.onCustomer,
-        shippingAddress: address,
-        // The shop has their name, number and address: a person it can find again, not a walk-in.
-        customerType: 'REGISTERED',
-        status: 'ACTIVE'
-      },
-      select: { id: true }
-    })).id;
+    if (proved) {
+      /*
+       * The number was proved, so this IS that customer: the same row the till knows, with their
+       * history and their points. This is the whole reason for asking for a code -- without proof
+       * the rule below has to make a new customer for every online order, and a regular buying
+       * online would be a stranger to their own shop.
+       */
+      const mine = await tx.customer.findFirst({
+        where: { clientId, phone: phone.value, deletedAt: null }, select: { id: true }
+      });
+      if (mine) {
+        customerId = mine.id;
+        // Their latest address, so the shop is not packing to one from two years ago.
+        await tx.customer.update({ where: { id: mine.id }, data: { shippingAddress: fullAddress } });
+      } else {
+        customerId = (await tx.customer.create({
+          data: {
+            clientId,
+            customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any),
+            name, email, phone: phone.value, shippingAddress: fullAddress,
+            // The shop has their name, number and address: a person it can find again.
+            customerType: 'REGISTERED', status: 'ACTIVE'
+          },
+          select: { id: true }
+        })).id;
+      }
+    } else {
+      /*
+       * Unproved, so the shop's own rule for somebody arriving from outside: the number is kept on
+       * the customer only when it belongs to nobody else. A number typed at a checkout is not proof
+       * of who they are, and matching on it would put a stranger's order on a regular's page.
+       */
+      const resolvedPhone = await phoneForOutsideCustomer(tx as any, clientId, phone.value);
+      phoneOnOrder = resolvedPhone.onOrder ?? phone.value;
+      customerId = (await tx.customer.create({
+        data: {
+          clientId,
+          customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any),
+          name, email, phone: resolvedPhone.onCustomer, shippingAddress: fullAddress,
+          customerType: 'REGISTERED', status: 'ACTIVE'
+        },
+        select: { id: true }
+      })).id;
+    }
 
     const order: any = await salesOrderService.writeFullOrderInTransaction(
       tx, clientId, locationId,
       {
-        customer: { id: customerId, name, phone: resolvedPhone.onOrder ?? phone.value, shippingAddress: address },
+        customer: { id: customerId, name, phone: phoneOnOrder, shippingAddress: fullAddress },
         externalOrderId: placementKey,
         sourceSystem: SHOP_SOURCE,
         status: 'CONFIRMED',
@@ -402,7 +495,9 @@ export async function place(clientId: string, input: PlaceInput) {
         placementKey,
         token,
         customerPhone: phone.value,
-        phoneVerified: input.phoneVerified === true,
+        phoneVerified: proved,
+        // An unproved order lets go of the shop's stock after a day; a proved one never does.
+        holdExpiresAt: proved ? null : new Date(Date.now() + UNPROVED_HOLD_MS),
         payWay: payWay as any,
         // Nothing is paid yet either way: on delivery the money comes later, and online it comes
         // when the gateway says so and not a moment before.
@@ -413,13 +508,71 @@ export async function place(clientId: string, input: PlaceInput) {
     return order.id as string;
   }, { timeout: 30000, maxWait: 15000 });
 
-  void salesOrderId;
 
-  // Only once the order is really there. Inside the transaction this could message a customer
-  // about an order that then failed to save.
-  afterCommit(() => { void sendOrderPlacedNotice(clientId, token); });
+  // Only once the order is really there. Inside the transaction these could tell a customer and a
+  // shop about an order that then failed to save.
+  afterCommit(() => {
+    // Three separate promises on purpose: WhatsApp being refused to somebody who said STOP must
+    // not stop their email, and neither must stop the shop being told.
+    void sendOrderPlacedNotice(clientId, token);
+    void emailOrderPlaced(clientId, token);
+    void tellTheShop(clientId, salesOrderId);
+  });
 
   return summary(clientId, token);
+}
+
+/**
+ * The customer calling their own order off.
+ *
+ * Only while it is still sitting at the shop. Once any of it has been sent, cancelling is a return
+ * and a return is a conversation -- so this says so and points at the shop rather than pretending.
+ * The cancelling itself is `salesOrderService.cancelOrder`, the same one the shop's own screen
+ * uses, which is what puts the stock back on the shelf.
+ */
+export async function cancel(clientId: string, token: unknown) {
+  const key = typeof token === 'string' ? token.trim() : '';
+  const row = key ? await prisma.onlineShopOrder.findUnique({
+    where: { token: key },
+    select: { clientId: true, salesOrderId: true, salesOrder: { select: { status: true } } }
+  }) : null;
+  if (!row || row.clientId !== clientId) throw new OnlineShopRuleError('That order could not be found.');
+
+  const status = (row as any).salesOrder.status as string;
+  if (status === 'CANCELLED') return summary(clientId, key);
+  if (status !== 'CONFIRMED' && status !== 'DRAFT') {
+    throw new OnlineShopRuleError('This order has already been sent, so it cannot be cancelled here. Message the shop and they will help.');
+  }
+
+  await salesOrderService.cancelOrder(clientId, row.salesOrderId);
+  return summary(clientId, key);
+}
+
+/**
+ * Orders whose hold has run out, let go.
+ *
+ * Unproved orders only, and only while nothing has been sent. Run from housekeeping; see the note
+ * on `holdExpiresAt` for why a shop open to the internet needs this at all.
+ */
+export async function releaseExpiredHolds(now = new Date()) {
+  const due = await prisma.onlineShopOrder.findMany({
+    where: { holdExpiresAt: { not: null, lte: now }, salesOrder: { status: 'CONFIRMED' } },
+    select: { clientId: true, salesOrderId: true },
+    take: 200
+  });
+
+  let released = 0;
+  for (const row of due) {
+    try {
+      await salesOrderService.cancelOrder(row.clientId, row.salesOrderId);
+      // Cleared so a cancel that half-worked is not tried for ever.
+      await prisma.onlineShopOrder.update({ where: { salesOrderId: row.salesOrderId }, data: { holdExpiresAt: null } });
+      released++;
+    } catch (e) {
+      console.warn('[online-shop] could not let go of a stale hold:', (e as Error)?.message);
+    }
+  }
+  return released;
 }
 
 /**
@@ -480,6 +633,8 @@ export async function summary(clientId: string, token: unknown) {
       : 'PLACED',
     payWay: row.payWay,
     paid: row.paid,
+    /** Whether the customer can still call it off themselves. */
+    mayCancel: o.status === 'CONFIRMED' || o.status === 'DRAFT',
     name: o.customerName,
     phone: o.customerPhone,
     address: o.shippingAddress,

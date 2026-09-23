@@ -91,15 +91,39 @@ async function checkProduct(clientId: string, code: string) {
   }
 }
 
+/**
+ * A department the shop actually sells, checked the same way a product code is.
+ *
+ * The nav is built from what the catalogue really holds, so a banner pointing at a department the
+ * shop has nothing in would land on an empty page -- a dead tap by another name.
+ */
+async function checkCategory(clientId: string, value: string) {
+  const { facetsFor } = await import('./facets');
+  const shop = await prisma.onlineShop.findUnique({
+    where: { clientId }, select: { locationIds: true, hideOutOfStock: true }
+  });
+  const facets = await facetsFor(clientId, {
+    locationIds: shop?.locationIds ?? [], hideOutOfStock: shop?.hideOutOfStock ?? false
+  });
+  if (!facets.categories.some(c => c.value === value.toUpperCase())) {
+    throw new OnlineShopRuleError(
+      `You do not have anything in ${value} online yet, so a banner pointing there would open an empty page.`
+    );
+  }
+}
+
 /** Where tapping it goes, checked so a banner can never be a dead tap. */
 function link(kind: unknown, value: unknown): { linkKind: OnlineShopBannerLink; linkValue: string | null } {
   const k = String(kind ?? 'NONE').toUpperCase();
   if (k === 'NONE' || !k) return { linkKind: 'NONE', linkValue: null };
-  if (k !== 'SEARCH' && k !== 'PRODUCT') throw new OnlineShopRuleError('A banner can go to a search or to one product.');
+  if (k !== 'SEARCH' && k !== 'PRODUCT' && k !== 'CATEGORY') {
+    throw new OnlineShopRuleError('A banner can go to a search, to a department, or to one product.');
+  }
   const v = words(value, 120);
   if (!v) {
-    throw new OnlineShopRuleError(k === 'SEARCH'
-      ? 'Say what this banner should search for, for example "silk".'
+    throw new OnlineShopRuleError(
+      k === 'SEARCH' ? 'Say what this banner should search for, for example "silk".'
+      : k === 'CATEGORY' ? 'Choose which department this banner opens.'
       : 'Choose which product this banner opens.');
   }
   return { linkKind: k as OnlineShopBannerLink, linkValue: v };
@@ -123,6 +147,7 @@ export async function add(clientId: string, userId: string | null, input: {
   // upload that is going to be refused anyway should be refused before any of it is done.
   const where = link(input.linkKind, input.linkValue);
   if (where.linkKind === 'PRODUCT') await checkProduct(clientId, where.linkValue!);
+  if (where.linkKind === 'CATEGORY') await checkCategory(clientId, where.linkValue!);
 
   const prepared = await prepareImage(buf, LIMITS);
 
@@ -172,6 +197,7 @@ export async function edit(clientId: string, id: string, input: {
   if (input.linkKind !== undefined) {
     where = link(input.linkKind, input.linkValue);
     if (where.linkKind === 'PRODUCT') await checkProduct(clientId, where.linkValue!);
+    if (where.linkKind === 'CATEGORY') await checkCategory(clientId, where.linkValue!);
   }
   await prisma.onlineShopBanner.update({
     where: { id },

@@ -60,7 +60,24 @@ export async function facetsFor(
    * comment above ELIGIBLE_PRODUCT warns about precisely that; importing it is the only way the
    * two cannot drift.
    */
-  const where = { ...ELIGIBLE_PRODUCT, clientId };
+  const where: any = { ...ELIGIBLE_PRODUCT, clientId };
+
+  /*
+   * A shop that hides what it has sold out of should not have those things in its nav either.
+   *
+   * This parameter was passed in and never used, so a shop with "hide sold out" on could show
+   * "Lehengas (3)" in its filter rail and then an empty page -- the exact dead end the facets were
+   * built to prevent. "Sellable" here means stock the shop actually sells online: some at one of
+   * its chosen stores, and not blocked there.
+   */
+  if (scope.hideOutOfStock && scope.locationIds.length) {
+    where.variants = {
+      some: {
+        stocks: { some: { locationId: { in: scope.locationIds }, quantity: { gt: 0 } } },
+        NOT: { locationProfiles: { some: { locationId: { in: scope.locationIds }, isAvailable: false } } }
+      }
+    };
+  }
 
   const [byCategory, byDressType, byFabric, byBrand, span, total] = await Promise.all([
     prisma.product.groupBy({ by: ['category'], where, _count: { _all: true } }),
