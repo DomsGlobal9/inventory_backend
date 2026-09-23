@@ -1499,3 +1499,43 @@ body { overflow-x: hidden; }
   /* With a strip to tap, the pips would be saying the same thing twice. */
   .gallery[data-many='true'] .pips { display: none; }
 }
+
+/* ── Two faults a real phone showed that the pane could not ──────────────────────────── */
+
+/*
+ * `main` was 443px wide inside a 393px phone, so the second product in every row was cut off at
+ * the edge of the screen -- and `overflow-x: hidden` on the body was quietly hiding it rather than
+ * fixing it, which is exactly what that property is bad for.
+ *
+ * The cause is the filter rail: it is full-bleed, which it achieves with a negative margin either
+ * side, and a negative margin still counts towards its parent's MIN-CONTENT. `main` is a flex item
+ * of #root, and a flex item sized by content takes its min-content -- so one full-bleed strip made
+ * the whole page 50px wider than the phone. `min-width: 0` does not help here, because the width
+ * is not coming from shrinking; `width: 100%` gives it a definite size and the rail overflows it
+ * the way it was always meant to.
+ */
+.grow { width: 100%; }
+
+/*
+ * A bar that does not change height.
+ *
+ * "In your bag (2)" wrapped onto three lines in a 393px bar, which made it 98px tall; "Buy now"
+ * took two. So the bar grew and shrank as the label changed -- under the thumb about to press it.
+ * Nothing in a fixed bar should wrap, and a bar fixed to the bottom of the screen should be one
+ * height for ever.
+ */
+.dock .in { min-height: 48px; }
+.dock .go {
+  white-space: nowrap;
+  padding-left: 12px; padding-right: 12px;
+  font-size: 14px;
+  min-width: 0;
+}
+.dock .amt { min-width: 0; }
+.dock .amt b { white-space: nowrap; }
+@media (max-width: 420px) {
+  /* At this width the price, two buttons and their padding do not all fit honestly. The price is
+     already large further up the page, and the bar exists to carry the BUTTONS down the page. */
+  .dock .amt span { display: none; }
+  .dock .go { font-size: 13.5px; padding-left: 10px; padding-right: 10px; }
+}

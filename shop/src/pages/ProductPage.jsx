@@ -429,8 +429,11 @@ export default function ProductPage({ slug, shop }) {
 
               {canAdd ? (
                 <>
+                  {/* Short on purpose. "In your bag (2)" wrapped to three lines in the bar, and
+                      because the label changed length as the bag changed, the bar grew and shrank
+                      under the shopper's thumb. */}
                   <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)}>
-                    {added ? <><Ticked /> Added</> : inBag > 0 ? `In your bag (${inBag})` : 'Add to bag'}
+                    {added ? <><Ticked /> Added</> : inBag > 0 ? `In bag · ${inBag}` : 'Add to bag'}
                   </button>
                   <button type="button" className="go" onClick={() => add(true)}>Buy now</button>
                 </>
