@@ -334,6 +334,20 @@ export default function CheckoutPage({ shop }) {
               </p>
               <Link className="go quiet" to={`/${slug}/bag`}>Back to the bag</Link>
             </>
+          ) : state.error ? (
+            /*
+             * A checkout that cannot price itself.
+             *
+             * It used to sit on a skeleton for ever, which reads as a page still loading rather
+             * than one that has given up -- and the only way out was the bag icon in the bar. The
+             * reason is already shown above; this is the way back to do something about it.
+             */
+            <>
+              <p className="tiny" style={{ marginTop: 0 }}>
+                Sort your bag out and come back — nothing has been ordered.
+              </p>
+              <Link className="go" to={`/${slug}/bag`}>Back to the bag</Link>
+            </>
           ) : (
             <div className="bone" style={{ height: 180, borderRadius: 12 }} />
           )}

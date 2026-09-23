@@ -109,22 +109,25 @@ export default function Nav({ shop, compact = false }) {
               placeholder={`Search ${shop?.name ?? 'the shop'}`} aria-label="Search this shop" />
           </form>
 
-          <button type="button" className="icon only-phone" aria-label="Search"
-            onClick={() => setSeeking(s => !s)} aria-expanded={seeking}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" strokeLinecap="round" />
-            </svg>
-          </button>
+          {/* Grouped, so they sit together at the right rather than trailing the search box. */}
+          <div className="tools">
+            <button type="button" className="icon only-phone" aria-label="Search"
+              onClick={() => setSeeking(s => !s)} aria-expanded={seeking}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" strokeLinecap="round" />
+              </svg>
+            </button>
 
-          <Link to={`/${slug}/orders`} className="icon" aria-label="Your orders" title="Your orders">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-              <path d="M5 4h11l3 3v13H5z" strokeLinejoin="round" />
-              <path d="M8.5 11h7M8.5 15h4" strokeLinecap="round" />
-            </svg>
-          </Link>
-          <Link to={`/${slug}/bag`} className="icon" aria-label={count ? `Your bag, ${count} pieces` : 'Your bag'}>
-            <Bag n={count} />
-          </Link>
+            <Link to={`/${slug}/orders`} className="icon" aria-label="Your orders" title="Your orders">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                <path d="M5 4h11l3 3v13H5z" strokeLinejoin="round" />
+                <path d="M8.5 11h7M8.5 15h4" strokeLinecap="round" />
+              </svg>
+            </Link>
+            <Link to={`/${slug}/bag`} className="icon" aria-label={count ? `Your bag, ${count} pieces` : 'Your bag'}>
+              <Bag n={count} />
+            </Link>
+          </div>
         </div>
 
         {seeking && (

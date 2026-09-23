@@ -56,6 +56,17 @@ export const GridSkeleton = ({ count = 8 }) => (
 export function Problem({ error, onRetry, shopName }) {
   const kind = error?.kind;
 
+  /*
+   * A rule the shop applied, said as the shop said it.
+   *
+   * "Anarkali Suit Set (L) is not available in the quantity you asked for" is guidance -- the
+   * shopper can change the number and carry on. Shown under a heading reading "Something went
+   * wrong" it became a fault, and a customer who thinks the shop is broken leaves.
+   */
+  if (kind === 'RULE') {
+    return <Say title={error.message} action={onRetry ? <Retry onRetry={onRetry} /> : null} />;
+  }
+
   if (kind === 'UNKNOWN_SHOP') {
     return (
       <Say title="There is no shop at this address">

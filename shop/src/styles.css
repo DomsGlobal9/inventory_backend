@@ -1117,15 +1117,228 @@ button.slide { cursor: pointer; }
  * which on a slow connection is a page that twitches for several seconds. The box holds its shape
  * from the start and the picture fades into it.
  */
-.shot { position: relative; overflow: hidden; border-radius: var(--r); background: var(--soft); }
-.shot img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .18s ease; }
+/*
+ * Scoped to `[data-state]`, which only the Shot component sets.
+ *
+ * Written as a bare `.shot img { opacity: 0 }` this reached every other photograph box in the app
+ * -- the bag's thumbnails, the order's, the "more from this shop" rail -- none of which go through
+ * Shot, so none of which ever got the class that turns the opacity back on. They were invisible.
+ */
+.shot[data-state] { position: relative; overflow: hidden; border-radius: var(--r); background: var(--soft); }
+.shot[data-state] img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .18s ease; }
 .shot[data-state='here'] img { opacity: 1; }
 /* A photograph that never arrives leaves the quiet box, not a broken-image icon: one of those
    makes a whole shop look broken. */
 .shot[data-state='failed'] img, .shot[data-state='none'] img { display: none; }
 @media (hover: hover) { .tile:hover .shot img { transform: scale(1.045); } }
-@media (prefers-reduced-motion: reduce) { .shot img { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .shot[data-state] img { transition: none; } }
 
 /* Where the next lot is fetched from, and the button for anyone without an observer. */
 .edge { display: flex; justify-content: center; padding: 8px 0 40px; min-height: 48px; }
 .edge .tiny { color: var(--faint); font-size: 12px; margin: 10px 0 0; }
+
+/* ── The bar, laid out properly ──────────────────────────────────────────────────────── */
+
+/*
+ * Three columns rather than a row of things pushed along by whatever grows.
+ *
+ * As a flex row the brand sat at the left, the search took every spare pixel, and the two icons
+ * trailed immediately after it -- so on a wide screen everything huddled in the middle-left with a
+ * gulf to the right of it. A shop bar reads left, centre, right: who this is, what you are looking
+ * for, and what you are carrying.
+ */
+.bar .row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; }
+.tools { display: flex; align-items: center; gap: 2px; justify-self: end; }
+@media (min-width: 720px) { .tools { gap: 6px; } }
+
+/*
+ * A shop's logo is usually a WORDMARK, not an icon.
+ *
+ * Cropped square with object-fit: cover, a shop whose logo is its name in Telugu had the middle
+ * third of it shown and the rest cut off. Contained, and allowed to be wider than it is tall, a
+ * wordmark reads as itself and a square logo is still square.
+ */
+.brand .mark {
+  width: auto; height: 34px; max-width: 108px;
+  object-fit: contain; border-radius: 8px; flex: 0 0 auto;
+}
+@media (min-width: 720px) {
+  .brand .mark { height: 44px; max-width: 150px; }
+  /* The search has a size of its own rather than swallowing the slack. */
+  .find { margin: 0 auto; width: 100%; max-width: 480px; }
+  .bar .row { gap: 28px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+ * A shop that looks like it sells ₹45,000 sarees
+ *
+ * Everything above this line is correct and plain. What was missing is the thing a customer
+ * decides in the first half second: whether this looks like a shop worth trusting with real
+ * money. Three levers, and no new bytes on the wire for any of them.
+ * ═══════════════════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /*
+   * A serif for the things that carry the shop's voice -- its name, its pieces, its prices.
+   *
+   * Not a web font: the page is served with `default-src 'self'`, so Google Fonts is blocked
+   * outright, and a font fetched at load is a second of invisible text on a slow connection. The
+   * stack below is already on every phone and laptop that will open this, and a saree shop set in
+   * a serif reads as a saree shop rather than as a dashboard.
+   */
+  --display: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+
+  --lift: 0 1px 2px rgba(16, 18, 24, .04), 0 12px 28px -14px rgba(16, 18, 24, .22);
+  --lift-hi: 0 2px 6px rgba(16, 18, 24, .06), 0 22px 44px -18px rgba(16, 18, 24, .3);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --lift: 0 1px 2px rgba(0,0,0,.5), 0 12px 30px -14px rgba(0,0,0,.75);
+    --lift-hi: 0 2px 8px rgba(0,0,0,.55), 0 24px 50px -18px rgba(0,0,0,.85);
+  }
+}
+
+/* The shop's own name, in its own voice. */
+.brand .name { font-family: var(--display); font-weight: 600; letter-spacing: -.005em; }
+.brand .sub { letter-spacing: .04em; text-transform: uppercase; font-size: 9.5px; opacity: .8; }
+
+/* Pieces and prices. A price in a serif reads as a price in a shop, not a figure in a table. */
+.tile h2, .piece h1, .pagetitle, .landed h1, .say h2, .alsoin h2, .small h3, .baglines h2, .baglines h3 {
+  font-family: var(--display);
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+.tile .now, .pricebox .now, .cost .now, .bill .sum dd, .due b, .orderlist .cash b {
+  font-family: var(--display);
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.piece h1 { line-height: 1.18; }
+.pagetitle { font-size: 24px; }
+@media (min-width: 880px) { .pagetitle { font-size: 30px; } }
+
+/* ── Surfaces that sit on the page rather than being drawn on it ─────────────────────── */
+
+.tile .shot, .shot[data-state] {
+  box-shadow: var(--lift);
+  transition: box-shadow .28s ease, transform .28s cubic-bezier(.22,.61,.36,1);
+}
+@media (hover: hover) {
+  .tile:hover .shot { box-shadow: var(--lift-hi); transform: translateY(-3px); }
+}
+
+.bill, .ask, .card, .promise, .filters {
+  box-shadow: var(--lift);
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+/* ── Buttons that answer a press ─────────────────────────────────────────────────────── */
+
+.go {
+  transition: transform .12s ease, box-shadow .2s ease, background .2s ease;
+  letter-spacing: -.005em;
+}
+.go:not(.quiet):not(:disabled) {
+  box-shadow: 0 1px 2px rgba(16,18,24,.1), 0 10px 22px -12px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+.go:not(:disabled):active { transform: scale(.985); }
+@media (hover: hover) {
+  .go:not(.quiet):not(:disabled):hover {
+    box-shadow: 0 2px 4px rgba(16,18,24,.12), 0 16px 30px -12px color-mix(in srgb, var(--accent) 75%, transparent);
+  }
+  .go.quiet:not(:disabled):hover { background: var(--soft); border-color: var(--ink); }
+}
+
+.pill, .opt { transition: border-color .18s ease, background .18s ease, transform .12s ease; }
+.pill:active, .opt:not(:disabled):active { transform: scale(.97); }
+@media (hover: hover) {
+  .pill:hover, .opt:not(:disabled):hover { border-color: color-mix(in srgb, var(--ink) 45%, var(--line)); }
+}
+
+/* The chosen size or colour, said properly rather than with a slightly darker outline. */
+.opt[aria-pressed='true'] {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+  font-weight: 600;
+}
+
+/* ── The banner, framed ──────────────────────────────────────────────────────────────── */
+
+@media (min-width: 720px) {
+  .strip { box-shadow: var(--lift); }
+}
+.slide .over h2 { font-family: var(--display); font-weight: 600; text-shadow: 0 1px 14px rgba(0,0,0,.35); }
+.slide .cta { box-shadow: 0 2px 12px rgba(0,0,0,.2); }
+
+/* ── The price, given the room a price deserves ──────────────────────────────────────── */
+
+.pricebox { align-items: last baseline; gap: 12px; }
+.pricebox .now { font-size: 30px; letter-spacing: -.02em; }
+@media (min-width: 880px) { .pricebox .now { font-size: 34px; } }
+.pricebox .cut { letter-spacing: .03em; }
+
+/* ── A quiet rule, where a section change needs saying ───────────────────────────────── */
+
+.alsoin { border-top-color: color-mix(in srgb, var(--line) 80%, transparent); }
+.alsoin h2 { font-size: 19px; }
+@media (min-width: 880px) { .alsoin h2 { font-size: 22px; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .tile .shot, .shot[data-state], .go, .pill, .opt { transition: none !important; }
+  .tile:hover .shot { transform: none; }
+}
+
+/* ── "See it on you", given the room the moment deserves ─────────────────────────────── */
+
+/*
+ * A customer who sees a ₹45,000 saree on themselves has decided something. The screen they decide
+ * it on should not look like a file dialog -- so once there is a result the backdrop goes dark,
+ * the shop behind it goes away, and the picture gets the sheet.
+ */
+.sheet { background: rgba(10, 12, 16, .55); }
+.sheet.showing { background: rgba(6, 7, 10, .88); backdrop-filter: blur(8px); }
+
+.sheetin {
+  box-shadow: 0 -4px 40px -8px rgba(0,0,0,.35);
+  animation: sheet-up .26s cubic-bezier(.22,.61,.36,1) both;
+}
+@keyframes sheet-up { from { transform: translateY(18px); opacity: 0 } to { transform: none; opacity: 1 } }
+@media (min-width: 720px) {
+  @keyframes sheet-up { from { transform: scale(.96); opacity: 0 } to { transform: none; opacity: 1 } }
+}
+
+.sheethead h2 { font-family: var(--display); font-weight: 600; font-size: 18px; }
+
+/* The picture, big, with the shopper's own underneath for the hold-to-compare. */
+.tryshot { position: relative; }
+.tryshot.big { max-height: 62vh; border-radius: 16px; box-shadow: 0 10px 40px -14px rgba(0,0,0,.5); }
+.tryshot .under {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
+  opacity: 0; transition: opacity .12s ease; pointer-events: none;
+}
+.tryshot .under[data-show='true'] { opacity: 1; }
+
+.compare {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 0; border-radius: 999px; cursor: pointer;
+  padding: 9px 16px; font: inherit; font-size: 12.5px; font-weight: 600;
+  background: rgba(255,255,255,.92); color: #16181d;
+  box-shadow: 0 4px 16px rgba(0,0,0,.28);
+  -webkit-user-select: none; user-select: none; touch-action: none;
+}
+.compare:active { background: #fff; }
+
+/* What to aim for, drawn rather than described. */
+.howto { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 2px 0 18px; }
+.howto div {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 14px 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--soft);
+}
+.howto svg { width: 34px; height: 48px; color: var(--muted); }
+.howto span { font-size: 11px; color: var(--muted); text-align: center; line-height: 1.35; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sheetin { animation: none; }
+  .tryshot .under { transition: none; }
+}
