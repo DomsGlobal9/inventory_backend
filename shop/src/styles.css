@@ -1332,6 +1332,107 @@ button.slide { cursor: pointer; }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════
+ * THE BAR, AGAIN: the shop's name is the loudest thing in the shop
+ *
+ * It was correct and completely anonymous. The name sat at 16px -- smaller than the price on
+ * any tile below it -- while a filled grey search pill, the widest and heaviest object on the
+ * page, took the middle. So the first thing a customer's eye landed on in a saree shop was a
+ * form control. That is backwards: on a page reached by tapping a link in WhatsApp, the one
+ * question being answered in the first half second is "whose shop is this?"
+ *
+ * Three moves, no new bytes on the wire:
+ *   - the name roughly doubles and keeps the display serif, so it reads as a shopfront;
+ *   - the search gives up its fill for a hairline and stops competing;
+ *   - the logo and the name are separated by a rule, so a wordmark beside a name reads as one
+ *     lockup rather than two things that collided.
+ * ═══════════════════════════════════════════════════════════════════════════════════════ */
+
+.bar { border-bottom-color: color-mix(in srgb, var(--line) 85%, transparent); }
+.bar .row { height: auto; min-height: var(--bar); padding-block: 10px; }
+
+/*
+ * THE BRAND MUST BE ABLE TO SHRINK, and on a phone a grid could not let it.
+ *
+ * A shop called "Sree Padmavathi Handloom Silks" ran its name straight underneath the search and
+ * bag icons. No amount of text-overflow helps that: ellipsis needs a width to ellipsise INTO, and
+ * the brand had none to be bounded by.
+ *
+ * The grid is three columns -- brand, search, tools -- and below 720px the SEARCH IS DISPLAY:NONE.
+ * That leaves two items for three tracks, so the tools were auto-placed into the middle `1fr`
+ * column while the brand's `auto` column, which means max-content and does not give way, grew
+ * straight through them. Widening the brand track could not fix a layout that had lost a column.
+ *
+ * So on a phone it is a flex row: the brand takes what is left after the tools and no more, and
+ * `min-width: 0` lets it fall below its content, which is the whole of what makes an ellipsis
+ * possible. The grid returns at 720px, where all three columns are really there.
+ *
+ * Caught by typing a long name into a real bar rather than by looking at a short one.
+ */
+@media (max-width: 719px) {
+  .bar .row { display: flex; align-items: center; }
+  .brand { flex: 1 1 auto; min-width: 0; }
+  .tools { flex: 0 0 auto; margin-left: auto; }
+}
+
+.brand { gap: 11px; }
+/*
+ * The hairline between a logo and the name. Only when there IS a logo -- :has is understood
+ * everywhere this shop runs, and where it is not, the rule simply never appears, which is the
+ * old look and not a broken one.
+ */
+.brand:has(.mark) .names {
+  padding-left: 11px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 90%, transparent);
+}
+.brand .names { gap: 1px; }
+
+.brand .name {
+  font-size: 21px; line-height: 1.1; letter-spacing: -.015em; font-weight: 600;
+}
+.brand .sub {
+  font-size: 9.5px; letter-spacing: .07em; opacity: .75;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+/* A quiet green dot: the shop is open and these pieces are really there to buy. */
+.brand .sub::before {
+  content: ''; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--save); flex: 0 0 auto; opacity: .85;
+}
+
+/*
+ * The search recedes. A hairline says "you may type here" quite as clearly as a filled pill,
+ * and does not shout it over the shop's own name.
+ */
+.find {
+  background: transparent; height: 40px;
+  border-color: color-mix(in srgb, var(--line) 92%, transparent);
+  transition: border-color .18s ease, background .18s ease;
+}
+.find:focus-within {
+  border-color: color-mix(in srgb, var(--ink) 35%, var(--line));
+  background: var(--card);
+}
+
+/* Big enough to hit, quiet enough to ignore until wanted. */
+.icon { width: 40px; height: 40px; border-radius: 11px; }
+.icon:hover { background: var(--soft); }
+.bagicon i { box-shadow: 0 0 0 2px var(--bg); }
+
+@media (min-width: 720px) {
+  .brand { gap: 14px; }
+  .brand:has(.mark) .names { padding-left: 14px; }
+  /* The shopfront size. Below this the name has to share a 393px line with two icons. */
+  .brand .name { font-size: 25px; }
+  .brand .sub { font-size: 10px; }
+  .bar .row { padding-block: 13px; }
+}
+
+/* The departments, set off from the bar above them rather than floating under it. */
+.depts { padding-top: 2px; }
+
+@media (prefers-reduced-motion: reduce) { .find { transition: none; } }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
  * A shop that looks like it sells ₹45,000 sarees
  *
  * Everything above this line is correct and plain. What was missing is the thing a customer
