@@ -329,6 +329,20 @@ export default function ProductPage({ slug, shop }) {
             </div>
           )}
 
+          {/*
+            "Only 3 left", when the shop has asked to say it.
+            
+            Placed under the size and above the buttons, which is where the decision is made. The
+            number arrives already capped by the server -- a shop with two hundred sarees sends
+            nothing at all -- so this only ever prints a handful, and null means "say nothing"
+            rather than "none": sold out is its own state above.
+          */}
+          {chosen?.fewLeft ? (
+            <p className="few">
+              {chosen.fewLeft === 1 ? 'Last one left' : `Only ${chosen.fewLeft} left`}
+            </p>
+          ) : null}
+
           {/* The buttons where a shop puts them: under the size, not floating over the page. */}
           <div ref={watch} className={`buyrow${canAdd ? '' : ' one'}`}>
             {canAdd ? (

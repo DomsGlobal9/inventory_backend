@@ -366,6 +366,21 @@ button.slide { cursor: pointer; }
 .cost .off { font-size: 14px; }
 .tax { font-size: 12px; color: var(--faint); margin: 0 0 20px; }
 
+/*
+ * "Only 3 left". Urgent enough to read, not so loud it looks like a sales trick -- a saree shop
+ * saying it has two left is a fact, and dressing a fact up as a countdown is how a shop stops
+ * being believed. Warm amber rather than red: red is what the page uses for something wrong.
+ */
+.few {
+  font-size: 13px; font-weight: 600; color: #a45b0a;
+  margin: -8px 0 14px; display: flex; align-items: center; gap: 6px;
+}
+.few::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor; flex: none;
+}
+@media (prefers-color-scheme: dark) { .few { color: #e9a23b; } }
+
 .pick { margin-bottom: 20px; }
 .pick > p { font-size: 12.5px; color: var(--muted); margin: 0 0 9px; font-weight: 500; }
 .pick > p b { color: var(--ink); font-weight: 600; }

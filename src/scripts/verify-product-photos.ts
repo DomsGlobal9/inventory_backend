@@ -155,17 +155,17 @@ async function main() {
     primaries.length === 2 && primaries.some(p => p.variantId === red[0].id) && primaries.some(p => p.variantId === blue.id),
     JSON.stringify(primaries));
 
-  // ── E. The shop's own photographs lead ──────────────────────────────────────────────────
-  console.log('\nE. THE SHOP\'S OWN PHOTOGRAPHS LEAD');
+  // ── E. The model shots lead, the shop's own follow ──────────────────────
+  console.log('\nE. THE MODEL SHOTS LEAD, THE SHOP\'S OWN FOLLOW');
 
   const listed = await imageService.getImages(product.id, SHOP);
-  const firstGenerated = listed.findIndex(i => i.generated);
-  const lastOwn = listed.map(i => i.generated).lastIndexOf(false);
-  check('every photograph the shop took is listed before every generated one',
-    firstGenerated === -1 || firstGenerated > lastOwn,
-    listed.map(i => (i.generated ? 'generated' : 'own')).join(', '));
-
-  // ── F. The feed a merchant's website reads ──────────────────────────────────────────────
+  // The starred one leads whatever it is, so it is not part of this question.
+  const rest = listed.filter(i => !i.isPrimary);
+  const lastGenerated = rest.map(i => i.generated).lastIndexOf(true);
+  const firstOwn = rest.findIndex(i => !i.generated);
+  check('the model shots come before the shop\'s own photographs',
+    lastGenerated === -1 || firstOwn === -1 || lastGenerated < firstOwn,
+    rest.map(i => (i.generated ? `view:${i.view ?? '?'}` : 'own')).join(', '));
   console.log('\nF. THE FEED A MERCHANT\'S WEBSITE READS');
 
   // The same photograph on three sizes again, to prove the feed says it once.
@@ -185,10 +185,10 @@ async function main() {
   check('  ...and no photograph is repeated at all',
     urls.length === new Set(urls).size, urls.join(', '));
 
-  const ownFirst = (feed?.images ?? []).findIndex((i: any) => i.url === 'https://example.test/feed-red.jpg');
+  const ownAt = (feed?.images ?? []).findIndex((i: any) => i.url === 'https://example.test/feed-red.jpg');
   const generatedAt = (feed?.images ?? []).findIndex((i: any) => i.url === view.url);
-  check('the shop\'s own photograph comes before the generated one',
-    ownFirst >= 0 && (generatedAt === -1 || ownFirst < generatedAt), `own@${ownFirst} generated@${generatedAt}`);
+  check('the generated view comes before the shop\'s own photograph',
+    generatedAt >= 0 && ownAt >= 0 && generatedAt < ownAt, `generated@${generatedAt} own@${ownAt}`);
 
   // ── F2. The star a shop presses actually moves the photograph ───────────────────────────
   console.log('\nF2. MARKING A DIFFERENT PHOTOGRAPH AS THE MAIN ONE');

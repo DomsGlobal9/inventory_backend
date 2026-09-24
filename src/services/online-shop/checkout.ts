@@ -169,7 +169,7 @@ function chooseStore(locationIds: string[], items: Resolved[]): string {
   const short = items.find(i => !locationIds.some(id => canSupply(i, id)));
   if (short) {
     throw new OnlineShopRuleError(
-      `${short.title}${short.size ? ` (${short.size})` : ''} is not available in the quantity you asked for. ` +
+      `${describePiece(short)} is not available in the quantity you asked for. ` +
       'Change the number, or take it out of your bag.'
     );
   }
@@ -177,6 +177,18 @@ function chooseStore(locationIds: string[], items: Resolved[]): string {
     'These pieces are in different stores, so they cannot be sent together. Order them separately, ' +
     'or ask the shop on WhatsApp.'
   );
+}
+
+/**
+ * A piece named the way a shopper would recognise it, colour and all.
+ *
+ * "Four Ways Saree (S)" is no help when a shop sells that saree in red and blue and the bag holds
+ * both: the shopper is told something is short and cannot tell which of the two it is. The colour
+ * is the first thing they chose, so it is the first thing this says.
+ */
+function describePiece(item: Resolved): string {
+  const parts = [item.colour, item.size].filter(Boolean);
+  return parts.length ? `${item.title} (${parts.join(', ')})` : item.title;
 }
 
 function canSupply(item: Resolved, locationId: string): boolean {
@@ -571,7 +583,7 @@ export async function place(clientId: string, input: PlaceInput) {
       const gone = items.find(i => i.variantId === e?.details?.variantId);
       throw new OnlineShopRuleError(
         gone
-          ? `${gone.title}${gone.size ? ` (${gone.size})` : ''} has just been bought by someone else. ` +
+          ? `${describePiece(gone)} has just been bought by someone else. ` +
             'Take it out of your bag, or ask for fewer.'
           : 'Something in your bag has just been bought by someone else. Refresh the page and try again.'
       );

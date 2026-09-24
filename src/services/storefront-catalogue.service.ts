@@ -230,7 +230,7 @@ const PRODUCT_SELECT = {
     // product's views from; a merchant's own website has always received only the finished ones and
     // still does, while a shop that wants to show everything it uploaded can say so. Filtering here
     // meant neither could choose.
-    select: { url: true, isPrimary: true, orderIndex: true, variantId: true, imageType: true, generated: true },
+    select: { url: true, isPrimary: true, orderIndex: true, variantId: true, imageType: true, generated: true, view: true },
     /*
      * The photograph the shop CHOSE leads. Then their own photographs, then the generated
      * views, then oldest first.
@@ -286,7 +286,34 @@ function toStorefrontProduct(
     ? p.images
     : p.images.filter(i => i.imageType === 'COVER' || i.imageType === 'GALLERY');
   const seenUrls = new Set<string>();
-  const shown = visible.filter(i => !seenUrls.has(i.url) && seenUrls.add(i.url));
+  const unique = visible.filter(i => !seenUrls.has(i.url) && seenUrls.add(i.url));
+
+  /*
+   * The order a shopper meets the photographs in.
+   *
+   *   1. the one the shop starred       -- whatever it is, that is the shop saying "this one"
+   *   2. the model shots, front first    -- front, sitting, side, back
+   *   3. the shop's own photographs      -- the flat-lay, the border, the weave
+   *
+   * The model shots lead because that is what somebody deciding whether to buy a saree wants to
+   * see: the garment on a person. The shop's own pictures are the detail they look at second --
+   * worth having, and worth having AFTER. This is the opposite of the order the admin's own list
+   * used at first, which put the shop's photographs first on the reasoning that a real photograph
+   * beats a generated one. True of provenance, wrong for a shop window.
+   *
+   * Sorted here rather than in the query because "front, sitting, side, back" is not an order any
+   * column sorts into -- alphabetically it is back, front, left, right, which is nothing at all.
+   */
+  const VIEW_ORDER: Record<string, number> = { front: 0, left: 1, right: 2, back: 3 };
+  const rank = (i: typeof unique[number]) =>
+    i.isPrimary ? -1
+      : i.generated ? (VIEW_ORDER[i.view ?? ''] ?? 4)
+      : 10;
+  const shown = unique
+    .map((img, i) => ({ img, i }))
+    // Stable inside each group, so the order the shop arranged is kept within it.
+    .sort((a, b) => rank(a.img) - rank(b.img) || a.i - b.i)
+    .map(x => x.img);
   return {
     productCode: p.productCode,
     title: p.title,

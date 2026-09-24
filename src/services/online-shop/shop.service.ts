@@ -94,6 +94,7 @@ export async function settingsFor(clientId: string) {
     accent: shop?.accent ?? null,
     locationIds: shop?.locationIds ?? [],
     hideOutOfStock: shop?.hideOutOfStock ?? false,
+    showFewLeft: shop?.showFewLeft ?? true,
     acceptsOrders: shop?.acceptsOrders ?? false,
     payOnDelivery: shop?.payOnDelivery ?? true,
     payOnline: shop?.payOnline ?? false,
@@ -151,7 +152,7 @@ export async function chooseSlug(clientId: string, raw: unknown) {
 
 /** Everything except the address, which has its own rules. */
 export async function save(clientId: string, input: {
-  displayName?: unknown; accent?: unknown; locationIds?: unknown; hideOutOfStock?: unknown;
+  displayName?: unknown; accent?: unknown; locationIds?: unknown; hideOutOfStock?: unknown; showFewLeft?: unknown;
   returnPolicy?: unknown; grievanceName?: unknown; grievancePhone?: unknown; grievanceEmail?: unknown;
   acceptsOrders?: unknown; payOnDelivery?: unknown; payOnline?: unknown;
   deliveryFee?: unknown; freeDeliveryAbove?: unknown; minOrderValue?: unknown;
@@ -253,6 +254,7 @@ export async function save(clientId: string, input: {
       accent: typeof input.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(input.accent.trim()) ? input.accent.trim() : undefined,
       ...(locationIds !== undefined ? { locationIds } : {}),
       ...(input.hideOutOfStock !== undefined ? { hideOutOfStock: input.hideOutOfStock === true } : {}),
+      ...(input.showFewLeft !== undefined ? { showFewLeft: input.showFewLeft === true } : {}),
       ...(input.acceptsOrders !== undefined ? { acceptsOrders: input.acceptsOrders === true } : {}),
       ...(input.payOnDelivery !== undefined ? { payOnDelivery: input.payOnDelivery === true } : {}),
       ...(input.payOnline !== undefined ? { payOnline: input.payOnline === true } : {}),
@@ -317,7 +319,7 @@ export async function publicShop(slugRaw: unknown): Promise<
   | { state: 'UNKNOWN' }
   | { state: 'CLOSED'; name: string }
   | { state: 'OPEN'; clientId: string; name: string; logoUrl: string | null; bannerUrl: string | null;
-      accent: string | null; currency: string; hideOutOfStock: boolean; locationIds: string[];
+      accent: string | null; currency: string; hideOutOfStock: boolean; showFewLeft: boolean; locationIds: string[];
       /** Whether this shop shows every photograph or only the finished ones. */
       allPhotos: boolean;
       seller: { name: string | null; address: string | null; gstNumber: string | null };
@@ -371,6 +373,7 @@ export async function publicShop(slugRaw: unknown): Promise<
     accent: shop.accent ?? null,
     currency: settings?.currency ?? 'INR',
     hideOutOfStock: shop.hideOutOfStock,
+    showFewLeft: shop.showFewLeft,
     locationIds: shop.locationIds,
     allPhotos: shop.showAllPhotos,
     /*
@@ -426,7 +429,7 @@ export async function publicShop(slugRaw: unknown): Promise<
  * choices -- only its online locations, and whether a sold-out piece is hidden.
  */
 export async function publicProducts(
-  shop: { clientId: string; locationIds: string[]; hideOutOfStock: boolean; allPhotos?: boolean },
+  shop: { clientId: string; locationIds: string[]; hideOutOfStock: boolean; allPhotos?: boolean; showFewLeft?: boolean },
   opts: {
     q?: string; category?: string; fabric?: string; dressType?: string;
     minPrice?: number; maxPrice?: number; sort?: string; page?: number; limit?: number;
@@ -441,19 +444,37 @@ export async function publicProducts(
 
   const page = await storefrontCatalogueService.browseProducts(scope, { ...opts, sort });
 
-  const products = page.products.map(forShopper)
+  const products = page.products.map(p => forShopper(p, shop.showFewLeft !== false))
     .filter(p => (shop.hideOutOfStock ? p.variants.some(v => v.sellable) : true));
 
   return { products, page: page.page, limit: page.limit, total: page.total, hasMore: page.hasMore };
 }
 
 /**
+ * How few is "nearly gone".
+ *
+ * The cap matters more than the number. At or below this, the page may say how many are left; above
+ * it, the shopper is told nothing at all -- so a shop holding two hundred sarees never publishes
+ * that, and a competitor reading the page learns only that something is running out, which they
+ * could see from the shelf anyway.
+ */
+const FEW_LEFT = 5;
+
+/**
  * What a shopper is allowed to see of a product.
  *
- * A shopper is told whether they can buy a piece, never how many are left: a stock count is the
- * shop's business, and "only 2 left" is a decision for the shop to make, not a leak.
+ * A shopper is told whether they can buy a piece, and -- only if the shop asked for it -- that a
+ * piece is nearly gone. A stock count is otherwise the shop's business: "only 2 left" is a
+ * decision for the SHOP to make, which is what showFewLeft is, rather than a figure published for
+ * everybody.
+ *
+ * `fewLeft` is null unless all three hold: the shop asked, the piece can be bought at all, and
+ * there are FEW_LEFT or fewer. Null means "say nothing", not "none left" -- sold out is `sellable`.
  */
-function forShopper(p: Awaited<ReturnType<typeof storefrontCatalogueService.getProduct>> & object) {
+function forShopper(
+  p: Awaited<ReturnType<typeof storefrontCatalogueService.getProduct>> & object,
+  showFewLeft: boolean
+) {
   return {
     ...p,
     variants: p.variants.map(v => ({
@@ -462,14 +483,17 @@ function forShopper(p: Awaited<ReturnType<typeof storefrontCatalogueService.getP
       // rather than whatever a browser makes of the word "maroon".
       colourHex: v.colourHex,
       price: v.price, compareAtPrice: v.compareAtPrice, currency: v.currency,
-      sellable: v.stock.sellable
+      sellable: v.stock.sellable,
+      fewLeft: showFewLeft && v.stock.sellable && v.stock.available > 0 && v.stock.available <= FEW_LEFT
+        ? v.stock.available
+        : null
     }))
   };
 }
 
 /** One product, by the code its page is addressed with. */
 export async function publicProduct(
-  shop: { clientId: string; locationIds: string[]; allPhotos?: boolean },
+  shop: { clientId: string; locationIds: string[]; allPhotos?: boolean; showFewLeft?: boolean },
   productCode: unknown
 ) {
   const code = typeof productCode === 'string' ? productCode.trim() : '';
@@ -478,5 +502,5 @@ export async function publicProduct(
     clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: shop.allPhotos !== false
   };
   const p = await storefrontCatalogueService.getProduct(scope, code);
-  return p ? forShopper(p) : null;
+  return p ? forShopper(p, shop.showFewLeft !== false) : null;
 }

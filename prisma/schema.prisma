@@ -3794,6 +3794,13 @@ model OnlineShop {
   /// A piece with no stock: hide it, or show it greyed as sold out. The shop's choice.
   hideOutOfStock Boolean @default(false) @map("hide_out_of_stock")
 
+  /// Whether the page says "Only 3 left" when a piece is nearly gone.
+  ///
+  /// A shopper is otherwise told whether they can buy a piece and nothing more, because a stock
+  /// count is the shop's business. This is the shop deciding to say it. Even switched on, only a
+  /// handful is ever revealed -- see FEW_LEFT -- so the real stock level never leaves the building.
+  showFewLeft Boolean @default(true) @map("show_few_left")
+
   /// Whether a customer can actually place an order, or only look and ask on WhatsApp.
   ///
   /// Off by default, and on is a decision: taking an order holds the shop's real stock and

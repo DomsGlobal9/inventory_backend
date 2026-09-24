@@ -8,20 +8,33 @@ export class ImageRepository {
   }
 
   /**
-   * Every photograph of a product, the shop's own ones first.
+   * Every photograph of a product, in the order a shopper meets them.
    *
-   * The one the shop marked as the main photograph leads -- that star is the shop saying which
-   * picture represents this colour, and a list that ignores it makes the star do nothing.
-   * `generated: asc` then puts false before true, so among the rest a real photograph of the
-   * real garment comes before the model shots Try-On made. Ordered by createdAt last so
-   * the result is stable -- several photographs of one colour share an orderIndex, and a list
-   * that reshuffles itself between two reads is a list a shop cannot reorder.
+   *   1. the one the shop starred    -- that star is the shop saying "this one"
+   *   2. the model shots, front first -- front, sitting, side, back
+   *   3. the shop's own photographs   -- the flat-lay, the border, the weave
+   *
+   * The same order the shop page uses (see storefront-catalogue.service.ts), so the Images tab
+   * and the shop agree about what leads. This first put the shop's own photographs first, on the
+   * reasoning that a real photograph beats a generated one -- true of provenance, wrong for a
+   * shop window, where somebody deciding on a saree wants to see it on a person.
+   *
+   * Sorted here rather than in the query: "front, sitting, side, back" is not an order any column
+   * sorts into, and createdAt keeps it stable, because several photographs of one colour share an
+   * orderIndex and a list that reshuffles itself between two reads cannot be reordered by hand.
    */
   async findManyByProduct(productId: string, clientId: string): Promise<ProductImage[]> {
-    return prisma.productImage.findMany({
+    const rows = await prisma.productImage.findMany({
       where: { productId, product: { clientId, status: { notIn: ['TRASHED' as any] } } },
-      orderBy: [{ isPrimary: 'desc' }, { generated: 'asc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }]
+      orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }]
     });
+    const VIEW_ORDER: Record<string, number> = { front: 0, left: 1, right: 2, back: 3 };
+    const rank = (i: ProductImage) =>
+      i.isPrimary ? -1 : i.generated ? (VIEW_ORDER[i.view ?? ''] ?? 4) : 10;
+    return rows
+      .map((img, i) => ({ img, i }))
+      .sort((a, b) => rank(a.img) - rank(b.img) || a.i - b.i)
+      .map(x => x.img);
   }
 
   async findById(id: string, clientId: string): Promise<ProductImage | null> {
