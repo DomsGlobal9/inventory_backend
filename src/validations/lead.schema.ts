@@ -30,7 +30,13 @@ export const updateLeadSchema = z.object({
 export const convertLeadSchema = z.object({
   companyName: z.string().trim().min(2).max(120).optional(),
   adminName: z.string().trim().min(2).max(120).optional(),
-  adminEmail: z.string().trim().toLowerCase().email().max(200).optional()
+  adminEmail: z.string().trim().toLowerCase().email().max(200).optional(),
+  /*
+   * The shop's number, which becomes ClientSettings.businessPhone on the new workspace -- the one
+   * a purchase order's letterhead prints and the online shop has to publish. Overridable for the
+   * same reason as the three above: whoever converts the lead may be fixing a typo in it.
+   */
+  phone: z.string().trim().min(7).max(20).optional()
 });
 
 export const listLeadsSchema = z.object({

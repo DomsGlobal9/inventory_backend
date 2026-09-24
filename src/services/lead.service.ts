@@ -28,12 +28,11 @@ export class LeadService {
      * rang it found out the hard way. A code now goes to it on WhatsApp from ScaleEzy's own number.
      *
      * The condition is the careful part. Refusing every unproved number would mean that the day
-     * ScaleEzy's WhatsApp drops -- which it does; one dropped by itself this week -- the signup
-     * form turns away every real customer who tries. So the gate is only closed while a code could
-     * actually have been sent. When it could not, the enquiry is taken and written down as
-     * unproved, and the console shows which is which rather than pretending they are the same.
-     */
-    /*
+     * ScaleEzy's WhatsApp drops the signup form turns away every real customer who tries. So the
+     * gate is only closed while a code could actually have been sent; when it could not, the
+     * enquiry is taken and written down as unproved, and the console shows which is which rather
+     * than pretending they are the same.
+     *
      * TWO DIFFERENT QUESTIONS, and they were tangled together at first.
      *
      * Whether this number IS proved is a fact about the number, and it is read every time. Whether
@@ -137,7 +136,7 @@ export class LeadService {
    * the Onboarding screen produces. Guarded against double-conversion, which would otherwise
    * create a second workspace and orphan the first.
    */
-  async convert(id: string, overrides?: { companyName?: string; adminName?: string; adminEmail?: string }) {
+  async convert(id: string, overrides?: { companyName?: string; adminName?: string; adminEmail?: string; phone?: string }) {
     const lead = await prisma.signupLead.findUnique({ where: { id } });
     if (!lead) throw Object.assign(new Error('Lead not found'), { statusCode: 404 });
     if (lead.status === LeadStatus.CONVERTED) {
@@ -150,7 +149,10 @@ export class LeadService {
     const result = await platformAdminService.onboardClient(
       overrides?.companyName?.trim() || lead.companyName,
       overrides?.adminName?.trim() || lead.contactName,
-      overrides?.adminEmail?.trim() || lead.email
+      overrides?.adminEmail?.trim() || lead.email,
+      // The number they gave -- and, since the form started asking for a code, proved. Overridable
+      // like the other three, because whoever converts the lead may be correcting a typo.
+      overrides?.phone?.trim() || lead.phone
     );
 
     // Recorded after onboarding succeeds: marking it converted first would strand the lead

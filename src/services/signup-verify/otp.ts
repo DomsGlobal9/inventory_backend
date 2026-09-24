@@ -69,24 +69,40 @@ const asPhone = (raw: unknown): string => {
  * customers, so when ScaleEzy cannot send, the enquiry is taken unproved and marked as such.
  */
 const REMEMBER_MS = 60_000;
-let seen: { can: boolean; at: number } | null = null;
 
+/*
+ * WHAT WE LEARNED FROM ACTUALLY TRYING, rather than from asking.
+ *
+ * The first version asked `whatsappClient.account('scaleezy')`, and that endpoint does not exist
+ * for ScaleEzy's own number: `/v1/accounts/client/:clientId` serves CLIENT accounts, and the
+ * ScaleEzy account is a different kind with no clientId at all (see the WhatsApp service's
+ * accounts/service.ts, which finds it by `kind: 'SCALEEZY'`). So it answered "not found", canSend
+ * was false for ever, and signup verification would have been quietly dead in production too --
+ * a pre-check that could never once have succeeded.
+ *
+ * There is no v1 endpoint to ask, so this stops asking. The only honest test of "can we send" is
+ * a send, and we do one of those whenever somebody presses Verify. What that attempt taught us is
+ * remembered here for a minute and is what the signup form's gate reads.
+ */
+let lastSend: { worked: boolean; at: number } | null = null;
+
+const learned = (worked: boolean) => { lastSend = { worked, at: Date.now() }; };
+
+/**
+ * Whether a code could be sent, as far as anything here knows.
+ *
+ * UNKNOWN COUNTS AS NO, and that is the safe direction: it only decides whether an unproved
+ * enquiry is REFUSED, so being wrong this way takes an enquiry we might have questioned, while
+ * being wrong the other way turns away a real customer over a number we could never have texted.
+ */
 export async function canSend(): Promise<boolean> {
   if (!whatsappConfigured()) return false;
-  if (seen && Date.now() - seen.at < REMEMBER_MS) return seen.can;
-  let can = false;
-  try {
-    // CONNECTED and nothing else: a queued message is useless for a code that dies in ten minutes.
-    can = (await whatsappClient.account('scaleezy' as any)).status === 'CONNECTED';
-  } catch {
-    can = false;
-  }
-  seen = { can, at: Date.now() };
-  return can;
+  if (lastSend && Date.now() - lastSend.at < REMEMBER_MS) return lastSend.worked;
+  return false;
 }
 
-/** Forget what we believed, so the next ask is a real one. */
-const forget = () => { seen = null; };
+/** Forget what the last attempt taught us, so the next one is judged on its own. */
+const forget = () => { lastSend = null; };
 
 /**
  * Whether an enquiry must carry a proved number, which is not quite the same as whether we can ask.
@@ -120,11 +136,11 @@ export async function sendCode(rawPhone: unknown) {
    */
   const phone = asPhone(rawPhone);
 
-  if (!(await canSend())) {
-    throw new SignupVerifyError(
-      'We cannot send a code just now. Send your enquiry anyway and we will ring you.'
-    );
-  }
+  /*
+   * NO PRE-CHECK. Pressing Verify tries to send, and what happens is the answer -- there is no
+   * endpoint that can tell us in advance about ScaleEzy's own number, and a guard built on one
+   * that did not exist refused every press without ever attempting anything.
+   */
   const now = new Date();
 
   const held = await prisma.signupPhoneCode.findUnique({ where: { phone } });
@@ -162,11 +178,20 @@ export async function sendCode(rawPhone: unknown) {
       // One code per send, however many times the request is retried.
       idempotencyKey: `SIGNUP:OTP:${phone}:${Math.floor(now.getTime() / 1000)}`
     });
+    learned(true);
   } catch (e) {
-    forget();
-    console.warn('[signup] a code could not be sent:', (e as Error)?.message);
+    learned(false);
+    const why = (e as Error)?.message || '';
+    console.warn('[signup] a code could not be sent:', why);
+    /*
+     * The service's own sentence when it is something the person can act on -- "this number is not
+     * on WhatsApp" is worth repeating, "ECONNREFUSED" is not. Anything else becomes the plain
+     * fallback, which always names the way round rather than leaving them stuck.
+     */
     throw new SignupVerifyError(
-      'That code could not be sent just now. Send your enquiry anyway and we will ring you.'
+      /not on whatsapp|not a whatsapp/i.test(why)
+        ? 'That number is not on WhatsApp. Send your enquiry anyway and we will ring you.'
+        : 'That code could not be sent just now. Send your enquiry anyway and we will ring you.'
     );
   }
 

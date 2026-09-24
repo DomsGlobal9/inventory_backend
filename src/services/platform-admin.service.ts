@@ -312,7 +312,14 @@ export class PlatformAdminService {
     return `${base}-${suffix}`;
   }
 
-  async onboardClient(companyName: string, adminName: string, adminEmail: string) {
+  /**
+   * A brand-new workspace.
+   *
+   * `businessPhone` is optional because onboarding does not only come from a signup enquiry -- the
+   * console can create a workspace with nothing but a name -- but where there IS a number it should
+   * arrive with the shop rather than be typed a second time.
+   */
+  async onboardClient(companyName: string, adminName: string, adminEmail: string, businessPhone?: string | null) {
     const clientId = await this.generateClientId(companyName);
 
     const tempPassword = crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe
@@ -350,11 +357,44 @@ export class PlatformAdminService {
     // upsert, not create: generateClientId is deterministic enough that a retried onboarding
     // can land on the same clientId, and failing the whole thing on a duplicate settings row
     // would be a poor reason to lose a client's provisioning.
+    /*
+     * The phone the shop gave when they enquired, carried in.
+     *
+     * It was asked for at signup, now proved with a code, and then dropped on the floor: onboarding
+     * took the company, the name and the email and nothing else, so a brand-new workspace had no
+     * phone number anywhere. That is the number a purchase order's letterhead prints, the contact
+     * the online shop is legally required to publish, and the one somebody would pick when linking
+     * WhatsApp -- and every one of them started blank for a number we already had in our hand.
+     *
+     * Seeded, not bound: it goes in as the starting value and Settings can change it, because the
+     * person who filled the form is not always the shop's front desk.
+     */
+    const shopPhone = (businessPhone ?? '').trim() || null;
     await prisma.clientSettings.upsert({
       where: { clientId },
-      create: { clientId, businessName: companyName.trim() || null },
-      update: { businessName: companyName.trim() || null }
+      create: { clientId, businessName: companyName.trim() || null, businessPhone: shopPhone },
+      update: {
+        businessName: companyName.trim() || null,
+        // Never overwrites a number a shop has already set for itself.
+        ...(shopPhone ? { businessPhone: shopPhone } : {})
+      }
     });
+
+    /*
+     * And the nightly Day Book knows where to go, once the owner switches it on. Left blank, the
+     * first thing they meet in Settings is a form asking for a number we were already told.
+     * Switched OFF regardless: seeding a destination is not consent to be messaged nightly.
+     */
+    if (shopPhone) {
+      const digits = shopPhone.replace(/\D/g, '');
+      if (digits.length >= 10) {
+        await prisma.whatsAppSettings.upsert({
+          where: { clientId },
+          create: { clientId, dayBookTo: digits.length === 10 ? `91${digits}` : digits },
+          update: {}
+        }).catch(() => { /* a shop with settings already is a shop that has chosen; leave it */ });
+      }
+    }
 
     const user = await prisma.user.create({
       data: { clientId, name: adminName, email: adminEmail, password: hashed, passwordEncrypted, status: 'ACTIVE' }
