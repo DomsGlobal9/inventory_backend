@@ -1,11 +1,32 @@
 import { Request, Response, NextFunction } from 'express';
 import { leadService } from '../services/lead.service';
+import { signupVerify, SignupVerifyError } from '../services/signup-verify';
 import {
   createLeadSchema,
   updateLeadSchema,
   convertLeadSchema,
   listLeadsSchema
 } from '../validations/lead.schema';
+
+/**
+ * Public, both of these. A refusal somebody can act on reads as a sentence and a 400; anything
+ * else is a fault and goes to the shared handler.
+ */
+const asked = (fn: (req: Request) => Promise<unknown>) =>
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await fn(req) });
+    } catch (e) {
+      if (e instanceof SignupVerifyError) return res.status(400).json({ success: false, message: e.message });
+      next(e);
+    }
+  };
+
+/** Send a code to the number somebody typed into the signup form. */
+export const sendSignupCode = asked(req => signupVerify.sendCode(req.body?.phone));
+
+/** Check the code they typed back. */
+export const checkSignupCode = asked(req => signupVerify.checkCode(req.body?.phone, req.body?.code));
 
 /** Public. No authentication, and it must never provision anything -- see lead.service.ts. */
 export const submitLead = async (req: Request, res: Response, next: NextFunction) => {

@@ -2045,6 +2045,13 @@ model SignupLead {
   phone       String
   message     String? @db.Text
 
+  /// Whether the phone above was proved by a code sent to it on WhatsApp.
+  ///
+  /// False is not the same as "fake": a lead taken while ScaleEzy's own WhatsApp was down is
+  /// accepted unproved on purpose, because a signup form that refuses everybody when one number
+  /// drops is worse than a lead somebody has to ring to check. The console shows which is which.
+  phoneVerified Boolean @default(false) @map("phone_verified")
+
   status LeadStatus @default(NEW)
   // Free-text working notes kept by whoever is handling the lead.
   notes  String?    @db.Text
@@ -2067,6 +2074,38 @@ model SignupLead {
   @@index([email])
   @@index([createdAt])
   @@map("signup_leads")
+}
+
+/// A code sent to somebody signing up, to prove the phone number they typed is theirs.
+///
+/// Kept apart from OnlineShopPhoneCode, which looks similar and is not the same thing: that one is
+/// scoped to a shop and proves a SHOPPER to that shop. This one has no shop at all -- the person
+/// filling the form has not got one yet -- so it is keyed on the number alone and the message goes
+/// out from ScaleEzy's own WhatsApp number rather than a shop's.
+///
+/// THE CODE IS NEVER STORED, only a hash of it salted with the number, so a copy of this table is
+/// not a list of live codes.
+model SignupPhoneCode {
+  id String @id @default(uuid())
+
+  /// In the one stored form, the same as everywhere else ("+919848022338").
+  phone    String @unique
+  codeHash String @map("code_hash")
+
+  /// Wrong guesses, and how many codes have gone to this number in this window. Both are what stop
+  /// this being a way to send a stranger a hundred messages, or to guess six digits.
+  tries     Int @default(0)
+  sentCount Int @default(1) @map("sent_count")
+
+  /// Set once the code was typed back correctly. A lead submitted soon after counts as proved.
+  verifiedAt DateTime? @map("verified_at")
+
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([expiresAt])
+  @@map("signup_phone_codes")
 }
 
 /// Which supplier sells which item, and on what terms.

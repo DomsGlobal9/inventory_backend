@@ -1,6 +1,7 @@
 import { LeadStatus, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { platformAdminService } from './platform-admin.service';
+import { signupVerify, SignupVerifyError } from './signup-verify';
 
 /**
  * Signup enquiries from the public marketing form.
@@ -20,12 +21,43 @@ export class LeadService {
     sourceIp?: string;
     userAgent?: string;
   }) {
+    /*
+     * THE NUMBER HAS TO BE PROVED -- but only while we are able to ask.
+     *
+     * The form took a phone and never checked it, so an enquiry could carry anything and whoever
+     * rang it found out the hard way. A code now goes to it on WhatsApp from ScaleEzy's own number.
+     *
+     * The condition is the careful part. Refusing every unproved number would mean that the day
+     * ScaleEzy's WhatsApp drops -- which it does; one dropped by itself this week -- the signup
+     * form turns away every real customer who tries. So the gate is only closed while a code could
+     * actually have been sent. When it could not, the enquiry is taken and written down as
+     * unproved, and the console shows which is which rather than pretending they are the same.
+     */
+    /*
+     * TWO DIFFERENT QUESTIONS, and they were tangled together at first.
+     *
+     * Whether this number IS proved is a fact about the number, and it is read every time. Whether
+     * we COULD have asked is a fact about ScaleEzy's WhatsApp this minute, and it decides only
+     * whether an unproved enquiry is refused.
+     *
+     * Reading the first through the second -- which is what "proved = couldAsk ? isVerified()"
+     * did -- meant somebody who proved their number and then took a minute over the rest of the
+     * form had their enquiry filed as unproved if the link dropped in between. The proof was real;
+     * only our ability to have asked for it had gone.
+     */
+    const proved = await signupVerify.isVerified(data.phone).catch(() => false);
+    const couldAsk = proved ? false : await signupVerify.mustProve().catch(() => false);
+    if (couldAsk && !proved) {
+      throw new SignupVerifyError('Confirm your phone number first -- we have sent you a code on WhatsApp.');
+    }
+
     const lead = await prisma.signupLead.create({
       data: {
         companyName: data.companyName.trim(),
         contactName: data.contactName.trim(),
         email: data.email.trim().toLowerCase(),
         phone: data.phone.trim(),
+        phoneVerified: proved,
         message: data.message?.trim() || null,
         sourceIp: data.sourceIp || null,
         userAgent: data.userAgent?.slice(0, 500) || null
