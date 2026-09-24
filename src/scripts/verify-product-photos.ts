@@ -189,6 +189,40 @@ async function main() {
   check('the shop\'s own photograph comes before the generated one',
     ownFirst >= 0 && (generatedAt === -1 || ownFirst < generatedAt), `own@${ownFirst} generated@${generatedAt}`);
 
+  // ── F2. The star a shop presses actually moves the photograph ───────────────────────────
+  console.log('\nF2. MARKING A DIFFERENT PHOTOGRAPH AS THE MAIN ONE');
+
+  /*
+   * Reported by a shop owner: they set another photograph as the main one for a colour, and the
+   * shop kept showing the old picture. The feed was ordered without isPrimary, so the star moved
+   * the badge in the admin and nothing else.
+   *
+   * Checked on ONE COLOUR, not on the first row of the whole feed -- the feed carries every
+   * colour, and the shop's product page ranks the chosen colour's photographs to the front and
+   * keeps this order within that group. The first row of the feed is a different question.
+   */
+  const redCode = (await prisma.productVariant.findUniqueOrThrow({ where: { id: red[0].id }, select: { variantCode: true } })).variantCode;
+  const redShots = async () => {
+    const f: any = await storefrontCatalogueService.getProduct({ clientId: SHOP, locationIds: [] }, product.productCode);
+    return (f?.images ?? []).filter((i: any) => i.variantCode === redCode).map((i: any) => i.url);
+  };
+
+  const beforeStar = await redShots();
+  check('this colour has more than one photograph to choose between', beforeStar.length > 1, String(beforeStar.length));
+  const notLeading = (await prisma.productImage.findMany({
+    where: { productId: product.id, variantId: red[0].id, isPrimary: false }, select: { id: true, url: true }
+  }))[0];
+  if (notLeading) {
+    await imageService.updateImage(notLeading.id, SHOP, { isPrimary: true });
+    const afterStar = await redShots();
+    check('marking a photograph as the main one puts it first for the shopper',
+      afterStar[0] === notLeading.url, `${afterStar[0]} vs ${notLeading.url}`);
+    check('  ...and the rest are still there, not lost',
+      afterStar.length === beforeStar.length, `${afterStar.length} vs ${beforeStar.length}`);
+  } else {
+    check('there was a second photograph on this colour to promote', false, 'none found');
+  }
+
   // ── G. A product with no colours keeps its photographs ──────────────────────────────────
   console.log('\nG. A PRODUCT WITH NO COLOURS KEEPS ITS PHOTOGRAPHS');
 

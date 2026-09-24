@@ -10,15 +10,17 @@ export class ImageRepository {
   /**
    * Every photograph of a product, the shop's own ones first.
    *
-   * `generated: asc` puts false before true, which is the whole point: a real photograph of the
-   * real garment leads and the model shots Try-On made follow it. Ordered by createdAt last so
+   * The one the shop marked as the main photograph leads -- that star is the shop saying which
+   * picture represents this colour, and a list that ignores it makes the star do nothing.
+   * `generated: asc` then puts false before true, so among the rest a real photograph of the
+   * real garment comes before the model shots Try-On made. Ordered by createdAt last so
    * the result is stable -- several photographs of one colour share an orderIndex, and a list
    * that reshuffles itself between two reads is a list a shop cannot reorder.
    */
   async findManyByProduct(productId: string, clientId: string): Promise<ProductImage[]> {
     return prisma.productImage.findMany({
       where: { productId, product: { clientId, status: { notIn: ['TRASHED' as any] } } },
-      orderBy: [{ generated: 'asc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }]
+      orderBy: [{ isPrimary: 'desc' }, { generated: 'asc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }]
     });
   }
 

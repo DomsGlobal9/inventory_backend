@@ -232,14 +232,28 @@ const PRODUCT_SELECT = {
     // meant neither could choose.
     select: { url: true, isPrimary: true, orderIndex: true, variantId: true, imageType: true, generated: true },
     /*
-     * The shop's own photographs first, then the generated views, then oldest first.
+     * The photograph the shop CHOSE leads. Then their own photographs, then the generated
+     * views, then oldest first.
      *
-     * orderIndex counts WITHIN a colour, so once photographs belonged to colours a plain
-     * orderIndex sort left every colour's first photograph tied with every other colour's --
-     * and a feed whose order changes between two reads is a gallery that reshuffles itself on
-     * a merchant's own website.
+     * isPrimary first is not a nicety -- it is the whole meaning of the star a shop presses on
+     * the Images tab. Without it, marking a different photograph as the main one changed the
+     * badge in the admin and nothing at all in the shop, because the shop page shows this list
+     * in this order and simply led with whatever came first. Reported by the shop owner, who
+     * did exactly that and watched the old picture stay put.
+     *
+     * generated second, so that among the photographs nobody singled out, a real picture of the
+     * real garment comes before a model shot. orderIndex counts WITHIN a colour, so once
+     * photographs belonged to colours a plain orderIndex sort left every colour's first
+     * photograph tied with every other colour's; createdAt breaks the last tie, because a feed
+     * whose order changes between two reads is a gallery that reshuffles itself on a merchant's
+     * own website.
      */
-    orderBy: [{ generated: 'asc' as const }, { orderIndex: 'asc' as const }, { createdAt: 'asc' as const }]
+    orderBy: [
+      { isPrimary: 'desc' as const },
+      { generated: 'asc' as const },
+      { orderIndex: 'asc' as const },
+      { createdAt: 'asc' as const }
+    ]
   },
   variants: { select: VARIANT_SELECT }
 } satisfies Prisma.ProductSelect;
