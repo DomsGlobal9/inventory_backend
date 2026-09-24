@@ -222,6 +222,19 @@ export async function checkCode(rawPhone: unknown, rawCode: unknown) {
   if (!held || held.expiresAt <= new Date()) {
     throw new SignupVerifyError('That code has run out. Ask for a new one.');
   }
+
+  /*
+   * ALREADY PROVED, AND THE PROOF IS STILL GOOD -- say yes again.
+   *
+   * A double tap on Confirm, or a slow line and an impatient thumb, used to land here a second
+   * time. Scolding somebody for confirming what they have already confirmed is a refusal with
+   * nothing behind it, so this answers the same way it did the first time. It grants nothing new:
+   * the proof they are being shown is the one they already earned a moment ago.
+   */
+  if (held.verifiedAt && Date.now() - held.verifiedAt.getTime() < PROOF_LASTS_MS) {
+    return { verified: true };
+  }
+
   if (held.tries >= MAX_TRIES) {
     throw new SignupVerifyError('That code has been tried too many times. Ask for a new one.');
   }
@@ -238,8 +251,14 @@ export async function checkCode(rawPhone: unknown, rawCode: unknown) {
     );
   }
 
+  /*
+   * SPENT. The hash is wiped, so those six digits can never be typed in again -- once the proof
+   * window above has passed there is nothing left to replay, even for somebody who read the
+   * message over a shoulder. `verifiedAt` is what carries the proof from here on, and it has its
+   * own expiry.
+   */
   await prisma.signupPhoneCode.update({
-    where: { id: held.id }, data: { verifiedAt: new Date(), tries: 0 }
+    where: { id: held.id }, data: { verifiedAt: new Date(), tries: 0, codeHash: '' }
   });
   return { verified: true };
 }
