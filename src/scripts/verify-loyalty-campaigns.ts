@@ -453,16 +453,44 @@ async function main() {
 
     const early = await prepareShopDay(SHOP, at(8));
     check('before 10 am the day is not prepared', early === null);
+
+    /*
+     * Claim the day back before claiming it, because something else may have got there first.
+     *
+     * The scheduler in the running server calls runDailyPrepare() every ten minutes, over every
+     * shop with loyalty switched on -- which this shop became two lines ago, when the settings
+     * were saved. If the timer fires in that gap it claims this shop's day, prepareShopDay
+     * correctly returns null for the second caller, and the run below is testing nothing.
+     *
+     * It is not a race the product has: preparing a day once is exactly the point. It is a race
+     * between a background job and a test that shares its database, and the test is the one that
+     * has to give way. Clearing the claim makes the call below deterministic; the second-run
+     * check straight after still proves that claiming twice does nothing.
+     */
+    await prisma.loyaltySettings.updateMany({ where: { clientId: SHOP }, data: { autoPreparedFor: null } });
+    await prisma.campaign.deleteMany({ where: { clientId: SHOP, source: { in: ['BIRTHDAY', 'ANNIVERSARY', 'POINTS_EXPIRING'] } } });
+
     const day = await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
     check('the day is prepared once', !!day, JSON.stringify(day));
     const redo = await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
     check('  ...and a second run the same day does nothing', redo === null);
-    check('birthday gift: 100 points to both birthdays, Ravi too (STOP stops messages, not gifts)', day!.birthdayPoints === 2 && await pointsOf(crowd[1]) === 100 && await pointsOf(ravi.id) === 159, JSON.stringify(day));
+
+    /*
+     * Everything below reads `day`. It used to say `day!`, so on the one run in a hundred where
+     * the scheduler won, the whole suite died on a TypeError and took its other 130 checks with
+     * it -- reported as "CRASHED", which reads like a broken product rather than a lost race.
+     * One failure, said plainly, and the rest of the run still happens.
+     */
+    if (!day) {
+      check('the day was prepared, so the gift and lapse checks can run', false,
+        'prepareShopDay returned null: something claimed this day before the test did');
+    } else {
+    check('birthday gift: 100 points to both birthdays, Ravi too (STOP stops messages, not gifts)', day.birthdayPoints === 2 && await pointsOf(crowd[1]) === 100 && await pointsOf(ravi.id) === 159, JSON.stringify(day));
     const wishes = await prisma.campaign.findFirst({ where: { clientId: SHOP, source: 'BIRTHDAY' }, include: { recipients: true } });
     check('  ...the wish goes only to the one who agreed, not to Ravi', wishes?.recipients.length === 1 && wishes.recipients[0].customerId === crowd[1] && /gift/.test(wishes.text), JSON.stringify(wishes?.recipients));
     const anniv = await prisma.campaign.findFirst({ where: { clientId: SHOP, source: 'ANNIVERSARY' }, include: { recipients: true } });
     check('anniversary wish: one', anniv?.recipients.length === 1 && anniv.recipients[0].customerId === crowd[2]);
-    check('quiet for 13 months: points lapsed', day!.lapsed >= 1 && await pointsOf(crowd[3]) === 0 && (await prisma.loyaltyEntry.count({ where: { customerId: crowd[3], kind: 'EXPIRED' } })) === 1);
+    check('quiet for 13 months: points lapsed', day.lapsed >= 1 && await pointsOf(crowd[3]) === 0 && (await prisma.loyaltyEntry.count({ where: { customerId: crowd[3], kind: 'EXPIRED' } })) === 1);
     const lapsing = await prisma.campaign.findFirst({ where: { clientId: SHOP, source: 'POINTS_EXPIRING' }, include: { recipients: true } });
     check('a week before lapsing: a reminder to that one customer', lapsing?.recipients.length === 1 && lapsing.recipients[0].customerId === crowd[4], JSON.stringify(lapsing?.recipients));
     const autoList = await own.get('/campaigns', { params: { source: 'AUTO' } });
@@ -470,6 +498,7 @@ async function main() {
     await prisma.loyaltySettings.update({ where: { clientId: SHOP }, data: { autoPreparedFor: '2000-01-01' } });
     await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
     check('the job run again on the same calendar day never gives the birthday gift twice', await pointsOf(crowd[1]) === 100);
+    }
 
     // ── J ──────────────────────────────────────────────────────────────────────────────────
     console.log('\nJ. ANOTHER SHOP');
