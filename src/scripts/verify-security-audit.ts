@@ -89,6 +89,7 @@ async function fingerprintA() {
 
 async function main() {
   if (!SECRET) throw new Error('JWT_SECRET must be set to forge test tokens');
+  await sweepOldRuns();
   console.log(`SETUP victim ${A}, attacker ${B}`);
 
   // ── Shop A, the victim ──────────────────────────────────────────────────────────────────────
@@ -467,6 +468,36 @@ async function endingSignIns(rolesA: Record<string, string>) {
     check('  ...and switching them off and on again leaves their earlier sign-in dead', !!otherToken2 && adminOff.status === 200 && (await consoleHttp(otherToken2).get('/admin/platform-admins')).status === 401, brief(adminOff));
   } finally {
     await prisma.platformAdmin.deleteMany({ where: { id: { in: [console_.id, other.id] } } }).catch(e => console.log('cleanup console admins', e?.message));
+  }
+}
+
+/**
+ * Shops this suite left behind on an earlier run, swept up before this one starts.
+ *
+ * cleanup() below runs in a `finally`, which covers a failing run but not a killed one -- and
+ * two of these were found sitting in the database days later, one holding a support ticket with
+ * no number, which failed verify-console-screens' "every ticket has a number" check. A suite
+ * that litters makes ANOTHER suite look broken, which is the worst kind of false alarm: the
+ * failure points at the wrong place entirely.
+ *
+ * Only this suite's own naming, and only shops older than an hour, so a run happening right now
+ * in another window is never touched.
+ */
+async function sweepOldRuns() {
+  const anHourAgo = Date.now() - 60 * 60 * 1000;
+  const mine = (id: string) => {
+    const stamp = Number(id.split('-').pop());
+    return Number.isFinite(stamp) && stamp < anHourAgo;
+  };
+  const rows = await prisma.user.findMany({
+    where: { OR: [{ clientId: { startsWith: 'sec-victim-' } }, { clientId: { startsWith: 'sec-attacker-' } }] },
+    select: { clientId: true }, distinct: ['clientId']
+  }).catch(() => []);
+  const stale = [...new Set(rows.map(r => r.clientId))].filter(mine);
+  for (const id of stale) {
+    await platformAdminService.deleteClientCompletely(id, id)
+      .then(() => console.log(`  [tidy] removed a shop left by an earlier run: ${id}`))
+      .catch((e: any) => console.log(`  [tidy] could not remove ${id}: ${e?.message}`));
   }
 }
 
