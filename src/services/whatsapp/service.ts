@@ -197,11 +197,14 @@ export async function getOverview(actor: Actor) {
   const configured = whatsappConfigured();
   let account: { status: string; phone: string | null; linkedAt: string | null } | null = null;
   let problem: string | null = null;
+  /* The real digits, kept here only long enough to compare. Only the masked form ever leaves. */
+  let linkedDigits = '';
   if (configured) {
     try {
       const a = await whatsappClient.account(actor.clientId);
+      linkedDigits = (a.phone ?? '').replace(/\D/g, '');
       // The service masks its own way; every screen here shows ••••1234.
-      const last4 = (a.phone ?? '').replace(/\D/g, '').slice(-4);
+      const last4 = linkedDigits.slice(-4);
       account = { status: a.status, phone: last4 ? `••••${last4}` : null, linkedAt: a.linkedAt };
     } catch (e) {
       problem = e instanceof WhatsAppServiceError ? e.message : 'WhatsApp could not be reached just now.';
@@ -209,12 +212,43 @@ export async function getOverview(actor: Actor) {
   }
   const owner = isOwner(actor);
   const settings = owner ? await prisma.whatsAppSettings.findUnique({ where: { clientId: actor.clientId } }) : null;
+
+  /*
+   * IS THE LINKED PHONE THE SHOP'S OWN NUMBER?
+   *
+   * The screen showed the linked number with nothing to compare it against, so nobody could tell
+   * whether the right phone had been scanned. A shop can perfectly well link a salesperson's
+   * handset by accident and never find out -- until a customer replies to a bill and reaches
+   * somebody who left last year.
+   *
+   * It only SAYS so. Nothing here refuses a link or takes one away: a warning a shop can act on
+   * beats a rule that locks them out of their own WhatsApp over a number nobody had declared.
+   */
+  const shop = await prisma.clientSettings.findUnique({
+    where: { clientId: actor.clientId }, select: { businessPhone: true }
+  });
+  const declared = (shop?.businessPhone ?? '').replace(/\D/g, '');
+  const shopPhone = declared ? `••••${declared.slice(-4)}` : null;
+  /*
+   * Compared on the last TEN digits, because the same Indian number is written a dozen ways --
+   * "+91 98480 22338", "098480 22338", "9848022338" -- and only the last ten are the number
+   * itself. Comparing the whole string would call a shop's own phone a stranger's.
+   */
+  const last10 = (n: string) => n.slice(-10);
+  const sameNumber = declared.length >= 10 && linkedDigits.length >= 10
+    ? last10(declared) === last10(linkedDigits)
+    : null;
+
   return {
     configured,
     account,
     problem,
     canManage: may(actor, 'whatsapp:manage'),
     isOwner: owner,
+    /** The number the shop says is theirs, and whether the linked phone is that one. */
+    shopPhone,
+    /** true / false / null when either side is unknown -- the screen says "not set" rather than guessing. */
+    linkedIsShopNumber: sameNumber,
     dayBook: owner ? {
       enabled: settings?.dayBookEnabled ?? false,
       time: settings?.dayBookTime ?? '22:00',

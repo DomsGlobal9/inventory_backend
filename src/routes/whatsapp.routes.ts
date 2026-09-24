@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import * as whatsapp from '../services/whatsapp/service';
+import * as shopNumber from '../services/whatsapp/shop-number';
 import { WhatsAppServiceError } from '../services/whatsapp/client';
+import { SignupVerifyError } from '../services/signup-verify';
 import { requirePermission } from '../middleware/permission.middleware';
 
 /**
@@ -22,11 +24,25 @@ const handle = (fn: (req: Request) => Promise<unknown>, status = 200) =>
       res.status(status).json({ success: true, data: await fn(req) });
     } catch (err) {
       if (err instanceof WhatsAppServiceError) return res.status(err.statusCode).json({ success: false, message: err.message });
+      // A wrong or expired code is something the person can act on, not a fault.
+      if (err instanceof SignupVerifyError) return res.status(400).json({ success: false, message: err.message });
       next(err);
     }
   };
 
 router.get('/', handle(req => whatsapp.getOverview(actor(req))));
+
+/*
+ * The shop's own contact number, and changing it.
+ *
+ * Behind `whatsapp:manage`, the same permission that links the number, because these are the same
+ * job: deciding which phone is this shop's. Proving the new number is what replaces an approval
+ * queue -- see services/whatsapp/shop-number.ts.
+ */
+router.post('/shop-number/start', requirePermission('whatsapp:manage'),
+  handle(req => shopNumber.startChange(actor(req), req.body?.phone)));
+router.post('/shop-number/finish', requirePermission('whatsapp:manage'),
+  handle(req => shopNumber.finishChange(actor(req), req.body?.phone, req.body?.code)));
 router.post('/link', requirePermission('whatsapp:manage'), handle(req => whatsapp.link(actor(req), req.body?.method, req.body?.phone)));
 router.post('/disconnect', requirePermission('whatsapp:manage'), handle(req => whatsapp.disconnect(actor(req))));
 router.post('/test', requirePermission('whatsapp:manage'), handle(req => whatsapp.sendTest(actor(req), req.body?.to, req.body?.nonce), 202));
