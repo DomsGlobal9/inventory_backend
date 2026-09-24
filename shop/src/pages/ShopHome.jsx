@@ -4,6 +4,7 @@ import { getProducts, money } from '../api';
 import { GridSkeleton, Problem, Say } from '../components/States';
 import { NoMatch } from '../components/Motion';
 import Shot from '../components/Shot';
+import Picker from '../components/Picker';
 
 /**
  * The shop, as a customer sees it after tapping a link in WhatsApp.
@@ -188,11 +189,16 @@ export default function ShopHome({ slug, shop }) {
           </svg>
           Filter{chosen.length ? ` (${chosen.length})` : ''}
         </button>
-        <label className="pill">
-          <select value={sort} onChange={e => setParam('sort', e.target.value)} aria-label="Order them by">
-            {SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-        </label>
+        {/*
+          The sort. Ours down to the list it opens -- see Picker, and the note in it about why a
+          native <select> could not be made to match the pills it sits beside.
+        */}
+        <Picker
+          value={sort}
+          options={SORTS}
+          onChange={v => setParam('sort', v)}
+          label="Order them by"
+        />
         {facets.dressTypes.slice(0, 6).map(d => (
           <button key={d.value} type="button" className="pill" aria-pressed={dressType === d.value}
             onClick={() => setParam('dressType', dressType === d.value ? '' : d.value)}>{d.value}</button>

@@ -69,14 +69,30 @@ export const EmptyOrders = () => (
  * An order placed: the ring settles, the tick draws, and six sparks go out and fade.
  * The one screen in the shop where a little celebration is the right thing.
  */
+/**
+ * The moment an order lands: the disc blooms, the ring closes round it, the tick is drawn, and
+ * the sparks go out.
+ *
+ * THE DISC IS DRAWN IN HERE, not behind in CSS. It used to be a 54px CSS circle with this 76px
+ * drawing centred on top of it and nudged down ten pixels by an unrelated margin -- so the tick
+ * sat high and left of its own background, and the sparks landed on the rim instead of flying off
+ * it. Two boxes of different sizes will always drift. One coordinate system cannot.
+ *
+ * The order of it is the point: the ring CLOSES (a thing being sealed), then the tick is written
+ * inside it, and only then does anything celebrate. A tick that appears at the same moment as its
+ * ring is a picture; drawn in that order it is an event.
+ */
 export const Landed = () => (
   <svg className="art-landed" width="76" height="76" viewBox="0 0 76 76" fill="none" aria-hidden="true">
+    <circle className="disc" cx="38" cy="38" r="30" fill="currentColor" opacity=".13" />
     <g className="sparks" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
       <path d="M38 8v-6" /><path d="M58 16l4-4" /><path d="M68 38h6" />
       <path d="M18 16l-4-4" /><path d="M8 38H2" /><path d="M38 68v6" />
     </g>
     <circle className="halo" cx="38" cy="38" r="30" stroke="currentColor" strokeWidth="2" opacity="0" />
-    <circle className="ring" cx="38" cy="38" r="26" stroke="currentColor" strokeWidth="2.5" opacity=".26" />
+    {/* Rotated so the ring starts closing from the top, the way a clock hand leaves twelve. */}
+    <circle className="ring" cx="38" cy="38" r="26" stroke="currentColor" strokeWidth="2.5"
+      strokeLinecap="round" transform="rotate(-90 38 38)" />
     <path className="draw" d="m24 39 9.5 9.5L53 29" stroke="currentColor" strokeWidth="4.5"
       strokeLinecap="round" strokeLinejoin="round" />
   </svg>
