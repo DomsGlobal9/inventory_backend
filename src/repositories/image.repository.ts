@@ -7,10 +7,18 @@ export class ImageRepository {
     return prisma.productImage.create({ data });
   }
 
+  /**
+   * Every photograph of a product, the shop's own ones first.
+   *
+   * `generated: asc` puts false before true, which is the whole point: a real photograph of the
+   * real garment leads and the model shots Try-On made follow it. Ordered by createdAt last so
+   * the result is stable -- several photographs of one colour share an orderIndex, and a list
+   * that reshuffles itself between two reads is a list a shop cannot reorder.
+   */
   async findManyByProduct(productId: string, clientId: string): Promise<ProductImage[]> {
     return prisma.productImage.findMany({
       where: { productId, product: { clientId, status: { notIn: ['TRASHED' as any] } } },
-      orderBy: { createdAt: 'asc' }
+      orderBy: [{ generated: 'asc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }]
     });
   }
 

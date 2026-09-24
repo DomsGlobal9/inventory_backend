@@ -67,7 +67,9 @@ router.post('/:productId', requirePermission('product:view'), counterLimiter, ha
       images: {
         where: { imageType: { in: ['COVER', 'GALLERY'] } },
         select: { url: true, isPrimary: true },
-        orderBy: { orderIndex: 'asc' }
+        // createdAt breaks the tie: orderIndex counts within a colour, so several colours
+        // share the same index and "the first photograph" was whichever one came back first.
+        orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }]
       }
     }
   });

@@ -354,11 +354,19 @@ export async function productPhotos(actor: Actor, search: unknown) {
       images: { some: {} },
       ...(q ? { OR: [{ title: { contains: q, mode: 'insensitive' } }, { productCode: { contains: q, mode: 'insensitive' } }] } : {})
     },
-    select: { id: true, title: true, images: { select: { id: true, url: true, isPrimary: true }, orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }], take: 6 } },
+    // No `take` on the photographs any more, and six distinct ones kept below instead.
+    // One photograph of a colour is registered against every size of that colour, so a saree in
+    // three sizes gave the same picture three times -- and six rows could be two pictures shown
+    // three times each. 24 products x a handful of photographs is a small read.
+    select: { id: true, title: true, images: { select: { id: true, url: true, isPrimary: true }, orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }] } },
     orderBy: { updatedAt: 'desc' },
     take: 24
   });
-  return rows.map(p => ({ id: p.id, title: p.title, images: p.images.map(i => ({ id: i.id, url: i.url })) }));
+  return rows.map(p => {
+    const seen = new Set<string>();
+    const images = p.images.filter(i => !seen.has(i.url) && seen.add(i.url)).slice(0, 6);
+    return { id: p.id, title: p.title, images: images.map(i => ({ id: i.id, url: i.url })) };
+  });
 }
 
 // ── Start, and making the links ───────────────────────────────────────────────────────────

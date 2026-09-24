@@ -702,10 +702,27 @@ model ProductImage {
   imageType  ProductImageType @map("image_type")
   orderIndex Int              @default(0) @map("order_index")
 
+  /// True when Try-On made this picture, false when the shop photographed it.
+  ///
+  /// A plain column rather than another ProductImageType value on purpose: adding a value to a
+  /// Postgres enum breaks the code already deployed against this database, because an older
+  /// Prisma client throws on a value it has never heard of. That is what took the alerts bell
+  /// down on 23 September. A new column is simply invisible to a client that does not select it.
+  ///
+  /// Read by the gallery ordering: a shop's own photograph of the garment leads, the generated
+  /// model shots follow it.
+  generated Boolean @default(false)
+
+  /// The flat-lay this was generated from, when it was.
+  generatedFromId String?        @map("generated_from_id")
+  generatedFrom   ProductImage?  @relation("GeneratedFrom", fields: [generatedFromId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  generatedViews  ProductImage[] @relation("GeneratedFrom")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([productId])
   @@index([variantId])
+  @@index([generatedFromId])
   @@map("inventory_product_images")
 }
 

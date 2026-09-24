@@ -152,7 +152,7 @@ export class ShopperTryOnProductService {
         dressType: true,
         images: {
           // The garment as the merchant chose to lead with, which is the one on the tag.
-          orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }],
+          orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
           take: 1,
           select: { url: true }
         }

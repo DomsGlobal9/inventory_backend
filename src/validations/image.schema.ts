@@ -16,6 +16,16 @@ export const createImageSchema = z.object({
    */
   variantId: z.string().uuid().optional(),
   imageType: z.nativeEnum(ProductImageType).default(ProductImageType.GALLERY),
+  /**
+   * Whether Try-On made this picture or the shop took it.
+   *
+   * Defaults to false, so every existing caller keeps registering photographs as the shop's
+   * own -- which is what they are. The gallery lists a shop's own photograph before the
+   * generated ones, because a real picture of the real garment is the better one to lead with.
+   */
+  generated: z.boolean().default(false),
+  /** The flat-lay a generated view came from. Checked against this product before it is saved. */
+  generatedFromId: z.string().uuid().optional(),
   orderIndex: z.number().int().default(0),
   storagePath: z.string().optional(),
   fileName: z.string().optional(),

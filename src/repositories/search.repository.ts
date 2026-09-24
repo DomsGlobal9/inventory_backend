@@ -26,7 +26,10 @@ export class SearchRepository {
       },
       include: {
         images: {
+          // Oldest first: the primary is per colour now, so without an order this returned an
+          // arbitrary colour -- and a different one on a different day.
           where: { isPrimary: true },
+          orderBy: { createdAt: 'asc' as const },
           take: 1
         }
       }
@@ -47,6 +50,7 @@ export class SearchRepository {
           include: {
             images: {
               where: { isPrimary: true },
+              orderBy: { createdAt: 'asc' as const },
               take: 1
             }
           }
@@ -71,7 +75,10 @@ export class SearchRepository {
       },
       include: {
         images: {
+          // Oldest first: the primary is per colour now, so without an order this returned an
+          // arbitrary colour -- and a different one on a different day.
           where: { isPrimary: true },
+          orderBy: { createdAt: 'asc' as const },
           take: 1
         }
       },

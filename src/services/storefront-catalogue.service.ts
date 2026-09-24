@@ -230,8 +230,16 @@ const PRODUCT_SELECT = {
     // product's views from; a merchant's own website has always received only the finished ones and
     // still does, while a shop that wants to show everything it uploaded can say so. Filtering here
     // meant neither could choose.
-    select: { url: true, isPrimary: true, orderIndex: true, variantId: true, imageType: true },
-    orderBy: { orderIndex: 'asc' as const }
+    select: { url: true, isPrimary: true, orderIndex: true, variantId: true, imageType: true, generated: true },
+    /*
+     * The shop's own photographs first, then the generated views, then oldest first.
+     *
+     * orderIndex counts WITHIN a colour, so once photographs belonged to colours a plain
+     * orderIndex sort left every colour's first photograph tied with every other colour's --
+     * and a feed whose order changes between two reads is a gallery that reshuffles itself on
+     * a merchant's own website.
+     */
+    orderBy: [{ generated: 'asc' as const }, { orderIndex: 'asc' as const }, { createdAt: 'asc' as const }]
   },
   variants: { select: VARIANT_SELECT }
 } satisfies Prisma.ProductSelect;
@@ -249,9 +257,22 @@ function toStorefrontProduct(
   p: ProductRow, scoped: Set<string>, currency: string, allPhotos = false
 ): StorefrontProduct {
   const byVariantId = new Map(p.variants.map(v => [v.id, v.variantCode]));
-  const shown = allPhotos
+  /*
+   * One entry per PHOTOGRAPH, not per row.
+   *
+   * A photograph of the red saree is registered against red/S, red/M and red/L, so the same url
+   * comes back three times. Sent as three entries, a shop's product page would show the same
+   * picture three times over and a merchant's own website would receive a gallery of duplicates.
+   *
+   * The first row for a url wins, which is the lowest orderIndex of the lowest size -- and the
+   * variantCode it carries is enough for a page to rank it: the shop's product page ranks a
+   * photograph of the chosen colour above the rest, and every size of a colour is that colour.
+   */
+  const visible = allPhotos
     ? p.images
     : p.images.filter(i => i.imageType === 'COVER' || i.imageType === 'GALLERY');
+  const seenUrls = new Set<string>();
+  const shown = visible.filter(i => !seenUrls.has(i.url) && seenUrls.add(i.url));
   return {
     productCode: p.productCode,
     title: p.title,

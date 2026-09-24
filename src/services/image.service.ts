@@ -80,9 +80,25 @@ export class ImageService {
       if (!variant) throw { statusCode: 400, message: 'That size/colour does not belong to this product.' };
     }
 
+    /*
+     * A generated view can only point at a flat-lay of THIS product.
+     *
+     * Same reasoning as variantId above: it arrives from the browser, and unchecked it would
+     * let one shop's photograph claim to have been generated from another shop's.
+     */
+    if (data.generatedFromId) {
+      const source = await prisma.productImage.findFirst({
+        where: { id: data.generatedFromId, productId, product: { clientId } },
+        select: { id: true }
+      });
+      if (!source) throw { statusCode: 400, message: 'That photograph does not belong to this product.' };
+    }
+
     const imageData: Prisma.ProductImageUncheckedCreateInput = {
       productId,
       variantId: data.variantId ?? null,
+      generated: data.generated ?? false,
+      generatedFromId: data.generatedFromId ?? null,
       url: data.url,
       storagePath: data.storagePath,
       fileName: data.fileName,
@@ -139,22 +155,45 @@ export class ImageService {
     const image = await imageRepository.findById(id, clientId);
     if (!image) throw { statusCode: 404, message: "Image not found" };
 
-    // Delete from Supabase Storage. storagePath is stored as {clientId}/{productId}/{filename}
-    // *within* the inventory-images bucket (see useUploadImage.js) -- it does not carry a
-    // bucket-name prefix, so it must be passed to .remove() as-is, not split apart.
+    /*
+     * The file goes only when the LAST row using it goes.
+     *
+     * storagePath is {clientId}/{productId}/{filename} WITHIN the inventory-images bucket -- it
+     * carries no bucket-name prefix, so it is passed to .remove() as-is rather than split apart.
+     *
+     * One photograph of the red saree is registered against red/S, red/M and red/L -- the bytes
+     * are uploaded once and three rows point at them. Removing the file as soon as any one of
+     * those rows was deleted would blank the other two: the shop would delete red/M's copy and
+     * watch red/S and red/L turn into broken images.
+     *
+     * Counted inside the same call that deletes the row, and deliberately BEFORE it: if another
+     * row shares the path there is nothing to do, and if this was the last one the file is
+     * removed after the row is gone, so a failure here leaves an orphaned file rather than a
+     * row pointing at nothing. An orphan costs storage; a row pointing at nothing is a broken
+     * picture on a shop's product page.
+     */
+    let sharedWith = 0;
     if (image.storagePath) {
+      sharedWith = await prisma.productImage.count({
+        where: { storagePath: image.storagePath, id: { not: id } }
+      });
+    }
+
+    const deleted = await imageRepository.delete(id, clientId);
+
+    if (image.storagePath && sharedWith === 0) {
       try {
         const { error } = await supabase.storage.from('inventory-images').remove([image.storagePath]);
         if (error) {
           console.error("Failed to delete from Supabase:", error);
-          // Optional: throw error if strict consistency is required
         }
       } catch (err) {
         console.error("Supabase deletion error:", err);
       }
     }
 
-    return imageRepository.delete(id, clientId);
+    return deleted;
+
   }
 }
 
