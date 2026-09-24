@@ -499,6 +499,23 @@ async function sweepOldRuns() {
       .then(() => console.log(`  [tidy] removed a shop left by an earlier run: ${id}`))
       .catch((e: any) => console.log(`  [tidy] could not remove ${id}: ${e?.message}`));
   }
+
+  /*
+   * The console admins too.
+   *
+   * These are ACTIVE platform admins with a password -- an account that can delete any shop
+   * on the platform. Two were found still sitting there a fortnight after the run that made
+   * them. A shop left behind is clutter; a platform admin left behind is a way in.
+   */
+  const admins = await prisma.platformAdmin.findMany({
+    where: { email: { startsWith: 'sec-console' } }, select: { id: true, email: true, createdAt: true }
+  }).catch(() => []);
+  for (const a of admins) {
+    if (a.createdAt.getTime() >= anHourAgo) continue;   // a run happening right now
+    await prisma.platformAdmin.delete({ where: { id: a.id } })
+      .then(() => console.log(`  [tidy] removed a console admin left by an earlier run: ${a.email}`))
+      .catch((e: any) => console.log(`  [tidy] could not remove ${a.email}: ${e?.message}`));
+  }
 }
 
 async function cleanup() {
