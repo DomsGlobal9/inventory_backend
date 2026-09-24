@@ -194,3 +194,150 @@ export async function emailOrderPlaced(clientId: string, token: string): Promise
     return 'skipped';
   }
 }
+
+
+/**
+ * Why an order stopped. It decides what is said, and to whom.
+ *
+ *   CUSTOMER      they pressed Cancel on their own order page
+ *   SHOP          somebody at the shop cancelled it from the Orders screen
+ *   HOLD_EXPIRED  nobody proved the number, so the day-long hold on the stock ran out
+ */
+export type WhyCancelled = 'CUSTOMER' | 'SHOP' | 'HOLD_EXPIRED';
+
+/**
+ * An online order that has stopped, told to whoever did not already know.
+ *
+ * Nothing said anything when an order was cancelled, and each of the three ways it happens left
+ * somebody in the dark:
+ *
+ *   - the SHOP cancelled it, and the customer sat waiting for a box that was never coming;
+ *   - the HOLD RAN OUT on an order nobody proved, and the customer found out only if they thought
+ *     to reopen their link -- for an order they had placed in good faith;
+ *   - the CUSTOMER cancelled it, and the shop, which may well have been packing it, was told
+ *     nothing at all. The "New online order" alert sat in their Alert Centre pointing at it.
+ *
+ * One entry point for all three, so a fourth way to cancel cannot quietly skip the telling. It is
+ * safe to call for any sales order: an order that is not one of this shop's own is skipped.
+ *
+ * Called AFTER the cancellation has committed, never inside it -- releasing a customer's stock must
+ * not depend on WhatsApp being reachable.
+ */
+export async function orderCancelled(
+  clientId: string, salesOrderId: string, why: WhyCancelled
+): Promise<'told' | 'skipped'> {
+  try {
+    const row = await prisma.onlineShopOrder.findUnique({
+      where: { salesOrderId },
+      select: {
+        token: true, customerPhone: true, clientId: true,
+        salesOrder: {
+          select: { orderNumber: true, total: true, customerName: true, customerId: true, status: true }
+        }
+      }
+    });
+    // A counter sale or a Shopify order being cancelled is not this module's business.
+    if (!row || row.clientId !== clientId) return 'skipped';
+
+    const [settings, shop] = await Promise.all([
+      getShopSettings(clientId).catch(() => null),
+      prisma.onlineShop.findUnique({ where: { clientId }, select: { slug: true, displayName: true } })
+    ]);
+    const name = shop?.displayName?.trim() || settings?.businessName?.trim() || 'the shop';
+    const link = shop?.slug ? shopUrl(shopBaseUrl(), shop.slug) : null;
+    const order = row.salesOrder;
+    const first = order.customerName ? order.customerName.split(' ')[0] : null;
+
+    /*
+     * The shop's "New online order" alert, closed.
+     *
+     * Matched on the title because that is the only handle there is -- an InventoryAlert carries
+     * no reference to the document that raised it, and the title is written by tellTheShop from an
+     * order number that is unique within the shop. Left open, the Alert Centre goes on asking
+     * somebody to pack an order that no longer exists.
+     */
+    await prisma.inventoryAlert.updateMany({
+      where: { clientId, title: `New online order ${order.orderNumber}`, isResolved: false },
+      data: { isResolved: true }
+    }).catch(() => {});
+
+    if (why === 'CUSTOMER') {
+      /*
+       * The customer knows -- they pressed it. The SHOP is the one who needs to hear, because the
+       * order may be half wrapped. Raised in the Alert Centre for the same reason a new order is:
+       * it is where this shop already looks for things that need doing.
+       */
+      await prisma.inventoryAlert.create({
+        data: {
+          clientId,
+          type: 'ONLINE_ORDER',
+          severity: 'INFO',
+          title: `Order ${order.orderNumber} was cancelled`,
+          message:
+            `${order.customerName || 'The customer'} called off their online order ` +
+            `for ₹${Number(order.total).toLocaleString('en-IN')}. Do not send it. The stock is back on the shelf.`
+        }
+      }).catch(() => {});
+      return 'told';
+    }
+
+    /*
+     * The customer did not do this, so the customer is told. Said plainly, with what it means for
+     * their money first -- "nothing is owed" is the question anybody asks -- and then the way
+     * forward, because a cancelled order should not be the end of the conversation.
+     */
+    const words = why === 'HOLD_EXPIRED'
+      ? [
+          `${first ? `${first}, your` : 'Your'} order ${order.orderNumber} with ${name} has been released.`,
+          '',
+          'It was not confirmed in time, so the pieces have gone back on sale. Nothing is owed.',
+          ...(link ? ['', `You can order again here: ${link}`] : []),
+          '',
+          'Confirming your number at the checkout keeps your order held.'
+        ]
+      : [
+          `${first ? `${first}, your` : 'Your'} order ${order.orderNumber} with ${name} has been cancelled.`,
+          '',
+          'Nothing is owed.',
+          ...(link ? ['', `Message the shop if this is a surprise: ${link}`] : [])
+        ];
+
+    if (whatsappConfigured() && row.customerPhone) {
+      const { sendShopText } = await import('../whatsapp/service');
+      await sendShopText({
+        clientId,
+        to: row.customerPhone.replace(/^\+/, ''),
+        text: words.join('\n'),
+        kind: 'ORDER_UPDATE',
+        referenceId: salesOrderId,
+        // One message per cancellation, however many times housekeeping comes round.
+        idempotencyKey: `SHOP:ORDER:CANCELLED:${salesOrderId}`,
+        sentBy: null,
+        linkPreview: false
+      }).catch((e: unknown) => {
+        // STOP, a shop with no number linked, WhatsApp down: the email below may still reach them.
+        console.warn('[online-shop] cancellation not sent on WhatsApp:', (e as Error)?.message);
+      });
+    }
+
+    const customer = order.customerId
+      ? await prisma.customer.findUnique({ where: { id: order.customerId }, select: { email: true } })
+      : null;
+    if (customer?.email && emailConfigured()) {
+      await sendMail({
+        to: customer.email,
+        subject: `${name} — order ${order.orderNumber} cancelled`,
+        text: [...words, '', name].join('\n'),
+        kind: 'online-shop-order-cancelled'
+      }).catch((e: unknown) => {
+        console.warn('[online-shop] cancellation email not sent:', (e as Error)?.message);
+      });
+    }
+
+    return 'told';
+  } catch (e) {
+    // The order is cancelled and the stock is back either way. Nothing here may undo that.
+    console.warn('[online-shop] could not tell anybody about a cancellation:', (e as Error)?.message);
+    return 'skipped';
+  }
+}

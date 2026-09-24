@@ -5,6 +5,7 @@ import { createOrderSchema, createFullOrderSchema } from '../validations/sales-o
 import { respondWithError } from '../utils/respondWithError';
 import { requestsManualDiscount } from '../services/pricing';
 import { grants, holdsEverything } from '../config/permissions';
+import { onlineShopNotices } from '../services/online-shop';
 
 export const createOrder = async (req: Request, res: Response) => {
   try {
@@ -176,6 +177,14 @@ export const cancelOrder = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
     const order = await salesOrderService.cancelOrder(clientId, req.params.id as string);
+    /*
+     * A customer who bought online is waiting for a box, and cancelling it here told them nothing.
+     *
+     * Composed at the controller rather than inside cancelOrder, which is the one writer POS,
+     * Shopify and the online shop all share and which must stay ignorant of any of them. The call
+     * is safe for every order: one that did not come from the shop is skipped.
+     */
+    void onlineShopNotices.orderCancelled(clientId, req.params.id as string, 'SHOP');
     res.json(order);
   } catch (error: any) {
     return respondWithError(res, error, { status: 400 });

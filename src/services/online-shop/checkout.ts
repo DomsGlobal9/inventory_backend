@@ -7,7 +7,7 @@ import { generateSequentialCode } from '../../utils/codeGenerator';
 import { normalisePhone } from '../../lib/phone';
 import { afterCommit } from '../../lib/afterCommit';
 import { OnlineShopRuleError } from './rules';
-import { sendOrderPlacedNotice, emailOrderPlaced, tellTheShop } from './notices';
+import { sendOrderPlacedNotice, emailOrderPlaced, tellTheShop, orderCancelled } from './notices';
 import { isVerified } from './otp';
 
 /**
@@ -64,7 +64,6 @@ export async function orderingFor(clientId: string) {
 function tidy(raw: unknown): BasketLine[] {
   const rows = Array.isArray(raw) ? raw : [];
   if (rows.length === 0) throw new OnlineShopRuleError('There is nothing in your bag.');
-  if (rows.length > MAX_LINES) throw new OnlineShopRuleError(`A bag can hold ${MAX_LINES} different pieces.`);
 
   // Merged rather than refused: a shopper who adds the same piece twice means two of it, and the
   // pricing engine needs each piece once with its full quantity.
@@ -76,6 +75,14 @@ function tidy(raw: unknown): BasketLine[] {
     if (!Number.isInteger(qty) || qty <= 0) throw new OnlineShopRuleError('How many of each piece has to be a whole number.');
     byCode.set(code, Math.min((byCode.get(code) ?? 0) + qty, MAX_PER_LINE));
   }
+
+  /*
+   * Counted AFTER merging, because the limit is on different pieces and that is what merging
+   * produces. Counted before, twenty-one rows of the same saree -- which is one piece -- was
+   * refused as "a bag can hold 20 different pieces": untrue, and nothing the shopper could act on.
+   * The body itself is capped at 32kb by the router, so this is not what keeps the payload small.
+   */
+  if (byCode.size > MAX_LINES) throw new OnlineShopRuleError(`A bag can hold ${MAX_LINES} different pieces.`);
   return [...byCode].map(([variantCode, quantity]) => ({ variantCode, quantity }));
 }
 
@@ -595,6 +602,9 @@ export async function cancel(clientId: string, token: unknown) {
   }
 
   await salesOrderService.cancelOrder(clientId, row.salesOrderId);
+  // The shop may be half way through wrapping it, and its Alert Centre is still asking somebody
+  // to. Not awaited: the customer's own page must not wait on a message to somebody else.
+  void orderCancelled(clientId, row.salesOrderId, 'CUSTOMER');
   return summary(clientId, key);
 }
 
@@ -617,6 +627,12 @@ export async function releaseExpiredHolds(now = new Date()) {
       await salesOrderService.cancelOrder(row.clientId, row.salesOrderId);
       // Cleared so a cancel that half-worked is not tried for ever.
       await prisma.onlineShopOrder.update({ where: { salesOrderId: row.salesOrderId }, data: { holdExpiresAt: null } });
+      /*
+       * The customer placed this in good faith and is about to find their order gone. Awaited,
+       * unlike the other two callers: this runs in a background job with nobody waiting, and an
+       * unawaited promise here would be left dangling when the loop and the process move on.
+       */
+      await orderCancelled(row.clientId, row.salesOrderId, 'HOLD_EXPIRED');
       released++;
     } catch (e) {
       console.warn('[online-shop] could not let go of a stale hold:', (e as Error)?.message);

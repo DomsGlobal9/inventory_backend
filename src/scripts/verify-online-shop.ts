@@ -22,7 +22,7 @@ import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { seedRolesForClient } from '../services/rbac-seed.service';
 import { platformAdminService } from '../services/platform-admin.service';
-import { onlineShop, shopBanners, shopCheckout, shopOtp, shopTryOn, OnlineShopRuleError, checkSlug, RESERVED_SLUGS } from '../services/online-shop';
+import { onlineShop, shopBanners, shopCheckout, shopOtp, shopTryOn, onlineShopNotices, OnlineShopRuleError, checkSlug, RESERVED_SLUGS } from '../services/online-shop';
 import { HousekeepingScheduler } from '../jobs/housekeeping.scheduler';
 
 const SERVER = (process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1').replace(/\/api\/v1\/?$/, '');
@@ -684,6 +684,52 @@ async function main() {
   check('...and that order is cancelled, not left holding stock', letGo?.status === 'CANCELLED', letGo?.status);
   const provedStill = await prisma.salesOrder.findFirst({ where: { clientId: SHOP, externalOrderId: provedKey }, select: { status: true } });
   check('...while a proved order is left alone', provedStill?.status === 'CONFIRMED', provedStill?.status);
+
+  /*
+   * NOBODY IS LEFT IN THE DARK BY A CANCELLATION.
+   *
+   * Three ways an order stops, and each one used to leave somebody guessing: the shop packing an
+   * order the customer had called off, and the customer waiting for a box the shop or the clock
+   * had already cancelled. There is no WhatsApp on a throwaway shop, so what is proved here is the
+   * part that is this module's own -- what the shop is told, and what it stops being told.
+   */
+  const placedAlert = await prisma.inventoryAlert.findFirst({
+    where: { clientId: SHOP, title: { startsWith: 'New online order' }, isResolved: false },
+    orderBy: { createdAt: 'desc' }, select: { title: true }
+  });
+  check('a hold that ran out closes the shop\'s "new order" alert, so nobody packs it',
+    placedAlert === null || !placedAlert.title.includes(String(order.data.data.orderNumber)),
+    placedAlert?.title);
+
+  // The customer calling it off is the one case the SHOP has to hear about.
+  const toCallOff = await post('/shop/lakshmi-silks/orders', {
+    ...details, placementKey: key(), lines: [{ variantCode: sareeCode, quantity: 1 }]
+  });
+  check('an order to call off is placed', toCallOff.status === 200, toCallOff.data);
+  const offNumber = toCallOff.data.data.orderNumber as string;
+  await post(`/shop/lakshmi-silks/orders/${toCallOff.data.data.token}/cancel`, {});
+  // The telling is deliberately not awaited by the customer's own page, so give it a moment.
+  await new Promise(r => setTimeout(r, 1200));
+  const shopTold = await prisma.inventoryAlert.findFirst({
+    where: { clientId: SHOP, title: `Order ${offNumber} was cancelled` },
+    select: { severity: true, message: true }
+  });
+  check('a customer calling their order off tells the shop, which may be wrapping it',
+    !!shopTold, shopTold);
+  check('...saying plainly not to send it', /do not send it/i.test(String(shopTold?.message)), shopTold?.message);
+  check('...and that the stock is back', /back on the shelf/i.test(String(shopTold?.message)), shopTold?.message);
+  check('...as something to know, not something wrong', shopTold?.severity === 'INFO', shopTold?.severity);
+  const stillAsking = await prisma.inventoryAlert.findFirst({
+    where: { clientId: SHOP, title: `New online order ${offNumber}`, isResolved: false }
+  });
+  check('...and the "new order" alert for it is closed, not left asking',
+    stillAsking === null, stillAsking?.id);
+
+  // Cancelling something that is not an online order at all must be a quiet no-op, because the
+  // Orders screen calls this for every cancellation it makes.
+  const notOurs = await onlineShopNotices.orderCancelled(SHOP, cancelled ? 'not-a-real-order-id' : 'x', 'SHOP');
+  check('cancelling an order that did not come from the shop tells nobody, quietly',
+    notOurs === 'skipped', notOurs);
 
   // A banner can point at a department the shop really has. Section N filled the shop to its six,
   // so two come off first -- the limit is already proved there.
