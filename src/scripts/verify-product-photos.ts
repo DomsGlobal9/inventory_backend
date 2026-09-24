@@ -51,8 +51,8 @@ async function main() {
   // ── Setup ───────────────────────────────────────────────────────────────────────────────
   const product = await prisma.product.create({
     data: {
-      clientId: SHOP, productCode: 'PRD-PHOTO', title: 'Photo Test Saree',
-      category: 'WOMEN' as any, status: 'ACTIVE' as any, basePrice: 2500
+      clientId: SHOP, productCode: 'PRD-PHOTO', title: 'Photo Test Saree', slug: `photo-test-${Date.now()}`,
+      category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, status: 'ACTIVE' as any, basePrice: 2500
     }
   });
   // Red in three sizes, blue in one: the red ones share a photograph, blue has its own.
@@ -72,8 +72,8 @@ async function main() {
 
   const otherProduct = await prisma.product.create({
     data: {
-      clientId: OTHER, productCode: 'PRD-OTHER', title: 'Another Shop Saree',
-      category: 'WOMEN' as any, status: 'ACTIVE' as any, basePrice: 999
+      clientId: OTHER, productCode: 'PRD-OTHER', title: 'Another Shop Saree', slug: `other-shop-${Date.now()}`,
+      category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, status: 'ACTIVE' as any, basePrice: 999
     }
   });
   const otherVariant = await prisma.productVariant.create({
@@ -194,8 +194,8 @@ async function main() {
 
   const plain = await prisma.product.create({
     data: {
-      clientId: SHOP, productCode: 'PRD-PLAIN', title: 'Alteration Service',
-      category: 'WOMEN' as any, status: 'ACTIVE' as any, basePrice: 100
+      clientId: SHOP, productCode: 'PRD-PLAIN', title: 'Alteration Service', slug: `alteration-${Date.now()}`,
+      category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, status: 'ACTIVE' as any, basePrice: 100
     }
   });
   const loose = await imageService.addImage(plain.id, SHOP, shot());
