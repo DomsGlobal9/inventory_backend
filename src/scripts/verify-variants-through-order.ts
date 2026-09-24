@@ -65,6 +65,21 @@ async function main() {
     await prisma.inventoryStock.create({ data: { clientId: SHOP, variantId: v.id, locationId: location.id, quantity: 5, reservedQty: 0 } });
     variants.push(v);
   }
+
+  // One photograph per COLOUR, registered against every size of it -- which is how the wizard
+  // files them. Without these the order summary has no picture to get wrong, and the bug this
+  // guards against (every line showing whichever photograph sorted first) is invisible.
+  for (const v of variants) {
+    const colour = String(v.colorName).toLowerCase();
+    await prisma.productImage.create({
+      data: {
+        productId: product.id, variantId: v.id,
+        url: `https://example.test/${colour}.jpg`, storagePath: `${SHOP}/${colour}.jpg`,
+        fileName: `${colour}.jpg`, imageType: 'GALLERY' as any,
+        isPrimary: v.size === 'S', orderIndex: colour === 'red' ? 0 : 1
+      }
+    });
+  }
   const [redS, redM, blueS, blueM] = variants;
   const name = (v: any) => `${v.colorName}/${v.size}`;
 
@@ -153,6 +168,27 @@ async function main() {
     ['S', 'M'].every(sz => shownLines.some((l: any) => l.size === sz)),
     JSON.stringify(shownLines.map((l: any) => `${l.colour ?? l.colorName}/${l.size}`)));
 
+  /*
+   * ...and the PICTURE beside each line is that line's own colour.
+   *
+   * This read the product's images with a `take: 1` and no variant filter, so every line on a
+   * confirmation got whichever photograph sorted first: an order for one blue and two red put
+   * the red saree next to the blue line. Nothing else was wrong -- the colour, the price and
+   * the stock were all right -- which is exactly why it survived: only the photograph lied,
+   * on the one page a customer keeps as their record of what they bought.
+   */
+  const shot = (l: any) => String(l.imageUrl ?? '').split('/').pop();
+  check('  ...and each line shows a photograph of ITS OWN colour',
+    shownLines.every((l: any) => {
+      const c = String(l.colour ?? l.colorName ?? '').toLowerCase();
+      return !!c && shot(l) === `${c}.jpg`;
+    }),
+    JSON.stringify(shownLines.map((l: any) => `${l.colour}/${l.size} -> ${shot(l)}`)));
+
+  check('  ...so the two colours do not share one picture',
+    new Set(shownLines.map(shot)).size === 2,
+    JSON.stringify(shownLines.map(shot)));
+
   // ── D. Cancelling puts back exactly what was held ───────────────────────────────────────
   console.log('\nD. CANCELLING PUTS BACK EXACTLY WHAT WAS HELD');
 
@@ -178,6 +214,8 @@ async function report() {
   await prisma.onlineShopOrder.deleteMany({ where: { clientId: SHOP } }).catch(() => null);
   await prisma.onlineShop.deleteMany({ where: { clientId: SHOP } }).catch(() => null);
   await prisma.inventoryStock.deleteMany({ where: { clientId: SHOP } }).catch(() => null);
+  // Before the variants they hang off, or the delete is refused and the shop is left behind.
+  await prisma.productImage.deleteMany({ where: { product: { clientId: SHOP } } }).catch(() => null);
   await prisma.productVariant.deleteMany({ where: { clientId: SHOP } }).catch(() => null);
   await prisma.product.deleteMany({ where: { clientId: SHOP } }).catch(() => null);
   await prisma.stockLocation.deleteMany({ where: { clientId: SHOP } }).catch(() => null);

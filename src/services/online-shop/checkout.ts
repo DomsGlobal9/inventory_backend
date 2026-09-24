@@ -708,13 +708,21 @@ export async function summary(clientId: string, token: unknown) {
               quantity: true, listUnitPrice: true, totalPrice: true,
               variant: {
                 select: {
-                  variantCode: true, size: true, colorName: true, hexCode: true,
+                  id: true, variantCode: true, size: true, colorName: true, hexCode: true,
                   product: {
                     select: {
                       title: true, productCode: true,
+                      // Photographs belong to a colour, so this cannot be a `take: 1` on the
+                      // product: it took whichever image sorted first and showed it against
+                      // every line, so an order for one Royal Blue and two Crimson put the
+                      // Crimson photograph next to the Royal Blue one. The picking is done
+                      // per line below, where the variant is known; the cap is generous
+                      // enough for a product's whole set and still bounded.
                       images: {
                         where: { imageType: { in: ['COVER', 'GALLERY'] } },
-                        select: { url: true }, orderBy: { orderIndex: 'asc' }, take: 1
+                        select: { url: true, variantId: true, isPrimary: true },
+                        orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }],
+                        take: 24
                       }
                     }
                   }
@@ -756,7 +764,13 @@ export async function summary(clientId: string, token: unknown) {
       size: i.variant?.size ?? null,
       colour: i.variant?.colorName ?? null,
       colourHex: hex(i.variant?.hexCode),
-      imageUrl: i.variant?.product.images[0]?.url ?? null,
+      // This colour's own photograph, falling back to the product's first only when the
+      // colour has none of its own -- so a line never shows another colour's picture.
+      imageUrl: (() => {
+        const all = i.variant?.product.images ?? [];
+        const mine = all.filter((im: any) => im.variantId === i.variant?.id);
+        return (mine[0] ?? all[0])?.url ?? null;
+      })(),
       quantity: i.quantity,
       unitPrice: Number(i.listUnitPrice),
       lineTotal: Number(i.totalPrice)

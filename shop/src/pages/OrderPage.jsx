@@ -111,7 +111,11 @@ export default function OrderPage({ shop }) {
 
       <div className="orderbody">
         <section className="card">
-          <h2>{o.items.length === 1 ? '1 piece' : `${o.items.length} pieces`}</h2>
+          {/* Pieces, not lines. Two of one colour and one of another is three pieces, and
+              counting the lines said "2 pieces" on the confirmation for an order the checkout
+              had just called "3 pieces" -- which reads like something was dropped on the way,
+              at the exact moment a customer is checking that it was not. */}
+          <h2>{(() => { const n = o.items.reduce((t, i) => t + i.quantity, 0); return n === 1 ? '1 piece' : `${n} pieces`; })()}</h2>
           <ul className="baglines flat">
             {o.items.map((i, n) => (
               <li key={`${i.variantCode}-${n}`}>

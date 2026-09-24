@@ -49,7 +49,15 @@ export class CatalogTryOnController {
         // whose key is wrong would otherwise show zero usage while nothing works for them --
         // and "no usage" and "broken" look identical in that case.
         void tryOnUsageService.record(clientId, { started: true, failed: true });
-        res.status(upstream.status || 502).json({ success: false, message: text || 'Try-On generation failed to start' });
+        // The upstream's own body used to be forwarded verbatim, so whatever the far end
+        // happened to say -- a vendor's API error, a proxy's HTML page, a stack trace --
+        // was printed in the shop's browser. It is kept here, where we can read it, and
+        // the merchant is told the one thing they can act on instead.
+        console.error(`[catalog-tryon] upstream refused (${upstream.status}):`, text.slice(0, 500));
+        res.status(upstream.status || 502).json({
+          success: false,
+          message: 'The photo studio could not be reached just now. Your photos are safe -- please try again in a minute.'
+        });
         return;
       }
 

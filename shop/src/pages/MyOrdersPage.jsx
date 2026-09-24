@@ -76,7 +76,8 @@ export default function MyOrdersPage({ shop }) {
                 <p className="of">
                   {new Date(o.placedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                   {' · '}
-                  {o.items.length === 1 ? '1 piece' : `${o.items.length} pieces`}
+                  {/* Pieces, not lines -- the same count the order itself shows. */}
+                  {(() => { const n = o.items.reduce((t, i) => t + (i.quantity ?? 1), 0); return n === 1 ? '1 piece' : `${n} pieces`; })()}
                 </p>
                 <p className="state" data-state={o.state}>{SAID[o.state] ?? 'Placed'}</p>
               </div>

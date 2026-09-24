@@ -406,7 +406,12 @@ export default function CheckoutPage({ shop }) {
                 {bag.lines.map(l => (
                   <li key={l.variantCode}>
                     <span className="n">{l.quantity}×</span>
-                    <span className="t">{l.title}{l.size ? ` · ${l.size}` : ''}</span>
+                    {/* The colour belongs here as much as the size. Two colours of one saree
+                        share a title, a code and a price, so without it this list showed the
+                        same sentence twice -- on the one screen where the customer is about to
+                        commit the money and can no longer see the swatches they picked from.
+                        The bag and the finished order have always named it; this was the gap. */}
+                    <span className="t">{[l.title, l.colour, l.size].filter(Boolean).join(' · ')}</span>
                     <span className="m">{money(l.lineTotal, currency)}</span>
                   </li>
                 ))}

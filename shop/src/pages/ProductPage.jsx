@@ -294,9 +294,16 @@ export default function ProductPage({ slug, shop }) {
             <div className="pick">
               <p>Colour{colour ? <>: <b>{colour}</b></> : ''}</p>
               <div className="opts">
-                {choices.colours.map(c => (
+                {choices.colours.map(c => {
+                  // Why it cannot be pressed, not just that it cannot. Greyed at 0.4 opacity says
+                  // "no" to somebody looking at it and nothing at all to somebody listening to it,
+                  // and even by eye a dimmed swatch reads as easily "not chosen" as "sold out".
+                  const gone = !soldOut && !canBuy(c.name, size) && !canBuy(c.name, null);
+                  return (
                   <button key={c.name} type="button" className="opt" aria-pressed={colour === c.name}
-                    disabled={!soldOut && !canBuy(c.name, size) && !canBuy(c.name, null)}
+                    disabled={gone}
+                    title={gone ? `${c.name} — sold out` : undefined}
+                    aria-label={gone ? `${c.name}, sold out` : undefined}
                     onClick={() => {
                       setColour(c.name);
                       // Moving to a colour that does not come in the chosen size would leave the
@@ -311,7 +318,8 @@ export default function ProductPage({ slug, shop }) {
                     {c.hex ? <span className="swatch" style={{ background: c.hex }} /> : null}
                     {c.name}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -320,11 +328,16 @@ export default function ProductPage({ slug, shop }) {
             <div className="pick">
               <p>Size{size ? <>: <b>{size}</b></> : ''}</p>
               <div className="opts">
-                {choices.sizes.map(s => (
-                  <button key={s} type="button" className="opt" aria-pressed={size === s}
-                    disabled={!soldOut && !canBuy(colour, s)}
-                    onClick={() => setSize(s)}>{s}</button>
-                ))}
+                {choices.sizes.map(s => {
+                  const gone = !soldOut && !canBuy(colour, s);
+                  return (
+                    <button key={s} type="button" className="opt" aria-pressed={size === s}
+                      disabled={gone}
+                      title={gone ? `${s} — sold out${colour ? ` in ${colour}` : ''}` : undefined}
+                      aria-label={gone ? `${s}, sold out${colour ? ` in ${colour}` : ''}` : undefined}
+                      onClick={() => setSize(s)}>{s}</button>
+                  );
+                })}
               </div>
             </div>
           )}
