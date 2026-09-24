@@ -107,9 +107,12 @@ export const cancelOrder = (slug, token, opts) =>
  * The photograph is sent once and deleted by the shop as soon as the picture is made. It is never
  * kept here either -- it lives in this page's memory until the sheet is closed.
  */
-export const tryOn = (slug, productCode, photo, opts) =>
+export const tryOn = (slug, productCode, photo, variantCode, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(productCode)}/tryon`,
-    { ...opts, send: { photo } });
+    // variantCode says which COLOUR is on screen, so the shop sends the front view of that one.
+    // Without it a shopper looking at the blue saree was tried on in whichever colour happened to
+    // lead the product.
+    { ...opts, send: { photo, variantCode } });
 
 export const sendCode = (slug, phone, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/verify/send`, { ...opts, send: { phone } });

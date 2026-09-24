@@ -713,6 +713,14 @@ model ProductImage {
   /// model shots follow it.
   generated Boolean @default(false)
 
+  /// Which of Try-On's four views this is: front, left, right or back. Null for a photograph
+  /// the shop took itself.
+  ///
+  /// Plain text rather than an enum, for the same reason as `generated`: a new enum value breaks
+  /// the code already deployed against this database. Read by try-on, which must send the FRONT
+  /// view of the colour a shopper is looking at -- a fact worth a column, not an alt text to parse.
+  view String?
+
   /// The flat-lay this was generated from, when it was.
   generatedFromId String?        @map("generated_from_id")
   generatedFrom   ProductImage?  @relation("GeneratedFrom", fields: [generatedFromId], references: [id], onDelete: SetNull, onUpdate: Cascade)
@@ -722,6 +730,7 @@ model ProductImage {
 
   @@index([productId])
   @@index([variantId])
+  @@index([variantId, view])
   @@index([generatedFromId])
   @@map("inventory_product_images")
 }

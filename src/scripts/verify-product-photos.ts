@@ -24,6 +24,7 @@ import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import { imageService } from '../services/image.service';
 import { storefrontCatalogueService } from '../services/storefront-catalogue.service';
+import { garmentFor } from '../services/online-shop/tryon';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -222,6 +223,45 @@ async function main() {
   } else {
     check('there was a second photograph on this colour to promote', false, 'none found');
   }
+
+  // ── F3. Try-on sends the front view of the colour on screen ────────────────────
+  console.log('\nF3. TRY-ON SENDS THE FRONT VIEW OF THE COLOUR ON SCREEN');
+
+  /*
+   * A shopper looking at the blue saree must be tried on in the BLUE one, using the front view.
+   *
+   * Both halves were wrong before: try-on sent whichever photograph led the whole product, and
+   * nothing in the database said which photograph was the front view at all.
+   */
+  const frontRed = await imageService.addImage(product.id, SHOP, shot({
+    variantId: red[1].id, generated: true, view: 'front', url: 'https://example.test/red-front.jpg', orderIndex: 9
+  }));
+  const frontBlue = await imageService.addImage(product.id, SHOP, shot({
+    variantId: blue.id, generated: true, view: 'front', url: 'https://example.test/blue-front.jpg', orderIndex: 9
+  }));
+  await imageService.addImage(product.id, SHOP, shot({
+    variantId: blue.id, generated: true, view: 'back', url: 'https://example.test/blue-back.jpg', orderIndex: 10
+  }));
+
+  const redCodes = await prisma.productVariant.findMany({ where: { id: { in: red.map(v => v.id) } }, select: { variantCode: true } });
+  const blueCode = (await prisma.productVariant.findUniqueOrThrow({ where: { id: blue.id }, select: { variantCode: true } })).variantCode;
+
+  const wornBlue = await garmentFor(SHOP, product.productCode, blueCode);
+  check('a shopper on blue is tried on in the BLUE front view',
+    wornBlue?.imageUrl === frontBlue.url, String(wornBlue?.imageUrl));
+
+  /*
+   * Asked for the size the front view is NOT filed against. A colour is several variants and one
+   * photograph of it is registered on each, but a shop can end up with it on only one -- picking
+   * red in size S must not lose a photograph filed under red in M.
+   */
+  const wornRedOtherSize = await garmentFor(SHOP, product.productCode, redCodes[0].variantCode);
+  check('  ...and asking by another SIZE of the same colour still finds that colour front view',
+    wornRedOtherSize?.imageUrl === frontRed.url, String(wornRedOtherSize?.imageUrl));
+
+  const wornUnknown = await garmentFor(SHOP, product.productCode, 'NO-SUCH-VARIANT');
+  check('  ...an unknown colour still gets a real garment rather than a refusal',
+    !!wornUnknown?.imageUrl, String(wornUnknown?.imageUrl));
 
   // ── G. A product with no colours keeps its photographs ──────────────────────────────────
   console.log('\nG. A PRODUCT WITH NO COLOURS KEEPS ITS PHOTOGRAPHS');

@@ -203,25 +203,37 @@ export default function ProductPage({ slug, shop }) {
   if (!p) return <Say title="That is no longer in this shop" />;
 
   /*
-   * EVERY photograph the shop took, with the ones of the chosen colour first.
+   * The photographs OF THE COLOUR ON SCREEN. Not the other colours'.
    *
-   * This used to pick one group and show only that, which meant a piece with five photographs
-   * showed ONE of them the moment a single photograph happened to be attached to the chosen
-   * variant -- the other four simply vanished, with no way for the shopper to reach them. A shop
-   * that photographs each colour still gets a gallery that follows the choice, because those
-   * photographs come first; nothing is hidden to achieve it.
+   * This used to show every photograph the piece had, merely ordering the chosen colour's first
+   * -- which was the right call back when a photograph belonged to the product as a whole and
+   * hiding any of them meant hiding the only ones there were. Now that each colour has its own,
+   * it reads as a mistake: a shopper looking at the green saree scrolled the rail and found
+   * yellow ones underneath, as if the shop had muddled its stock.
+   *
+   * Photographs with no colour at all are kept alongside. Older products still have some, and
+   * they are genuinely of the piece rather than of one colour -- the fabric, the border, the weave.
    */
   const all = p.images ?? [];
   const forColour = colour
     ? choices.variants.filter(v => v.colour === colour).map(v => v.variantCode)
     : [];
+  const mine = all.filter(img => !img.variantCode || forColour.includes(img.variantCode));
+
+  /*
+   * The safety net, and the reason this is a filter with a fallback rather than a plain filter:
+   * a colour nobody has photographed yet would otherwise leave the page with no picture on it.
+   * Showing another colour is not ideal; showing a shopper an empty grey box is worse.
+   */
+  const shown = mine.length > 0 ? mine : all;
+
   const rank = (img) => {
     if (chosen && img.variantCode === chosen.variantCode) return 0;   // this exact size and colour
     if (img.variantCode && forColour.includes(img.variantCode)) return 1; // this colour
     if (!img.variantCode) return 2;                                    // the piece as a whole
-    return 3;                                                          // another colour
-  };
-  const photos = [...all]
+    return 3;                                                          // another colour, only ever
+  };                                                                   // reached by the fallback
+  const photos = [...shown]
     .map((img, i) => ({ img, i, r: rank(img) }))
     // Stable inside each group, so the shop's own ordering is kept.
     .sort((a, b) => a.r - b.r || a.i - b.i)
@@ -465,7 +477,7 @@ export default function ProductPage({ slug, shop }) {
 
       {trying ? (
         <Suspense fallback={null}>
-          <TryOn slug={slug} product={p} onClose={() => setTrying(false)} />
+          <TryOn slug={slug} product={p} chosen={chosen} onClose={() => setTrying(false)} />
         </Suspense>
       ) : null}
     </>

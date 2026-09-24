@@ -99,6 +99,7 @@ export class ImageService {
       variantId: data.variantId ?? null,
       generated: data.generated ?? false,
       generatedFromId: data.generatedFromId ?? null,
+      view: data.view ?? null,
       url: data.url,
       storagePath: data.storagePath,
       fileName: data.fileName,

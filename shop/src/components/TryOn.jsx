@@ -42,7 +42,7 @@ const hasCamera = () => {
   catch { return false; }
 };
 
-export default function TryOn({ slug, product, onClose }) {
+export default function TryOn({ slug, product, chosen, onClose }) {
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
   const [onPhone] = useState(hasCamera);
@@ -69,7 +69,7 @@ export default function TryOn({ slug, product, onClose }) {
   const go = async () => {
     setBusy(true); setSaid(null);
     try {
-      const out = await tryOn(slug, product.productCode, photo);
+      const out = await tryOn(slug, product.productCode, photo, chosen?.variantCode);
       setResult(out.imageUrl);
     } catch (err) {
       setSaid(err?.message ?? 'That did not work. Please try another photograph.');

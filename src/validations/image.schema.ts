@@ -26,6 +26,13 @@ export const createImageSchema = z.object({
   generated: z.boolean().default(false),
   /** The flat-lay a generated view came from. Checked against this product before it is saved. */
   generatedFromId: z.string().uuid().optional(),
+  /**
+   * Which of the four generated views this is.
+   *
+   * A fixed list, so try-on can ask for "the front one" and get an answer rather than a guess.
+   * Absent for a photograph the shop took itself -- those are not a view of anything.
+   */
+  view: z.enum(['front', 'left', 'right', 'back']).optional(),
   orderIndex: z.number().int().default(0),
   storagePath: z.string().optional(),
   fileName: z.string().optional(),

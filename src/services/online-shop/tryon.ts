@@ -23,8 +23,8 @@ export async function offersTryOn(clientId: string): Promise<boolean> {
   return shop?.tryOn === true;
 }
 
-/** One try-on: this piece, on this person. */
-export async function seeItOn(clientId: string, productCodeRaw: unknown, photoRaw: unknown) {
+/** One try-on: this piece, in this colour, on this person. */
+export async function seeItOn(clientId: string, productCodeRaw: unknown, photoRaw: unknown, variantCodeRaw?: unknown) {
   if (!(await offersTryOn(clientId))) {
     throw new OnlineShopRuleError('This shop does not offer try-on just now.');
   }
@@ -40,7 +40,8 @@ export async function seeItOn(clientId: string, productCodeRaw: unknown, photoRa
   const hasPhoto = typeof photoRaw === 'string' && photoRaw.replace(/^data:image\/[a-z+]+;base64,/i, '').length > 0;
   if (!hasPhoto) throw new OnlineShopRuleError('Choose a photograph of yourself first.');
 
-  const garment = await garmentFor(clientId, productCode);
+  const variantCode = typeof variantCodeRaw === 'string' ? variantCodeRaw.trim() : '';
+  const garment = await garmentFor(clientId, productCode, variantCode);
   if (!garment) throw new OnlineShopRuleError('That piece cannot be tried on. Ask the shop for a photo.');
 
   try {
@@ -68,21 +69,64 @@ export async function seeItOn(clientId: string, productCodeRaw: unknown, photoRa
  * Scoped by client and by what the shop actually put online, so a product code from another shop
  * -- or one this shop has not published -- resolves to nothing rather than to somebody else's saree.
  */
-async function garmentFor(clientId: string, productCode: string) {
+/**
+ * Exported so a suite can check WHICH photograph gets sent without a real generation.
+ *
+ * seeItOn is the only other way in, and it needs a configured gateway and spends real credit on
+ * a real call -- so testing through it would mean either not testing this at all, or paying for
+ * a picture nobody looks at to find out which colour we picked.
+ */
+export async function garmentFor(clientId: string, productCode: string, variantCode: string) {
   const product = await prisma.product.findFirst({
     where: { clientId, productCode, status: 'ACTIVE', trashedAt: null },
     select: {
       title: true, dressType: true,
       images: {
         where: { imageType: { in: ['COVER', 'GALLERY'] } },
-        select: { url: true, isPrimary: true },
-        // createdAt breaks the tie: orderIndex counts within a colour, so several colours
-        // share the same index and "the first photograph" was whichever one came back first.
-        orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }]
-      }
+        select: { url: true, isPrimary: true, view: true, variantId: true, generated: true },
+        orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }]
+      },
+      variants: { select: { id: true, variantCode: true, colorName: true } }
     }
   });
-  const photo = product?.images.find(i => i.isPrimary)?.url ?? product?.images[0]?.url;
-  if (!product || !photo) return null;
+  if (!product) return null;
+
+  /*
+   * The FRONT view of the colour the shopper is looking at.
+   *
+   * Two things were wrong before. It sent whichever photograph led the whole product, so a
+   * shopper looking at the blue saree was tried on in the red one -- invisible while every
+   * photograph belonged to the product, obvious the moment they belonged to colours. And it had
+   * no way to ask for the front view at all: the four generated views were ordinary photographs
+   * with nothing saying which was which.
+   *
+   * A colour is several variants -- blue/S, blue/M, blue/L -- and one photograph of it is
+   * registered against each. So the search is by COLOUR, not by the exact variant the shopper
+   * has selected: picking blue in size M must not lose the photograph filed under blue in S.
+   */
+  const chosen = product.variants.find(v => v.variantCode === variantCode);
+  const sameColour = chosen?.colorName
+    ? new Set(product.variants.filter(v => v.colorName === chosen.colorName).map(v => v.id))
+    : new Set<string>();
+  const ofThisColour = product.images.filter(i => i.variantId && sameColour.has(i.variantId));
+
+  /*
+   * Down the list until something is found, because a shopper pressing "try it on me" must not
+   * meet a refusal over which photograph a shop happened to take:
+   *
+   *   1. this colour's front view          -- what we are aiming for
+   *   2. any generated view of this colour -- another angle of the right colour
+   *   3. this colour's lead photograph     -- the shop's own picture of the right colour
+   *   4. the product's lead photograph     -- the wrong colour, but a real garment, which is
+   *                                           what happened for every shopper before today
+   */
+  const photo =
+    ofThisColour.find(i => i.view === 'front')?.url
+    ?? ofThisColour.find(i => i.generated)?.url
+    ?? ofThisColour[0]?.url
+    ?? product.images.find(i => i.isPrimary)?.url
+    ?? product.images[0]?.url;
+
+  if (!photo) return null;
   return { title: product.title, dressType: product.dressType, imageUrl: photo };
 }

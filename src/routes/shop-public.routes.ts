@@ -213,7 +213,9 @@ const tryOnLimiter = rateLimit({
 router.post('/:slug/products/:productCode/tryon', tryOnLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
-  return shopTryOn.seeItOn(shop.clientId, req.params.productCode, req.body?.photo);
+  // variantCode says which colour the shopper is looking at, so the right one is tried on them.
+  // Optional: an older shop page that does not send it still works, on the product's lead photo.
+  return shopTryOn.seeItOn(shop.clientId, req.params.productCode, req.body?.photo, req.body?.variantCode);
 }));
 
 /*
