@@ -227,6 +227,40 @@ button.slide { cursor: pointer; }
   .sorter .caret { transition: none; }
 }
 
+/*
+ * Addresses a shopper has saved: cards to pick from, above the boxes they would otherwise type in.
+ *
+ * Picking one fills the boxes rather than hiding them, so what is on screen is always what the
+ * parcel is addressed to -- a checkout that ordered to something the customer could not see would
+ * be worse than one that asked them to type it again.
+ */
+.book { display: grid; gap: 8px; margin: 0 0 14px; }
+@media (min-width: 620px) { .book { grid-template-columns: 1fr 1fr; } }
+
+.book .saved {
+  display: block; text-align: left; width: 100%;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: inherit;
+  padding: 11px 13px; cursor: pointer; font: inherit;
+  transition: border-color .18s ease, background .18s ease;
+}
+.book .saved b { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
+.book .saved b em {
+  font-style: normal; font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px;
+}
+.book .saved span {
+  display: block; font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: 1.45;
+  /* Two lines and then an ellipsis: a card is a reminder, not the address in full. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.book .saved .pin { font-size: 11.5px; color: var(--faint); margin-top: 2px; -webkit-line-clamp: 1; }
+.book .saved[aria-pressed='true'] { border-color: var(--ink); background: var(--soft); }
+.book .saved.fresh { border-style: dashed; }
+@media (hover: hover) {
+  .book .saved:hover { border-color: color-mix(in srgb, var(--ink) 45%, var(--line)); }
+}
+@media (prefers-reduced-motion: reduce) { .book .saved { transition: none; } }
+
 .count { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; }
 
 /* Opened from the Filter pill rather than always on show: on a phone the photographs come first. */

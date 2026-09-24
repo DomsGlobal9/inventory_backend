@@ -117,6 +117,39 @@ export const sendCode = (slug, phone, opts) =>
 export const checkCode = (slug, phone, code, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/verify/check`, { ...opts, send: { phone, code } });
 
+/*
+ * Addresses a shopper has saved.
+ *
+ * Every one of these is a POST, including the listing, because the token that says who this is
+ * would otherwise sit in a URL -- in history, in server logs, in a Referer header on the way to
+ * somebody else's site -- and it is the key to a person's home address.
+ */
+export const myAddresses = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/addresses`, { ...opts, send: { token } });
+
+export const saveAddress = (slug, token, address, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/addresses/save`, { ...opts, send: { token, address } });
+
+export const removeAddress = (slug, token, id, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/addresses/remove`, { ...opts, send: { token, id } });
+
+/*
+ * The secret the browser earned by proving its number, kept on the device that earned it.
+ *
+ * Per shop, because a proof given to one shop means nothing at another -- the server checks that
+ * too, but a browser has no business holding one shop's key under another's name.
+ */
+const KEY = (slug) => `scaleezy.proof.${slug}`;
+export const heldProof = (slug) => {
+  try { return window.localStorage.getItem(KEY(slug)) || null; } catch { return null; }
+};
+export const holdProof = (slug, token) => {
+  try { if (token) window.localStorage.setItem(KEY(slug), token); } catch { /* private window: they type it again */ }
+};
+export const dropProof = (slug) => {
+  try { window.localStorage.removeItem(KEY(slug)); } catch { /* nothing to do */ }
+};
+
 /** Money as an Indian shopper reads it: ₹8,500, and ₹8,500.50 only when there are paise. */
 export const money = (amount, currency = 'INR') => {
   const n = Number(amount);

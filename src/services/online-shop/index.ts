@@ -10,6 +10,8 @@ export * as shopCheckout from './checkout';
 export * as onlineShopNotices from './notices';
 export { facetsFor, forgetFacets } from './facets';
 export * as shopOtp from './otp';
+/** Addresses a shopper has saved, read only with the secret their browser earned by proving a number. */
+export * as shopAddresses from './addresses';
 export * as shopTryOn from './tryon';
 export { OnlineShopRuleError } from './rules';
 export { checkSlug, RESERVED_SLUGS } from './rules';

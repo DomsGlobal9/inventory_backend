@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { priceBag, placeOrder, sendCode, checkCode, money } from '../api';
+import {
+  priceBag, placeOrder, sendCode, checkCode, money,
+  myAddresses, heldProof, holdProof, dropProof
+} from '../api';
 import { useBag, emptyBag, placementKey, clearPlacementKey } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag } from '../components/Motion';
@@ -43,6 +46,15 @@ export default function CheckoutPage({ shop }) {
    */
   const [proof, setProof] = useState({ state: 'none', code: '', busy: false, said: null, forPhone: '' });
 
+  /*
+   * Addresses this person has saved, and which one is in the boxes below.
+   *
+   * `usingId` is cleared the moment they type in the address themselves, so the highlighted card
+   * never disagrees with what is actually going to be ordered to.
+   */
+  const [book, setBook] = useState([]);
+  const [usingId, setUsingId] = useState(null);
+
   const key = lines.map(l => `${l.variantCode}:${l.quantity}`).join('|');
 
   const reprice = useCallback((signal) => {
@@ -80,6 +92,61 @@ export default function CheckoutPage({ shop }) {
       if (held) setForm(f => ({ ...f, ...held, payWay: f.payWay }));
     } catch { /* a browser that will not store: they type it once */ }
   }, [slug]);
+
+  /*
+   * The book, fetched only where there is a secret to fetch it with.
+   *
+   * A proof that has run out, or been cleared, simply answers "confirm your number" -- which is
+   * not a failure worth showing on a checkout, so it empties the list and says nothing.
+   *
+   * ABOVE THE EMPTY-BAG RETURN BELOW, with every other hook. Placed after it, these two would be
+   * skipped the moment the bag emptied -- which happens on the way out of a successful order --
+   * and React counts hooks: one render with fewer than the last is the "rendered fewer hooks than
+   * expected" crash, on the happiest path there is.
+   */
+  const loadBook = useCallback(async () => {
+    const token = heldProof(slug);
+    if (!token) { setBook([]); return; }
+    try {
+      const out = await myAddresses(slug, token);
+      setBook(out?.addresses ?? []);
+    } catch {
+      dropProof(slug);
+      setBook([]);
+    }
+  }, [slug]);
+
+  useEffect(() => { void loadBook(); }, [loadBook]);
+
+  /*
+   * Arriving at a checkout with a book already filled in.
+   *
+   * Once, when the book lands, and never again -- a shopper who has since chosen a different card,
+   * or typed over the boxes, must not have their own choice taken back off them by a late render.
+   *
+   * What is on the form already WINS: it is what they last ordered to on this device, and it is
+   * almost always one of these cards anyway, since the book fills itself. Where it matches a card,
+   * that card is the one shown as chosen -- otherwise the page would offer three saved addresses
+   * and highlight "Somewhere else" while displaying one of the three.
+   */
+  const formNow = useRef(form);
+  useEffect(() => { formNow.current = form; }, [form]);
+  const settled = useRef(false);
+
+  useEffect(() => {
+    if (settled.current || book.length === 0) return;
+    settled.current = true;
+
+    const typed = formNow.current.address.trim();
+    if (typed) {
+      const same = book.find(a => a.line.trim() === typed);
+      if (same) setUsingId(same.id);
+      return;
+    }
+    const first = book.find(a => a.isDefault) ?? book[0];
+    setForm(f => ({ ...f, address: first.line, pincode: first.pincode, name: f.name || first.name }));
+    setUsingId(first.id);
+  }, [book]);
 
   if (lines.length === 0) {
     return (
@@ -130,11 +197,28 @@ export default function CheckoutPage({ shop }) {
   const confirmCode = async () => {
     setProof(p => ({ ...p, busy: true, said: null }));
     try {
-      await checkCode(slug, form.phone, proof.code);
+      // The secret comes back with the confirmation and is kept on this device; it is what the
+      // saved addresses are read with from here on.
+      const out = await checkCode(slug, form.phone, proof.code);
+      holdProof(slug, out?.token);
       setProof(p => ({ ...p, state: 'done', busy: false, said: 'Number confirmed.', forPhone: form.phone }));
+      void loadBook();
     } catch (err) {
       setProof(p => ({ ...p, busy: false, said: err?.message ?? 'That code was not right.' }));
     }
+  };
+
+  /** Put a saved address into the boxes, so what is ordered to is always what is on screen. */
+  const useSaved = (a) => {
+    setUsingId(a.id);
+    setRefused(null);
+    setForm(f => ({
+      ...f,
+      address: a.line,
+      pincode: a.pincode,
+      // A gift goes to somebody else, and it is their name the parcel wants.
+      name: a.name || f.name
+    }));
   };
 
   const proved = proof.state === 'done' && proof.forPhone === form.phone;
@@ -245,10 +329,44 @@ export default function CheckoutPage({ shop }) {
 
           <section className="ask">
             <h2><i>2</i> Where does it go?</h2>
+
+            {/*
+              Addresses this person has saved, for a shopper whose number is proved.
+
+              Not offered otherwise, and that is the point rather than a limitation: a number typed
+              at a checkout is not proof of who somebody is, and these are people's homes. The book
+              fills itself as they order, so nobody is asked to tick "save this address".
+            */}
+            {book.length > 0 && (
+              <div className="book">
+                {book.map(a => (
+                  <button
+                    key={a.id} type="button" className="saved" aria-pressed={usingId === a.id}
+                    onClick={() => useSaved(a)}
+                  >
+                    <b>
+                      {a.label || a.name}
+                      {a.isDefault ? <em>Default</em> : null}
+                    </b>
+                    <span>{a.line}</span>
+                    <span className="pin">{a.pincode}{a.name && a.label ? ` · ${a.name}` : ''}</span>
+                  </button>
+                ))}
+                <button
+                  type="button" className="saved fresh" aria-pressed={usingId === null}
+                  onClick={() => { setUsingId(null); set('address', ''); set('pincode', ''); }}
+                >
+                  <b>Somewhere else</b>
+                  <span>Type a new address</span>
+                </button>
+              </div>
+            )}
+
             <div className="fields">
               <label className="wide">
                 <span>Full address</span>
-                <textarea value={form.address} onChange={e => set('address', e.target.value)}
+                <textarea value={form.address}
+                  onChange={e => { set('address', e.target.value); setUsingId(null); }}
                   rows={4} maxLength={500} autoComplete="street-address"
                   placeholder={'House / flat, street\nArea, landmark\nCity, State'} />
               </label>

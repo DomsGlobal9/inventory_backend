@@ -180,6 +180,23 @@ export async function save(clientId: string, input: {
    * A shop cannot take orders with no way to pay: the customer would reach the last step of a
    * checkout and find nothing to press. Said here rather than discovered there.
    */
+  /*
+   * PAYING ONLINE CANNOT BE SWITCHED ON, because nothing takes the money yet.
+   *
+   * The flag, the pay way, the radio button on the checkout and the "Card, UPI or net banking"
+   * under it were all built ahead of the gateway -- see PLAN-online-shop-payments.md, which says
+   * plainly that Phase 4 is a plan and nothing is built. A shop that turned this on offered its
+   * customers "Pay now", took the order, wrote it `paid: false`, and never asked for a rupee. That
+   * is not a missing feature; it is a switch that promises what the code cannot do.
+   *
+   * Refused here rather than hidden in the screen, because the screen is not the only way in.
+   */
+  if (input.payOnline === true && !shop.payOnline) {
+    throw new OnlineShopRuleError(
+      'Taking payment online is not ready yet, so it cannot be switched on. Take orders on delivery for now.'
+    );
+  }
+
   const wantsOrders = input.acceptsOrders === true;
   if (wantsOrders) {
     const onDelivery = input.payOnDelivery === undefined ? shop.payOnDelivery : input.payOnDelivery === true;

@@ -218,8 +218,49 @@ export async function checkCode(clientId: string, rawPhone: unknown, rawCode: un
     );
   }
 
-  await prisma.onlineShopPhoneCode.update({ where: { id: held.id }, data: { verifiedAt: new Date(), tries: 0 } });
-  return { verified: true };
+  /*
+   * The proof, and a secret for the browser that earned it.
+   *
+   * `verifiedAt` says this NUMBER was proved a moment ago. That is the right thing to ask when
+   * deciding which customer an order belongs to -- the worst a stranger can do with it is place
+   * an order against their own number. It is the wrong thing to ask before handing over somebody's
+   * saved addresses, because anybody who knows the number would pass.
+   *
+   * So the browser that typed the code back gets an unguessable token, the way a customer's order
+   * page does, and that is what the address book is read with. A month, because being asked to
+   * prove a number again every hour to see your own address is worse than useless -- and it can be
+   * given up at any time by clearing the browser, which is where it lives.
+   */
+  const sessionToken = crypto.randomBytes(24).toString('base64url');
+  await prisma.onlineShopPhoneCode.update({
+    where: { id: held.id },
+    data: {
+      verifiedAt: new Date(), tries: 0,
+      sessionToken, sessionExpiresAt: new Date(Date.now() + SESSION_LASTS_MS)
+    }
+  });
+  return { verified: true, token: sessionToken };
+}
+
+/** How long a browser stays recognised after proving its number. */
+const SESSION_LASTS_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Whose browser this is, from the secret it was given -- or nobody.
+ *
+ * Found by the token alone and then checked against the shop, so a token from one shop can never
+ * read anything in another. The same shape as an order's link, for the same reason.
+ */
+export async function whoIs(clientId: string, rawToken: unknown): Promise<string | null> {
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  if (token.length < 20) return null;
+  const row = await prisma.onlineShopPhoneCode.findUnique({
+    where: { sessionToken: token },
+    select: { clientId: true, phone: true, sessionExpiresAt: true }
+  });
+  if (!row || row.clientId !== clientId) return null;
+  if (!row.sessionExpiresAt || row.sessionExpiresAt <= new Date()) return null;
+  return row.phone;
 }
 
 /**

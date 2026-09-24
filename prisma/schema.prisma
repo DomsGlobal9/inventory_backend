@@ -1132,6 +1132,7 @@ model Customer {
   salesOrders        SalesOrder[]
   loyaltyEntries     LoyaltyEntry[]
   storeCreditEntries StoreCreditEntry[]
+  addresses          CustomerAddress[]
 
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -3880,6 +3881,15 @@ model OnlineShopPhoneCode {
   /// proves their number and then spends ten minutes choosing is not asked again.
   verifiedAt DateTime? @map("verified_at")
 
+  /// A secret given to the BROWSER that typed the code back, and to nothing else.
+  ///
+  /// `verifiedAt` alone says "this number was proved recently" -- it says nothing about who is
+  /// asking now. That is enough to decide which customer an order belongs to, and nowhere near
+  /// enough to hand somebody their saved addresses: anybody who knew the number would qualify.
+  /// This is what the address book is read with.
+  sessionToken     String?   @unique @map("session_token")
+  sessionExpiresAt DateTime? @map("session_expires_at")
+
   expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -3887,6 +3897,46 @@ model OnlineShopPhoneCode {
   @@unique([clientId, phone])
   @@index([expiresAt])
   @@map("online_shop_phone_codes")
+}
+
+/// An address a customer has saved, so a returning shopper picks rather than types.
+///
+/// Its own rows rather than more columns on Customer, because a person has more than one: their
+/// own, their mother's, the office. `Customer.shippingAddress` is a single field and every online
+/// order wrote straight over it -- so sending one saree to a sister replaced the address of the
+/// person who had been buying there for years.
+///
+/// The address is COPIED onto an order as text when it is used, exactly as it was before, so
+/// changing or removing one here never rewrites what an old order was sent to.
+model CustomerAddress {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  customerId String   @map("customer_id")
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  /// What the customer calls it -- "Home", "Amma's", "Office". Theirs to choose; may be empty.
+  label String?
+
+  /// Who receives it and what to ring at that address, which is not always the account holder:
+  /// a gift goes to somebody else, and the delivery person needs THEIR number.
+  name  String
+  phone String
+
+  line    String @db.Text
+  pincode String
+
+  /// The one offered first at a checkout. At most one per customer; the service keeps that true.
+  isDefault Boolean @default(false) @map("is_default")
+
+  /// Kept rather than deleted, so a customer who removes an address does not change the meaning
+  /// of anything that pointed at it while they were still choosing.
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@index([clientId, customerId])
+  @@map("customer_addresses")
 }
 
 /// A banner across the top of a shop's own online shop: the picture, a few words over it, and

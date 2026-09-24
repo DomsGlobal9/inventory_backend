@@ -1,6 +1,6 @@
 import express, { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
-import { onlineShop, shopCheckout, shopOtp, shopTryOn, OnlineShopRuleError } from '../services/online-shop';
+import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, OnlineShopRuleError } from '../services/online-shop';
 
 /**
  * What a shopper's browser asks for at `shop.scaleezy.com/<slug>`.
@@ -241,6 +241,34 @@ router.post('/:slug/verify/check', codeLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   return shopOtp.checkCode(shop.clientId, req.body?.phone, req.body?.code);
+}));
+
+/*
+ * ── Addresses a shopper has saved ─────────────────────────────────────────────────────
+ *
+ * ALL POST, including the one that only reads. The token that says who this is would otherwise sit
+ * in a URL -- in history, in logs, in a Referer header on the way to somebody else's site -- and
+ * it is the key to a person's home address. Bodies are not written down like that.
+ *
+ * Counted with pricing rather than with ordering: picking an address is part of filling a form,
+ * not a thing that holds a shop's stock.
+ */
+router.post('/:slug/addresses', priceLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopAddresses.mine(shop.clientId, req.body?.token);
+}));
+
+router.post('/:slug/addresses/save', priceLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopAddresses.save(shop.clientId, req.body?.token, req.body?.address ?? {});
+}));
+
+router.post('/:slug/addresses/remove', priceLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopAddresses.remove(shop.clientId, req.body?.token, req.body?.id);
 }));
 
 export default router;

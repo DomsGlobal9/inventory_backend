@@ -8,6 +8,7 @@ import { normalisePhone } from '../../lib/phone';
 import { afterCommit } from '../../lib/afterCommit';
 import { OnlineShopRuleError } from './rules';
 import { sendOrderPlacedNotice, emailOrderPlaced, tellTheShop, orderCancelled } from './notices';
+import { rememberFromOrder as rememberAddress } from './addresses';
 import { isVerified } from './otp';
 
 /**
@@ -428,6 +429,8 @@ export async function place(clientId: string, input: PlaceInput) {
   const token = crypto.randomBytes(24).toString('base64url');
 
   let salesOrderId: string;
+  // Carried out of the transaction so the address book can be filled once the order is really there.
+  let placedCustomerId: string | null = null;
   try {
   salesOrderId = await prisma.$transaction(async (tx) => {
     let customerId: string;
@@ -445,8 +448,19 @@ export async function place(clientId: string, input: PlaceInput) {
       });
       if (mine) {
         customerId = mine.id;
-        // Their latest address, so the shop is not packing to one from two years ago.
-        await tx.customer.update({ where: { id: mine.id }, data: { shippingAddress: fullAddress } });
+        /*
+         * `shippingAddress` is ONE field, and this wrote over it on every order -- so a regular
+         * sending one saree to her sister replaced her own address with her sister's, and the
+         * next thing the till prefilled was wrong. It is now the address of the last order only
+         * where the customer has no book of their own yet; once they have saved addresses, that
+         * book is the record and this single field stops being rewritten behind them.
+         */
+        const hasBook = await tx.customerAddress.count({
+          where: { clientId, customerId: mine.id, deletedAt: null }
+        });
+        if (hasBook === 0) {
+          await tx.customer.update({ where: { id: mine.id }, data: { shippingAddress: fullAddress } });
+        }
       } else {
         customerId = (await tx.customer.create({
           data: {
@@ -514,6 +528,7 @@ export async function place(clientId: string, input: PlaceInput) {
       }
     });
 
+    placedCustomerId = customerId;
     return order.id as string;
   }, { timeout: 30000, maxWait: 15000 });
   } catch (e: any) {
@@ -574,6 +589,20 @@ export async function place(clientId: string, input: PlaceInput) {
     void sendOrderPlacedNotice(clientId, token);
     void emailOrderPlaced(clientId, token);
     void tellTheShop(clientId, salesOrderId);
+    /*
+     * The address book fills itself, for a proved customer only.
+     *
+     * This is what makes it worth having: order twice and you never type your address again, and
+     * nobody had to notice a "save this address" tick box. Unproved, there is no one to save it
+     * against -- an unproved order makes its own customer row precisely because the number is not
+     * proof of who they are, and building a book on that would put one person's address in
+     * another person's account.
+     */
+    if (proved && placedCustomerId) {
+      void rememberAddress(clientId, placedCustomerId, {
+        name, phone: phone.value, line: address, pincode
+      });
+    }
   });
 
   return summary(clientId, token);

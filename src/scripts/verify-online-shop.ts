@@ -322,6 +322,18 @@ async function main() {
   const noWay = await own.patch('/online-shop', { acceptsOrders: true, payOnDelivery: false, payOnline: false });
   check('ordering cannot be switched on with no way to pay', noWay.status === 400 && /way customers can pay/i.test(noWay.data.message), noWay.data);
 
+  /*
+   * "Pay now" cannot be switched on, because nothing takes the money. The flag, the pay way and
+   * the radio button on the checkout were all built ahead of the gateway, so a shop could offer
+   * its customers a way to pay that never asked them for a rupee.
+   */
+  const noGateway = await own.patch('/online-shop', { payOnline: true });
+  check('paying online cannot be switched on while nothing collects the money',
+    noGateway.status === 400 && /not ready yet/i.test(String(noGateway.data.message)), noGateway.data);
+  check('...and it stays off', (await own.get('/online-shop')).data.data.payOnline === false);
+  check('...so no shopper is ever offered it',
+    !((await http('/shop/lakshmi-silks')).data.data.buying?.payWays ?? []).includes('ONLINE'));
+
   const terms = await own.patch('/online-shop', {
     acceptsOrders: true, payOnDelivery: true, deliveryFee: 79, freeDeliveryAbove: 50000, minOrderValue: 2000
   });
