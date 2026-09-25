@@ -51,10 +51,44 @@ function shell(): string | null {
   return html;
 }
 
-function withTags(html: string, tags: Record<string, string>, title: string, description: string) {
+/**
+ * The shop's own logo as the page's icon.
+ *
+ * Without this the tab, the bookmark and the phone's home screen all show the browser's blank
+ * default -- and a shopper who keeps three shops open has no way to tell which tab is which. The
+ * logo is already uploaded and already shown at the top of the page, so this costs the shop
+ * nothing and is theirs rather than ours: putting a ScaleEzy mark on a client's shop would be
+ * claiming their page, which it is not.
+ *
+ * Only https, and only from the picture storage's shape of URL as far as the browser is concerned
+ * -- the page's own Content-Security-Policy governs it as an image (`img-src`), which is why this
+ * works at all with a logo hosted on another host.
+ *
+ * No `type` attribute on purpose: the logos are PNG, JPEG or WebP depending on what the shop
+ * uploaded, and a wrong type is worse than none -- browsers sniff the file anyway, and a declared
+ * type that disagrees makes some of them drop the icon entirely.
+ */
+function iconTags(logoUrl?: string | null): string[] {
+  const url = String(logoUrl ?? '').trim();
+  if (!/^https:\/\//i.test(url)) return [];
+  return [
+    `<link rel="icon" href="${esc(url)}" />`,
+    // What iOS uses when a shopper adds the shop to their home screen.
+    `<link rel="apple-touch-icon" href="${esc(url)}" />`
+  ];
+}
+
+function withTags(
+  html: string,
+  tags: Record<string, string>,
+  title: string,
+  description: string,
+  logoUrl?: string | null
+) {
   const meta = [
     `<title>${esc(title)}</title>`,
     `<meta name="description" content="${esc(description)}" />`,
+    ...iconTags(logoUrl),
     ...Object.entries(tags).map(([k, v]) =>
       (k.startsWith('og:') || k.startsWith('article:')
         ? `<meta property="${esc(k)}" content="${esc(v)}" />`
@@ -64,6 +98,7 @@ function withTags(html: string, tags: Record<string, string>, title: string, des
   return html
     .replace(/<title>[\s\S]*?<\/title>/i, '')
     .replace(/<meta\s+name="description"[^>]*>/i, '')
+    .replace(/<link\s+rel="(?:icon|apple-touch-icon)"[^>]*>/gi, '')
     .replace('</head>', `  ${meta}\n  </head>`);
 }
 
@@ -122,7 +157,7 @@ async function page(req: Request, res: Response) {
     'twitter:card': image ? 'summary_large_image' : 'summary',
     // A shop's own pages are its own to index; ScaleEzy does not claim them.
     robots: 'index, follow'
-  }, title, description));
+  }, title, description, shop.logoUrl));
 }
 
 /**
