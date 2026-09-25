@@ -554,7 +554,21 @@ export class PlatformAdminService {
     });
     // Campaign pictures are files in the same bucket.
     const campaignPictures = await prisma.campaignMedia.findMany({ where: { clientId }, select: { storagePath: true } });
-    const storagePaths = [...images.map(i => i.storagePath), ...campaignPictures.map(p => p.storagePath)].filter((p): p is string => !!p);
+    /*
+     * The online shop's pictures live in the same bucket and were being left behind: a deleted
+     * shop's banners stayed publicly readable at their own addresses with nothing in the database
+     * pointing at them, so nothing would ever find them again to remove them. Found while testing
+     * the icon, which would have joined them.
+     */
+    const shopBanners = await prisma.onlineShopBanner.findMany({ where: { clientId }, select: { imagePath: true } });
+    const shop = await prisma.onlineShop.findUnique({ where: { clientId }, select: { iconPath: true, bannerPath: true } });
+    const storagePaths = [
+      ...images.map(i => i.storagePath),
+      ...campaignPictures.map(p => p.storagePath),
+      ...shopBanners.map(b => b.imagePath),
+      shop?.iconPath,
+      shop?.bannerPath
+    ].filter((p): p is string => !!p);
 
     // Children first. Where a relation cascades this is redundant, and harmless; where it does
     // not, it is the difference between a clean delete and a foreign-key error.
