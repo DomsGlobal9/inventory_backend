@@ -3785,6 +3785,14 @@ model OnlineShop {
   /// What the shopper sees at the top. Falls back to the shop's business name and logo.
   displayName String? @map("display_name")
   logoUrl     String? @map("logo_url")
+
+  /// The square picture a browser shows in its tab, a bookmark and a phone's home screen.
+  ///
+  /// Separate from the logo on purpose: a shop's logo is usually a WORDMARK, and a wordmark
+  /// squeezed into sixteen pixels is a smudge. Empty is fine -- the page then falls back to the
+  /// logo, which is still better than the browser's blank default.
+  iconUrl  String? @map("icon_url")
+  iconPath String? @map("icon_path")
   bannerUrl   String? @map("banner_url")
   bannerPath  String? @map("banner_path")
   accent      String? // one hex colour; the rest of the palette is derived

@@ -90,6 +90,8 @@ export async function settingsFor(clientId: string) {
     isLive: shop?.isLive ?? false,
     displayName: shop?.displayName ?? fallbackName,
     logoUrl: shop?.logoUrl ?? seller?.logoUrl ?? null,
+    /** The square one for the browser tab. Null means the page falls back to the logo. */
+    iconUrl: shop?.iconUrl ?? null,
     bannerUrl: shop?.bannerUrl ?? null,
     accent: shop?.accent ?? null,
     locationIds: shop?.locationIds ?? [],
@@ -346,7 +348,7 @@ export async function deliversTo(slugRaw: unknown, pincodeRaw: unknown): Promise
 export async function publicShop(slugRaw: unknown): Promise<
   | { state: 'UNKNOWN' }
   | { state: 'CLOSED'; name: string }
-  | { state: 'OPEN'; clientId: string; name: string; logoUrl: string | null; bannerUrl: string | null;
+  | { state: 'OPEN'; clientId: string; name: string; logoUrl: string | null; iconUrl: string | null; bannerUrl: string | null;
       accent: string | null; currency: string; hideOutOfStock: boolean; showFewLeft: boolean; locationIds: string[];
       /** Whether this shop shows every photograph or only the finished ones. */
       allPhotos: boolean;
@@ -399,6 +401,12 @@ export async function publicShop(slugRaw: unknown): Promise<
     clientId: shop.clientId,
     name,
     logoUrl: shop.logoUrl ?? seller?.logoUrl ?? null,
+    /*
+     * The browser-tab icon, the shop's own square one if it set one. Falls back to the logo rather
+     * than to nothing: a wordmark shrunk to sixteen pixels is a poor icon, but it is still the
+     * shop's colours, and it beats the browser's blank default page mark.
+     */
+    iconUrl: shop.iconUrl ?? shop.logoUrl ?? seller?.logoUrl ?? null,
     bannerUrl: shop.bannerUrl ?? null,
     accent: shop.accent ?? null,
     currency: settings?.currency ?? 'INR',

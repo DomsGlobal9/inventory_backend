@@ -34,7 +34,12 @@ export interface PrepareLimits {
   tooBig: string;
 }
 
-export async function prepareImage(input: Buffer, limits: PrepareLimits): Promise<Prepared> {
+/**
+ * Everything that must be true before a picture is worth decoding, and the sentence to say when
+ * it is not. Shared, because the guards that matter -- the decompression-bomb limit, the HEIC
+ * message a shop owner can actually act on -- are exactly the ones nobody should write twice.
+ */
+async function inspect(input: Buffer, minSide = MIN_SIDE): Promise<sharp.Metadata> {
   if (!input?.length) throw badRequest('The picture is empty.');
   if (input.length > MAX_UPLOAD_BYTES) throw badRequest('The picture is larger than 15 MB. Choose a smaller one.');
 
@@ -51,7 +56,49 @@ export async function prepareImage(input: Buffer, limits: PrepareLimits): Promis
   if (!meta.format || !READABLE.has(meta.format)) throw badRequest('That file is not a picture ScaleEzy can read. Use a JPEG or PNG photo.');
   if (!meta.width || !meta.height) throw badRequest('That picture could not be read.');
   if (meta.width * meta.height > MAX_PIXELS) throw badRequest('The picture is too large (more than 40 megapixels). Choose a smaller one.');
-  if (meta.width < MIN_SIDE || meta.height < MIN_SIDE) throw badRequest(`The picture is too small (${meta.width} × ${meta.height}). Use one at least ${MIN_SIDE} pixels wide and tall.`);
+  if (meta.width < minSide || meta.height < minSide) throw badRequest(`The picture is too small (${meta.width} × ${meta.height}). Use one at least ${minSide} pixels wide and tall.`);
+  return meta;
+}
+
+/** The side of the square an icon is stored at. One size; browsers scale it down themselves. */
+export const ICON_SIDE = 256;
+/** Below this an icon is a blur in a bookmark bar, which is worse than the browser's default. */
+const ICON_MIN_SIDE = 48;
+
+/**
+ * A shop's icon: one square PNG, whatever shape they gave us.
+ *
+ * Squares, because that is the only shape a browser tab, a bookmark and a phone's home screen
+ * have. `fit: contain` rather than `cover`: cropping to a square takes the middle, and the middle
+ * of a wordmark is two letters -- so a shop that uploads a wide logo would get a favicon reading
+ * "AK". Padded instead, so nothing they chose is thrown away.
+ *
+ * PNG, not the JPEG the rest of this file makes: an icon is flat colour and lettering, where JPEG
+ * puts visible fuzz around every edge at the sizes an icon is actually seen at. It also keeps the
+ * padding transparent rather than white, so the icon sits properly on a browser's dark theme
+ * instead of in a white box.
+ */
+export async function prepareIcon(input: Buffer): Promise<{ png: Buffer; side: number }> {
+  await inspect(input, ICON_MIN_SIDE);
+  try {
+    const png = await sharp(input, { limitInputPixels: MAX_PIXELS, failOn: 'error', pages: 1 })
+      .rotate() // upright by the camera's own note, before that note is dropped
+      .resize({
+        width: ICON_SIDE, height: ICON_SIDE,
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      })
+      .toColourspace('srgb')
+      .png({ compressionLevel: 9, palette: true })
+      .toBuffer();
+    return { png, side: ICON_SIDE };
+  } catch {
+    throw badRequest('That picture is damaged and could not be read. Try another copy of it.');
+  }
+}
+
+export async function prepareImage(input: Buffer, limits: PrepareLimits): Promise<Prepared> {
+  await inspect(input);
 
   // Smaller and smaller until it fits; a normal photo fits at the first try.
   const steps: Array<[number, number]> = [

@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { onlineShop, shopBanners, shopInterest, OnlineShopRuleError } from '../services/online-shop';
+import { onlineShop, shopBanners, shopIcon, shopInterest, OnlineShopRuleError } from '../services/online-shop';
 import { requirePermission } from '../middleware/permission.middleware';
 
 /**
@@ -56,6 +56,14 @@ router.get('/waiting', handle(req => shopInterest.whoIsWaiting(clientId(req), {
 
 /** Dealt with. Kept rather than deleted, so the demand behind it is still countable. */
 router.post('/waiting/:id/handled', handle(req => shopInterest.markHandled(clientId(req), String(req.params.id))));
+
+/*
+ * The square picture the browser puts in its tab. Its own pair of routes rather than a field on
+ * PATCH /, because it carries a whole picture: the settings save is a small JSON body somebody
+ * presses Save on, and folding a base64 photograph into it would make every ordinary save large.
+ */
+router.post('/icon', handle(req => shopIcon.setIcon(clientId(req), req.body ?? {})));
+router.delete('/icon', handle(req => shopIcon.clearIcon(clientId(req))));
 
 router.get('/banners', handle(req => shopBanners.listFor(clientId(req))));
 router.post('/banners', handle(req => shopBanners.add(clientId(req), userId(req), req.body ?? {})));

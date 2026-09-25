@@ -157,7 +157,7 @@ async function page(req: Request, res: Response) {
     'twitter:card': image ? 'summary_large_image' : 'summary',
     // A shop's own pages are its own to index; ScaleEzy does not claim them.
     robots: 'index, follow'
-  }, title, description, shop.logoUrl));
+  }, title, description, shop.iconUrl));
 }
 
 /**
