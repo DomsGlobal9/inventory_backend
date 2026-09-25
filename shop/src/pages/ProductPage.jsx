@@ -486,6 +486,11 @@ export default function ProductPage({ slug, shop }) {
             <dl>
               {p.fabric ? <><dt>Fabric</dt><dd>{p.fabric}</dd></> : null}
               {p.dressType ? <><dt>Type</dt><dd>{p.dressType}</dd></> : null}
+              {/* How it was made -- woven, block printed, embroidered. The shop is asked for it
+                  while adding the product and it was shown on their own preview, but it never
+                  reached the page: the one person actually choosing between two sarees could not
+                  see it. For a saree it says more about the price than the brand does. */}
+              {p.craft ? <><dt>Made</dt><dd>{p.craft}</dd></> : null}
               {p.brand ? <><dt>Brand</dt><dd>{p.brand}</dd></> : null}
               {chosen?.colour ? <><dt>Colour</dt><dd>{chosen.colour}</dd></> : null}
               {chosen?.size ? <><dt>Size</dt><dd>{chosen.size}</dd></> : null}

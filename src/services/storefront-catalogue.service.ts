@@ -60,6 +60,14 @@ export interface StorefrontProduct {
   productType: string;
   dressType: string | null;
   fabric: string | null;
+  /**
+   * Woven, block printed, embroidered, and so on.
+   *
+   * Asked for while a product is added, stored, and shown on the owner's own preview -- and then
+   * not sent here, so the one person choosing between two sarees never saw it. For a saree it is
+   * a stronger signal than the brand: how it was made is most of what the price is.
+   */
+  craft: string | null;
   brand: string | null;
   publishedAt: string | null;
   updatedAt: string;
@@ -220,7 +228,7 @@ function toStorefrontVariant(
  */
 const PRODUCT_SELECT = {
   id: true, productCode: true, title: true, description: true,
-  category: true, productType: true, dressType: true, fabric: true, brand: true,
+  category: true, productType: true, dressType: true, fabric: true, craft: true, brand: true,
   basePrice: true, publishedAt: true, createdAt: true, updatedAt: true,
   images: {
     // variantId: a photograph may belong to one colour rather than to the product as a whole,
@@ -322,6 +330,7 @@ function toStorefrontProduct(
     productType: String(p.productType),
     dressType: p.dressType ?? null,
     fabric: p.fabric ?? null,
+    craft: p.craft ?? null,
     brand: p.brand ?? null,
     publishedAt: p.publishedAt ? p.publishedAt.toISOString() : null,
     updatedAt: p.updatedAt.toISOString(),
