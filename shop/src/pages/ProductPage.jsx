@@ -41,12 +41,15 @@ function saving(now, was) {
 /**
  * The photographs.
  *
- * One strip, read two ways. On a phone it is swiped and the pips say where you are; on a wide
- * screen the same strip gets a column of thumbnails beside it, because a mouse has no thumb and
- * because that vertical space is otherwise wasted next to a tall photograph.
+ * One strip, one shape on every screen: the big photograph, and a rail of small ones lying down
+ * underneath it. The rail used to stand upright beside the picture on a laptop and lie down only
+ * on a phone, so the same shop looked like two different shops depending on what you opened it
+ * on. Sideways everywhere -- dragged with a finger on a phone or a tablet, with the trackpad or
+ * the thumbnails themselves on a laptop.
  */
 function Gallery({ photos, title }) {
   const strip = useRef(null);
+  const rail = useRef(null);
   const [at, setAt] = useState(0);
 
   // Back to the first photograph whenever the set changes -- choosing green should show the green
@@ -54,7 +57,23 @@ function Gallery({ photos, title }) {
   useEffect(() => {
     setAt(0);
     if (strip.current) strip.current.scrollLeft = 0;
+    if (rail.current) rail.current.scrollLeft = 0;
   }, [photos.map(p => p.url).join('|')]);
+
+  // Swipe to photograph six and the marked thumbnail is off the end of the rail, so the rail is
+  // saying nothing. Nudge it back into view -- by hand, with scrollLeft, rather than with
+  // scrollIntoView, which is entitled to scroll the whole PAGE to do the same job.
+  useEffect(() => {
+    const el = rail.current;
+    const btn = el?.children?.[at];
+    if (!el || !btn) return;
+    const left = btn.offsetLeft;
+    const right = left + btn.offsetWidth;
+    if (left < el.scrollLeft) el.scrollTo({ left: Math.max(0, left - 8), behavior: 'smooth' });
+    else if (right > el.scrollLeft + el.clientWidth) {
+      el.scrollTo({ left: right - el.clientWidth + 8, behavior: 'smooth' });
+    }
+  }, [at]);
 
   if (!photos.length) {
     return (
@@ -76,17 +95,6 @@ function Gallery({ photos, title }) {
 
   return (
     <div className="gallery" data-many={photos.length > 1}>
-      {photos.length > 1 && (
-        <div className="rolls" role="tablist" aria-label="Photographs">
-          {photos.map((img, i) => (
-            <button key={img.url} type="button" role="tab" aria-selected={i === at}
-              aria-label={`Photograph ${i + 1}`} onClick={() => show(i)}>
-              <img src={img.url} alt="" loading="lazy" decoding="async" />
-            </button>
-          ))}
-        </div>
-      )}
-
       <div className="frame">
         <div className="swipe" ref={strip}
           onScroll={e => setAt(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}>
@@ -103,6 +111,17 @@ function Gallery({ photos, title }) {
           </div>
         )}
       </div>
+
+      {photos.length > 1 && (
+        <div className="rolls" ref={rail} role="tablist" aria-label="Photographs">
+          {photos.map((img, i) => (
+            <button key={img.url} type="button" role="tab" aria-selected={i === at}
+              aria-label={`Photograph ${i + 1}`} onClick={() => show(i)}>
+              <img src={img.url} alt="" loading="lazy" decoding="async" />
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

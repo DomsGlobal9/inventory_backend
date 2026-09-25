@@ -900,23 +900,13 @@ button.slide { cursor: pointer; }
     margin: 0;
     position: sticky;
     top: calc(var(--bar) + 16px);
-    display: grid;
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
     gap: 12px;
   }
-  /* The thumbnails only exist where there is more than one, so a single photo is not indented. */
-  .gallery[data-many='true'] { grid-template-columns: 68px minmax(0, 1fr); }
 
-  .rolls { display: flex; flex-direction: column; gap: 9px; overflow-y: auto; max-height: 72vh;
-    scrollbar-width: none; }
-  .rolls::-webkit-scrollbar { display: none; }
-  .rolls button {
-    padding: 0; border: 1.5px solid transparent; border-radius: 9px; overflow: hidden;
-    background: var(--soft); cursor: pointer; aspect-ratio: 3 / 4; flex: 0 0 auto;
-  }
-  .rolls button img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .rolls button[aria-selected='true'] { border-color: var(--ink); }
-  .rolls button:hover { border-color: var(--line); }
+  /* The rail lies down here as well -- shared rule further down, size override after it, because
+     that rule comes later in the file and a tie on specificity goes to whoever is last. */
 
   /* Capped, so the picture cannot be taller than the page it belongs to. */
   .swipe > figure { max-height: 72vh; }
@@ -1668,20 +1658,6 @@ body { overflow-x: hidden; }
 .foot li { margin-bottom: 0; }
 .foot li a { display: inline-block; padding: 7px 0; }
 
-/*
- * The thumbnail rail belongs to a mouse, and to nothing else.
- *
- * It was styled only inside the wide-screen block, so on a phone it fell back to an unstyled div:
- * five full-width photographs stacked on top of each other, 2212px of them, which pushed the price
- * and the Add to bag button about three THOUSAND pixels down the page. A shopper would have given
- * up long before reaching the thing they came to press.
- *
- * On a phone the photographs are swiped and the pips say where you are; there is nothing for
- * thumbnails to add and no room for them to do it in.
- */
-.rolls { display: none; }
-@media (min-width: 880px) { .rolls { display: flex; } }
-
 /* Breadcrumbs a thumb can actually hit. */
 .crumbs a { display: inline-block; padding: 6px 0; }
 .alsoin .head a { display: inline-block; padding: 6px 0 6px 10px; }
@@ -1735,23 +1711,62 @@ body { overflow-x: hidden; }
 }
 .swipe > figure { border-radius: 0; }
 
-/* Thumbnails: a row under the picture on a phone, a column beside it on a laptop. */
-@media (max-width: 879px) {
-  .rolls {
-    display: flex; gap: 8px; margin-top: 10px;
-    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
-    scroll-snap-type: x proximity;
-  }
-  .rolls::-webkit-scrollbar { display: none; }
-  .rolls button {
-    flex: 0 0 auto; width: 56px; padding: 0; aspect-ratio: 3 / 4; scroll-snap-align: start;
-    border: 1.5px solid transparent; border-radius: 9px; overflow: hidden;
-    background: var(--soft); cursor: pointer;
-  }
-  .rolls button img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .rolls button[aria-selected='true'] { border-color: var(--ink); }
-  /* With a strip to tap, the pips would be saying the same thing twice. */
-  .gallery[data-many='true'] .pips { display: none; }
+/*
+ * The thumbnail rail: sideways on every device, dragged by hand where there is a hand.
+ *
+ * It used to be two different things. A phone got a row under the picture; a laptop got a column
+ * standing up beside it. So a shop with eight photographs looked like a neat strip on one device
+ * and a tall ladder on the other, and every rule about it had to be written twice -- which is
+ * exactly how the phone version once ended up unstyled and three thousand pixels long.
+ *
+ * One shape now, everywhere: a row under the photograph. The dragging is the browser's own
+ * `overflow-x: auto` and nothing else -- no drag handler, no library. It follows a finger exactly
+ * on a phone or a tablet, and a trackpad on a laptop, and it costs nothing on a cheap Android.
+ *
+ * `overscroll-behavior-x: contain` is the one non-obvious line: without it, a hard flick that
+ * reaches the end of the rail is handed on to the page, and on iOS that is the back gesture. No
+ * `touch-action` here on purpose -- pinning it to pan-x would mean a finger that lands on a
+ * thumbnail can no longer scroll the page DOWN, which is what a finger there usually wants.
+ */
+.rolls {
+  display: flex; gap: 8px; margin-top: 10px;
+  overflow-x: auto; overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+}
+.rolls::-webkit-scrollbar { display: none; }
+.rolls button {
+  flex: 0 0 auto; width: 56px; padding: 0; aspect-ratio: 3 / 4; scroll-snap-align: start;
+  border: 1.5px solid transparent; border-radius: 9px; overflow: hidden;
+  background: var(--soft); cursor: pointer;
+}
+.rolls button img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rolls button[aria-selected='true'] { border-color: var(--ink); }
+/* With a strip to tap, the pips would be saying the same thing twice. */
+.gallery[data-many='true'] .pips { display: none; }
+
+/* Bigger where there is room, and an edge on hover where there is a pointer to hover with. */
+@media (min-width: 880px) {
+  .rolls button { width: 68px; }
+  .rolls button:hover { border-color: var(--line); }
+}
+
+/*
+ * A tablet is not a big phone.
+ *
+ * Between 600px and the two-column layout at 880px the gallery took the full width of the page,
+ * so a portrait saree on a 768px tablet came out 966 pixels tall -- and the rail underneath it
+ * began a thousand pixels down, which is the same as not being there at all. Measured it; that
+ * was the gap.
+ *
+ * Capping the gallery and centring it is the fix, rather than capping the HEIGHT the way the
+ * laptop layout does: that one crops, and on a tablet the photograph is still the whole point of
+ * the page. This keeps it whole, and brings the rail back up where a hand can reach it.
+ */
+@media (min-width: 600px) and (max-width: 879px) {
+  .gallery { max-width: 440px; margin-inline: auto; }
+  .rolls button { width: 64px; }
 }
 
 /* ── Two faults a real phone showed that the pane could not ──────────────────────────── */
