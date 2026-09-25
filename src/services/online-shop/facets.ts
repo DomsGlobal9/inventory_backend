@@ -21,6 +21,8 @@ export type Facets = {
   categories: { value: string; label: string; count: number }[];
   dressTypes: { value: string; count: number }[];
   fabrics: { value: string; count: number }[];
+  /** Woven, block printed, embroidered -- how the pieces were made. */
+  crafts: { value: string; count: number }[];
   brands: { value: string; count: number }[];
   price: { min: number; max: number } | null;
   total: number;
@@ -79,10 +81,11 @@ export async function facetsFor(
     };
   }
 
-  const [byCategory, byDressType, byFabric, byBrand, span, total] = await Promise.all([
+  const [byCategory, byDressType, byFabric, byCraft, byBrand, span, total] = await Promise.all([
     prisma.product.groupBy({ by: ['category'], where, _count: { _all: true } }),
     prisma.product.groupBy({ by: ['dressType'], where: { ...where, dressType: { not: null } }, _count: { _all: true } }),
     prisma.product.groupBy({ by: ['fabric'], where: { ...where, fabric: { not: null } }, _count: { _all: true } }),
+    prisma.product.groupBy({ by: ['craft'], where: { ...where, craft: { not: null } }, _count: { _all: true } }),
     prisma.product.groupBy({ by: ['brand'], where: { ...where, brand: { not: null } }, _count: { _all: true } }),
     /*
      * The range the shop's prices actually run over, so a price filter offers figures that exist.
@@ -103,6 +106,7 @@ export async function facetsFor(
       .map(r => ({ ...r, label: label(r.value) })),
     dressTypes: rank(byDressType.map(r => ({ value: String(r.dressType), count: r._count._all }))),
     fabrics: rank(byFabric.map(r => ({ value: String(r.fabric), count: r._count._all }))),
+    crafts: rank(byCraft.map(r => ({ value: String(r.craft), count: r._count._all }))),
     brands: rank(byBrand.map(r => ({ value: String(r.brand), count: r._count._all }))),
     price: span._min.sellingPrice === null || span._max.sellingPrice === null
       ? null

@@ -386,7 +386,7 @@ export async function publicShop(slugRaw: unknown): Promise<
     // Sent with the shop itself rather than fetched separately: the nav and the filter rail are
     // part of the page's furniture, and a second round trip for them shows an empty nav first.
     facetsFor(shop.clientId, { locationIds: shop.locationIds, hideOutOfStock: shop.hideOutOfStock })
-      .catch(() => ({ categories: [], dressTypes: [], fabrics: [], brands: [], price: null, total: 0 })),
+      .catch(() => ({ categories: [], dressTypes: [], fabrics: [], crafts: [], brands: [], price: null, total: 0 })),
     // Whether the shop's own WhatsApp is linked. Remembered for a minute inside canVerify, so this
     // is not a call to another service on every page load.
     canVerify(shop.clientId).catch(() => false)
@@ -471,7 +471,7 @@ export async function publicShop(slugRaw: unknown): Promise<
 export async function publicProducts(
   shop: { clientId: string; locationIds: string[]; hideOutOfStock: boolean; allPhotos?: boolean; showFewLeft?: boolean },
   opts: {
-    q?: string; category?: string; fabric?: string; dressType?: string;
+    q?: string; category?: string; fabric?: string; craft?: string; dressType?: string;
     minPrice?: number; maxPrice?: number; sort?: string; page?: number; limit?: number;
   } = {}
 ) {

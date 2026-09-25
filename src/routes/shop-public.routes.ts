@@ -147,6 +147,7 @@ router.get('/:slug/products', async (req: Request, res: Response) => {
     q: str(req.query.q),
     category: str(req.query.category),
     fabric: str(req.query.fabric),
+    craft: str(req.query.craft),
     dressType: str(req.query.dressType),
     minPrice: num(req.query.minPrice),
     maxPrice: num(req.query.maxPrice),

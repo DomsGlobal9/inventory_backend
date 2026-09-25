@@ -105,11 +105,12 @@ export default function ShopHome({ slug, shop }) {
   const sort = params.get('sort') ?? 'NEW';
   const category = params.get('category') ?? '';
   const fabric = params.get('fabric') ?? '';
+  const craft = params.get('craft') ?? '';
   const dressType = params.get('dressType') ?? '';
   const maxPrice = params.get('maxPrice') ?? '';
 
   /* Anything chosen starts the list again from the top. */
-  useEffect(() => { setDeeper(1); setShown([]); }, [slug, q, sort, category, fabric, dressType, maxPrice, nonce]);
+  useEffect(() => { setDeeper(1); setShown([]); }, [slug, q, sort, category, fabric, craft, dressType, maxPrice, nonce]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -117,7 +118,7 @@ export default function ShopHome({ slug, shop }) {
     if (first) setState(s => ({ ...s, loading: true, error: null }));
     else setFetchingMore(true);
 
-    getProducts(slug, { q, sort, category, fabric, dressType, maxPrice, page: deeper, limit: 24 }, { signal: ac.signal })
+    getProducts(slug, { q, sort, category, fabric, craft, dressType, maxPrice, page: deeper, limit: 24 }, { signal: ac.signal })
       .then(data => {
         setState({ loading: false, error: null, data });
         setShown(was => {
@@ -135,7 +136,7 @@ export default function ShopHome({ slug, shop }) {
         if (first) setState({ loading: false, error: e, data: null });
       });
     return () => ac.abort();
-  }, [slug, q, sort, category, fabric, dressType, maxPrice, deeper, nonce]);
+  }, [slug, q, sort, category, fabric, craft, dressType, maxPrice, deeper, nonce]);
 
   /*
    * The next lot, fetched before the bottom is reached.
@@ -169,9 +170,10 @@ export default function ShopHome({ slug, shop }) {
   };
 
   // The shop's own catalogue, not this page of it.
-  const facets = shop?.facets ?? { fabrics: [], dressTypes: [], price: null };
+  const facets = shop?.facets ?? { fabrics: [], crafts: [], dressTypes: [], price: null };
   const total = state.data?.total ?? 0;
   const chosen = [q && ['q', `“${q}”`], category && ['category', category], fabric && ['fabric', fabric],
+    craft && ['craft', craft],
     dressType && ['dressType', dressType], maxPrice && ['maxPrice', `under ${money(maxPrice)}`]].filter(Boolean);
 
   /* Round figures a shopper actually thinks in, from the shop's own range. */
@@ -215,6 +217,22 @@ export default function ShopHome({ slug, shop }) {
                   <button key={f.value} type="button" className="opt" aria-pressed={fabric === f.value}
                     onClick={() => setParam('fabric', fabric === f.value ? '' : f.value)}>
                     {f.value} <em>{f.count}</em>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* How it was made. Next to Fabric because the two are read together -- "silk" and
+              "woven" answer different halves of the same question. Hidden when a shop has only
+              one, like every other group here: a filter with one option filters nothing. */}
+          {(facets.crafts ?? []).length > 1 && (
+            <div className="group">
+              <h3>Made</h3>
+              <div className="opts">
+                {facets.crafts.map(c => (
+                  <button key={c.value} type="button" className="opt" aria-pressed={craft === c.value}
+                    onClick={() => setParam('craft', craft === c.value ? '' : c.value)}>
+                    {c.value} <em>{c.count}</em>
                   </button>
                 ))}
               </div>

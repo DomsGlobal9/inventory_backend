@@ -440,7 +440,7 @@ export class StorefrontCatalogueService {
    * they are paging is filtered and sorted by their own choices, not by a changing clock.
    */
   async browseProducts(scope: CatalogueScope, opts: {
-    q?: string; category?: string; fabric?: string; dressType?: string;
+    q?: string; category?: string; fabric?: string; craft?: string; dressType?: string;
     minPrice?: number; maxPrice?: number;
     sort?: 'NEW' | 'PRICE_LOW' | 'PRICE_HIGH' | 'NAME';
     page?: number; limit?: number;
@@ -459,6 +459,7 @@ export class StorefrontCatalogueService {
       ...ELIGIBLE_PRODUCT,
       ...(opts.category ? { category: opts.category as never } : {}),
       ...(opts.fabric ? { fabric: { equals: opts.fabric, mode: 'insensitive' } } : {}),
+      ...(opts.craft ? { craft: { equals: opts.craft, mode: 'insensitive' } } : {}),
       ...(opts.dressType ? { dressType: { equals: opts.dressType, mode: 'insensitive' } } : {}),
       ...(opts.minPrice != null || opts.maxPrice != null
         ? { basePrice: { ...(opts.minPrice != null ? { gte: opts.minPrice } : {}), ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {}) } }
@@ -469,6 +470,7 @@ export class StorefrontCatalogueService {
             OR: [
               { title: { contains: q, mode: 'insensitive' } },
               { fabric: { contains: q, mode: 'insensitive' } },
+              { craft: { contains: q, mode: 'insensitive' } },
               { dressType: { contains: q, mode: 'insensitive' } },
               { brand: { contains: q, mode: 'insensitive' } },
               { productCode: { contains: q, mode: 'insensitive' } },
