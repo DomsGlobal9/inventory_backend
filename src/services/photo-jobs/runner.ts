@@ -113,7 +113,7 @@ type Job = Awaited<ReturnType<typeof prisma.photoJob.findFirstOrThrow>>;
  * imageService.deleteImage already knows this -- it removes the file only when the last row
  * using it goes.
  */
-async function saveView(job: Job, view: string, image: string): Promise<number> {
+async function saveView(job: Job, view: string, image: string, superseded: Set<string>): Promise<number> {
   const cropped = await keepFirstPoseOnly(await bytesFor(image));
   const stored = await imageService.storeBytes(
     job.productId, job.clientId, `${view}.jpg`, cropped, 'image/jpeg'
@@ -134,11 +134,16 @@ async function saveView(job: Job, view: string, image: string): Promise<number> 
 
   for (const variantId of job.variantIds) {
     /*
-     * Replacing, not adding -- and this is new, because nothing used to re-run a generation by
-     * accident. A job retried after a redeploy generates all four views again, and appending
-     * them would leave the colour with eight photographs: two fronts, two backs, and no way for
-     * the shop to tell which is which. The old ones are noted BEFORE the new one is written and
-     * deleted AFTER, so a failure in between leaves a duplicate rather than a gap.
+     * Replacing, not adding. A job retried after a redeploy generates all four views again, and
+     * appending them would leave the colour with eight photographs: two fronts, two backs, and
+     * no way for the shop to tell which is which.
+     *
+     * The old row is noted here and removed only once the whole job is over, NOT the moment its
+     * replacement lands. That matters since a colour stopped part-way is now re-run from the
+     * front view it already has: that front view is this job's source, the far end fetches it by
+     * URL, and deleting the file the moment view one arrived would pull the source out from
+     * under views two, three and four. Waiting costs a few seconds of the colour showing both
+     * the old picture and the new one; not waiting risks the rest of the set.
      */
     const previous = await prisma.productImage.findMany({
       where: { productId: job.productId, variantId, generated: true, view },
@@ -170,12 +175,24 @@ async function saveView(job: Job, view: string, image: string): Promise<number> 
       continue;
     }
 
-    for (const old of previous) {
-      await imageService.deleteImage(old.id, job.clientId).catch(() => { /* already gone */ });
-    }
+    for (const old of previous) superseded.add(old.id);
   }
 
   return saved;
+}
+
+/**
+ * Removes the pictures this job replaced, once it can no longer need them.
+ *
+ * Run whatever the outcome, including a cancel: a view that really was replaced should not be
+ * left behind as a duplicate just because the job stopped after it. Anything that is now gone
+ * anyway is ignored -- this is tidying, and it must never be the reason a finished job reports
+ * a failure.
+ */
+async function removeSuperseded(job: Job, superseded: Set<string>) {
+  for (const id of superseded) {
+    await imageService.deleteImage(id, job.clientId).catch(() => { /* already gone */ });
+  }
 }
 
 /**
@@ -276,6 +293,8 @@ export class PhotoJobRunner {
     let stalled = false;            // the stream went quiet and we gave up on it
     let viewsSaved = 0;
     let lastFrameAt = Date.now();
+    // Pictures this run has replaced. Held until the very end -- see saveView.
+    const superseded = new Set<string>();
 
     // One timer does both jobs: says we are still alive, and reads the stop flag. The flag is how
     // a cancel arriving on ANOTHER instance reaches this loop -- there is no other channel.
@@ -356,7 +375,7 @@ export class PhotoJobRunner {
 
             if (data.type === 'VIEW_READY') {
               const view = API_VIEW_TO_LOCAL[data.view] || data.view;
-              const saved = await saveView(job, view, data.image);
+              const saved = await saveView(job, view, data.image, superseded);
               if (saved === 0) {
                 // Every size of this colour has gone. There is nowhere left to put the
                 // photographs, so carrying on would spend the rest of the generation on nothing.
@@ -429,6 +448,7 @@ export class PhotoJobRunner {
       ));
     } finally {
       clearInterval(heartbeat);
+      await removeSuperseded(job, superseded);
     }
   }
 

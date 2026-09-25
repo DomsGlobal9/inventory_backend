@@ -1,5 +1,5 @@
 import { prisma } from '../../lib/prisma';
-import { resolveTryOnCategory, pickRandomModelId } from './catalog';
+import { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER } from './catalog';
 
 /**
  * Making, listing, stopping and clearing photo jobs.
@@ -73,24 +73,54 @@ async function coloursOf(productId: string, clientId: string): Promise<ColourGro
   return [...byColour.values()];
 }
 
+/** Which of the four views have actually been made for a colour. */
+function viewsMadeFor(colour: ColourGroup) {
+  return new Set(colour.images.filter(i => i.generated && i.view).map(i => i.view as string));
+}
+
+/** A finished set: all four. */
+function hasWholeSet(colour: ColourGroup) {
+  const made = viewsMadeFor(colour);
+  return VIEW_ORDER.every(v => made.has(v));
+}
+
 /**
  * What to generate FROM, in the order that respects what the shop meant.
  *
- * The same order the Images tab uses, deliberately: a flat-lay handed over for this job first,
- * then the main photograph, then anything. If the two disagreed, the picture the shop was shown
- * on screen and the picture the job actually used would be different ones.
+ * The same order the Images tab uses, and that is not a nicety: the screen names the picture it
+ * is about to work from, and the job has to use that same one or the shop is told one thing and
+ * shown another. The rule lives in frontend/src/lib/photoSets.js as well; both must change
+ * together, and frontend/scripts/verify-photo-sets.mjs is what checks that side of it.
+ *
+ * Their own picture always wins over one we made. Generating from a generated picture copies its
+ * mistakes, and a shop that uploaded a photograph expects that photograph to be the one used.
+ * The front view is the fallback for a colour that has nothing of its own -- a set that stopped
+ * part-way, or one whose flat-lay was deleted after it was used.
  */
 function sourceForViews(colour: ColourGroup) {
-  return colour.images.find(i => i.imageType === 'RAW_UPLOAD')
-    ?? colour.images.find(i => i.isPrimary)
+  const own = colour.images.filter(i => !i.generated);
+  return own.find(i => i.imageType === 'RAW_UPLOAD')
+    ?? own.find(i => i.isPrimary)
+    ?? own[0]
+    ?? colour.images.find(i => i.generated && i.view === 'front')
     ?? colour.images[0]
     ?? null;
 }
 
-/** A generated front view, anywhere on the product: what an empty colour is copied from. */
+/**
+ * A generated front view, anywhere on the product: what a colour with nothing of its own is
+ * copied from. A FINISHED set for preference.
+ *
+ * Preferring a whole set is not fussiness. A colour whose own set stopped after one view is
+ * usable as a source, but it is also a colour still waiting to be finished, and taking it as
+ * the reference would quietly make the half-made one the standard the others are matched to.
+ */
 function sourceForColour(colours: ColourGroup[]) {
+  const frontOf = (c: ColourGroup) => c.images.find(i => i.generated && i.view === 'front');
+  const whole = colours.find(c => hasWholeSet(c) && frontOf(c));
+  if (whole) return frontOf(whole)!;
   for (const c of colours) {
-    const front = c.images.find(i => i.generated && i.view === 'front');
+    const front = frontOf(c);
     if (front) return front;
   }
   return null;
