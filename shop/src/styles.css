@@ -392,6 +392,10 @@ button.slide { cursor: pointer; }
 }
 .opt[aria-pressed='true'] { border-color: var(--ink); }
 .opt:disabled { opacity: .4; cursor: not-allowed; text-decoration: line-through; }
+/* Sold out, but still worth looking at. Reads the same as disabled -- struck through and faded
+   -- while remaining pressable, so the piece can be seen and asked about. */
+.opt[data-gone='true'] { opacity: .45; text-decoration: line-through; }
+.opt[data-gone='true'][aria-pressed='true'] { opacity: .75; border-color: var(--ink); }
 .swatch { width: 15px; height: 15px; border-radius: 50%; border: 1px solid rgba(128,128,128,.4); }
 
 .why { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 18px; }
@@ -1835,3 +1839,18 @@ body { overflow-x: hidden; }
   background: transparent; color: inherit; font: inherit; font-weight: 500; cursor: pointer;
 }
 .sharethis svg { flex: 0 0 auto; }
+
+/* "Tell the shop you want this" -- the sold-out path. Quiet until opened, because most people
+   looking at a sold-out piece are about to leave and a form in their way helps nobody. */
+.wantit { border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; margin-top: 12px; width: 100%; }
+.wantit > p { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.wantit .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.wantit .row + .row { margin-top: 8px; }
+.wantit input {
+  flex: 1 1 150px; min-width: 0; min-height: 44px; padding: 0 12px;
+  border: 1.5px solid var(--line); border-radius: 10px; background: transparent;
+  color: inherit; font: inherit;
+}
+.wantit .go { flex: 0 0 auto; }
+.wantit .bad { margin: 8px 0 0; font-size: 12.5px; color: var(--warn, #b45309); }
+.wanted { margin: 12px 0 0; font-size: 13px; color: var(--ok, #16a34a); }

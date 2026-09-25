@@ -1,6 +1,6 @@
 import express, { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
-import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, OnlineShopRuleError } from '../services/online-shop';
+import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, shopInterest, OnlineShopRuleError } from '../services/online-shop';
 
 /**
  * What a shopper's browser asks for at `shop.scaleezy.com/<slug>`.
@@ -269,6 +269,21 @@ router.post('/:slug/verify/check', codeLimiter, buying(async (req) => {
  * Counted with pricing rather than with ordering: picking an address is part of filling a form,
  * not a thing that holds a shop's stock.
  */
+/**
+ * "Tell the shop I want this", on a piece that is sold out.
+ *
+ * Counted with ordering rather than pricing: it writes a row, and it is reachable by anybody
+ * with no account at all.
+ *
+ * It promises nothing about being messaged later -- see the note in interest.ts. The shop is
+ * shown who is waiting and rings them.
+ */
+router.post('/:slug/interest', buyLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopInterest.wantThis(shop.clientId, req.body ?? {});
+}));
+
 router.post('/:slug/addresses', priceLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');

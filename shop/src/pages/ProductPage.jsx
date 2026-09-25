@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useStat
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getProduct, money, askOnWhatsApp, shareThis } from '../api';
 import DeliveryCheck from '../components/DeliveryCheck';
+import TellTheShop from '../components/TellTheShop';
 import { addToBag, useBag } from '../bag';
 import { Problem, Say } from '../components/States';
 /* Fetched only when somebody presses the button: most shoppers never do, and it carries a
@@ -302,7 +303,15 @@ export default function ProductPage({ slug, shop }) {
                   const gone = !soldOut && !canBuy(c.name, size) && !canBuy(c.name, null);
                   return (
                   <button key={c.name} type="button" className="opt" aria-pressed={colour === c.name}
-                    disabled={gone}
+                    /*
+                     * Shown as gone, NOT switched off.
+                     *
+                     * Disabling it meant a shopper who came for the rust saree could not select
+                     * it, could not see its photographs, and could not tell the shop they wanted
+                     * it -- the one moment a shop learns about demand it has no other way to
+                     * see. Buying is still refused; looking and asking are not.
+                     */
+                    data-gone={gone ? 'true' : undefined}
                     title={gone ? `${c.name} — sold out` : undefined}
                     aria-label={gone ? `${c.name}, sold out` : undefined}
                     onClick={() => {
@@ -333,7 +342,7 @@ export default function ProductPage({ slug, shop }) {
                   const gone = !soldOut && !canBuy(colour, s);
                   return (
                     <button key={s} type="button" className="opt" aria-pressed={size === s}
-                      disabled={gone}
+                      data-gone={gone ? 'true' : undefined}
                       title={gone ? `${s} — sold out${colour ? ` in ${colour}` : ''}` : undefined}
                       aria-label={gone ? `${s}, sold out${colour ? ` in ${colour}` : ''}` : undefined}
                       onClick={() => setSize(s)}>{s}</button>
@@ -370,6 +379,11 @@ export default function ProductPage({ slug, shop }) {
               <>
                 <button type="button" className="go" disabled>Sold out</button>
                 {ask ? <a className="go quiet" href={ask} target="_blank" rel="noopener noreferrer">Ask the shop</a> : null}
+                {/* WhatsApp works and people use it, but it leaves the shop nothing to count.
+                    This records who is waiting, for the one moment a shop can learn about
+                    demand it otherwise never sees. */}
+                <TellTheShop slug={slug} product={p} variantCode={chosen?.variantCode}
+                  piece={[p.title, chosen?.colour, chosen?.size].filter(Boolean).join(' · ')} />
               </>
             ) : ask ? (
               <a className="go" href={ask} target="_blank" rel="noopener noreferrer">

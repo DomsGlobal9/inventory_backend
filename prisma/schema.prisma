@@ -572,6 +572,7 @@ model Product {
   // Relations
   variants ProductVariant[]
   images   ProductImage[]
+  interests ShopInterest[]
 
   // Soft Delete & Timestamps
   trashedAt      DateTime?      @map("trashed_at")
@@ -652,6 +653,7 @@ model ProductVariant {
   @@index([productId])
   @@index([clientId, lastMovementAt])
   @@map("inventory_product_variants")
+  interests ShopInterest[]
 }
 
 // 2.1 INVENTORY RESERVATION
@@ -4049,4 +4051,41 @@ enum OnlineShopBannerLink {
   /// One of the shop's own departments, as the nav lists them (WOMEN, MEN...). A shop with a
   /// menswear banner should be able to send a tap there without searching for the word.
   CATEGORY
+}
+
+/// Somebody wanted a piece that was sold out.
+///
+/// A sold-out colour is the one moment a shop learns about demand it has no other way to see:
+/// the customer arrived, wanted it, and left. The page already offers "Ask if it is coming
+/// back", which sends them to WhatsApp and leaves no record -- so a shop with twenty such
+/// messages over three weeks cannot tell that eleven were for the same saree.
+///
+/// A table rather than a new InventoryAlertType, deliberately. Adding a value to that enum is
+/// what broke the alerts bell on 23 September: a deployed client that has not been rebuilt
+/// throws on a value it does not know. A table nothing currently reads cannot do that.
+///
+/// Nothing here promises an automatic message. The shop sees who is waiting and rings them.
+model ShopInterest {
+  id        String @id @default(uuid())
+  clientId  String @map("client_id")
+  productId String @map("product_id")
+  variantId String @map("variant_id")
+
+  /// How the shop rings them back, and the only reason this row exists.
+  phone String
+  name  String?
+
+  /// Set once the shop has dealt with it, so the list shows what is still outstanding.
+  handledAt DateTime? @map("handled_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  product Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  /// One row per person per piece: asking twice is still one person waiting.
+  @@unique([variantId, phone])
+  @@index([clientId])
+  @@index([productId])
+  @@index([handledAt])
+  @@map("shop_interests")
 }

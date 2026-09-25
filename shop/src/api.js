@@ -95,6 +95,13 @@ export const deliversTo = (slug, pincode, opts) =>
 export const priceBag = (slug, lines, couponCodes, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/bag`, { ...opts, send: { lines, couponCodes } });
 
+/**
+ * "Tell the shop I want this", on a piece that is sold out. Promises nothing about being
+ * messaged later -- the shop is shown who is waiting and rings them.
+ */
+export const wantThis = (slug, body, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/interest`, { ...opts, send: body });
+
 export const placeOrder = (slug, order, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/orders`, { ...opts, send: order });
 
