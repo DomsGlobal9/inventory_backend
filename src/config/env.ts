@@ -202,6 +202,18 @@ const envSchema = z.object({
   // Campaigns and automatic loyalty messages go to real customers; off outside production unless this says so.
   WHATSAPP_CAMPAIGNS_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
 
+  // --- Photo jobs --------------------------------------------------------------------
+  //
+  // Making a set of photographs spends a shop's paid generations, and a development machine
+  // points at the production database -- so a laptop left running would quietly pick up real
+  // shops' work, charge them for it, and strand the job the moment the laptop sleeps. Off
+  // outside production unless this says otherwise.
+  PHOTO_JOBS_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
+  // And when it IS on here, which shops this instance may work for. Empty means all of them,
+  // which is right in production and wrong on a laptop: set it to the test shop so a suite
+  // cannot reach into a real one. Comma-separated client ids.
+  PHOTO_JOBS_ONLY_CLIENTS: optionalStr(z.string()),
+
   // --- Shopify -----------------------------------------------------------------------
   //
   // All optional, and the integration fails SAFE without them: the OAuth routes refuse to

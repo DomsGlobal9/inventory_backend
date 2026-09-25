@@ -11,6 +11,7 @@ import dashboardRoutes from './dashboard.routes';
 import transactionRoutes from './transaction.routes';
 import catalogRoutes from './catalog.routes';
 import catalogTryOnRoutes from './catalog-tryon.routes';
+import photoJobsRoutes from './photo-jobs.routes';
 import searchRoutes from './search.routes';
 import stockCountRoutes from './stock-count.routes';
 import supplierRoutes from './supplier.routes';
@@ -139,6 +140,8 @@ router.use('/dashboard', hideCost, dashboardRoutes);
 router.use('/branding', brandingRoutes);
 router.use('/catalog', hideCost, catalogRoutes);
 router.use('/catalog-tryon', catalogTryOnRoutes);
+// Sets of photographs being made on this side, so the shop does not have to sit and watch.
+router.use('/photo-jobs', photoJobsRoutes);
 router.use('/search', hideCost, searchRoutes);
 router.use('/stock-counts', hideCost, stockCountRoutes);
 router.use('/suppliers', supplierRoutes);

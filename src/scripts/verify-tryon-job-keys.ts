@@ -15,7 +15,7 @@
  *
  *   npx tsx src/scripts/verify-tryon-job-keys.ts
  */
-import { jobKeyFor } from '../controllers/catalog-tryon.controller';
+import { jobKeyFor } from '../services/tryon';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];

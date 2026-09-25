@@ -7,6 +7,7 @@
  *   gateway.service     talks to the platform gateway -- the outbound call and nothing else
  *   credential.service  which key we present for a client, and who may see it
  *   usage.service       what was used, and whether they are still within their allowance
+ *   jobKey              what the far end calls one generation, so it can be cancelled
  *
  * Importers take this folder, not the files inside it, so the split above can change without
  * every caller in the codebase changing with it.
@@ -16,3 +17,4 @@ export { serviceCredentialService } from './credential.service';
 export type { CredentialSummary } from './credential.service';
 export { tryOnUsageService } from './usage.service';
 export type { UsageSummary } from './usage.service';
+export { jobKeyFor } from './jobKey';

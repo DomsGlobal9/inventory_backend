@@ -1,4 +1,5 @@
 import { CampaignsScheduler } from './jobs/campaigns.scheduler';
+import { PhotoJobsScheduler } from './jobs/photo-jobs.scheduler';
 import express from 'express'; // Restart trigger 2
 import cors from 'cors';
 import { env } from './config/env';
@@ -252,4 +253,19 @@ app.listen(PORT, () => {
     CampaignsScheduler.start();
     OfferMirrorWorker.start();
   }
+
+  /*
+   * Asked separately, and outside that switch on purpose.
+   *
+   * DISABLE_BACKGROUND_JOBS exists because two instances must not both write the same closing
+   * snapshot or claim the same storefront event -- work where running twice is the bug. Photo
+   * jobs are not that shape: a job is claimed with a conditional update, so a second instance
+   * either wins it or is told it changed nothing.
+   *
+   * It still honours the switch by default, so production behaves exactly as it did. What this
+   * allows is the one case the switch cannot express: a development machine that must NOT run
+   * the clock, but does need to run photo jobs for a single test shop. The worker reads both
+   * PHOTO_JOBS_IN_DEV and PHOTO_JOBS_ONLY_CLIENTS and decides for itself.
+   */
+  PhotoJobsScheduler.start();
 });

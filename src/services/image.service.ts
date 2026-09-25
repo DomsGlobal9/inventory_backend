@@ -7,6 +7,58 @@ import { supabase } from '../lib/supabase';
 export class ImageService {
 
   /**
+   * Where a picture for this product goes, and the only place that answer is worked out.
+   *
+   * Never interpolate a client-supplied name into a path unsanitised: "../" or a leading slash
+   * would escape the tenant prefix that is the whole point of this. Slash removal alone already
+   * makes escape impossible, but collapsing dot runs keeps the stored object names sane too --
+   * "../../etc/passwd" should not survive as "_.._.._etc_passwd".
+   *
+   * Pulled out of createUploadUrl when storeBytes arrived. Two copies of this would be two
+   * places for the tenant boundary to drift, and that boundary is the entire reason the browser
+   * stopped choosing its own paths.
+   */
+  private storagePathFor(clientId: string, productId: string, fileName: string) {
+    const safeName = String(fileName || 'upload')
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .replace(/\.{2,}/g, '.')
+      .replace(/^[._-]+/, '')
+      .slice(0, 120) || 'upload';
+    return `${clientId}/${productId}/${Date.now()}_${safeName}`;
+  }
+
+  /**
+   * Puts bytes we are already holding into storage.
+   *
+   * The browser's route is createUploadUrl and a signed PUT, because the browser is not trusted
+   * to choose a path and its bytes are better off not passing through here at all. The photo-job
+   * worker is not a browser: it is inside this process holding the picture it has just taken off
+   * the stream, and signing a URL for itself to PUT to would be three network trips to do what
+   * one call does.
+   *
+   * upsert is off. Every path carries a timestamp, so a collision would mean two pictures landing
+   * in the same millisecond for the same product -- which is worth an error rather than one of
+   * them silently replacing the other.
+   */
+  async storeBytes(productId: string, clientId: string, fileName: string, bytes: Buffer, contentType = 'image/jpeg') {
+    const product = await productRepository.findById(productId, clientId);
+    if (!product) throw { statusCode: 404, message: "Product not found" };
+
+    const storagePath = this.storagePathFor(clientId, productId, fileName);
+
+    const { error } = await supabase.storage
+      .from('inventory-images')
+      .upload(storagePath, bytes, { contentType, upsert: false });
+
+    if (error) {
+      throw { statusCode: 502, message: `Could not store the picture: ${error.message}` };
+    }
+
+    const { data: publicUrlData } = supabase.storage.from('inventory-images').getPublicUrl(storagePath);
+    return { storagePath, publicUrl: publicUrlData.publicUrl, fileName, fileSize: bytes.length };
+  }
+
+  /**
    * Issues a short-lived, single-use upload URL scoped to a path THIS server computed.
    *
    * The browser used to build `${clientId}/${productId}/${file}` itself and write straight
@@ -20,18 +72,7 @@ export class ImageService {
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
 
-    // Never interpolate a client-supplied name into a path unsanitised: "../" or a leading
-    // slash would escape the tenant prefix that is the whole point of this.
-    // Slash removal alone already makes escape impossible, but collapsing dot runs keeps
-    // the stored object names sane too -- "../../etc/passwd" should not survive as
-    // "_.._.._etc_passwd".
-    const safeName = String(fileName || 'upload')
-      .replace(/[^a-zA-Z0-9._-]/g, '_')
-      .replace(/\.{2,}/g, '.')
-      .replace(/^[._-]+/, '')
-      .slice(0, 120) || 'upload';
-
-    const storagePath = `${clientId}/${productId}/${Date.now()}_${safeName}`;
+    const storagePath = this.storagePathFor(clientId, productId, fileName);
 
     const { data, error } = await supabase.storage
       .from('inventory-images')

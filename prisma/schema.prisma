@@ -573,6 +573,7 @@ model Product {
   variants ProductVariant[]
   images   ProductImage[]
   interests ShopInterest[]
+  photoJobs PhotoJob[]
 
   // Soft Delete & Timestamps
   trashedAt      DateTime?      @map("trashed_at")
@@ -4096,4 +4097,102 @@ model ShopInterest {
   @@index([productId])
   @@index([handledAt])
   @@map("shop_interests")
+}
+
+// =============================================================================
+// PHOTO JOBS
+// =============================================================================
+//
+// Making a set of photographs, on this side rather than in a browser tab.
+//
+// Generation used to run entirely in the page: the browser opened the stream, and the browser
+// saved each view as it arrived. Whoever pressed the button had to sit and watch it. Close the
+// tab, walk to the counter, or simply open another screen, and the work was recorded as
+// cancelled -- after the GPU time had already been spent. Nothing on this side knew a job
+// existed at all, so nothing could finish it and nothing could say that it had.
+//
+// One row here IS the job. A worker claims it, runs it, and writes down what happened; every
+// screen reads the progress from this table instead of owning the work.
+model PhotoJob {
+  id String @id @default(uuid())
+
+  clientId  String  @map("client_id")
+  productId String  @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// VIEWS  -- the four catalog views, made from a photograph of this colour.
+  /// COLOUR -- this colour, copied from another colour's generated front view.
+  ///
+  /// Plain text rather than an enum, like ProductImage.view and DailyReportJob.status. Adding a
+  /// value to a Postgres enum breaks the code already deployed against this database -- an older
+  /// Prisma client throws on a value it has never heard of, which is what took the alerts bell
+  /// down on 23 September. A third kind of job must never be able to do that.
+  kind String
+
+  /// QUEUED -> RUNNING -> DONE | FAILED | CANCELLED. Text, for the reason above.
+  status String @default("QUEUED")
+
+  /// The colour being photographed, as the shop wrote it, and folded to lower case for the
+  /// uniqueness rule. A colour is several variants -- red/S, red/M and red/L share one set of
+  /// photographs -- so a job targets a COLOUR and saves against every variant of it.
+  colourName String   @map("colour_name")
+  colourKey  String   @map("colour_key")
+  colourHex  String?  @map("colour_hex")
+  variantIds String[] @map("variant_ids")
+
+  /// The photograph this is made FROM: the row, and the address as it stood when the job was
+  /// made. Both, because the far end fetches the address itself and the row it came from may be
+  /// deleted while the job is still running.
+  sourceImageId  String? @map("source_image_id")
+  sourceImageUrl String  @map("source_image_url") @db.Text
+
+  /// What the far end is told to call this job, and therefore what cancelling it has to name.
+  /// The suffix only: the tenant is put in front by jobKeyFor, never by the browser.
+  jobKey String @map("job_key")
+
+  /// Fixed for the life of the job, so a retry after a restart asks for the same model as the
+  /// views already saved. Four views of one garment on two different models is not a set.
+  category String
+  modelId  String @map("model_id")
+
+  viewsDone  Int @default(0) @map("views_done")
+  viewsTotal Int @default(4) @map("views_total")
+
+  /// Why it failed or stopped, in words a shop owner can act on. Shown exactly as written.
+  message String? @db.Text
+
+  /// Who pressed the button. They are told first, but anyone who may see the product may see the
+  /// job -- a shop is not one person, and the one who started it may have gone home.
+  requestedBy String? @map("requested_by")
+
+  /// Asked to stop. The runner may be on another instance, so this is how the request reaches
+  /// it; the far end is told separately and directly.
+  cancelRequested Boolean @default(false) @map("cancel_requested")
+
+  /// How many times a runner has picked this up. A redeploy strands whatever was running, and
+  /// one automatic retry is the difference between the shop getting their photographs and being
+  /// told to press the button again. Two would be spending their allowance on a guess.
+  attempts Int @default(0)
+
+  /// Touched while the stream is alive. A RUNNING row that has stopped being touched belongs to
+  /// an instance that has gone, and is what both boot recovery and the stall timeout look for.
+  heartbeatAt DateTime? @map("heartbeat_at")
+
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+
+  /// Null until somebody has been told it finished. This is what makes "I was signed out when it
+  /// finished" work: the notice waits for them instead of being missed.
+  seenAt DateTime? @map("seen_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// There is also a partial unique index on (product_id, colour_key) covering QUEUED and
+  /// RUNNING rows, which is what actually stops two people making the same colour twice. It
+  /// cannot be written here -- Prisma has no partial index -- so it lives in the migration.
+  @@index([clientId, status])
+  @@index([productId])
+  @@index([status, createdAt])
+  @@map("photo_jobs")
 }
