@@ -315,6 +315,34 @@ export type PublicShopState = 'OPEN' | 'CLOSED' | 'UNKNOWN';
  * told the shop is not open rather than left thinking they mistyped. An address nobody has ever
  * used answers UNKNOWN, and says nothing about whether it once existed.
  */
+/**
+ * Does this shop deliver to one PIN code?
+ *
+ * Asked before the shopper has typed anything else. The same refusal already exists at the end
+ * of the checkout -- after a name, a phone number and a full address have been entered -- which
+ * is the worst possible moment to learn it: everything asked for was wasted, and the shopper is
+ * left with a red line under a form they have just filled in.
+ *
+ * Answers one PIN code at a time and never returns the list. See the note on deliversEverywhere.
+ */
+export async function deliversTo(slugRaw: unknown, pincodeRaw: unknown): Promise<
+  { ok: false; reason: 'BAD_PINCODE' } | { ok: true; delivers: boolean; everywhere: boolean }
+> {
+  const pincode = String(pincodeRaw ?? '').replace(/\D/g, '');
+  if (!/^[1-9][0-9]{5}$/.test(pincode)) return { ok: false, reason: 'BAD_PINCODE' };
+
+  const slug = String(slugRaw ?? '').trim().toLowerCase();
+  const shop = await prisma.onlineShop.findUnique({
+    where: { slug },
+    select: { isLive: true, deliverPincodes: true }
+  });
+  // A shop that is not open answers nothing at all, rather than leaking that the address exists.
+  if (!shop || !shop.isLive) return { ok: true, delivers: false, everywhere: false };
+
+  const everywhere = shop.deliverPincodes.length === 0;
+  return { ok: true, delivers: everywhere || shop.deliverPincodes.includes(pincode), everywhere };
+}
+
 export async function publicShop(slugRaw: unknown): Promise<
   | { state: 'UNKNOWN' }
   | { state: 'CLOSED'; name: string }
@@ -339,6 +367,8 @@ export async function publicShop(slugRaw: unknown): Promise<
         deliveryFee: number;
         freeDeliveryAbove: number | null;
         minOrderValue: number | null;
+        /** Whether the shop delivers anywhere, so a page knows to offer a PIN code check. */
+        deliversEverywhere: boolean;
       };
       grievance: { name: string | null; phone: string | null; email: string | null };
       returnPolicy: string | null }
@@ -395,7 +425,17 @@ export async function publicShop(slugRaw: unknown): Promise<
       ],
       deliveryFee: Number(shop.deliveryFee),
       freeDeliveryAbove: shop.freeDeliveryAbove == null ? null : Number(shop.freeDeliveryAbove),
-      minOrderValue: shop.minOrderValue == null ? null : Number(shop.minOrderValue)
+      minOrderValue: shop.minOrderValue == null ? null : Number(shop.minOrderValue),
+      /*
+       * WHETHER the shop limits where it delivers -- never WHERE.
+       *
+       * The list itself is the shop's own business: it maps their delivery area, their reach and
+       * arguably their customers, and a page that shipped it could be read by anybody including
+       * the shop next door. This one boolean is all a page needs to decide whether to offer the
+       * "do you deliver to me?" box at all, and a shopper's own PIN code is answered one at a
+       * time by `deliversTo` below.
+       */
+      deliversEverywhere: shop.deliverPincodes.length === 0
     },
     // The Consumer Protection (E-Commerce) Rules 2020 require the seller's own details on the
     // page: the shop is the seller, not ScaleEzy.

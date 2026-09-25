@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getProduct, money, askOnWhatsApp } from '../api';
+import { getProduct, money, askOnWhatsApp, shareThis } from '../api';
+import DeliveryCheck from '../components/DeliveryCheck';
 import { addToBag, useBag } from '../bag';
 import { Problem, Say } from '../components/States';
 /* Fetched only when somebody presses the button: most shoppers never do, and it carries a
@@ -437,6 +438,33 @@ export default function ProductPage({ slug, shop }) {
               </div>
             </div>
           </div>
+
+          {/* Sending ONE piece to somebody, which is how a great deal of this sells: a customer
+              forwards a saree to their mother rather than the whole shop. The product page is
+              already rendered with its own title and photograph attached, so what lands in the
+              chat is a picture and a name, not a bare address.
+
+              navigator.share where the phone has it -- that is the sheet people already know,
+              and it offers WhatsApp among everything else. The plain WhatsApp link is the
+              fallback for desktop, where the share sheet does not exist. */}
+          <button
+            type="button"
+            className="sharethis"
+            onClick={async () => {
+              const s = shareThis(shop?.name ?? 'this shop', p);
+              try {
+                if (navigator.share) { await navigator.share({ title: p.title, text: s.text, url: s.url }); return; }
+              } catch { /* they closed the sheet -- not a failure, and not worth a message */ }
+              window.open(s.whatsapp, '_blank', 'noopener,noreferrer');
+            }}
+          >
+            <Wa /> Send this to someone
+          </button>
+
+          {/* Asked here rather than at the checkout, where the same refusal already waits after
+              a name, a number and a full address have been typed in. Renders nothing at all for
+              a shop that delivers everywhere. */}
+          <DeliveryCheck slug={slug} deliversEverywhere={shop?.buying?.deliversEverywhere !== false} />
 
           {/* What it is, as rows. A shopper scanning for "is this real silk" should find it. */}
           <div className="spec">

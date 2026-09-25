@@ -123,6 +123,20 @@ router.get('/:slug', async (req: Request, res: Response) => {
   res.json({ success: true, data: visible });
 });
 
+/**
+ * "Do you deliver to me?" -- answered before anything else is asked for.
+ *
+ * Rate limited with the same bucket the pricing uses, because this reads the shop's delivery
+ * area one PIN code at a time and an unlimited version could be walked through all of them.
+ */
+router.get('/:slug/delivers/:pincode', priceLimiter, async (req: Request, res: Response) => {
+  const answer = await onlineShop.deliversTo(req.params.slug, req.params.pincode);
+  if (!answer.ok) {
+    return res.status(400).json({ success: false, message: 'That PIN code does not look right. It is six digits.' });
+  }
+  res.json({ success: true, data: { delivers: answer.delivers, everywhere: answer.everywhere } });
+});
+
 /** The catalogue, a page at a time. */
 router.get('/:slug/products', async (req: Request, res: Response) => {
   const shop = await onlineShop.publicShop(req.params.slug);

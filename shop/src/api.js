@@ -82,6 +82,16 @@ export const getProduct = (slug, code, opts) =>
  * totals would sooner or later show a figure the checkout disagreed with.
  */
 
+/**
+ * "Do you deliver to me?", asked before anything else.
+ *
+ * The same refusal already waits at the end of the checkout, after a name, a number and a full
+ * address have been typed in -- which is the worst moment to find out, because everything asked
+ * for was wasted. One PIN code at a time; the shop's delivery area is never sent to the page.
+ */
+export const deliversTo = (slug, pincode, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/delivers/${encodeURIComponent(pincode)}`, opts);
+
 export const priceBag = (slug, lines, couponCodes, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/bag`, { ...opts, send: { lines, couponCodes } });
 
@@ -179,4 +189,25 @@ export const askOnWhatsApp = (phone, shopName, product) => {
     ? `Hi ${shopName}, I saw ${product.title} (${product.productCode}) on your shop. Is it available?`
     : `Hi ${shopName}, I saw your shop online.`;
   return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
+};
+
+/**
+ * Send this piece to somebody.
+ *
+ * The whole shop is shared as a WhatsApp link, and a customer forwarding ONE saree to their
+ * mother or their sister is how a great deal of this actually sells. Until now they had to
+ * select the address bar and copy it, which on a phone is the point most people give up.
+ *
+ * The link is the product's own page, which the backend already renders with the shop's name
+ * and the piece's photograph attached -- so what arrives in the chat is a picture and a title,
+ * not a bare URL.
+ */
+export const shareThis = (shopName, product) => {
+  const url = typeof window !== 'undefined' ? window.location.href : '';
+  return {
+    url,
+    text: `${product?.title ?? 'This'}${product?.productCode ? ` (${product.productCode})` : ''} from ${shopName}`,
+    whatsapp: `https://wa.me/?text=${encodeURIComponent(`${product?.title ?? 'Have a look at this'} from ${shopName}
+${url}`)}`
+  };
 };
