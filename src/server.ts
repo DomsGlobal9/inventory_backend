@@ -154,6 +154,12 @@ const tooBigIsSaidPlainly = (what: string) =>
 app.use('/api/v1/online-shop/banners', carriesLogin, express.json({ limit: '21mb' }),
   tooBigIsSaidPlainly('That picture is larger than 15 MB. Choose a smaller one.'));
 
+// The shop's icon travels the same way as its banners, and was added without this -- so every
+// real picture came back as a bare "request entity too large", which is the third time this
+// exact mistake has been made on this file. A path that carries a photograph needs a line here.
+app.use('/api/v1/online-shop/icon', carriesLogin, express.json({ limit: '21mb' }),
+  tooBigIsSaidPlainly('That picture is larger than 15 MB. Choose a smaller one.'));
+
 app.use('/api/v1/tryon', carriesLogin, express.json({ limit: '21mb' }),
   tooBigIsSaidPlainly('That photograph is larger than 15 MB. Take another one.'));
 
