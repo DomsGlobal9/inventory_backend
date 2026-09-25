@@ -46,7 +46,12 @@ export class CatalogTryOnService {
     return response;
   }
 
-  async cancelJob(clientId: string) {
+  /**
+   * `clientId` is the tenant -- it chooses which API key we present. `jobKey` is what the far end
+   * calls the job, and is what actually gets cancelled; it defaults to the tenant so a caller that
+   * never named a job still stops the one it started.
+   */
+  async cancelJob(clientId: string, jobKey: string = clientId) {
     this.assertConfigured();
     // The same key that started the job. Cancelling with a different one would ask the gateway
     // to stop a job belonging to a tenant it does not think we are.
@@ -58,7 +63,9 @@ export class CatalogTryOnService {
         'Content-Type': 'application/json',
         'x-api-key': key,
       },
-      body: JSON.stringify({ clientId }),
+      // The far end reads this field as the job name, not as who we are -- who we are is the key
+      // above and the tenant header the gateway adds.
+      body: JSON.stringify({ clientId: jobKey }),
     });
     if (!response.ok) {
       const text = await response.text().catch(() => '');

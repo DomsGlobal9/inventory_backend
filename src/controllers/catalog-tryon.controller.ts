@@ -3,6 +3,31 @@ import { catalogTryOnService } from '../services/tryon';
 import { tryOnUsageService } from '../services/tryon';
 import { respondWithError } from '../utils/respondWithError';
 
+/**
+ * Which JOB this is, inside this shop.
+ *
+ * The catalog service treats the body's `clientId` as a job name: a second request under the same
+ * one cancels the first mid-stream. We used to send the tenant id for every generation, so every
+ * generation from one shop shared a single job name -- fine while a shop only ever made one set of
+ * photographs at a time, and the thing that would stop several colours being made at once.
+ *
+ * The browser supplies only a SUFFIX, never the whole name, and the tenant is always prepended
+ * here. Two reasons. A shop must not be able to name a job inside another shop -- the catalog
+ * service scopes job names by the account in x-gateway-client-id, but that is the gateway's word,
+ * not ours, and this costs nothing. And where that header does not arrive, the far end falls back
+ * to a single flat namespace, where an unprefixed "crimson" from two different shops would be the
+ * same job.
+ *
+ * Trimmed to what the far end accepts (identity.js: /^[A-Za-z0-9._:-]{1,128}$/), so a colour code
+ * like "#dc143c" cannot silently make the whole name malformed and get the request disowned.
+ */
+export function jobKeyFor(clientId: string, rawSuffix: unknown): string {
+  const suffix = typeof rawSuffix === 'string'
+    ? rawSuffix.trim().replace(/[^A-Za-z0-9._-]/g, '').slice(0, 40)
+    : '';
+  return (suffix ? `${clientId}:${suffix}` : clientId).slice(0, 128);
+}
+
 export class CatalogTryOnController {
 
   async generateCatalog(req: Request, res: Response, next: NextFunction) {
@@ -35,8 +60,13 @@ export class CatalogTryOnController {
       // existing shop on the day it deploys.
       await tryOnUsageService.assertWithinLimit(clientId);
 
+      // `jobId` is ours, not the far end's -- it names the job and is not forwarded as a field.
+      const { jobId, ...body } = (req.body ?? {}) as Record<string, unknown>;
+
       const upstream = await catalogTryOnService.streamGenerateCatalog(
-        { ...req.body, clientId },
+        // `clientId` here is the JOB name. Whatever the browser put in this field is discarded:
+        // it may choose a suffix, never the name itself.
+        { ...body, clientId: jobKeyFor(clientId, jobId) },
         abortController.signal,
         // Passed separately from the payload as well, because it now decides which key we
         // present -- not just what we tell the far end we are doing.
@@ -125,7 +155,8 @@ export class CatalogTryOnController {
   async cancelJob(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
-      const result = await catalogTryOnService.cancelJob(clientId);
+      // The same name the job was started under, or the far end is asked to stop something else.
+      const result = await catalogTryOnService.cancelJob(clientId, jobKeyFor(clientId, (req.body ?? {}).jobId));
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
