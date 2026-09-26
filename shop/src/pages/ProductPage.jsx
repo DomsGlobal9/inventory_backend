@@ -110,13 +110,25 @@ function Gallery({ photos, title }) {
             {photos.map((_, i) => <i key={i} data-on={i === at} />)}
           </div>
         )}
+
+        {/*
+          Where you are in the set.
+
+          Without it the rail reads as though it were repeating the big photograph -- the first
+          thumbnail IS the picture on show, and with nothing saying so it just looks like the same
+          photograph twice. "1 / 5" makes the rail obviously a position, not a copy.
+        */}
+        {photos.length > 1 && (
+          <div className="photonum" aria-hidden="true">{at + 1} / {photos.length}</div>
+        )}
       </div>
 
       {photos.length > 1 && (
         <div className="rolls" ref={rail} role="tablist" aria-label="Photographs">
           {photos.map((img, i) => (
             <button key={img.url} type="button" role="tab" aria-selected={i === at}
-              aria-label={`Photograph ${i + 1}`} onClick={() => show(i)}>
+              aria-label={i === at ? `Photograph ${i + 1}, showing now` : `Photograph ${i + 1}`}
+              onClick={() => show(i)}>
               <img src={img.url} alt="" loading="lazy" decoding="async" />
             </button>
           ))}

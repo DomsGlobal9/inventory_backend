@@ -933,8 +933,23 @@ button.slide { cursor: pointer; }
   /* The rail lies down here as well -- shared rule further down, size override after it, because
      that rule comes later in the file and a tie on specificity goes to whoever is last. */
 
-  /* Capped, so the picture cannot be taller than the page it belongs to. */
-  .swipe > figure { max-height: 72vh; }
+  /*
+   * Capped so the picture cannot be taller than the page it belongs to -- and, now, so that the
+   * thumbnails underneath it are ON that page.
+   *
+   * 72vh alone only capped the photograph. It ignored everything the photograph has to share the
+   * screen with: the sticky header, the 16px the gallery holds below it, the breadcrumb, and the
+   * ~113px of rail and gap underneath. Measured on a 900px-tall window that came to 890px of
+   * content in 900px of screen -- it fitted, barely, and on any shorter laptop window the rail
+   * sat below the fold. So the photograph filled the screen and the thumbnails were simply not
+   * there until you scrolled, which is what "the layout changed" was pointing at.
+   *
+   * min() takes whichever is smaller: never more than 72vh, and never more than what is left
+   * after the header and the rail have been paid for. On a tall screen 72vh still wins and
+   * nothing looks different; on a short one the photograph gives up the height instead of the
+   * rail doing it.
+   */
+  .swipe > figure { max-height: min(72vh, calc(100vh - var(--bar) - 200px)); }
   .swipe img { width: 100%; height: 100%; object-fit: cover; }
   /* On a mouse the strip is driven by the thumbnails, not by dragging. */
   .gallery .pips { display: none; }
@@ -1754,27 +1769,71 @@ body { overflow-x: hidden; }
  * thumbnail can no longer scroll the page DOWN, which is what a finger there usually wants.
  */
 .rolls {
-  display: flex; gap: 8px; margin-top: 10px;
+  display: flex; gap: 8px; margin-top: 6px;
   overflow-x: auto; overflow-y: hidden;
   overscroll-behavior-x: contain;
   scrollbar-width: none; -webkit-overflow-scrolling: touch;
   scroll-snap-type: x proximity;
+  /*
+   * Room for the ring on the selected thumbnail.
+   *
+   * A scroll container clips at its PADDING box, and the ring is an outline sitting 2px outside
+   * the button -- so with no padding it was shaved off on the first thumbnail and along the top
+   * and bottom of every one, which made the mark look like a stray line rather than a ring.
+   * 4px of padding is exactly the 2px offset plus the 2px outline, and `scroll-padding` keeps a
+   * thumbnail snapped to the edge from landing under it.
+   */
+  padding: 4px; scroll-padding: 4px;
 }
 .rolls::-webkit-scrollbar { display: none; }
 .rolls button {
   flex: 0 0 auto; width: 56px; padding: 0; aspect-ratio: 3 / 4; scroll-snap-align: start;
-  border: 1.5px solid transparent; border-radius: 9px; overflow: hidden;
+  border: 0; border-radius: 9px; overflow: hidden;
   background: var(--soft); cursor: pointer;
+  opacity: .5; transition: opacity .15s ease, outline-color .15s ease;
+  outline: 2px solid transparent; outline-offset: 2px;
 }
 .rolls button img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.rolls button[aria-selected='true'] { border-color: var(--ink); }
+
+/*
+ * The one you are looking at has to LOOK like the one you are looking at.
+ *
+ * It was a 1.5px border in --ink, drawn hard against the photograph -- on a dark saree that is
+ * invisible, so all five thumbnails looked identical and the first one read as the big picture
+ * repeated underneath for no reason. Reported exactly that way: "the first pic is showing as big
+ * one, why still showing the first one again down".
+ *
+ * Two changes, and neither is a thicker border. The ones you are NOT on are dimmed, so the eye is
+ * told which is live rather than asked to find a hairline; and the mark is an `outline` with an
+ * offset, which is drawn OUTSIDE the thumbnail in the gap between them, against the page rather
+ * than against the photograph. A border of any thickness sits on the picture and competes with
+ * it; a ring in the gap cannot be lost, whatever colour the saree is.
+ */
+.rolls button[aria-selected='true'] { opacity: 1; outline-color: var(--ink); }
+.rolls button:hover { opacity: 1; }
 /* With a strip to tap, the pips would be saying the same thing twice. */
 .gallery[data-many='true'] .pips { display: none; }
+
+/*
+ * "3 / 5" in the corner of the photograph.
+ *
+ * The rail alone never says whether it is a set of DIFFERENT photographs or the same one repeated
+ * -- a number does, in one glance, and it is the convention every shopper already knows. Sits over
+ * the picture, so it costs no height on a screen where the rail is already fighting for room.
+ */
+/* `photonum`, not `count`: .count is already the "12 pieces" line on the home page, and a second
+   rule of that name this far down the file would have quietly turned it into a floating pill. */
+.photonum {
+  position: absolute; right: 10px; bottom: 10px;
+  padding: 3px 9px; border-radius: 999px;
+  background: rgba(0, 0, 0, .55); color: #fff;
+  font-size: 12px; font-variant-numeric: tabular-nums; letter-spacing: .02em;
+  backdrop-filter: blur(4px); pointer-events: none;
+}
 
 /* Bigger where there is room, and an edge on hover where there is a pointer to hover with. */
 @media (min-width: 880px) {
   .rolls button { width: 68px; }
-  .rolls button:hover { border-color: var(--line); }
 }
 
 /*
