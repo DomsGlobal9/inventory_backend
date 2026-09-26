@@ -524,6 +524,23 @@ function withOffers(product: any, offers: PublicOffer[]) {
   };
 }
 
+/*
+ * WHY THE SHOP NO LONGER ASKS FOR EVERY PHOTOGRAPH.
+ *
+ * A shop setting, "Show every photo of a product", passed allPhotos through to the catalogue,
+ * and allPhotos includes RAW_UPLOAD. RAW_UPLOAD had meanwhile become the way a merchant says
+ * "not in my shop": the Images tab's hide button sets it, the gallery labels those pictures NOT
+ * IN YOUR SHOP, and the flat-lay upload promises "your flat-lay stays out of your shop".
+ *
+ * So one shop had twenty-two pictures it had deliberately hidden, every one of them visible to
+ * customers, and pressing hide again changed nothing because the setting outranked it. The
+ * owner hid one, showed it again, and reported that the shop never changed -- correctly, it
+ * never did.
+ *
+ * A specific decision about one picture beats a default about all of them, so the picture wins
+ * and the setting is gone from the shop screen. The column stays for now rather than being
+ * dropped from under a running deployment; nothing reads it.
+ */
 export async function publicProducts(
   shop: { clientId: string; locationIds: string[]; hideOutOfStock: boolean; allPhotos?: boolean; showFewLeft?: boolean },
   opts: {
@@ -531,9 +548,7 @@ export async function publicProducts(
     minPrice?: number; maxPrice?: number; sort?: string; page?: number; limit?: number;
   } = {}
 ) {
-  const scope: CatalogueScope = {
-    clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: shop.allPhotos !== false
-  };
+  const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false };
   const sort = ['NEW', 'PRICE_LOW', 'PRICE_HIGH', 'NAME'].includes(String(opts.sort))
     ? (opts.sort as 'NEW' | 'PRICE_LOW' | 'PRICE_HIGH' | 'NAME')
     : 'NEW';
@@ -596,9 +611,10 @@ export async function publicProduct(
 ) {
   const code = typeof productCode === 'string' ? productCode.trim() : '';
   if (!code) throw fail(400, 'Which product is missing.');
-  const scope: CatalogueScope = {
-    clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: shop.allPhotos !== false
-  };
+  /*
+   * RAW_UPLOAD IS NEVER SHOWN TO A CUSTOMER. See publicProducts above.
+   */
+  const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false };
   const p = await storefrontCatalogueService.getProduct(scope, code);
   if (!p) return null;
   // The same badge the tile wore, and per size as well: the page is where a shopper picks one,

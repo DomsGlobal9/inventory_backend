@@ -280,21 +280,35 @@ function toStorefrontProduct(
 ): StorefrontProduct {
   const byVariantId = new Map(p.variants.map(v => [v.id, v.variantCode]));
   /*
-   * One entry per PHOTOGRAPH, not per row.
+   * One entry per photograph PER COLOUR -- not one per file.
    *
    * A photograph of the red saree is registered against red/S, red/M and red/L, so the same url
    * comes back three times. Sent as three entries, a shop's product page would show the same
    * picture three times over and a merchant's own website would receive a gallery of duplicates.
+   * Those three are one photograph and collapse to one.
    *
-   * The first row for a url wins, which is the lowest orderIndex of the lowest size -- and the
-   * variantCode it carries is enough for a page to rank it: the shop's product page ranks a
-   * photograph of the chosen colour above the rest, and every size of a colour is that colour.
+   * TWO COLOURS SHARING A FILE ARE NOT ONE PHOTOGRAPH, and folding them together was a bug that
+   * reached a real shop. Every product that existed before photographs belonged to colours had
+   * its pictures COPIED onto each variant by the 20260924190000 migration, so both colours of a
+   * saree point at the same five files. Collapsing on the url alone kept five rows out of ten
+   * and gave each one whichever colour happened to sort first -- so the shop page, which shows
+   * the chosen colour's photographs, offered two pictures for one colour and three for the other
+   * out of five that both of them have. Reported by a shop owner counting five in the admin and
+   * two in their shop.
+   *
+   * Keyed by colour rather than by variant, because sizes of one colour ARE one photograph and a
+   * variant key would put red/S, red/M and red/L back in three times over. A photograph with no
+   * variant, or a variant with no colour, keys as the empty colour and still collapses.
    */
+  const colourOf = new Map(p.variants.map(v => [v.id, (v.colorName ?? '').trim().toLowerCase()]));
   const visible = allPhotos
     ? p.images
     : p.images.filter(i => i.imageType === 'COVER' || i.imageType === 'GALLERY');
-  const seenUrls = new Set<string>();
-  const unique = visible.filter(i => !seenUrls.has(i.url) && seenUrls.add(i.url));
+  const seen = new Set<string>();
+  const unique = visible.filter(i => {
+    const key = `${i.variantId ? (colourOf.get(i.variantId) ?? '') : ''}|${i.url}`;
+    return !seen.has(key) && seen.add(key);
+  });
 
   /*
    * The order a shopper meets the photographs in.
