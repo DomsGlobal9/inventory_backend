@@ -135,3 +135,69 @@ export const Toward = ({ done }) => (
 export const Working = () => (
   <span className="motion dots" aria-hidden="true"><i /><i /><i /></span>
 );
+
+/**
+ * The saree going on: the wait for a try-on, drawn as the thing it is waiting for.
+ *
+ * A band of light sweeping over the photograph was the first attempt and it was wrong -- it is the
+ * loading bar every page has, and it says nothing about what is being done. This is the shop's own
+ * work drawn out: a figure standing still, the pallu arriving over one shoulder, the saree drawing
+ * itself down the body, and only then a little sparkle, because the sparkle is the result and not
+ * the process.
+ *
+ * ORDER IS THE WHOLE POINT, the same way Landed seals the ring before it writes the tick. The
+ * cloth ARRIVES, then the garment is DRAWN, then it glints. Played in that order it reads as
+ * something being put on somebody. Played together it would be a logo.
+ *
+ * The figure never moves. Everything happens against it, which is what stops this looking like a
+ * spinner with extra steps.
+ */
+export const Dressing = () => {
+  /*
+   * One silhouette, drawn twice.
+   *
+   * The first attempt was thin outlines drawn with stroke-dashoffset, the way Landed writes its
+   * tick. At 150px that read as loose geometry -- a circle, an arc and a triangle -- and not as a
+   * woman in a saree. Line weight is the reason: a 2.8px stroke on a 120-unit box is about one
+   * pixel of ink per edge on a phone, and a shape that thin has to be recognised from its outline
+   * alone. A FILLED silhouette is recognised from its mass, which survives any size.
+   *
+   * So the garment is painted, not drawn. A faint copy of her stands there the whole time, and a
+   * solid copy is revealed over it from the shoulders down -- the saree arriving on somebody who
+   * was already standing there, which is exactly what a try-on does.
+   */
+  const BODY = 'M51 27c-4 2-6 7-5.5 13L44 62 29 126h62L76 62l-1.5-22c.5-6-1.5-11-5.5-13z';
+  const PALLU = 'M51 27c5 9 13 17 23 21l2 10c-14-4-24-14-29-25z';
+  const BORDER = 'M30.5 114h59l1.5 12H29z';
+
+  return (
+    <svg className="art-dressing" width="150" height="175" viewBox="0 0 120 140" fill="none" aria-hidden="true">
+      {/* The floor she stands on. It widens as the cloth settles, which is what gives her weight. */}
+      <ellipse className="shadow" cx="60" cy="131" rx="29" ry="4" fill="currentColor" opacity=".22" />
+
+      {/* Her. Always there, at the same strength, so what changes is only the clothes. */}
+      <circle className="head" cx="60" cy="16" r="9.5" fill="currentColor" opacity=".5" />
+
+      {/* The saree she has not got on yet. */}
+      <g className="ghost" fill="currentColor" opacity=".2">
+        <path d={BODY} /><path d={PALLU} /><path d={BORDER} />
+      </g>
+
+      {/* The same saree, arriving. The wipe is on the group, from the shoulders downwards. */}
+      <g className="fill" fill="currentColor">
+        {/* The body sits back so the pallu and the hem border read as the brighter bands they
+            are on a real saree. All one white would be a dress, not this. */}
+        <path d={BODY} opacity=".6" />
+        <path d={PALLU} opacity="1" />
+        <path d={BORDER} opacity="1" />
+      </g>
+
+      {/* What it actually is, admitted in three small lights, after the saree is on. */}
+      <g className="sparks" fill="currentColor">
+        <circle className="s1" cx="22" cy="48" r="2.8" />
+        <circle className="s2" cx="99" cy="72" r="2.3" />
+        <circle className="s3" cx="92" cy="20" r="2.1" />
+      </g>
+    </svg>
+  );
+};

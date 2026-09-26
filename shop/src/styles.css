@@ -873,6 +873,22 @@ button.slide { cursor: pointer; }
 }
 .tryshot img { width: 100%; height: 100%; object-fit: contain; }
 
+/*
+ * The wait, over the customer's own photograph.
+ *
+ * Their picture goes back behind a veil and the drawing sits on top of it, so the sheet is
+ * obviously busy and obviously busy WITH THAT PHOTOGRAPH. The veil is dark rather than light
+ * because the drawing is drawn in white, and white on a bright photograph of a saree disappears.
+ */
+.tryshot .draping {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  background: rgba(14, 16, 20, .58);
+  color: #fff;
+  pointer-events: none;
+}
+.tryshot .draping svg { overflow: visible; }
+
 /* More of the shop, swiped, under the piece. */
 .alsoin { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 24px; padding-bottom: 34px; }
 .alsoin .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
@@ -934,23 +950,31 @@ button.slide { cursor: pointer; }
      that rule comes later in the file and a tie on specificity goes to whoever is last. */
 
   /*
-   * Capped so the picture cannot be taller than the page it belongs to -- and, now, so that the
-   * thumbnails underneath it are ON that page.
+   * The photograph keeps its SHAPE. The screen only decides how big it is.
    *
-   * 72vh alone only capped the photograph. It ignored everything the photograph has to share the
-   * screen with: the sticky header, the 16px the gallery holds below it, the breadcrumb, and the
-   * ~113px of rail and gap underneath. Measured on a 900px-tall window that came to 890px of
-   * content in 900px of screen -- it fitted, barely, and on any shorter laptop window the rail
-   * sat below the fold. So the photograph filled the screen and the thumbnails were simply not
-   * there until you scrolled, which is what "the layout changed" was pointing at.
+   * This was a max-height on a full-width frame, and that pair cuts faces off. The frame says
+   * `aspect-ratio: 3/4` and the shop's photographs are 895x1200, which is 0.746 -- the same shape,
+   * so nothing needs to be cropped at all. But a max-height squashes the BOX to landscape while
+   * `object-fit: cover` keeps the PICTURE portrait, and cover resolves that by throwing away the
+   * difference top and bottom. On a 1280x800 laptop the box became 670x584 and cover cut
+   * (893-584)/2 = 155px off the top of a head-to-toe photograph. 155px off the top is the face.
    *
-   * min() takes whichever is smaller: never more than 72vh, and never more than what is left
-   * after the header and the rail have been paid for. On a tall screen 72vh still wins and
-   * nothing looks different; on a short one the photograph gives up the height instead of the
-   * rail doing it.
+   * So the height is not capped any more. The WIDTH is, and the height follows it through the
+   * aspect ratio: width = available height x 3/4 means the frame is always exactly 3:4, always
+   * fits between the header and the rail, and never has a shape the photograph has to be cut to
+   * fit. A short window gets a smaller photograph rather than a beheaded one.
+   *
+   * The 200px is what the photograph shares the screen with: the sticky header, the 16px the
+   * gallery holds below it, the breadcrumb, and the ~113px of rail and gap underneath. Without it
+   * the thumbnails sat below the fold, which is the other half of what was reported.
    */
-  .swipe > figure { max-height: min(72vh, calc(100vh - var(--bar) - 200px)); }
-  .swipe img { width: 100%; height: 100%; object-fit: cover; }
+  .gallery { max-width: calc((100vh - var(--bar) - 200px) * 3 / 4); }
+  .swipe > figure { max-height: none; }
+
+  /* `contain`, so a photograph that is NOT 3:4 -- a shop's own landscape close-up, say -- is shown
+     whole against the frame instead of having its sides cut off. For the 3:4 ones the box is now
+     exactly their shape, so contain and cover come to the same thing and nothing is letterboxed. */
+  .swipe img { width: 100%; height: 100%; object-fit: contain; }
   /* On a mouse the strip is driven by the thumbnails, not by dragging. */
   .gallery .pips { display: none; }
 
@@ -1310,15 +1334,69 @@ button.slide { cursor: pointer; }
 .motion.dots i:nth-child(2) { animation-delay: .15s; }
 .motion.dots i:nth-child(3) { animation-delay: .3s; }
 
+/* ── Putting it on you ────────────────────────────────────────────────────────────────── */
+
+/*
+ * One 2.9s round, in the order the thing actually happens: the pallu arrives, the saree is drawn
+ * down the body, then it glints. Every part is on the same clock with its own delay, which is
+ * what makes four separate animations read as one event rather than four loops that happen to
+ * share a box.
+ */
+
+/*
+ * The saree arriving, from the shoulders down.
+ *
+ * `clip-path: inset(...)` rather than a stroke-dashoffset: the garment is a filled shape now, and
+ * a fill cannot be "drawn" the way a line can. Animating the BOTTOM inset from 100% to 0 uncovers
+ * it top-first, which is the direction a saree actually goes on. Held at full for a third of the
+ * round so there is a finished picture to look at, then covered again to start over.
+ */
+@keyframes dress-on {
+  0%        { clip-path: inset(0 0 100% 0) }
+  55%       { clip-path: inset(0 0 0 0) }
+  86%       { clip-path: inset(0 0 0 0) }
+  100%      { clip-path: inset(0 0 100% 0) }
+}
+.art-dressing .fill { animation: dress-on 2.9s ease-in-out infinite; }
+
+/* She brightens a little as it lands -- the difference between a figure and a mannequin. */
+@keyframes her { 0%, 40% { opacity: .45 } 62%, 86% { opacity: .85 } 100% { opacity: .45 } }
+.art-dressing .head { animation: her 2.9s ease-in-out infinite; }
+
+/* Last, and briefly. A sparkle that runs the whole time would be decoration; one that lands after
+   the saree is on is the shop saying "there". */
+@keyframes spark-pop {
+  0%, 58%, 100% { transform: scale(0); opacity: 0 }
+  72%           { transform: scale(1); opacity: .95 }
+  88%           { transform: scale(.55); opacity: 0 }
+}
+.art-dressing .sparks circle {
+  transform-box: fill-box; transform-origin: center;
+  animation: spark-pop 2.9s ease-out infinite;
+}
+.art-dressing .s2 { animation-delay: .1s; }
+.art-dressing .s3 { animation-delay: .2s; }
+
+/* The floor widens as the cloth settles onto her -- the same trick as the swinging bag's shadow. */
+@keyframes stand-settle { 0%, 100% { transform: scaleX(.94) } 55% { transform: scaleX(1.1) } }
+.art-dressing .shadow { transform-origin: 60px 131px; animation: stand-settle 2.9s ease-in-out infinite; }
+
 /* Everyone who asked their device for less motion gets the drawing, still. */
 @media (prefers-reduced-motion: reduce) {
-  .art-bag *, .art-parcel *, .art-landed *, .art-look *, .motion, .motion * {
+  .art-bag *, .art-parcel *, .art-landed *, .art-look *, .art-dressing *, .motion, .motion * {
     animation: none !important;
   }
   .art-landed .draw { stroke-dashoffset: 0; }
   .art-landed .ring { opacity: .26; transform: none; }
   .art-parcel .tape, .art-parcel .road { stroke-dashoffset: 0; }
   .motion.tick .draw { stroke-dashoffset: 0; }
+
+  /* The finished picture rather than a half-dressed one: she has it on, and the sparkle has
+     already happened. */
+  .art-dressing .fill { clip-path: none; }
+  .art-dressing .head { opacity: .8; }
+  .art-dressing .sparks circle { opacity: .5; transform: none; }
+  .art-dressing .shadow { transform: none; }
 }
 
 /* ── Photographs that arrive rather than appear ──────────────────────────────────────── */

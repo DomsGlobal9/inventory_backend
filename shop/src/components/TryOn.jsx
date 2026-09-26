@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { tryOn } from '../api';
-import { Working } from '../components/Motion';
+import { Working, Dressing } from '../components/Motion';
 
 /**
  * "See it on you."
@@ -117,7 +117,20 @@ export default function TryOn({ slug, product, chosen, onClose }) {
           </>
         ) : photo ? (
           <>
-            <div className="tryshot"><img src={photo} alt="The photograph you chose" /></div>
+            {/*
+              While it is working, the waiting happens ON the photograph rather than under it.
+
+              It used to be three dots on a line of text below, and the picture sat there looking
+              finished -- so on a slow connection people tapped again, or left. Their own
+              photograph goes back behind a veil and the shop draws what it is doing on top of it:
+              a saree being put on somebody. No bar and no percentage, because the generator
+              reports no progress and a bar that invents one is a lie the customer finds out about
+              at the end.
+            */}
+            <div className="tryshot">
+              <img src={photo} alt="The photograph you chose" />
+              {busy ? <span className="draping"><Dressing /></span> : null}
+            </div>
             {said ? <p className="refused">{said}</p> : null}
             <div className="sheetrow">
               <button type="button" className="go quiet" disabled={busy}
@@ -128,7 +141,9 @@ export default function TryOn({ slug, product, chosen, onClose }) {
                 {busy ? 'Working…' : 'See it on me'}
               </button>
             </div>
-            {busy ? <p className="tiny">Putting it on you <Working /></p> : null}
+            {/* role=status so the wait is announced to a screen reader, which cannot see the band
+                of light. The dots are aria-hidden, so only the words are read out. */}
+            {busy ? <p className="tiny" role="status">Putting it on you <Working /></p> : null}
           </>
         ) : (
           <>
