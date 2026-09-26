@@ -183,6 +183,21 @@ export const money = (amount, currency = 'INR') => {
 };
 
 /**
+ * What an offer is worth, said the way a price is said.
+ *
+ * "in your bag" is doing real work, not padding. This discount is not in the price above it --
+ * it comes off when the piece is in the bag -- and a shopper who reads "15% off" beside a price
+ * reasonably believes the price already has it. Saying where it happens is the difference
+ * between a badge that helps and one that starts an argument at the last step.
+ */
+export const offerWords = (offer, currency = 'INR') => {
+  if (!offer) return null;
+  if (offer.kind === 'PERCENT') return `${offer.value}% off in your bag`;
+  if (offer.kind === 'AMOUNT') return `${money(offer.value, currency)} off in your bag`;
+  return `${money(offer.value, currency)} in your bag`;
+};
+
+/**
  * A chat with the shop about one piece, with the first line already typed.
  *
  * This is how Phase 1 sells: there is no basket and no payment yet, so "Ask on WhatsApp" is the

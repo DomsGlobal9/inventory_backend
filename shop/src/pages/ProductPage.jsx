@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getProduct, money, askOnWhatsApp, shareThis } from '../api';
+import { getProduct, money, askOnWhatsApp, shareThis , offerWords } from '../api';
 import DeliveryCheck from '../components/DeliveryCheck';
 import TellTheShop from '../components/TellTheShop';
 import { addToBag, useBag } from '../bag';
@@ -301,6 +301,18 @@ export default function ProductPage({ slug, shop }) {
                 {was ? <span className="was">{money(was, currency)}</span> : null}
                 {off ? <span className="cut">{off}% OFF</span> : null}
               </div>
+              {/*
+                The shop's offer on THIS size, which is a different thing from the strike-through
+                above: that is the list price against the selling price. This comes off in the bag,
+                and until now the only way to find out was to put the piece in the bag and look --
+                so a shopper comparing two shops never knew this one was cheaper.
+
+                Read from the chosen piece rather than the product, because an offer can cover one
+                size and not another, and this is the moment they are choosing.
+              */}
+              {chosen.offer ? (
+                <p className="dealline">{offerWords(chosen.offer, currency)}</p>
+              ) : null}
               <p className="tax">Inclusive of all taxes</p>
             </>
           )}

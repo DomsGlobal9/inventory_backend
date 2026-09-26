@@ -18,6 +18,11 @@ import { env } from '../../config/env';
 import { storefrontCatalogueService, type CatalogueScope } from '../storefront-catalogue.service';
 import { checkSlug, readyToGoLive, shopUrl, OnlineShopRuleError } from './rules';
 import * as banners from './banners';
+// The shop window's own offer badges. One matcher, shared with third-party storefronts.
+import {
+  pricingQuoteService, windowOfferFor, windowOfferForProduct,
+  type PublicOffer, type ShopPiece
+} from '../pricing';
 import { facetsFor, type Facets } from './facets';
 import { canVerify } from './otp';
 
@@ -476,6 +481,49 @@ export async function publicShop(slugRaw: unknown): Promise<
  * shop and a merchant's own website answer from one place. What this adds is the shop's own
  * choices -- only its online locations, and whether a sold-out piece is hidden.
  */
+/**
+ * The offers a shop window may mention, loaded once per request.
+ *
+ * Offers were invisible until the bag. The engine knew, publicOffers already hands the list to
+ * third-party storefronts, and our own shop -- the one storefront we write ourselves -- was the
+ * only one not asking. One query per page of products, and the matching is pure.
+ *
+ * Never fatal. A shop whose offers cannot be read should still SELL; the window simply says
+ * nothing about discounts, which is exactly where it was before any of this.
+ */
+async function windowOffers(shop: { clientId: string; locationIds: string[] }) {
+  const locationId = shop.locationIds[0];
+  if (!locationId) return [];
+  try {
+    return (await pricingQuoteService.publicOffers(shop.clientId, 'ONLINE', locationId)) as PublicOffer[];
+  } catch (err) {
+    console.error('[shop] could not read offers for the window:', (err as Error)?.message);
+    return [];
+  }
+}
+
+/** Puts the badge on a product and on each piece of it, using the shop's own live offers. */
+function withOffers(product: any, offers: PublicOffer[]) {
+  if (offers.length === 0) return product;
+
+  const pieceOf = (v: any): ShopPiece => ({
+    productCode: product.productCode,
+    variantCode: v.variantCode,
+    category: product.category,
+    dressType: product.dressType,
+    price: Number(v.price)
+  });
+
+  const variants = product.variants.map((v: any) => ({ ...v, offer: windowOfferFor(offers, pieceOf(v)) }));
+  // The tile's one badge, and only when every piece a shopper could buy really gets it.
+  const sellable = product.variants.filter((v: any) => v.sellable);
+  return {
+    ...product,
+    variants,
+    offer: windowOfferForProduct(offers, (sellable.length ? sellable : product.variants).map(pieceOf))
+  };
+}
+
 export async function publicProducts(
   shop: { clientId: string; locationIds: string[]; hideOutOfStock: boolean; allPhotos?: boolean; showFewLeft?: boolean },
   opts: {
@@ -492,8 +540,10 @@ export async function publicProducts(
 
   const page = await storefrontCatalogueService.browseProducts(scope, { ...opts, sort });
 
+  const offers = await windowOffers(shop);
   const products = page.products.map(p => forShopper(p, shop.showFewLeft !== false))
-    .filter(p => (shop.hideOutOfStock ? p.variants.some(v => v.sellable) : true));
+    .filter(p => (shop.hideOutOfStock ? p.variants.some(v => v.sellable) : true))
+    .map(p => withOffers(p, offers));
 
   return { products, page: page.page, limit: page.limit, total: page.total, hasMore: page.hasMore };
 }
@@ -550,5 +600,8 @@ export async function publicProduct(
     clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: shop.allPhotos !== false
   };
   const p = await storefrontCatalogueService.getProduct(scope, code);
-  return p ? forShopper(p, shop.showFewLeft !== false) : null;
+  if (!p) return null;
+  // The same badge the tile wore, and per size as well: the page is where a shopper picks one,
+  // and an offer that covers only the large is a fact they need at that moment.
+  return withOffers(forShopper(p, shop.showFewLeft !== false), await windowOffers(shop));
 }

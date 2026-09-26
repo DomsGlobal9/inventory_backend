@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { getProducts, money } from '../api';
+import { getProducts, money, offerWords } from '../api';
 import { GridSkeleton, Problem, Say } from '../components/States';
 import { NoMatch } from '../components/Motion';
 import Shot from '../components/Shot';
@@ -56,8 +56,22 @@ function Tile({ slug, p }) {
   return (
     <Link className={`tile${sellable ? '' : ' gone'}`} to={`/${slug}/p/${encodeURIComponent(p.productCode)}`}>
       <Shot src={photo?.url} alt={p.title}>
-        {off ? <span className="tag">{off}% off</span> : null}
-        {!sellable ? <span className="tag out">Sold out</span> : null}
+        {/*
+          Stacked rather than laid on top of each other. A piece can be marked down AND carry an
+          offer AND be sold out, and each .tag pinned itself to the same corner -- which was fine
+          while only one of them could ever be true at a time.
+        */}
+        <span className="tags">
+          {off ? <span className="tag">{off}% off</span> : null}
+          {/*
+            The shop's own offer, a different thing from the tag above it: that one is the list
+            price against the selling price, typed on the piece. This one comes off in the BAG,
+            and used to be invisible until the shopper got there -- so a sale ran and only the
+            people who had already decided to buy ever found out.
+          */}
+          {p.offer ? <span className="tag deal">{offerWords(p.offer, currency)}</span> : null}
+          {!sellable ? <span className="tag out">Sold out</span> : null}
+        </span>
       </Shot>
       <h2>{p.title}</h2>
       <p className="sub">{[p.fabric, p.dressType].filter(Boolean).join(' · ') || ' '}</p>

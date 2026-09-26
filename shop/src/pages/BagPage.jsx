@@ -152,6 +152,28 @@ export default function BagPage({ shop }) {
                 </ul>
               ) : null}
 
+              {/*
+                Offers within reach. The same shape as the free-delivery nudge below,
+                deliberately: a shopper reads "add this much more and you get that" once and knows
+                what both of them mean. Above delivery, because a discount on the pieces is worth
+                more to them than the delivery fee, and it is the one the shop is actually selling.
+
+                The engine has worked these out all along and the shop threw them away, so
+                somebody 300 rupees short of a 15% discount was told nothing and left without it.
+              */}
+              {bag.almost?.map((a, i) => (
+                <div className="nudge" key={`almost-${i}`}>
+                  {a.needMore != null ? (
+                    <>
+                      Add {money(a.needMore, currency)} more and you get <b>{a.name}</b>.
+                      <Toward done={bag.goods / (bag.goods + a.needMore)} />
+                    </>
+                  ) : (
+                    <>Add {a.needMoreItems} more {a.needMoreItems === 1 ? 'piece' : 'pieces'} and you get <b>{a.name}</b>.</>
+                  )}
+                </div>
+              ))}
+
               {/* A bar that fills as they add, because "add ₹400 more" is a fact and a bar that is
                   nearly full is a reason. */}
               {toFree > 0 ? (

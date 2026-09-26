@@ -101,6 +101,70 @@ export class OfferInsightService {
   }
 
   /** Twenty at a time: a picker, not a catalogue browser. */
+  /**
+   * How many products each offer actually covers.
+   *
+   * A merchant writes "20% off sarees", switches it on, and watches nothing happen -- because
+   * their products carry no dress type, so the offer matches not one piece in the shop. It ran
+   * for a week and discounted nothing, and there was nowhere at all this could be seen: the
+   * offer said ACTIVE, the dates were right, and it was simply pointed at an empty shelf.
+   *
+   * The picker already says "Sarees (42)" while an offer is being written. This is the same
+   * question asked about one that is already running, which is when it matters most.
+   *
+   * One pass over three small columns rather than a query per offer: a shop with a thousand
+   * products is three thousand short strings, and the offers screen is a screen somebody opens,
+   * not a path anything hot goes down.
+   */
+  async coverage(
+    clientId: string,
+    offers: { id: string; scope: string; targets: { scope: string; refId: string }[]; exclusions: { scope: string; refId: string }[] }[]
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (offers.length === 0) return out;
+
+    const products = await prisma.product.findMany({
+      where: { clientId, ...onSale },
+      select: { id: true, category: true, dressType: true }
+    });
+
+    // Only loaded when an offer actually names pieces; most never do.
+    const variantProduct = new Map<string, string>();
+    const namesVariants = offers.some(
+      o => o.scope === 'VARIANT' || o.exclusions.some(e => e.scope === 'VARIANT')
+    );
+    if (namesVariants) {
+      const vs = await prisma.productVariant.findMany({ where: { clientId }, select: { id: true, productId: true } });
+      for (const v of vs) variantProduct.set(v.id, v.productId);
+    }
+
+    /** The same rules the pricing engine matches by, asked of a product rather than a basket line. */
+    const hits = (
+      ref: { scope: string; refId: string },
+      p: { id: string; category: string | null; dressType: string | null }
+    ): boolean => {
+      switch (ref.scope) {
+        case 'CATEGORY': return p.category === ref.refId;
+        // Free text a person typed, so matched the way a person reads it.
+        case 'DRESS_TYPE': return !!p.dressType && normaliseType(ref.refId) === normaliseType(p.dressType);
+        case 'PRODUCT': return ref.refId === p.id;
+        case 'VARIANT': return variantProduct.get(ref.refId) === p.id;
+        default: return false;
+      }
+    };
+
+    for (const o of offers) {
+      let n = 0;
+      for (const p of products) {
+        // An exclusion beats any target, as it does in the engine.
+        if (o.exclusions.some(e => hits(e, p))) continue;
+        if (o.scope === 'ALL' || o.targets.some(t => hits({ scope: o.scope, refId: t.refId }, p))) n++;
+      }
+      out.set(o.id, n);
+    }
+    return out;
+  }
+
   async search(clientId: string, scope: string, q: string) {
     const term = q.trim().slice(0, 80);
     if (scope === 'PRODUCT') {

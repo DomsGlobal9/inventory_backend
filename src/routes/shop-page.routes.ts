@@ -143,7 +143,7 @@ async function page(req: Request, res: Response) {
       description = product.description?.trim()
         || [product.fabric, product.dressType].filter(Boolean).join(' · ')
         || `${product.title} at ${shop.name}.`;
-      image = product.images?.find(i => i.isPrimary)?.url ?? product.images?.[0]?.url ?? image;
+      image = product.images?.find((i: { isPrimary?: boolean; url?: string }) => i.isPrimary)?.url ?? product.images?.[0]?.url ?? image;
     }
   }
 

@@ -15,6 +15,9 @@
  *                  the till and a merchant's own website both ask it and get the same answer,
  *                  which is the entire point -- their developer never sees the rules, so they
  *                  cannot implement them slightly differently.
+ *   shopfront      what a shop window may honestly say about an offer BEFORE anything is in a
+ *                  bag -- "buying just this one piece, what comes off?" Pure, and shared with
+ *                  third-party storefronts through publicOffers so there is one matcher.
  *   quote.service  loading the world for the engine -- the shop's live offers, the variants, the
  *                  prices at this location -- and then FREEZING the answer, so a basket priced at
  *                  23:59:58 is not charged differently at 00:00:03.
@@ -37,6 +40,9 @@ export { priceBasket } from './engine';
 export type {
   BasketLine, CandidateOffer, AppliedOffer, PricedBasketLine, PricedBasket
 } from './engine';
+
+export { covers, savingOnOne, windowOfferFor, windowOfferForProduct } from './shopfront';
+export type { PublicOffer, ShopPiece, ShopWindowOffer } from './shopfront';
 
 export { pricingQuoteService, fingerprint, pricedLinesFromQuote, QUOTE_TTL_MS } from './quote.service';
 export type { QuoteRequest } from './quote.service';

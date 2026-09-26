@@ -18,6 +18,8 @@ import { OfferDraft, validateOffer, effectiveStatus, dedupeTargets, normaliseTag
 import { normaliseSchedule, OfferSchedule } from './schedule';
 import { generateCodes, validateCodeBatch, canonicalCode } from './codes';
 import { forgetShopSettings } from '../../lib/clientSettings';
+// Reading, not writing: how much of the shop an offer reaches lives with the other read queries.
+import { offerInsightService } from './insight.service';
 import { markOfferMirrorsDirty } from '../shopify-discounts/dirty';
 
 /** Which fields, when changed, mean the rule itself is different and history must be kept. */
@@ -99,9 +101,20 @@ export class OfferService {
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }]
     });
 
+    /*
+     * How much of the shop each one reaches. An offer pointed at an empty shelf looks identical
+     * to a working one in every other column -- ACTIVE, dated, switched on -- and discounts
+     * nothing. This is the only place that difference is visible.
+     */
+    const covers = await offerInsightService.coverage(
+      clientId,
+      offers.map(o => ({ id: o.id, scope: o.scope, targets: o.targets, exclusions: o.exclusions }))
+    );
+
     return offers.map(o => ({
       ...o,
       redemptionCount: (o as any)._count.redemptions,
+      coversProducts: covers.get(o.id) ?? 0,
       // What it IS, not what the column says. A merchant reading a list needs to see that an
       // offer they switched on last month stopped on its own three weeks ago.
       effectiveStatus: effectiveStatus(o as any, now)

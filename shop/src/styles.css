@@ -314,6 +314,25 @@ button.slide { cursor: pointer; }
   padding: 4px 8px; border-radius: 6px;
 }
 .tag.out { background: rgba(22, 24, 29, .82); color: #fff; }
+
+/*
+ * Several tags on one piece, one under the other.
+ *
+ * Each .tag pins itself to the same corner, which was right while only one could be true at a
+ * time. A piece can now be marked down, carry an offer AND be sold out; the wrapper takes the
+ * corner and the tags inside it simply sit in a column.
+ */
+.tags {
+  position: absolute; left: 8px; top: 8px; z-index: 1;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  max-width: calc(100% - 16px);
+}
+.tags .tag { position: static; }
+/* The offer reads as money saved rather than as a label, so it takes the saving colour. */
+.tag.deal {
+  background: var(--save, #15803d); color: #fff;
+  text-transform: none; letter-spacing: 0; font-weight: 700;
+}
 .gone .shot img { opacity: .42; }
 
 .dots { display: flex; gap: 4px; margin-top: 7px; }
@@ -1875,3 +1894,9 @@ body { overflow-x: hidden; }
 .wantit .go { flex: 0 0 auto; }
 .wantit .bad { margin: 8px 0 0; font-size: 12.5px; color: var(--warn, #b45309); }
 .wanted { margin: 12px 0 0; font-size: 13px; color: var(--ok, #16a34a); }
+
+/* The offer on the piece being looked at, under its price. Money saved, so it takes the
+   saving colour rather than looking like another label. */
+.dealline {
+  margin: -6px 0 10px; font-size: 13.5px; font-weight: 700; color: var(--save);
+}

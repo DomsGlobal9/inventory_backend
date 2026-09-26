@@ -93,8 +93,23 @@ export interface PricedBasket {
   totalMinor: number;
   /** Codes the customer gave that did nothing, and why. Never a bare "invalid code". */
   rejected: { code: string; reason: string }[];
-  /** Offers that ALMOST applied. "Spend ₹80 more" is worth more than silence. */
-  nearMisses: { offerId: string; title: string; reason: string }[];
+  /**
+   * Offers that ALMOST applied. "Spend ₹80 more" is worth more than silence.
+   *
+   * `reason` is the sentence, and it is what the till shows. The two numbers beside it are the
+   * same shortfall as data, because a shop's own website has to write it in the customer's
+   * currency -- "Spend ₹3,600 more" rather than "Spend 3600.00 more" -- and picking the figure
+   * back out of the sentence with a regular expression is the sort of thing that breaks the day
+   * somebody improves the wording. Only a near miss that IS a shortfall carries them; one that
+   * lost to a better offer has nothing to add.
+   */
+  nearMisses: {
+    offerId: string;
+    title: string;
+    reason: string;
+    needMoreMinor?: number;
+    needMoreItems?: number;
+  }[];
 }
 
 export const normaliseType = (v: string | null | undefined) => String(v ?? '').trim().toLowerCase();
@@ -195,14 +210,33 @@ export function priceBasket(
   const usable = offers.filter(o => o.trigger === 'AUTOMATIC' || unlockingCode(o) != null);
   const codeOf = (o: CandidateOffer) => (o.trigger === 'CODE' ? unlockingCode(o) : null);
 
+  /**
+   * How much short of an offer's conditions this basket is, kept as it is worked out.
+   *
+   * The smallest shortfall wins where an offer is measured more than once: a per-item offer is
+   * asked about each line it covers, and telling a customer the largest of those gaps would be
+   * asking them to spend more than they need to.
+   */
+  const shortfalls = new Map<string, { minor?: number; items?: number }>();
+  const noteShortfall = (offerId: string, gap: { minor?: number; items?: number }) => {
+    const had = shortfalls.get(offerId);
+    if (!had) return shortfalls.set(offerId, gap);
+    if (gap.minor != null && (had.minor == null || gap.minor < had.minor)) had.minor = gap.minor;
+    if (gap.items != null && (had.items == null || gap.items < had.items)) had.items = gap.items;
+    return shortfalls;
+  };
+
   /** Whether the basket meets an offer's conditions, and what to say when it does not. */
   const conditionsMet = (offer: CandidateOffer, againstMinor: number, againstQuantity = totalQuantity): string | null => {
     if (offer.minSubtotalMinor != null && againstMinor < offer.minSubtotalMinor) {
       const short = offer.minSubtotalMinor - againstMinor;
+      noteShortfall(offer.id, { minor: short });
       return `Spend ${(short / 100).toFixed(2)} more to get this.`;
     }
     if (offer.minQuantity != null && againstQuantity < offer.minQuantity) {
-      return `Add ${offer.minQuantity - againstQuantity} more item(s) to get this.`;
+      const short = offer.minQuantity - againstQuantity;
+      noteShortfall(offer.id, { items: short });
+      return `Add ${short} more item(s) to get this.`;
     }
     return null;
   };
@@ -471,7 +505,16 @@ export function priceBasket(
     // still one thing to tell the customer.
     // An offer that did take money off somewhere in the basket is not a near miss, whatever it
     // missed on another line.
-    nearMisses: nearMisses.filter((n, i, all) =>
-      all.findIndex(x => x.offerId === n.offerId) === i && !allDiscounts.some(d => d.offerId === n.offerId))
+    nearMisses: nearMisses
+      .filter((n, i, all) =>
+        all.findIndex(x => x.offerId === n.offerId) === i && !allDiscounts.some(d => d.offerId === n.offerId))
+      .map(n => {
+        const gap = shortfalls.get(n.offerId);
+        return {
+          ...n,
+          ...(gap?.minor != null ? { needMoreMinor: gap.minor } : {}),
+          ...(gap?.items != null ? { needMoreItems: gap.items } : {})
+        };
+      })
   };
 }

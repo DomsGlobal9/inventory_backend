@@ -296,6 +296,25 @@ function view(
     /** Why a discount came off, in the shop's own words, so the page can show it. */
     offers: (quote.discounts ?? []).map((d: any) => ({ name: d.title ?? 'Offer', saved: Number(d.amount ?? 0) })),
     /*
+     * Offers this basket ALMOST won, and only the ones a customer can do something about.
+     *
+     * The engine has worked this out all along -- "Spend 3,600 more to get this" -- and the shop
+     * threw it away, so a shopper 300 rupees short of a 15% discount was told nothing and left
+     * without it. That is a sale lost on both sides for want of one sentence.
+     *
+     * Filtered to shortfalls. The engine also reports near misses of the "another offer already
+     * took more off and the two do not combine" kind, which is true, internal, and nothing the
+     * customer can act on -- printing it would only read as the shop explaining itself.
+     */
+    almost: (quote.nearMisses ?? [])
+      .filter((n: any) => n.needMoreMinor != null || n.needMoreItems != null)
+      .map((n: any) => ({
+        name: n.title ?? 'Offer',
+        /** In the shop's currency, not paise: the page writes it the way a price is written. */
+        needMore: n.needMoreMinor != null ? Number(fromMinor(n.needMoreMinor)) : null,
+        needMoreItems: n.needMoreItems ?? null
+      })),
+    /*
      * A code that did not work, said as what it is. "There is no offer with that code" to somebody
      * holding a card the shop printed starts an argument at the counter; the engine already tells
      * the difference between a code that is unknown, one already spent and one that is real but
