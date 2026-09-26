@@ -361,13 +361,27 @@ button.slide { cursor: pointer; }
  * the price, the sizes and the button off the screen, and a shopper who has to scroll before they
  * can see what a thing costs often does not.
  */
+/*
+ * 3:4 on EVERY device, because that is the shape the photographs actually are.
+ *
+ * This was 4/5 on a phone and 3/4 on a laptop. The shop's photographs are 895x1200, which is
+ * 0.754 -- so on a phone the frame was 0.8 and `object-fit: cover` made up the difference by
+ * cutting about 5% off the top and the bottom. Five per cent off the top of a head-to-toe
+ * photograph is the top of her head, and it was happening on the device most customers use.
+ *
+ * One shape everywhere costs a phone 29 pixels of extra height at 375px wide, and buys a
+ * photograph that is never cut on any device.
+ */
 .swipe > figure {
   flex: 0 0 100%; scroll-snap-align: center; margin: 0;
-  aspect-ratio: 4 / 5; background: var(--soft);
+  aspect-ratio: 3 / 4; background: var(--soft);
 }
-@media (min-width: 880px) { .swipe > figure { aspect-ratio: 3 / 4; } }
 @media (min-width: 880px) { .swipe > figure { border-radius: var(--r); overflow: hidden; } }
-.swipe img { width: 100%; height: 100%; object-fit: cover; }
+
+/* `contain` everywhere, for the same reason the desktop rule uses it: a 3:4 photograph fills this
+   frame exactly and is not letterboxed, and a shop's own landscape close-up is shown whole rather
+   than having its sides cut off. Nothing the shop uploaded is ever hidden. */
+.swipe img { width: 100%; height: 100%; object-fit: contain; }
 
 .frame { position: relative; }
 .gallery .pips { position: absolute; inset: auto 0 12px 0; padding: 0; }
@@ -931,8 +945,23 @@ button.slide { cursor: pointer; }
  * deliberate rather than cramped into a corner.
  */
 @media (min-width: 880px) {
+  /*
+   * The photograph and the words stay TOGETHER, whatever the monitor is doing.
+   *
+   * This was `minmax(0, 1fr)` for the picture column, which hands it every pixel left over after
+   * the words. That was fine while the photograph filled its column -- but since the frame is
+   * capped to keep the picture's own 3:4 shape (see below), the photograph is narrower than the
+   * column and the difference became empty white space BETWEEN the picture and the price. On a
+   * 1280px laptop that was a couple of hundred pixels; on an 1865px monitor it was nine hundred,
+   * and the page read as two unrelated things at opposite ends of the screen.
+   *
+   * `auto` sizes the column to the photograph instead of to the leftover, and `justify-content:
+   * center` puts the pair in the middle of the page. Wide screens now get wider margins, which is
+   * what every shop's product page does, rather than a gap down the middle.
+   */
   .piece {
-    grid-template-columns: minmax(0, 1fr) minmax(360px, 430px);
+    grid-template-columns: auto minmax(360px, 430px);
+    justify-content: center;
     gap: 52px;
     align-items: start;
   }
@@ -968,7 +997,17 @@ button.slide { cursor: pointer; }
    * gallery holds below it, the breadcrumb, and the ~113px of rail and gap underneath. Without it
    * the thumbnails sat below the fold, which is the other half of what was reported.
    */
-  .gallery { max-width: calc((100vh - var(--bar) - 200px) * 3 / 4); }
+  /*
+   * A floor and a ceiling, not just a height sum.
+   *
+   * The bare calc did keep the thumbnails above the fold, but on a short window it shrank the
+   * photograph to 393px, which is smaller than the words beside it and looks like a mistake. The
+   * clamp keeps the same height-aware behaviour in the middle, and stops it at both ends: never
+   * narrower than 420px however short the window is (a little scrolling beats a postage stamp),
+   * and never wider than 560px however tall it is, because past that the photograph starts to
+   * outweigh the price and the buttons again -- the fault the 72vh cap was originally added for.
+   */
+  .gallery { max-width: clamp(420px, calc((100vh - var(--bar) - 200px) * 3 / 4), 560px); }
   .swipe > figure { max-height: none; }
 
   /* `contain`, so a photograph that is NOT 3:4 -- a shop's own landscape close-up, say -- is shown
@@ -1909,9 +1948,17 @@ body { overflow-x: hidden; }
   backdrop-filter: blur(4px); pointer-events: none;
 }
 
-/* Bigger where there is room, and an edge on hover where there is a pointer to hover with. */
+/*
+ * 56px, not 68px, on a laptop.
+ *
+ * The rail lives inside the capped gallery now, so its width is the photograph's, not the page's.
+ * At 68px a sixth thumbnail was sliced down the middle at the right edge -- it scrolls, so nothing
+ * was unreachable, but a half-cut photograph reads as broken rather than as "there is more". At
+ * 56px six fit inside a 420px frame with room to spare (6 x 56 + 5 x 8 gaps + 8 padding = 384),
+ * and a shop with seven or more still scrolls, which is the honest thing for it to do.
+ */
 @media (min-width: 880px) {
-  .rolls button { width: 68px; }
+  .rolls button { width: 56px; }
 }
 
 /*
