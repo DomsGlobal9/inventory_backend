@@ -17,6 +17,8 @@ import { getShopSettings } from '../lib/clientSettings';
 import { phoneForOutsideCustomer } from './customer.service';
 import { phoneSearchDigits } from '../lib/phone';
 import { paymentSummary } from './payments/payment-rules';
+import { freezeTaxForLine } from './pricing/freezeTax';
+import { mayChargeTax, type GstRegistration } from './pricing/tax';
 
 /** Kept here as well as in counter-sale, which imports this service: one string, no import cycle. */
 const COUNTER_SOURCE = 'SCALEEZY_COUNTER';
@@ -324,12 +326,23 @@ export class SalesOrderService {
       const resolved: {
         item: any; unitCostMinor: number; priced: PricedLine;
         manual: ManualDiscount | null; orderItemId?: string;
+        /** The product's GST standing, carried here so the rate can be frozen onto the line. */
+        tax: { hsnCode: string | null; taxRateBps: number | null; taxSlabbed: boolean; priceIsExclusive: boolean };
       }[] = [];
 
       for (const item of data.items) {
         const variant = await tx.productVariant.findFirst({
           where: { id: item.variantId, clientId },
-          include: { locationProfiles: true, product: { select: { basePrice: true } } }
+          include: {
+            locationProfiles: true,
+            // The tax fields come too, so the rate charged can be frozen onto the line below.
+            product: {
+              select: {
+                basePrice: true,
+                hsnCode: true, taxRateBps: true, taxSlabbed: true, priceIsExclusive: true
+              }
+            }
+          }
         });
         if (!variant) throw notFound(`Variant not found: ${item.variantId}`);
 
@@ -413,7 +426,15 @@ export class SalesOrderService {
           item,
           unitCostMinor: toMinor(variant.averageCost),
           priced,
-          manual
+          manual,
+          // The variant's own code wins where it has one -- a saree sold with a stitched blouse
+          // is two different things on one invoice.
+          tax: {
+            hsnCode: variant.hsnCode ?? variant.product.hsnCode ?? null,
+            taxRateBps: variant.taxRateBps ?? variant.product.taxRateBps ?? null,
+            taxSlabbed: Boolean(variant.product.taxSlabbed),
+            priceIsExclusive: Boolean(variant.product.priceIsExclusive)
+          }
         });
       }
 
@@ -452,9 +473,39 @@ export class SalesOrderService {
 
       const reservationItems = [];
 
+      /*
+       * The shop's own GST standing, read ONCE rather than per line.
+       *
+       * This RECORDS the tax; it does not police it. A shop that has not set an HSN yet still
+       * sells, exactly as it did yesterday, and the line simply carries nulls -- which is what
+       * every row in the table has today. Refusing belongs where a DOCUMENT is produced
+       * (buildBill's `issuable`), not here: putting it here would stop every shop selling the
+       * moment this deployed, to fix a problem none of them has noticed yet.
+       */
+      const gstSettings = await tx.clientSettings.findUnique({
+        where: { clientId },
+        select: { gstRegistration: true, gstStateCode: true }
+      });
+      const shopChargesTax = mayChargeTax((gstSettings?.gstRegistration ?? 'UNREGISTERED') as GstRegistration);
+      /*
+       * A sales order has no place of supply of its own yet, so this is the shop's own state --
+       * true for every counter sale, because the customer is standing in the shop. When the online
+       * shop starts passing a delivery state, that is what decides this instead.
+       */
+      const interState = false;
+
       for (const entry of resolved) {
         const { item, unitCostMinor, priced } = entry;
         const totalCostMinor = unitCostMinor * priced.quantity;
+
+        /*
+         * The rate CHARGED, worked out now and stored beside the money.
+         *
+         * Never looked up again. The rates changed on 22 September 2025, so a bill reprinted from
+         * the week before must show what the customer actually paid -- asking the product at
+         * reprint time prints a document that disagrees with the money taken.
+         */
+        const frozenTax = freezeTaxForLine(entry.tax, priced, shopChargesTax, interState);
 
         const orderItem = await tx.salesOrderItem.create({
           data: {
@@ -471,7 +522,8 @@ export class SalesOrderService {
             // Against the NET total. This is the line the whole change exists for: a saree sold
             // at ₹9,600 after ₹2,400 off used to report the margin of a ₹12,000 sale.
             grossProfit: fromMinor(priced.totalPriceMinor - totalCostMinor),
-            priceSource: priced.priceSource
+            priceSource: priced.priceSource,
+            ...frozenTax
           }
         });
 

@@ -25,6 +25,7 @@ import {
 } from '../services/pricing/tax';
 import { suggestHsn, effectiveTaxFor, hsnForInvoice } from '../services/pricing/hsn';
 import { buildBill, financialYearOf, type BillLineInput } from '../services/pricing/bill';
+import { freezeTaxForLine, type ProductTaxStanding } from '../services/pricing/freezeTax';
 
 let passed = 0;
 let failed = 0;
@@ -408,6 +409,61 @@ eq('27 Sep 2026 is 2026-27', financialYearOf(new Date('2026-09-27T00:00:00')), '
 eq('31 Mar 2027 is still 2026-27', financialYearOf(new Date('2027-03-31T00:00:00')), '2026-27');
 eq('1 Apr 2027 starts 2027-28', financialYearOf(new Date('2027-04-01T00:00:00')), '2027-28');
 eq('1 Jan 2027 is 2026-27, not 2027-28', financialYearOf(new Date('2027-01-01T00:00:00')), '2026-27');
+
+
+// -- U. Freezing the rate onto the sale line -----------------------------------------------
+console.log('\nU. What gets written onto the line, and never looked up again');
+
+const STANDING_SAREE: ProductTaxStanding =
+  { hsnCode: '5007', taxRateBps: 500, taxSlabbed: false, priceIsExclusive: false };
+const STANDING_LEHENGA: ProductTaxStanding =
+  { hsnCode: '6204', taxRateBps: 500, taxSlabbed: true, priceIsExclusive: true };
+const P1 = (unit: number, qty = 1) =>
+  ({ quantity: qty, unitPriceMinor: unit, totalPriceMinor: unit * qty });
+
+{
+  const f = freezeTaxForLine(STANDING_SAREE, P1(rupees(3121)), true, false);
+  eq('a saree freezes at 5%', f.taxRateBps, 500);
+  check('with the taxable value taken back out of the tag price',
+    Math.round((Number(f.taxableValue) + Number(f.cgst) + Number(f.sgst)) * 100) === rupees(3121),
+    `${f.taxableValue} + ${f.cgst} + ${f.sgst}`);
+  check('and an order item carrying them still serialises -- the BigInt fault is gone',
+    (() => { try { JSON.stringify(f); return true; } catch { return false; } })(),
+    'JSON.stringify threw "Do not know how to serialize a BigInt" before this');
+}
+{
+  const f = freezeTaxForLine(STANDING_LEHENGA, P1(rupees(2600)), true, false);
+  eq('a lehenga above Rs 2,500 freezes at 18%', f.taxRateBps, 1800);
+}
+{
+  const f = freezeTaxForLine(STANDING_LEHENGA, P1(rupees(2000), 3), true, false);
+  eq('three at Rs 2,000 freeze at 5% -- the threshold is per piece', f.taxRateBps, 500);
+}
+{
+  const f = freezeTaxForLine(STANDING_SAREE, P1(rupees(3121)), false, false);
+  check('a shop that may not charge tax freezes NOTHING',
+    f.taxRateBps === null && f.taxableValue === null && f.hsnCode === null);
+}
+{
+  const noHsn: ProductTaxStanding = { ...STANDING_SAREE, hsnCode: null, taxRateBps: null };
+  const f = freezeTaxForLine(noHsn, P1(rupees(3121)), true, false);
+  check('a product with no HSN freezes nothing -- and the sale still goes through',
+    f.taxRateBps === null, 'recording, not policing: buildBill refuses the DOCUMENT, not the sale');
+}
+{
+  const trap: ProductTaxStanding = { ...STANDING_LEHENGA, priceIsExclusive: false };
+  const f = freezeTaxForLine(trap, P1(rupees(2800)), true, false);
+  check('the section 2 contradiction freezes nothing rather than guessing',
+    f.taxRateBps === null, 'a null here is honest; a guess is a wrong invoice');
+}
+{
+  const here = freezeTaxForLine(STANDING_SAREE, P1(rupees(5000)), true, false);
+  const away = freezeTaxForLine(STANDING_SAREE, P1(rupees(5000)), true, true);
+  check('in-state freezes CGST and SGST', Number(here.cgst) > 0 && Number(here.igst) === 0);
+  check('inter-state freezes IGST', Number(away.igst) > 0 && Number(away.cgst) === 0);
+  check('and the tax is the same amount either way',
+    Math.round((Number(here.cgst) + Number(here.sgst)) * 100) === Math.round(Number(away.igst) * 100));
+}
 
 // ── Result ───────────────────────────────────────────────────────────────────────────────
 console.log(`\n${'='.repeat(72)}`);
