@@ -19,6 +19,17 @@ import { posQueue } from '../services/pos/pos-queue.service';
  * production it stays off unless POS_QUEUE_IN_DEV says otherwise, and POS_QUEUE_ONLY_CLIENTS
  * narrows it to the test shop when it is on.
  */
+/**
+ * The first line only.
+ *
+ * Prisma's errors carry the whole offending query and a source excerpt -- valuable once, noise
+ * every two seconds. The full error is still what the row's own detail column records.
+ */
+function firstLine(message?: string): string {
+  const line = String(message ?? 'unknown problem').split(/\r?\n/).map(l => l.trim()).find(Boolean);
+  return (line ?? 'unknown problem').slice(0, 200);
+}
+
 export class PosQueueScheduler {
   private static timers: NodeJS.Timeout[] = [];
   private static ticking = false;
@@ -26,6 +37,43 @@ export class PosQueueScheduler {
 
   private static readonly TICK_MS = 2 * 1000;
   private static readonly RECOVER_MS = 60 * 1000;
+
+  /*
+   * The same complaint, once a minute, not thirty times.
+   *
+   * Ticking every two seconds means a problem that lasts -- an unreachable database, a migration
+   * nobody has run yet -- writes the identical sentence thirty times a minute and buries whatever
+   * else the log had to say. Learned the hard way: this worker produced 142 copies of one line
+   * while waiting for a table to be created. The count is kept and reported when it clears, so
+   * nothing is hidden, just not repeated.
+   */
+  private static lastProblem = '';
+  private static sameProblemSince = 0;
+  private static sameProblemCount = 0;
+  private static readonly REPEAT_MS = 60 * 1000;
+
+  private static complain(what: string) {
+    const now = Date.now();
+    if (what === this.lastProblem && now - this.sameProblemSince < this.REPEAT_MS) {
+      this.sameProblemCount++;
+      return;
+    }
+    const alsoTimes = what === this.lastProblem && this.sameProblemCount
+      ? ` (and ${this.sameProblemCount} more times since)`
+      : '';
+    console.error(`[pos-queue] ${what}${alsoTimes}`);
+    this.lastProblem = what;
+    this.sameProblemSince = now;
+    this.sameProblemCount = 0;
+  }
+
+  private static recovered() {
+    if (!this.lastProblem) return;
+    const extra = this.sameProblemCount ? ` after ${this.sameProblemCount + 1} failed ticks` : '';
+    console.log(`[pos-queue] working again${extra}`);
+    this.lastProblem = '';
+    this.sameProblemCount = 0;
+  }
 
   private static onlyClients(): string[] | undefined {
     const raw = env.POS_QUEUE_ONLY_CLIENTS;
@@ -53,8 +101,9 @@ export class PosQueueScheduler {
       this.ticking = true;
       try {
         await posQueue.tick(only);
+        this.recovered();
       } catch (err) {
-        console.error('[pos-queue] tick failed:', (err as Error)?.message);
+        this.complain(`tick failed: ${firstLine((err as Error)?.message)}`);
       } finally {
         this.ticking = false;
       }
@@ -67,7 +116,7 @@ export class PosQueueScheduler {
         const n = await posQueue.recoverStranded();
         if (n) console.log(`[pos-queue] put ${n} stranded event(s) back on the queue`);
       } catch (err) {
-        console.error('[pos-queue] recovery failed:', (err as Error)?.message);
+        this.complain(`recovery failed: ${firstLine((err as Error)?.message)}`);
       } finally {
         this.recovering = false;
       }
