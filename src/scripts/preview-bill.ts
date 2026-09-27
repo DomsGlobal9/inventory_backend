@@ -86,6 +86,16 @@ async function main() {
   console.log(`\n   TOTAL TAX  ${rs(bill.totalTaxMinor)}`);
   console.log(`   PAYABLE    ${rs(bill.payableMinor)}`);
 
+  /*
+   * Warnings before the verdict, and kept apart from it. A warning is something to look at; a
+   * problem is something that stops the bill. Printing them together would teach a shopkeeper to
+   * skim past both.
+   */
+  if (bill.warnings.length) {
+    console.log('\n   WORTH CHECKING:');
+    for (const w of bill.warnings) console.log(`     - ${w}`);
+  }
+
   if (!bill.issuable) {
     console.log('\n   THIS BILL CANNOT BE ISSUED:');
     for (const p of bill.problems) console.log(`     - ${p}`);

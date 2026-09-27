@@ -17,9 +17,9 @@
  */
 
 import {
-  taxForLine, taxableFromInclusive, rateFor, roundOff,
+  taxForLine, taxableFromInclusive, slabWarning, roundOff,
   mayChargeTax, documentKindFor,
-  type GstRegistration, type DocumentKind, type RateBps, type RateRule
+  type GstRegistration, type DocumentKind, type RateBps
 } from './tax';
 
 export interface BillLineInput {
@@ -67,6 +67,12 @@ export interface Bill {
   payableMinor: number;
   /** Plain sentences a shopkeeper can act on. Empty means the bill may be issued. */
   problems: string[];
+  /**
+   * Things worth noticing that must NOT stop a sale -- a stitched piece that looks under-taxed,
+   * most of all. Kept apart from `problems` on purpose: a warning a queue can ignore and a
+   * refusal it cannot are different things, and merging them teaches people to ignore both.
+   */
+  warnings: string[];
   /** False when `problems` is non-empty and the shop is one that must charge tax. */
   issuable: boolean;
 }
@@ -83,6 +89,7 @@ export interface BillInput {
 export function buildBill(input: BillInput): Bill {
   const { registration, shopStateCode, placeOfSupplyStateCode, lines } = input;
   const problems: string[] = [];
+  const warnings: string[] = [];
 
   const chargesTax = mayChargeTax(registration);
   const documentKind = documentKindFor(registration);
@@ -119,33 +126,35 @@ export function buildBill(input: BillInput): Bill {
     }
 
     /*
-     * The section 2 contradiction, refused at source rather than resolved by guesswork.
+     * THE RATE IS WHAT THE SHOP TYPED. Nothing is worked out from the price.
      *
-     * A slabbed product priced INCLUSIVE of tax has no self-consistent rate between ₹2,625 and
-     * ₹2,950: at 5% the taxable value lands above the ₹2,500 threshold, and at 18% it lands below
-     * it. There is no arithmetic answer, so the setup is wrong rather than the sum. Saying so here
-     * is the whole reason `priceIsExclusive` exists.
+     * This replaced a refusal. When the rate was derived from the price, a stitched piece priced
+     * INCLUSIVE of tax between ₹2,625 and ₹2,950 had no self-consistent answer -- above the
+     * ₹2,500 threshold at 5%, below it at 18% -- so the only honest thing was to refuse the line.
+     * Taking the rate as given removes the contradiction rather than handling it, and removes the
+     * refusal with it.
      */
-    if (line.taxSlabbed && !line.priceIsExclusive) {
-      problems.push(`${line.label} is stitched clothing, so its price must be entered without tax. Its rate depends on the price, and a price that already includes tax cannot decide its own rate.`);
-    }
-
-    const baseRule: RateRule = {
-      hsnCode: line.hsnCode ?? '',
-      slabbed: line.taxSlabbed,
-      baseRateBps: line.taxRateBps ?? 0
-    };
+    const rateBpsCharged = line.taxRateBps ?? 0;
 
     /*
-     * The threshold is PER PIECE and on the DISCOUNTED value -- three lehengas at ₹2,000 each are
-     * 5%, not 18% because they add to ₹6,000; and an offer taking one from ₹2,600 to ₹2,400 takes
-     * it from 18% to 5%, because GST is on the transaction value.
+     * Still worth NOTICING when a figure looks under-taxed, though never worth changing.
+     *
+     * The threshold is per piece and on the discounted value, so this compares what the shop set
+     * against what the slab rule would say for this piece at this price. Only the direction that
+     * costs money is flagged: charging too much means the customer overpaid and the shop owes it
+     * on anyway, while charging too little means the shop owes the difference AND a penalty.
      */
     const perPieceTaxable = line.priceIsExclusive
       ? line.netUnitPriceMinor
-      : taxableFromInclusive(line.netUnitPriceMinor, line.taxRateBps ?? 0).taxableValueMinor;
+      : taxableFromInclusive(line.netUnitPriceMinor, rateBpsCharged).taxableValueMinor;
 
-    const rateBpsCharged = line.taxRateBps == null ? 0 : rateFor(baseRule, perPieceTaxable);
+    const warn = slabWarning(
+      line.label,
+      { hsnCode: line.hsnCode ?? '', slabbed: line.taxSlabbed, baseRateBps: rateBpsCharged },
+      perPieceTaxable,
+      rateBpsCharged
+    );
+    if (warn) warnings.push(warn);
 
     const taxable = line.priceIsExclusive
       ? line.lineTotalMinor
@@ -175,6 +184,7 @@ export function buildBill(input: BillInput): Bill {
     totalTaxMinor: cgstMinor + sgstMinor + igstMinor,
     grossMinor, roundOffMinor, payableMinor: roundedMinor,
     problems,
+    warnings,
     issuable: problems.length === 0
   };
 }

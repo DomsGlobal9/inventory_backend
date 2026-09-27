@@ -303,8 +303,11 @@ console.log('\nO. A mixed basket');
     lines: [SAREE_LINE('saree', rupees(5000)), LEHENGA_EX('lehenga', rupees(2600))]
   });
   eq('the saree is 5%', bill.lines[0].rateBpsCharged, 500);
-  eq('the lehenga above Rs 2,500 is 18%', bill.lines[1].rateBpsCharged, 1800);
-  check('two rates on one bill, taxed per line', bill.issuable, bill.problems.join(' | '));
+  eq('the lehenga is charged what the shop typed, not what we worked out',
+    bill.lines[1].rateBpsCharged, 500);
+  check('but a stitched piece over Rs 2,500 at 5% is WARNED about',
+    bill.warnings.some(w => /usually 18%/.test(w)), bill.warnings.join(' | '));
+  check('and the sale is not blocked by it', bill.issuable, bill.problems.join(' | '));
 }
 {
   // the same lehenga, discounted below the threshold
@@ -312,16 +315,16 @@ console.log('\nO. A mixed basket');
     registration: 'REGULAR', shopStateCode: '36',
     lines: [LEHENGA_EX('lehenga after an offer', rupees(2400))]
   });
-  eq('an offer that crosses the threshold changes the rate too',
-    bill.lines[0].rateBpsCharged, 500);
+  eq('under the threshold it is the same 5%, and no warning',
+    [bill.lines[0].rateBpsCharged, bill.warnings.length], [500, 0]);
 }
 {
   const bill = buildBill({
     registration: 'REGULAR', shopStateCode: '36',
     lines: [LEHENGA_EX('three lehengas', rupees(6000), 3)]
   });
-  eq('the threshold is per piece: 3 x Rs 2,000 is 5%, not 18%',
-    bill.lines[0].rateBpsCharged, 500);
+  eq('three at Rs 2,000 a piece: 5%, and no warning -- the threshold is per piece',
+    [bill.lines[0].rateBpsCharged, bill.warnings.length], [500, 0]);
 }
 
 // -- P. Who may charge, and who may not ----------------------------------------------------
@@ -358,12 +361,20 @@ console.log('\nQ. Refusals, rather than a quietly wrong invoice');
     bill.problems.some(p => p.includes('PRD-9')), bill.problems[0] ?? '(none)');
 }
 {
-  // the section 2 trap: slabbed AND inclusive
-  const trap: BillLineInput = { ...LEHENGA_EX('lehenga', rupees(2800)), priceIsExclusive: false };
-  const bill = buildBill({ registration: 'REGULAR', shopStateCode: '36', lines: [trap] });
-  check('stitched clothing priced WITH tax is refused, not guessed at', !bill.issuable);
-  check('and the reason explains the circularity',
-    bill.problems.some(p => /cannot decide its own rate/.test(p)), bill.problems[0] ?? '(none)');
+  /*
+   * What used to be the section 2 trap. When the rate was derived from the price, a stitched
+   * piece priced INCLUSIVE between Rs 2,625 and Rs 2,950 had no self-consistent rate and the line
+   * had to be refused. The rate is now whatever the shop typed, so there is nothing to derive and
+   * the case is ordinary.
+   */
+  const was: BillLineInput = { ...LEHENGA_EX('lehenga', rupees(2800)), priceIsExclusive: false };
+  const bill = buildBill({ registration: 'REGULAR', shopStateCode: '36', lines: [was] });
+  check('a stitched piece priced WITH tax is now ordinary, not refused', bill.issuable,
+    bill.problems.join(' | '));
+  check('the customer still pays exactly the tag price',
+    bill.payableMinor === rupees(2800), String(bill.payableMinor));
+  check('and it is warned about rather than blocked',
+    bill.warnings.length === 1, bill.warnings.join(' | '));
 }
 {
   const bill = buildBill({ registration: 'REGULAR', shopStateCode: null, lines: [SAREE_LINE('s', 100000)] });
@@ -435,7 +446,7 @@ const P1 = (unit: number, qty = 1) =>
 }
 {
   const f = freezeTaxForLine(STANDING_LEHENGA, P1(rupees(2600)), true, false);
-  eq('a lehenga above Rs 2,500 freezes at 18%', f.taxRateBps, 1800);
+  eq('the rate frozen is the one the shop set, not one we chose', f.taxRateBps, 500);
 }
 {
   const f = freezeTaxForLine(STANDING_LEHENGA, P1(rupees(2000), 3), true, false);
@@ -453,10 +464,10 @@ const P1 = (unit: number, qty = 1) =>
     f.taxRateBps === null, 'recording, not policing: buildBill refuses the DOCUMENT, not the sale');
 }
 {
-  const trap: ProductTaxStanding = { ...STANDING_LEHENGA, priceIsExclusive: false };
-  const f = freezeTaxForLine(trap, P1(rupees(2800)), true, false);
-  check('the section 2 contradiction freezes nothing rather than guessing',
-    f.taxRateBps === null, 'a null here is honest; a guess is a wrong invoice');
+  const was: ProductTaxStanding = { ...STANDING_LEHENGA, priceIsExclusive: false };
+  const f = freezeTaxForLine(was, P1(rupees(2800)), true, false);
+  check('a tax-inclusive stitched piece now freezes normally -- no contradiction left to dodge',
+    f.taxRateBps === 500 && f.taxableValue !== null, String(f.taxRateBps));
 }
 {
   const here = freezeTaxForLine(STANDING_SAREE, P1(rupees(5000)), true, false);

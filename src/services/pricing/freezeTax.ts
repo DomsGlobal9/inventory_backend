@@ -11,7 +11,7 @@
  * has noticed yet.
  */
 
-import { taxForLine, taxableFromInclusive, rateFor, type RateRule } from './tax';
+import { taxForLine, taxableFromInclusive } from './tax';
 import { Prisma } from '@prisma/client';
 import { fromMinor } from './money';
 
@@ -61,29 +61,19 @@ export function freezeTaxForLine(
   if (!standing.hsnCode || standing.taxRateBps == null) return NOTHING;
 
   /*
-   * A slabbed product priced INCLUSIVE of tax has no self-consistent rate between Rs 2,625 and
-   * Rs 2,950 -- see PLAN-gst.md section 2. Rather than pick one and be wrong half the time, this
-   * records nothing and lets buildBill refuse the document with an explanation a shopkeeper can
-   * act on. A null here is honest; a guess is a wrong invoice.
+   * THE RATE IS WHAT THE SHOP TYPED. Nothing is worked out from the price.
+   *
+   * That single decision is the whole simplification. Deriving the rate from the price created a
+   * case with no answer at all: a stitched piece priced INCLUSIVE of tax between Rs 2,625 and
+   * Rs 2,950 was above the Rs 2,500 threshold at 5% and below it at 18%, so neither rate was
+   * consistent with itself. With the rate given there is nothing to derive and nothing to
+   * contradict.
+   *
+   * Where a figure looks under-taxed, buildBill says so in a warning. It does not change it: a
+   * shop's rate is its own declaration, and software that quietly overrides it ends up
+   * disagreeing with the shopkeeper's accountant.
    */
-  if (standing.taxSlabbed && !standing.priceIsExclusive) return NOTHING;
-
-  const rule: RateRule = {
-    hsnCode: standing.hsnCode,
-    slabbed: standing.taxSlabbed,
-    baseRateBps: standing.taxRateBps
-  };
-
-  /*
-   * The threshold is PER PIECE and on the DISCOUNTED value: three lehengas at Rs 2,000 each stay
-   * at 5%, and an offer taking one from Rs 2,600 to Rs 2,400 takes it from 18% to 5% -- because
-   * GST is on the transaction value, not the list price.
-   */
-  const perPieceTaxable = standing.priceIsExclusive
-    ? priced.unitPriceMinor
-    : taxableFromInclusive(priced.unitPriceMinor, standing.taxRateBps).taxableValueMinor;
-
-  const rateBps = rateFor(rule, perPieceTaxable);
+  const rateBps = standing.taxRateBps;
 
   const taxable = standing.priceIsExclusive
     ? priced.totalPriceMinor

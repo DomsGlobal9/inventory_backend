@@ -153,6 +153,18 @@ export const APPAREL_RULE = {
 export const FABRIC_RULE = { slabbed: false, baseRateBps: 500 } as const;
 
 /**
+ * WHAT THE RATE WOULD BE under the slab rule -- used to ADVISE, not to decide.
+ *
+ * The rate charged is whatever the shop typed on the product. That is deliberate and it is what
+ * the established products do: Tally and Marg both have the shopkeeper classify and the software
+ * apply. It also dissolves a problem deriving the rate created -- a stitched piece priced
+ * INCLUSIVE of tax between Rs 2,625 and Rs 2,950 had no self-consistent rate at all, because the
+ * threshold is on the value excluding tax and the rate decides what that value is. Nothing to
+ * derive, nothing to contradict.
+ *
+ * This is kept so there is still one place that knows the legal rule, and `slabWarning` below
+ * uses it to notice when a shop's own figure looks wrong.
+ *
  * The rate for one piece.
  *
  * `perPieceTaxableMinor` is the value of ONE piece after discount, not the line total. The
@@ -169,6 +181,34 @@ export function rateFor(rule: RateRule, perPieceTaxableMinor: number): RateBps {
   const threshold = rule.thresholdMinor ?? APPAREL_RULE.thresholdMinor;
   const high = rule.highRateBps ?? APPAREL_RULE.highRateBps;
   return Math.abs(perPieceTaxableMinor) > threshold ? high : rule.baseRateBps;
+}
+
+/**
+ * "This looks under-taxed" -- one plain sentence, or nothing.
+ *
+ * A warning rather than a correction, on purpose. Changing a shop's rate behind its back is how
+ * software ends up disagreeing with the shopkeeper's own accountant; refusing the sale over it
+ * would stop a counter queue for something that may be perfectly deliberate. So the software
+ * notices and says so, and the person decides -- the same bargain as suggestHsn, which proposes
+ * an HSN and refuses to write it in.
+ *
+ * Only the DANGEROUS direction is flagged. Charging too much means the customer overpaid and the
+ * shop owes it on anyway; charging too little means the shop owes the difference AND a penalty.
+ * One warning about the case that costs money beats two a shopkeeper learns to ignore.
+ */
+export function slabWarning(
+  label: string,
+  rule: RateRule,
+  perPieceTaxableMinor: number,
+  rateCharged: RateBps
+): string | null {
+  if (!rule.slabbed) return null;
+  const expected = rateFor({ ...rule, baseRateBps: rateCharged }, perPieceTaxableMinor);
+  if (expected <= rateCharged) return null;
+
+  const threshold = (rule.thresholdMinor ?? APPAREL_RULE.thresholdMinor) / 100;
+  return `${label} is stitched clothing selling above Rs ${threshold.toLocaleString('en-IN')} a piece, ` +
+    `where GST is usually ${expected / 100}%. It is set to ${rateCharged / 100}% -- please check that is right.`;
 }
 
 /* ── What the shop is allowed to issue ──────────────────────────────────────────────────── */
