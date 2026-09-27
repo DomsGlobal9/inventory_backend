@@ -64,10 +64,12 @@ inst.interceptors.response.use(
 async function sendEvent(key: string, body: any) {
   const r = await api(key).post('/events', body);
   if (r.data?.data?.answer !== 'ACCEPTED') return r;
+  // A sale is filed under its invoice number, a return under its credit note number.
+  const number = String(body.creditNoteNo ?? body.invoiceNo ?? '');
 
   const until = Date.now() + 180_000;
   while (Date.now() < until) {
-    const s = await api(key).get(`/events/status?invoiceNo=${encodeURIComponent(String(body.invoiceNo))}`);
+    const s = await api(key).get(`/events/status?invoiceNo=${encodeURIComponent(number)}`);
     const d = s.data?.data;
     if (d && (d.status === 'APPLIED' || d.status === 'REJECTED')) {
       const ok = d.answer === 'APPLIED' || d.answer === 'ALREADY_APPLIED';
@@ -78,7 +80,7 @@ async function sendEvent(key: string, body: any) {
     }
     await new Promise(res => setTimeout(res, 400));
   }
-  throw new Error(`event ${body.invoiceNo} never settled -- is the POS worker running? (POS_QUEUE_IN_DEV=true)`);
+  throw new Error(`event ${number} never settled -- is the POS worker running? (POS_QUEUE_IN_DEV=true)`);
 }
 
 async function main() {
@@ -260,7 +262,7 @@ async function main() {
       kind: 'sale.returned', creditNoteNo: 'CN/2026-27/0001', againstInvoiceNo: invoiceNo,
       lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 285000 }], totals: {}
     });
-    check('the right amount passes the check',
+    check('the right amount is APPLIED, not refused',
       ok.data?.data?.answer !== 'AMOUNT_MISMATCH', JSON.stringify(ok.data?.data));
 
     const wrong = await sendEvent(key, {
@@ -513,15 +515,24 @@ async function main() {
       if (st.data?.data?.status === 'APPLIED') break;
       await new Promise(res => setTimeout(res, 400));
     }
-    const after = await api(key).post('/events', {
+    /*
+     * sendEvent, not a bare post, and the difference now matters: a return WRITES. Fired and not
+     * waited for, this one landed in the middle of a later group and put a piece back on a shelf
+     * that group had just counted. The old check-only behaviour hid that entirely.
+     */
+    const after = await sendEvent(key, {
       kind: 'sale.returned', creditNoteNo: `CN/2026-27/S${Date.now() % 10000}`,
       againstInvoiceNo: race.invoiceNo,
-      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {}
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {},
+      refund: { method: 'CASH' }
     });
-    check('once the sale has landed the return is checked on its merits',
-      after.data?.data?.answer !== 'SALE_NOT_YET_APPLIED' &&
-      after.data?.data?.answer !== 'UNKNOWN_ORDER',
-      JSON.stringify(after.data?.data));
+    /*
+     * Asserted on what it SHOULD be, not on what it should not be. The first version of this
+     * checked only that the answer was neither SALE_NOT_YET_APPLIED nor UNKNOWN_ORDER, and a
+     * return failing outright with "insufficient stock" passed it happily.
+     */
+    check('once the sale has landed the return goes through on its merits',
+      after.data?.data?.answer === 'APPLIED', JSON.stringify(after.data?.data));
   }
 
   console.log('\nM. RETRY CLEARS A REJECTION');
@@ -577,12 +588,95 @@ async function main() {
     check('and exactly ONE order came out of the whole exchange', orders === 1, String(orders));
   }
 
+  console.log('\nN. A RETURN IS ACTUALLY WRITTEN');
+  {
+    // A sale of its own, so the numbers cannot be disturbed by anything earlier.
+    const inv = `INV/2026-27/RT${Date.now() % 10000}`;
+    await prisma.inventoryStock.updateMany({
+      where: { clientId: CLIENT, variantId: variant.id }, data: { quantity: 10, reservedQty: 0 }
+    });
+    const sale = await sendEvent(key, {
+      kind: 'sale.completed', invoiceNo: inv, occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 2, unitPricePaise: 300000, lineTotalPaise: 600000 }],
+      totals: {}, payments: [{ method: 'CASH', amountPaise: 600000 }]
+    });
+    check('the sale it will be returned against applied',
+      sale.data?.data?.answer === 'APPLIED', JSON.stringify(sale.data?.data));
+
+    const afterSale = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('two pieces went out', afterSale?.quantity === 8, String(afterSale?.quantity));
+
+    const cn = `CN/2026-27/W${Date.now() % 10000}`;
+    const ret = await sendEvent(key, {
+      kind: 'sale.returned', creditNoteNo: cn, againstInvoiceNo: inv,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {},
+      refund: { method: 'CASH' }
+    });
+    check('the return is APPLIED, not "the write is the next step"',
+      ret.data?.data?.answer === 'APPLIED', JSON.stringify(ret.data?.data));
+    check('and it comes back with a credit note number of ours',
+      String(ret.data?.data?.orderNumber ?? '').startsWith('RET-'), String(ret.data?.data?.orderNumber));
+
+    const afterReturn = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('ONE piece went back on the shelf', afterReturn?.quantity === 9, String(afterReturn?.quantity));
+
+    const refunds = await prisma.salesOrderPayment.findMany({
+      where: { clientId: CLIENT, kind: 'REFUND', salesOrder: { externalOrderId: inv } },
+      select: { method: true, amount: true }
+    });
+    check('the money is recorded as a refund, so the day book sees it go out',
+      refunds.length === 1 && Number(refunds[0].amount) === 3000,
+      JSON.stringify(refunds.map(r => ({ m: r.method, a: String(r.amount) }))));
+
+    const rows = await prisma.salesReturn.findMany({
+      where: { clientId: CLIENT, salesOrder: { externalOrderId: inv } },
+      select: { status: true, refundStatus: true, returnNumber: true }
+    });
+    check('the return itself is COMPLETED and marked refunded',
+      rows.length === 1 && rows[0].status === 'COMPLETED' && rows[0].refundStatus === 'REFUNDED',
+      JSON.stringify(rows));
+
+    // the same credit note again must not refund a second time
+    const again = await sendEvent(key, {
+      kind: 'sale.returned', creditNoteNo: cn, againstInvoiceNo: inv,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {},
+      refund: { method: 'CASH' }
+    });
+    check('sending the same credit note again is ALREADY_APPLIED',
+      again.data?.data?.answer === 'ALREADY_APPLIED', JSON.stringify(again.data?.data));
+
+    const afterTwice = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('and the piece did NOT go back twice', afterTwice?.quantity === 9, String(afterTwice?.quantity));
+
+    const refundsTwice = await prisma.salesOrderPayment.count({
+      where: { clientId: CLIENT, kind: 'REFUND', salesOrder: { externalOrderId: inv } }
+    });
+    check('nor was the money paid back twice', refundsTwice === 1, String(refundsTwice));
+
+    // more than was sold, now that one has already come back
+    const tooMany = await sendEvent(key, {
+      kind: 'sale.returned', creditNoteNo: `CN/2026-27/Z${Date.now() % 10000}`, againstInvoiceNo: inv,
+      lines: [{ itemCode: variant.variantCode, qty: 2, lineTotalPaise: 600000 }], totals: {}
+    });
+    check('returning more than is left is refused, counting what already came back',
+      tooMany.data?.data?.answer === 'QTY_EXCEEDS_SOLD', JSON.stringify(tooMany.data?.data));
+  }
+
 }
 
 main()
   .then(async () => {
     await prisma.posInboundEvent.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.salesOrderPayment.deleteMany({ where: { clientId: CLIENT } });
+    // Returns point at the order, so they go first or the order will not delete.
+    await prisma.salesReturnItem.deleteMany({ where: { salesReturn: { clientId: CLIENT } } }).catch(() => {});
+    await prisma.salesReturn.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.salesOrder.deleteMany({ where: { clientId: CLIENT } });
     await prisma.inventoryTransaction.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.customer.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
@@ -597,6 +691,8 @@ main()
   .catch(async e => {
     console.error('CRASHED:', e.message);
     await prisma.posInboundEvent.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
+    await prisma.salesReturnItem.deleteMany({ where: { salesReturn: { clientId: CLIENT } } }).catch(() => {});
+    await prisma.salesReturn.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.inventoryStock.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.productVariant.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.product.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});

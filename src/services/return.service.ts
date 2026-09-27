@@ -311,6 +311,16 @@ export class ReturnService {
             movementType: 'IN',
             reason: 'CUSTOMER_RETURN',
             quantityDelta: item.quantity,
+            /*
+             * A piece coming BACK can never be refused for the shelf being short.
+             *
+             * applyMovement refuses any movement that ends below zero, which is right for taking
+             * stock out and absurd for putting it back: a shop that oversold sits at -4, the
+             * customer hands one saree back, and -4 + 1 = -3 is still negative -- so the return
+             * was refused and the money could not be recorded. Found by a suite that had driven
+             * the count negative two groups earlier. An increase never makes a count worse.
+             */
+            allowNegative: true,
             notes: `Restock from return ${salesReturn.returnNumber}`,
             referenceType: 'SALES_RETURN',
             referenceId: salesReturn.id,

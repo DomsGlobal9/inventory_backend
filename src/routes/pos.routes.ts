@@ -19,7 +19,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateStorefront, storefrontContext } from '../middleware/storefront.middleware';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
 import { checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
-import { acceptSale, saleStatus } from '../services/pos/pos-queue.service';
+import { acceptSale, acceptReturn, saleStatus } from '../services/pos/pos-queue.service';
 
 const router = Router();
 
@@ -126,11 +126,31 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
         res.status(retryable ? 409 : 422).json({ success: false, data: problem });
         return;
       }
-      const notYet: PosEventResult = {
-        answer: 'BAD_PAYLOAD',
-        detail: 'Returns are checked but not yet applied here. The amounts agree; the write is the next step.'
-      };
-      res.status(422).json({ success: false, data: notYet });
+      /*
+       * The amounts agree, so the return is taken in and written behind the answer -- the same
+       * shape as a sale, for the same reason: the customer already has their money.
+       *
+       * The CHECK stays at the door rather than moving into the worker, and that asymmetry is
+       * deliberate. A refund the two systems disagree about is the one disagreement worth stopping
+       * a till for, it is the one thing a till cannot check for itself, and it costs three queries.
+       * Everything after it is bookkeeping nobody is standing and waiting for.
+       */
+      const locationId = ctx.locationIds[0];
+      if (!locationId) {
+        res.status(422).json({
+          success: false,
+          data: { answer: 'BAD_PAYLOAD', detail: 'This connection has no location, so a return has nowhere to go back to.' } as PosEventResult
+        });
+        return;
+      }
+
+      const taken = await acceptReturn(ctx.clientId, locationId, event);
+      if (taken.answer === 'ACCEPTED') {
+        res.status(202).json({ success: true, data: taken });
+        return;
+      }
+      const tookOk = taken.answer === 'APPLIED' || taken.answer === 'ALREADY_APPLIED';
+      res.status(tookOk ? 200 : 422).json({ success: tookOk, data: taken });
       return;
     }
 

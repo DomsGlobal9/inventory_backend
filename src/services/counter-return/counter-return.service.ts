@@ -233,7 +233,14 @@ async function worth(db: Prisma.TransactionClient | typeof prisma, clientId: str
  * "for cash" would turn credit into money, which only a manager may do (payOut). Worked out
  * cumulatively over the bill's completed returns, like the points share.
  */
-async function creditShare(db: Prisma.TransactionClient | typeof prisma, clientId: string, orderId: string, moneyMinor: number, excludeReturnId?: string) {
+/**
+ * Exported because a POS return has to put money back by exactly the same rules.
+ *
+ * Not copied into the POS module: this is the arithmetic that decides how much of a refund goes
+ * back as store credit rather than cash, and two copies of that is one rule and one slow divergence
+ * that surfaces in somebody's books months later.
+ */
+export async function creditShare(db: Prisma.TransactionClient | typeof prisma, clientId: string, orderId: string, moneyMinor: number, excludeReturnId?: string) {
   if (moneyMinor <= 0) return 0;
   const pays = await db.salesOrderPayment.findMany({ where: { clientId, salesOrderId: orderId, kind: 'PAYMENT' }, select: { method: true, amount: true } });
   const creditPaid = pays.filter(p => p.method === 'CREDIT').reduce((a, p) => a + toMinor(p.amount as any), 0);
@@ -251,9 +258,12 @@ async function creditShare(db: Prisma.TransactionClient | typeof prisma, clientI
  * The refund rows for one return: the store-credit share as credit, the rest the way chosen. Store
  * credit rows also add to the customer's credit. Returns the method recorded on the return.
  */
-async function writeRefund(tx: Prisma.TransactionClient, input: {
+export async function writeRefund(tx: Prisma.TransactionClient, input: {
   clientId: string; orderId: string; returnId: string; returnNumber: string; locationId: string; customerId: string | null;
-  moneyMinor: number; creditBackMinor: number; method: RefundMethod | null; reference: string | null; userId: string; exchange?: boolean;
+  moneyMinor: number; creditBackMinor: number; method: RefundMethod | null; reference: string | null;
+  /** Null when no person did it -- a POS return is applied by a machine, and receivedById is nullable. */
+  userId: string | null;
+  exchange?: boolean;
 }): Promise<RefundMethod | null> {
   const creditMinor = input.method === 'CREDIT' ? input.moneyMinor : input.creditBackMinor;
   const otherMinor = input.moneyMinor - creditMinor;

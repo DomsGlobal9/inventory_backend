@@ -22,6 +22,7 @@
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
 import { applySale, POS_SOURCE, type PosEventResult } from './pos-events.service';
+import { applyReturn } from './pos-returns.service';
 
 /** How many events one tick may take on. */
 const BATCH = 10;
@@ -69,16 +70,44 @@ export async function acceptSale(
 ): Promise<PosAcceptResult> {
   const fault = faultInSaleShape(event);
   if (fault) return { answer: 'BAD_PAYLOAD', detail: fault };
+  return accept(clientId, locationId, 'sale.completed', String(event.invoiceNo), event);
+}
 
+/**
+ * Take a return in the same way, and for the same reason.
+ *
+ * A return is as much a thing that already happened as a sale is: the customer has their money
+ * before this event is sent. What is NOT deferred is the arithmetic check -- that runs at the door
+ * in the route, because a refund the two systems disagree about is exactly the disagreement worth
+ * stopping a till for, and it is only three queries.
+ *
+ * Filed under the credit note number rather than the invoice, so a bill and a return against it
+ * are two rows and neither can displace the other.
+ */
+export async function acceptReturn(
+  clientId: string,
+  locationId: string,
+  event: any
+): Promise<PosAcceptResult> {
+  const creditNoteNo = String(event?.creditNoteNo ?? '').trim();
+  if (!creditNoteNo) return { answer: 'BAD_PAYLOAD', detail: 'The return has no credit note number.' };
+  return accept(clientId, locationId, 'sale.returned', creditNoteNo, event);
+}
+
+async function accept(
+  clientId: string,
+  locationId: string,
+  kind: string,
+  idNo: string,
+  event: any
+): Promise<PosAcceptResult> {
   const row = await prisma.posInboundEvent.upsert({
     where: {
-      clientId_kind_invoiceNo: {
-        clientId, kind: 'sale.completed', invoiceNo: String(event.invoiceNo)
-      }
+      clientId_kind_invoiceNo: { clientId, kind, invoiceNo: idNo }
     },
     create: {
-      clientId, locationId, kind: 'sale.completed',
-      invoiceNo: String(event.invoiceNo), payload: event
+      clientId, locationId, kind,
+      invoiceNo: idNo, payload: event
     },
     // Deliberately empty. A resend must not overwrite the event we are already working on: the
     // first version is the one the answer will be about. A REJECTED one is different -- see below.
@@ -138,8 +167,14 @@ export async function acceptSale(
 
 /** Where an event got to, for a till that wants to know. */
 export async function saleStatus(clientId: string, invoiceNo: string) {
-  const row = await prisma.posInboundEvent.findUnique({
-    where: { clientId_kind_invoiceNo: { clientId, kind: 'sale.completed', invoiceNo } },
+  /*
+   * By number alone, whichever kind it is. An invoice number and a credit note number are
+   * different things in every till that has ever existed, so a till asking "where did this get
+   * to?" should not also have to say which sort of thing it was asking about.
+   */
+  const row = await prisma.posInboundEvent.findFirst({
+    where: { clientId, invoiceNo },
+    orderBy: { receivedAt: 'desc' },
     select: {
       id: true, status: true, answer: true, orderNumber: true, detail: true,
       warnings: true, attempts: true, receivedAt: true, settledAt: true
@@ -176,12 +211,14 @@ async function runOne(id: string): Promise<boolean> {
 
   const row = await prisma.posInboundEvent.findUnique({
     where: { id },
-    select: { clientId: true, locationId: true, payload: true, attempts: true }
+    select: { clientId: true, locationId: true, payload: true, attempts: true, kind: true }
   });
   if (!row) return false;
 
   try {
-    const out = await applySale(row.clientId, row.locationId, row.payload as any);
+    const out = row.kind === 'sale.returned'
+      ? await applyReturn(row.clientId, row.locationId, row.payload as any)
+      : await applySale(row.clientId, row.locationId, row.payload as any);
 
     /*
      * Settled either way, but NOT under the same status.
@@ -288,5 +325,5 @@ export async function recoverStranded(): Promise<number> {
 }
 
 export const posQueue = {
-  acceptSale, saleStatus, tick, recoverStranded, faultInSaleShape, POS_SOURCE
+  acceptSale, acceptReturn, saleStatus, tick, recoverStranded, faultInSaleShape, POS_SOURCE
 };
