@@ -89,8 +89,17 @@ export async function acceptSale(
 
   // Already finished while the till was retrying: give it the real answer, not a queue position.
   if (row.status === 'APPLIED' || row.status === 'REJECTED') {
+    /*
+     * APPLIED becomes ALREADY_APPLIED, because that is what it is from the sender's side.
+     *
+     * The stored answer records what happened the FIRST time. Handing it back unchanged told a
+     * till that its retry had just made the sale, when the sale was made minutes ago -- and the
+     * POS uses that distinction to tell a first send from a retry. Nothing was double-sold
+     * either way, which is why this was a quiet regression rather than a loud one.
+     */
+    const answer = row.answer === 'APPLIED' ? 'ALREADY_APPLIED' : row.answer;
     return {
-      answer: (row.answer ?? 'APPLIED') as PosEventResult['answer'],
+      answer: (answer ?? 'ALREADY_APPLIED') as PosEventResult['answer'],
       orderNumber: row.orderNumber ?? undefined,
       detail: row.detail ?? undefined,
       warnings: (row.warnings as string[] | null) ?? undefined

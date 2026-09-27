@@ -62,7 +62,7 @@ inst.interceptors.response.use(
  * function rather than forty edits, and every existing check keeps meaning what it meant.
  */
 async function sendEvent(key: string, body: any) {
-  const r = await sendEvent(key, body);
+  const r = await api(key).post('/events', body);
   if (r.data?.data?.answer !== 'ACCEPTED') return r;
 
   const until = Date.now() + 180_000;
@@ -398,8 +398,7 @@ async function main() {
       r.data?.data?.[0]?.available === 0, String(r.data?.data?.[0]?.available));
   }
 
-  console.log('
-J. THE TILL DOES NOT WAIT');
+  console.log('\nJ. THE TILL DOES NOT WAIT');
   {
     const quick = {
       kind: 'sale.completed',
@@ -458,8 +457,7 @@ J. THE TILL DOES NOT WAIT');
     check('and asking without an invoice number is a plain 400', noArg.status === 400, `status ${noArg.status}`);
   }
 
-  console.log('
-K. A FAULT IN THE MESSAGE IS STILL REFUSED AT THE DOOR');
+  console.log('\nK. A FAULT IN THE MESSAGE IS STILL REFUSED AT THE DOOR');
   {
     // These need no database, so they must not be queued and discovered later.
     const t0 = Date.now();
@@ -477,8 +475,7 @@ K. A FAULT IN THE MESSAGE IS STILL REFUSED AT THE DOOR');
     check('nothing was left sitting in the queue', queued === 0, String(queued));
   }
 
-  console.log('
-L. A RETURN THAT OVERTAKES ITS OWN SALE');
+  console.log('\nL. A RETURN THAT OVERTAKES ITS OWN SALE');
   {
     /*
      * Only possible since sales became asynchronous: the POS sends the return after the sale, but
