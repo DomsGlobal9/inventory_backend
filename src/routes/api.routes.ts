@@ -37,6 +37,7 @@ import linksApiRoutes from './links-api.routes';
 import { platformAdminAuthRoutes, platformAdminConsoleRoutes } from './platform-admin.routes';
 import leadRoutes from './lead.routes';
 import storefrontPublicRoutes from './storefront-public.routes';
+import posRoutes from './pos.routes';
 import shopifyPublicRoutes from './shopify-public.routes';
 import shopperTryOnPublicRoutes from './shopper-tryon-public.routes';
 import tryOnCounterRoutes from './tryon-counter.routes';
@@ -86,6 +87,9 @@ router.use('/leads', leadRoutes);
 // connection, which supplies the tenant and the location scope -- so nothing here trusts a
 // clientId the caller sent.
 router.use('/storefront/v1', storefrontPublicRoutes);
+// A till, holding a connection credential rather than a session cookie -- same gate as the
+// storefront above, and scoped to its own tenant and locations the same way.
+router.use('/pos/v1', posRoutes);
 
 // Shopify's OAuth callback and its webhooks. Also ahead of the gate, and for a stronger
 // reason: a callback is a browser redirect and a webhook is a POST from Shopify's servers, so
