@@ -27,6 +27,13 @@ export interface HsnSuggestion {
   because: string;
   /** Always true. Kept explicit so no caller can quietly treat this as settled. */
   needsConfirming: true;
+  /**
+   * Set when the product's own title contradicts its fabric field -- "kanchipuram saree" recorded
+   * as Chiffon, which is a real row in a real shop. The suggestion still follows the FABRIC field,
+   * because that is the one somebody chose deliberately from a list; but a shopkeeper reading
+   * "silk, going in as man-made" will spot in a second what no rule here can decide.
+   */
+  conflict?: string;
 }
 
 /** Fabric: flat 5%, whatever the piece costs. The HSN differs only by what it is woven from. */
@@ -63,10 +70,27 @@ export function suggestHsn(input: {
   dressType?: string | null;
   fabric?: string | null;
   productType?: string | null;
+  /** Read only to spot a contradiction with `fabric`. It never changes the code chosen. */
+  title?: string | null;
 }): HsnSuggestion | null {
   const dress = (input.dressType ?? '').trim();
   const fabric = (input.fabric ?? '').trim();
+  const title = (input.title ?? '').trim();
   if (!dress && !fabric) return null;
+
+  /*
+   * Does the title disagree with the fabric field?
+   *
+   * Titles are free text and often useless ("fsa", "saree34"), so they are never trusted to CHOOSE
+   * a code. But when a title clearly names a material and the fabric field names a different one,
+   * that is worth saying out loud -- one of the two is wrong, and only the shop knows which.
+   */
+  const materialOf = (text: string) => FABRIC_BY_MATERIAL.find(([re]) => re.test(text))?.[2] ?? null;
+  const fromTitle = title ? materialOf(title) : null;
+  const fromFabric = fabric ? materialOf(fabric) : null;
+  const conflict = fromTitle && fromFabric && fromTitle !== fromFabric
+    ? `The title reads like ${fromTitle} but the fabric is recorded as "${fabric}" (${fromFabric}). Going with the fabric field -- check which is right.`
+    : undefined;
 
   /*
    * Stitched is checked FIRST and against the dress type only.
@@ -85,7 +109,8 @@ export function suggestHsn(input: {
       taxRateBps: APPAREL_RULE.baseRateBps,
       taxSlabbed: true,
       because: `Read as ${words}. Stitched clothing is 5% up to Rs 2,500 a piece and 18% above.`,
-      needsConfirming: true
+      needsConfirming: true,
+      conflict
     };
   }
 
@@ -99,7 +124,8 @@ export function suggestHsn(input: {
       taxRateBps: FABRIC_RULE.baseRateBps,
       taxSlabbed: false,
       because: `Read as ${words}. Fabric is 5% whatever it costs -- there is no price threshold.`,
-      needsConfirming: true
+      needsConfirming: true,
+      conflict
     };
   }
 
