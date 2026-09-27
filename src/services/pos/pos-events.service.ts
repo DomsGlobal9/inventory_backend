@@ -33,6 +33,14 @@ import { recordPayments } from '../payments';
 
 export const POS_SOURCE = 'SCALEEZY_POS';
 
+/**
+ * The one customer row a shop uses for everybody who did not leave a name.
+ *
+ * A constant rather than a lookup by name, because a name can be edited and this row must stay
+ * findable. Per shop, because externalCustomerId is scoped to the tenant.
+ */
+export const WALK_IN_KEY = 'POS:WALK-IN';
+
 /** What the POS is told. Permanent codes stop that shop's queue for a person to look at. */
 export type PosAnswer =
   | 'APPLIED'
@@ -45,6 +53,12 @@ export type PosAnswer =
 
 export interface PosEventResult {
   answer: PosAnswer;
+  /**
+   * Worth the owner seeing, never worth stopping the queue for. A tax figure that disagrees is
+   * the case this exists for: a cashier cannot fix it, so refusing the sale would halt a counter
+   * over something only the office can settle.
+   */
+  warnings?: string[];
   /** Inventory's own order number, when one was made or found. */
   orderNumber?: string;
   /** One plain sentence for whoever has to look at a stopped queue. */
@@ -61,6 +75,10 @@ export interface PosLine {
   unitPricePaise?: number | null;
   /** Whole paise off this LINE in total, not per piece. */
   discountPaise?: number | null;
+  /** The POS's own rate, in basis points. 500 = 5%. */
+  taxRateBps?: number | null;
+  /** The POS's own tax for the line, whole paise. */
+  taxPaise?: number | null;
 }
 
 export interface PosPayment {
@@ -117,6 +135,30 @@ async function resolveItems(clientId: string, codes: string[]) {
   return byCode;
 }
 
+/**
+ * What Inventory's own products say the rate is, for the comparison only.
+ *
+ * Never used to CHANGE what is recorded -- the POS's figure is what goes on the line. This exists
+ * so a disagreement can be named rather than discovered in a return months later.
+ */
+async function taxStandingByCode(clientId: string, codes: string[]) {
+  const wanted = [...new Set(codes)];
+  const rows = await prisma.productVariant.findMany({
+    where: { clientId, OR: [{ variantCode: { in: wanted } }, { sku: { in: wanted } }] },
+    select: {
+      variantCode: true, sku: true, taxRateBps: true,
+      product: { select: { taxRateBps: true } }
+    }
+  });
+  const map = new Map<string, { taxRateBps: number | null }>();
+  for (const v of rows) {
+    const entry = { taxRateBps: v.taxRateBps ?? v.product.taxRateBps ?? null };
+    map.set(v.variantCode, entry);
+    if (!map.has(v.sku)) map.set(v.sku, entry);
+  }
+  return map;
+}
+
 /** The order this event is about, if Inventory has already seen it. */
 async function findByExternal(clientId: string, externalOrderId: string) {
   return prisma.salesOrder.findFirst({
@@ -147,14 +189,20 @@ export async function applySale(
   }
 
   /*
-   * The POS's own rule is that a phone is mandatory and unique per shop, so a sale without one is
-   * a payload fault rather than a walk-in. Said plainly rather than refused with "choose the
-   * customer", which is a sentence written for somebody looking at a screen.
+   * A WALK-IN IS NOT A PAYLOAD FAULT.
+   *
+   * I had this wrong: a missing phone answered BAD_PAYLOAD, which would have stopped a shop's
+   * whole queue on its first cash sale to somebody who did not want to give a number. Most POS
+   * sales are exactly that.
+   *
+   * Inventory's own counter sale has no walk-in path -- it requires a phone, deliberately, so
+   * that a shop's customer history is never split across two rows for one person. That rule is
+   * right for a till where somebody is typing, and wrong as a reason to refuse a sale that has
+   * already happened. So a sale with no phone is recorded against an explicit per-shop walk-in
+   * customer: one row per shop, found or created on first use, named so it can never be mistaken
+   * for a real person, and never carrying a phone.
    */
   const customerPhone = String(event.customer?.phone ?? '').trim();
-  if (!customerPhone) {
-    return bad('This sale has no customer phone number, and Inventory records every sale against one.');
-  }
 
   const already = await findByExternal(clientId, event.invoiceNo);
   if (already) return { answer: 'ALREADY_APPLIED', orderNumber: already.orderNumber };
@@ -164,6 +212,9 @@ export async function applySale(
   if (missing.length) {
     return { answer: 'UNKNOWN_ITEM', detail: `Not in this shop's catalogue: ${missing.join(', ')}.` };
   }
+
+  // What Inventory believes the rate is, purely so a difference can be pointed out afterwards.
+  const taxByCode = await taxStandingByCode(clientId, event.lines.map(l => l.itemCode));
 
   try {
     /*
@@ -197,11 +248,22 @@ export async function applySale(
            * be refused because two people share a number -- that would stop the queue over
            * somebody else's data.
            */
-          customer: {
-            externalId: `POS:${customerPhone}`,
-            name: event.customer?.name ?? 'Counter customer',
-            phone: customerPhone
-          },
+          customer: customerPhone
+            ? {
+                externalId: `POS:${customerPhone}`,
+                name: event.customer?.name ?? 'Counter customer',
+                phone: customerPhone
+              }
+            : {
+                /*
+                 * One walk-in row per shop, reached through the same externalId path so it is
+                 * found rather than made again. The name is unmistakable on purpose: it will
+                 * appear in the customer list, and it must never read like somebody's name.
+                 */
+                externalId: WALK_IN_KEY,
+                name: 'Walk-in customer (no details taken)',
+                phone: null
+              },
           externalOrderId: event.invoiceNo,
           sourceSystem: POS_SOURCE,
           status: 'CONFIRMED',
@@ -214,7 +276,17 @@ export async function applySale(
             listUnitPrice: l.unitPricePaise != null
               ? fromMinor(l.unitPricePaise)
               : fromMinor(Math.round(l.lineTotalPaise / l.qty)),
-            lineDiscount: l.discountPaise != null ? fromMinor(l.discountPaise) : undefined
+            lineDiscount: l.discountPaise != null ? fromMinor(l.discountPaise) : undefined,
+            /*
+             * THE POS'S TAX, STORED AS SENT.
+             *
+             * The POS invoice is the document the customer is holding, so it is the legal record
+             * of what was charged. If Inventory computed its own figure, one bill would have two
+             * tax records that could disagree -- and today they would, because the POS's own
+             * rates are still being settled. Ours becomes a check that warns.
+             */
+            taxRateBps: l.taxRateBps ?? undefined,
+            taxPaise: l.taxPaise ?? undefined
           }))
         },
         'POS',
@@ -257,9 +329,30 @@ export async function applySale(
     });
 
     // alreadyDone hands back the row it found, which has no `items` -- either way the sale exists.
+    /*
+     * Ours against theirs, said out loud and nothing more.
+     *
+     * A cashier cannot fix a tax rate, so refusing the sale would stop a counter over something
+     * only the office can settle -- and the sale has already happened either way. The POS shows
+     * these to the owner; the money and the stock are already recorded.
+     */
+    const warnings: string[] = [];
+    for (const line of event.lines) {
+      if (line.taxRateBps == null) continue;
+      const standing = taxByCode.get(line.itemCode);
+      if (standing?.taxRateBps != null && standing.taxRateBps !== line.taxRateBps) {
+        warnings.push(
+          `${line.itemCode}: the till charged ${line.taxRateBps / 100}% GST, the product here says ` +
+          `${standing.taxRateBps / 100}%. The bill was recorded as the till sent it -- somebody should ` +
+          `settle which is right.`
+        );
+      }
+    }
+
     return {
       answer: (order as any).items ? 'APPLIED' : 'ALREADY_APPLIED',
-      orderNumber: order.orderNumber
+      orderNumber: order.orderNumber,
+      ...(warnings.length ? { warnings } : {})
     };
   } catch (e: any) {
     /*

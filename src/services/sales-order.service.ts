@@ -505,7 +505,33 @@ export class SalesOrderService {
          * the week before must show what the customer actually paid -- asking the product at
          * reprint time prints a document that disagrees with the money taken.
          */
-        const frozenTax = freezeTaxForLine(entry.tax, priced, shopChargesTax, interState);
+        const ourTax = freezeTaxForLine(entry.tax, priced, shopChargesTax, interState);
+
+        /*
+         * A CALLER THAT ALREADY ISSUED THE BILL KEEPS ITS OWN FIGURE.
+         *
+         * A POS sale arrives after the customer has walked out holding a printed invoice. That
+         * paper is the legal record of what was charged, so Inventory stores what it says rather
+         * than a second opinion -- one bill with two disagreeing tax records is worse than one
+         * bill whose tax somebody has to check. The caller is expected to compare ours and warn;
+         * see pos-events.service.
+         *
+         * Only for callers that supply it. Every other path still computes, which is every path
+         * where Inventory itself decided the price.
+         */
+        const givenRate = entry.item?.taxRateBps;
+        const givenTax = entry.item?.taxPaise;
+        const frozenTax = (givenRate != null && givenTax != null)
+          ? {
+              ...ourTax,
+              taxRateBps: givenRate,
+              // Split the caller's own figure the same way ours would be: halved in-state, whole
+              // as IGST across state lines.
+              cgst: interState ? fromMinor(0) : fromMinor(Math.ceil(givenTax / 2)),
+              sgst: interState ? fromMinor(0) : fromMinor(Math.floor(givenTax / 2)),
+              igst: interState ? fromMinor(givenTax) : fromMinor(0)
+            }
+          : ourTax;
 
         const orderItem = await tx.salesOrderItem.create({
           data: {

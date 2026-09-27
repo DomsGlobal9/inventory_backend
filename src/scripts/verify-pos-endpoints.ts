@@ -54,7 +54,7 @@ async function main() {
   });
 
   await prisma.inventoryStock.create({
-    data: { clientId: CLIENT, variantId: variant.id, locationId: location.id, quantity: 5, reservedQty: 1 }
+    data: { clientId: CLIENT, variantId: variant.id, locationId: location.id, quantity: 20, reservedQty: 1 }
   });
 
   // A connection credential, minted by the app's own helper rather than hand-rolled -- the
@@ -95,14 +95,14 @@ async function main() {
       v.pricePaise === 300000 && Number.isInteger(v.pricePaise), String(v.pricePaise));
     check('the rupee price is untouched, so the online shop still reads the same feed',
       v.price === 3000, String(v.price));
-    check('availability is quantity minus what is promised', v.stock?.available === 4,
+    check('availability is quantity minus what is promised', v.stock?.available === 19,
       JSON.stringify(v.stock));
   }
 
   console.log('\nC. LIVE STOCK');
   {
     const r = await api(key).get(`/stock?codes=${variant.variantCode}`);
-    check('answers for a variantCode', r.status === 200 && r.data?.data?.[0]?.available === 4,
+    check('answers for a variantCode', r.status === 200 && r.data?.data?.[0]?.available === 19,
       JSON.stringify(r.data?.data?.[0]));
     const bySku = await api(key).get(`/stock?codes=${variant.sku}`);
     check('and the sku is not accepted here -- codes are variant codes',
@@ -168,7 +168,7 @@ async function main() {
     const stock = await prisma.inventoryStock.findFirst({
       where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
     });
-    check('stock came off the shelf: 5 minus 2 sold', stock?.quantity === 3, String(stock?.quantity));
+    check('stock came off the shelf: 20 minus 2 sold', stock?.quantity === 18, String(stock?.quantity));
   }
 
   {
@@ -192,7 +192,7 @@ async function main() {
     const stock = await prisma.inventoryStock.findFirst({
       where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
     });
-    check('and stock did NOT come off twice', stock?.quantity === 3, String(stock?.quantity));
+    check('and stock did NOT come off twice', stock?.quantity === 18, String(stock?.quantity));
   }
 
   {
@@ -226,6 +226,71 @@ async function main() {
     });
     check('more pieces than were sold is QTY_EXCEEDS_SOLD',
       tooMany.data?.data?.answer === 'QTY_EXCEEDS_SOLD', JSON.stringify(tooMany.data?.data));
+  }
+
+  console.log('\nG. A WALK-IN, AND A TAX FIGURE THAT DISAGREES');
+  {
+    // No customer at all -- the commonest POS sale, and the one that used to stop the queue.
+    const walkIn = {
+      kind: 'sale.completed',
+      invoiceNo: `INV/2026-27/W${Date.now() % 1000}`,
+      occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }],
+      totals: {},
+      payments: [{ method: 'CASH', amountPaise: 300000 }]
+    };
+    const r = await api(key).post('/events', walkIn);
+    check('a sale with NO customer is APPLIED, not refused',
+      r.data?.data?.answer === 'APPLIED', JSON.stringify(r.data?.data));
+
+    const cust = await prisma.customer.findMany({
+      where: { clientId: CLIENT }, select: { name: true, phone: true, externalCustomerId: true }
+    });
+    const walk = cust.find(c => c.externalCustomerId === 'POS:WALK-IN');
+    check('it went to an explicit walk-in row', Boolean(walk), JSON.stringify(cust.map(c => c.name)));
+    check('which carries no phone', walk?.phone == null, String(walk?.phone));
+    check('and is named so nobody mistakes it for a person',
+      /walk-in/i.test(walk?.name ?? ''), walk?.name);
+
+    // a second walk-in reuses the same row rather than making another
+    const again = await api(key).post('/events', { ...walkIn, invoiceNo: `${walkIn.invoiceNo}-2` });
+    check('a second walk-in sale also applies', again.data?.data?.answer === 'APPLIED',
+      JSON.stringify(again.data?.data));
+    const walkRows = await prisma.customer.count({
+      where: { clientId: CLIENT, externalCustomerId: 'POS:WALK-IN' }
+    });
+    check('and there is still only ONE walk-in row for the shop', walkRows === 1, String(walkRows));
+  }
+
+  {
+    // the product here says 5%; the till says 12% -- exactly the live disagreement
+    const odd = {
+      kind: 'sale.completed',
+      invoiceNo: `INV/2026-27/T${Date.now() % 1000}`,
+      occurredAt: new Date().toISOString(),
+      lines: [{
+        itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000,
+        taxRateBps: 1200, taxPaise: 32143
+      }],
+      totals: {},
+      payments: [{ method: 'CASH', amountPaise: 300000 }]
+    };
+    const r = await api(key).post('/events', odd);
+    check('a sale whose tax disagrees is still APPLIED -- a cashier cannot fix a rate',
+      r.data?.data?.answer === 'APPLIED', JSON.stringify(r.data?.data));
+    check('and it comes back with a warning naming both rates',
+      (r.data?.data?.warnings ?? []).some((w) => /12% GST/.test(w) && /says 5%/.test(w)),
+      JSON.stringify(r.data?.data?.warnings));
+
+    const line = await prisma.salesOrderItem.findFirst({
+      where: { salesOrder: { clientId: CLIENT, externalOrderId: odd.invoiceNo } },
+      select: { taxRateBps: true, cgst: true, sgst: true }
+    });
+    check('the TILL\'s rate is what got stored, not ours', line?.taxRateBps === 1200,
+      String(line?.taxRateBps));
+    check('and the till\'s tax was split in half, adding back exactly',
+      Math.round((Number(line?.cgst) + Number(line?.sgst)) * 100) === 32143,
+      `${line?.cgst} + ${line?.sgst}`);
   }
 
 }
