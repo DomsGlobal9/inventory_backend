@@ -18,7 +18,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateStorefront, storefrontContext } from '../middleware/storefront.middleware';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
-import { checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
+import { applySale, checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
 
 const router = Router();
 
@@ -127,10 +127,31 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
       return;
     }
 
-    if (kind === 'sale.completed' || kind === 'sale.exchanged') {
+    if (kind === 'sale.completed') {
+      /*
+       * One location per connection in v1, so the till's location is the connection's. When a
+       * shop has two tills this becomes the event's own locationCode, checked against the scope --
+       * which is why the contract already carries the field.
+       */
+      const locationId = ctx.locationIds[0];
+      if (!locationId) {
+        res.status(422).json({
+          success: false,
+          data: { answer: 'BAD_PAYLOAD', detail: 'This connection has no location, so a sale has nowhere to come off.' } as PosEventResult
+        });
+        return;
+      }
+
+      const out = await applySale(ctx.clientId, locationId, event);
+      const ok = out.answer === 'APPLIED' || out.answer === 'ALREADY_APPLIED';
+      res.status(ok ? 200 : 422).json({ success: ok, data: out });
+      return;
+    }
+
+    if (kind === 'sale.exchanged') {
       const notYet: PosEventResult = {
         answer: 'BAD_PAYLOAD',
-        detail: 'This endpoint is not finished. Nothing has been recorded.'
+        detail: 'Exchanges are not finished here. Nothing has been recorded.'
       };
       res.status(422).json({ success: false, data: notYet });
       return;

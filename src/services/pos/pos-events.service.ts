@@ -23,9 +23,13 @@
  * months later in a reconciliation nobody can unpick. There we compute, compare, and refuse.
  */
 
-import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
-import { portionOf, toMinor } from '../pricing/money';
+import { runTransaction } from '../../lib/txRetry';
+import { portionOf, toMinor, fromMinor } from '../pricing/money';
+import { salesOrderService } from '../sales-order.service';
+import { dispatchService } from '../dispatch.service';
+import { planPayments } from '../payments/payment-rules';
+import { recordPayments } from '../payments';
 
 export const POS_SOURCE = 'SCALEEZY_POS';
 
@@ -53,6 +57,16 @@ export interface PosLine {
   qty: number;
   /** Whole paise, after discount, for the whole line. */
   lineTotalPaise: number;
+  /** Before discount, per piece. Optional: without it the line total is taken as the list price. */
+  unitPricePaise?: number | null;
+  /** Whole paise off this LINE in total, not per piece. */
+  discountPaise?: number | null;
+}
+
+export interface PosPayment {
+  /** CASH | UPI | CARD | POINTS | CREDIT -- the same words Inventory already uses. */
+  method: string;
+  amountPaise: number;
 }
 
 export interface PosSaleEvent {
@@ -63,6 +77,11 @@ export interface PosSaleEvent {
   customer?: { name?: string | null; phone?: string | null } | null;
   lines: PosLine[];
   totals: { roundOffPaise?: number };
+  /**
+   * What the customer actually handed over. Recorded here because Inventory's day book is the
+   * whole business and the POS day close is one drawer -- two documents, not a double count.
+   */
+  payments?: PosPayment[];
 }
 
 export interface PosReturnEvent {
@@ -115,22 +134,30 @@ async function findByExternal(clientId: string, externalOrderId: string) {
  */
 export async function applySale(
   clientId: string,
-  event: PosSaleEvent,
-  deps: {
-    writeOrder: (tx: Prisma.TransactionClient, input: any) => Promise<{ id: string; orderNumber: string }>;
-    dispatchAll: (tx: Prisma.TransactionClient, orderId: string) => Promise<void>;
-  }
+  locationId: string,
+  event: PosSaleEvent
 ): Promise<PosEventResult> {
   if (!event.invoiceNo) return bad('The event has no invoice number.');
   if (!Array.isArray(event.lines) || !event.lines.length) return bad('The sale has no lines.');
   if (event.lines.some(l => !Number.isInteger(l.qty) || l.qty <= 0)) {
     return bad('Every line needs a whole number of pieces above zero.');
   }
+  if (event.lines.some(l => !Number.isInteger(l.lineTotalPaise) || l.lineTotalPaise < 0)) {
+    return bad('Every line needs a whole number of paise, zero or more.');
+  }
+
+  /*
+   * The POS's own rule is that a phone is mandatory and unique per shop, so a sale without one is
+   * a payload fault rather than a walk-in. Said plainly rather than refused with "choose the
+   * customer", which is a sentence written for somebody looking at a screen.
+   */
+  const customerPhone = String(event.customer?.phone ?? '').trim();
+  if (!customerPhone) {
+    return bad('This sale has no customer phone number, and Inventory records every sale against one.');
+  }
 
   const already = await findByExternal(clientId, event.invoiceNo);
-  if (already) {
-    return { answer: 'ALREADY_APPLIED', orderNumber: already.orderNumber };
-  }
+  if (already) return { answer: 'ALREADY_APPLIED', orderNumber: already.orderNumber };
 
   const byCode = await resolveItems(clientId, event.lines.map(l => l.itemCode));
   const missing = event.lines.map(l => l.itemCode).filter(c => !byCode.has(c));
@@ -139,33 +166,112 @@ export async function applySale(
   }
 
   try {
-    const order = await prisma.$transaction(async tx => {
-      const made = await deps.writeOrder(tx, {
-        clientId,
-        externalOrderId: event.invoiceNo,
-        sourceSystem: POS_SOURCE,
-        customer: event.customer ?? undefined,
-        lines: event.lines.map(l => ({
-          variantId: byCode.get(l.itemCode)!,
-          quantity: l.qty,
-          lineTotalMinor: l.lineTotalPaise
-        }))
-      });
-      // One transaction, so a sale never exists without its stock having moved.
-      await deps.dispatchAll(tx, made.id);
+    /*
+     * runTransaction, not prisma.$transaction, and the reason is measurable: the database is in
+     * Singapore and Prisma's default interactive-transaction timeout is five seconds. Writing the
+     * order, dispatching every line and recording the payments is a dozen round trips, and the
+     * first real sale died on P2028 -- "transaction not found" -- with nothing written.
+     *
+     * `alreadyDone` is the other half: on a retry or a race it looks for the sale the winner
+     * already wrote and returns that, rather than failing. It is a better version of catching
+     * P2002 by hand, because it also covers a timeout that actually committed.
+     */
+    const order = await runTransaction(async tx => {
+      /*
+       * THE POS'S OWN FIGURES, recorded rather than recalculated.
+       *
+       * writeFullOrderInTransaction prices from the catalogue unless the caller supplies its own,
+       * which is the path Shopify orders already take. The POS is the system of record for this
+       * bill -- it took the money and printed the invoice -- so its numbers go in as given, and
+       * mayOverridePrices says so explicitly rather than by omission.
+       */
+      const made: any = await salesOrderService.writeFullOrderInTransaction(
+        tx, clientId, locationId,
+        {
+          /*
+           * Found or made by the POS's own identity for this person, not by ours.
+           *
+           * externalId is the path Shopify orders already take, and it is the lenient one: the
+           * phone goes through phoneForOutsideCustomer, which keeps a number only when nobody
+           * else in the shop has it and otherwise saves the order WITHOUT it. A sale must never
+           * be refused because two people share a number -- that would stop the queue over
+           * somebody else's data.
+           */
+          customer: {
+            externalId: `POS:${customerPhone}`,
+            name: event.customer?.name ?? 'Counter customer',
+            phone: customerPhone
+          },
+          externalOrderId: event.invoiceNo,
+          sourceSystem: POS_SOURCE,
+          status: 'CONFIRMED',
+          handover: 'TAKEN_NOW',
+          items: event.lines.map(l => ({
+            variantId: byCode.get(l.itemCode)!,
+            quantity: l.qty,
+            // Net per piece, worked from the line total so the two can never disagree.
+            unitPrice: fromMinor(Math.round(l.lineTotalPaise / l.qty)),
+            listUnitPrice: l.unitPricePaise != null
+              ? fromMinor(l.unitPricePaise)
+              : fromMinor(Math.round(l.lineTotalPaise / l.qty)),
+            lineDiscount: l.discountPaise != null ? fromMinor(l.discountPaise) : undefined
+          }))
+        },
+        'POS',
+        null,
+        { userId: null, manualLimitPercent: null, mayOverridePrices: true, lean: true }
+      );
+
+      /*
+       * Dispatched in the same transaction, including a KEPT sale. The goods left the shop when
+       * the till said so; an order that exists here without its stock having moved would be a
+       * shop whose count is wrong until somebody notices.
+       */
+      await dispatchService.dispatchInTransaction(
+        tx, clientId, made.id,
+        made.items.map((i: any) => ({ salesOrderItemId: i.id, quantity: i.quantity }))
+      );
+
+      /*
+       * The money. Against the bill as Inventory wrote it, not the figure the till displayed --
+       * if those ever differ it is a bug worth failing on rather than papering over.
+       */
+      if (event.payments?.length) {
+        const planned = planPayments(
+          toMinor(made.total),
+          event.payments.map(p => ({ method: p.method as any, amount: p.amountPaise / 100 })),
+          'FULL'
+        );
+        await recordPayments(
+          tx,
+          { clientId, salesOrderId: made.id, locationId, receivedById: null },
+          planned
+        );
+      }
+
       return made;
+    }, {
+      label: `pos sale ${event.invoiceNo}`,
+      alreadyDone: () => findByExternal(clientId, event.invoiceNo) as any,
+      tooSlowMessage: 'The shop took too long to record this sale. It has not been recorded; the till will send it again.'
     });
 
-    return { answer: 'APPLIED', orderNumber: order.orderNumber };
+    // alreadyDone hands back the row it found, which has no `items` -- either way the sale exists.
+    return {
+      answer: (order as any).items ? 'APPLIED' : 'ALREADY_APPLIED',
+      orderNumber: order.orderNumber
+    };
   } catch (e: any) {
     /*
-     * Two tills, or a retry racing the original. The unique index is what decides it, and the
-     * loser reads the winner's order rather than failing -- the same shape counter-sale.service
-     * already uses for two presses landing together.
+     * A retry racing the original, or two tills at once. The unique index decides it and the
+     * loser reads the winner's order rather than failing -- the shape counter-sale already uses.
      */
     if (e?.code === 'P2002') {
       const winner = await findByExternal(clientId, event.invoiceNo);
       if (winner) return { answer: 'ALREADY_APPLIED', orderNumber: winner.orderNumber };
+    }
+    if (e?.statusCode === 400 || e?.status === 400) {
+      return bad(e.message ?? 'The sale was refused.');
     }
     throw e;
   }

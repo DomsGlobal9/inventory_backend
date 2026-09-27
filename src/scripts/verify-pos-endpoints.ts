@@ -128,14 +128,114 @@ async function main() {
   }
   {
     const r = await api(key).post('/events', { kind: 'sale.completed', invoiceNo: 'INV/1', lines: [] });
-    check('a sale is refused for now, and says nothing was recorded',
-      r.data?.data?.answer === 'BAD_PAYLOAD' && /nothing has been recorded/i.test(r.data?.data?.detail ?? ''),
+    check('a sale with no lines is BAD_PAYLOAD and says so plainly',
+      r.data?.data?.answer === 'BAD_PAYLOAD' && /no lines/i.test(r.data?.data?.detail ?? ''),
       r.data?.data?.detail);
   }
+  console.log('\nE. A REAL SALE');
+  const invoiceNo = `INV/2026-27/${Date.now() % 10000}`;
+  const saleBody = {
+    kind: 'sale.completed',
+    invoiceNo,
+    occurredAt: new Date().toISOString(),
+    customer: { name: 'Walk in', phone: '9876500011' },
+    lines: [{ itemCode: variant.variantCode, qty: 2, unitPricePaise: 300000, lineTotalPaise: 570000, discountPaise: 30000 }],
+    totals: { roundOffPaise: 0 },
+    payments: [{ method: 'CASH', amountPaise: 570000 }]
+  };
+
+  let orderNumber = '';
+  {
+    const r = await api(key).post('/events', saleBody);
+    check('a sale is APPLIED', r.data?.data?.answer === 'APPLIED', JSON.stringify(r.data?.data));
+    orderNumber = r.data?.data?.orderNumber ?? '';
+    check('and comes back with Inventory\'s own order number', Boolean(orderNumber), orderNumber);
+  }
+
+  {
+    const order = await prisma.salesOrder.findFirst({
+      where: { clientId: CLIENT, externalOrderId: invoiceNo, sourceSystem: 'SCALEEZY_POS' },
+      select: { status: true, total: true, channel: true, items: { select: { quantity: true, totalPrice: true, unitPrice: true } } }
+    });
+    check('the order is here, on the POS channel', order?.channel === 'POS', String(order?.channel));
+    check('the POS total was recorded as given, not re-priced',
+      Number(order?.total) === 5700, String(order?.total));
+    check('and so was the line', Number(order?.items?.[0]?.totalPrice) === 5700,
+      String(order?.items?.[0]?.totalPrice));
+  }
+
+  {
+    const stock = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('stock came off the shelf: 5 minus 2 sold', stock?.quantity === 3, String(stock?.quantity));
+  }
+
+  {
+    const pays = await prisma.salesOrderPayment.findMany({
+      where: { clientId: CLIENT }, select: { kind: true, method: true, amount: true }
+    });
+    check('the money is recorded, so the day book sees it',
+      pays.length === 1 && pays[0].kind === 'PAYMENT' && Number(pays[0].amount) === 5700,
+      JSON.stringify(pays));
+  }
+
+  {
+    // the whole point of at-least-once delivery
+    const again = await api(key).post('/events', saleBody);
+    check('sending it AGAIN is ALREADY_APPLIED, not a second sale',
+      again.data?.data?.answer === 'ALREADY_APPLIED', JSON.stringify(again.data?.data));
+    check('and it returns the same order number', again.data?.data?.orderNumber === orderNumber);
+
+    const orders = await prisma.salesOrder.count({ where: { clientId: CLIENT } });
+    check('exactly ONE order exists', orders === 1, String(orders));
+    const stock = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('and stock did NOT come off twice', stock?.quantity === 3, String(stock?.quantity));
+  }
+
+  {
+    const r = await api(key).post('/events', { ...saleBody, invoiceNo: `${invoiceNo}-X`, lines: [{ itemCode: 'NOPE', qty: 1, lineTotalPaise: 100 }] });
+    check('an unknown item is UNKNOWN_ITEM and names it',
+      r.data?.data?.answer === 'UNKNOWN_ITEM' && /NOPE/.test(r.data?.data?.detail ?? ''),
+      JSON.stringify(r.data?.data));
+  }
+
+  console.log('\nF. A RETURN AGAINST THAT REAL SALE');
+  {
+    // one piece of two: half of 5700 is 2850
+    const ok = await api(key).post('/events', {
+      kind: 'sale.returned', creditNoteNo: 'CN/2026-27/0001', againstInvoiceNo: invoiceNo,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 285000 }], totals: {}
+    });
+    check('the right amount passes the check',
+      ok.data?.data?.answer !== 'AMOUNT_MISMATCH', JSON.stringify(ok.data?.data));
+
+    const wrong = await api(key).post('/events', {
+      kind: 'sale.returned', creditNoteNo: 'CN/2026-27/0002', againstInvoiceNo: invoiceNo,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {}
+    });
+    check('a wrong amount is AMOUNT_MISMATCH with both figures',
+      wrong.data?.data?.answer === 'AMOUNT_MISMATCH' && /285000/.test(wrong.data?.data?.detail ?? ''),
+      wrong.data?.data?.detail);
+
+    const tooMany = await api(key).post('/events', {
+      kind: 'sale.returned', creditNoteNo: 'CN/2026-27/0003', againstInvoiceNo: invoiceNo,
+      lines: [{ itemCode: variant.variantCode, qty: 5, lineTotalPaise: 1425000 }], totals: {}
+    });
+    check('more pieces than were sold is QTY_EXCEEDS_SOLD',
+      tooMany.data?.data?.answer === 'QTY_EXCEEDS_SOLD', JSON.stringify(tooMany.data?.data));
+  }
+
 }
 
 main()
   .then(async () => {
+    await prisma.salesOrderPayment.deleteMany({ where: { clientId: CLIENT } });
+    await prisma.salesOrder.deleteMany({ where: { clientId: CLIENT } });
+    await prisma.inventoryTransaction.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
+    await prisma.customer.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.inventoryStock.deleteMany({ where: { clientId: CLIENT } });
     await prisma.productVariant.deleteMany({ where: { clientId: CLIENT } });
     await prisma.product.deleteMany({ where: { clientId: CLIENT } });
