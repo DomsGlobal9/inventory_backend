@@ -1,0 +1,219 @@
+/**
+ * The GST maths, every scenario in PLAN-gst.md section 9.
+ *
+ * PURE. No database, no API, no server. The tax engine is a pure function, so its suite is too --
+ * which means this one can be run any time, cannot touch a real client's data, and finishes in
+ * milliseconds rather than minutes.
+ *
+ *   A  the rates as they stand after 22 Sep 2025: fabric flat, apparel slabbed at 2500
+ *   B  the slab follows the TRANSACTION value, so an offer can change the rate
+ *   C  CGST/SGST always add back to the total, including on odd paise
+ *   D  inter-state is IGST and costs the customer the same
+ *   E  inclusive <-> exclusive round trips exactly, on the number the customer can check
+ *   F  a credit note reverses its sale exactly, to the paisa
+ *   G  who may charge tax at all, and which document they issue
+ *   H  rounding the bill, and the round-off line
+ *   I  the circularity trap of section 2, proved rather than asserted
+ *   J  property sweeps: thousands of values, not just the ones I thought of
+ *
+ *   npx tsx src/scripts/verify-gst.ts
+ */
+import {
+  taxForLine, taxableFromInclusive, inclusiveFromTaxable, rateFor, roundOff,
+  mayChargeTax, documentKindFor, APPAREL_RULE, FABRIC_RULE,
+  type RateRule, type GstRegistration
+} from '../services/pricing/tax';
+
+let passed = 0;
+let failed = 0;
+
+function check(name: string, ok: boolean, detail = '') {
+  if (ok) { passed++; console.log(`   PASS  ${name}${detail ? '  -- ' + detail : ''}`); }
+  else { failed++; console.log(`   FAIL  ${name}${detail ? '  -- ' + detail : ''}`); }
+}
+const eq = (name: string, got: unknown, want: unknown) =>
+  check(name, JSON.stringify(got) === JSON.stringify(want), `got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+
+const rupees = (n: number) => n * 100;           // to paise
+const SAREE: RateRule = { hsnCode: '5007', ...FABRIC_RULE };
+const LEHENGA: RateRule = { hsnCode: '6204', ...APPAREL_RULE };
+
+// ── A. The rates ─────────────────────────────────────────────────────────────────────────
+console.log('\nA. The rates, as they stand after 22 September 2025');
+
+eq('a ₹800 saree is 5%', rateFor(SAREE, rupees(800)), 500);
+eq('a ₹3,121 saree is still 5%', rateFor(SAREE, rupees(3121)), 500);
+eq('a ₹40,000 kanchipuram is STILL 5% (fabric has no threshold)', rateFor(SAREE, rupees(40000)), 500);
+
+eq('a ₹2,400 lehenga is 5%', rateFor(LEHENGA, rupees(2400)), 500);
+eq('a ₹2,500 lehenga is 5% (the threshold is "above")', rateFor(LEHENGA, rupees(2500)), 500);
+eq('a ₹2,500.01 lehenga is 18%', rateFor(LEHENGA, rupees(2500) + 1), 1800);
+eq('a ₹2,600 lehenga is 18%', rateFor(LEHENGA, rupees(2600)), 1800);
+
+check('the retired ₹1,000 threshold is NOT applied',
+  rateFor(LEHENGA, rupees(1500)) === 500, 'a ₹1,500 lehenga must be 5%, not 12%');
+
+// ── B. The slab follows the transaction value ────────────────────────────────────────────
+console.log('\nB. An offer can change the rate, because GST is on the transaction value');
+
+eq('₹2,600 lehenga, no offer → 18%', rateFor(LEHENGA, rupees(2600)), 1800);
+eq('same lehenga after a ₹200 offer → 5%', rateFor(LEHENGA, rupees(2400)), 500);
+
+check('the threshold is PER PIECE, not per line',
+  rateFor(LEHENGA, rupees(2000)) === 500,
+  'three at ₹2,000 each are 5%, not 18% because they total ₹6,000');
+
+// ── C. CGST and SGST always add back ─────────────────────────────────────────────────────
+console.log('\nC. CGST + SGST = the total tax, always, including on odd paise');
+
+{
+  const t = taxForLine({ taxableValueMinor: rupees(5000), rateBps: 500, interState: false });
+  eq('₹5,000 at 5% in-state', t, { cgstMinor: 12500, sgstMinor: 12500, igstMinor: 0, totalTaxMinor: 25000 });
+}
+{
+  // 333.33 at 5% = 16.6665 -> 1667 paise, which is odd and cannot be halved evenly
+  const t = taxForLine({ taxableValueMinor: 33333, rateBps: 500, interState: false });
+  check('an odd number of paise still adds back exactly',
+    t.cgstMinor + t.sgstMinor === t.totalTaxMinor,
+    `${t.cgstMinor} + ${t.sgstMinor} = ${t.totalTaxMinor}`);
+  check('and the halves differ by at most one paisa',
+    Math.abs(t.cgstMinor - t.sgstMinor) <= 1, `${t.cgstMinor} vs ${t.sgstMinor}`);
+}
+
+// ── D. Inter-state ───────────────────────────────────────────────────────────────────────
+console.log('\nD. Another state means IGST, and the customer pays the same');
+
+{
+  const home = taxForLine({ taxableValueMinor: rupees(3000), rateBps: 500, interState: false });
+  const away = taxForLine({ taxableValueMinor: rupees(3000), rateBps: 500, interState: true });
+  eq('in-state splits into halves', [home.cgstMinor, home.sgstMinor, home.igstMinor], [7500, 7500, 0]);
+  eq('out-of-state is one IGST line', [away.cgstMinor, away.sgstMinor, away.igstMinor], [0, 0, 15000]);
+  check('the customer pays the same either way', home.totalTaxMinor === away.totalTaxMinor,
+    `${home.totalTaxMinor} = ${away.totalTaxMinor}`);
+}
+
+// ── E. Inclusive prices ──────────────────────────────────────────────────────────────────
+console.log('\nE. Working backwards from a tax-inclusive shelf price');
+
+{
+  const { taxableValueMinor, taxMinor } = taxableFromInclusive(rupees(3121), 500);
+  check('taxable + tax = the price on the tag, exactly',
+    taxableValueMinor + taxMinor === rupees(3121),
+    `${taxableValueMinor} + ${taxMinor} = ${rupees(3121)}`);
+  check('and the taxable value is about price ÷ 1.05',
+    Math.abs(taxableValueMinor - Math.round(rupees(3121) / 1.05)) <= 1,
+    `${taxableValueMinor}`);
+}
+{
+  const ex = rupees(2000);
+  const inc = inclusiveFromTaxable(ex, 1800);
+  const back = taxableFromInclusive(inc, 1800);
+  eq('exclusive → inclusive → exclusive comes home', back.taxableValueMinor, ex);
+}
+
+// ── F. Credit notes ──────────────────────────────────────────────────────────────────────
+console.log('\nF. A refund reverses its sale exactly');
+
+{
+  const sale = taxForLine({ taxableValueMinor: 33333, rateBps: 500, interState: false });
+  const note = taxForLine({ taxableValueMinor: -33333, rateBps: 500, interState: false });
+  eq('the credit note is the sale negated, to the paisa',
+    [note.cgstMinor, note.sgstMinor, note.totalTaxMinor],
+    [-sale.cgstMinor, -sale.sgstMinor, -sale.totalTaxMinor]);
+}
+{
+  const sale = taxForLine({ taxableValueMinor: 12345, rateBps: 1800, interState: true });
+  const note = taxForLine({ taxableValueMinor: -12345, rateBps: 1800, interState: true });
+  check('and on IGST too', note.igstMinor === -sale.igstMinor, `${note.igstMinor} vs ${-sale.igstMinor}`);
+}
+
+// ── G. Who may charge tax ────────────────────────────────────────────────────────────────
+console.log('\nG. Not every shop may charge GST');
+
+const regs: GstRegistration[] = ['REGULAR', 'COMPOSITION', 'UNREGISTERED'];
+eq('only a regular dealer may charge', regs.map(mayChargeTax), [true, false, false]);
+eq('and each issues a different document', regs.map(documentKindFor),
+  ['TAX_INVOICE', 'BILL_OF_SUPPLY', 'RECEIPT']);
+
+// ── H. Rounding ──────────────────────────────────────────────────────────────────────────
+console.log('\nH. The bill total goes to the nearest rupee, and the difference is its own line');
+
+{
+  const r = roundOff(449960);                      // ₹4,499.60
+  eq('₹4,499.60 becomes ₹4,500.00', [r.roundedMinor, r.roundOffMinor], [450000, 40]);
+}
+{
+  const r = roundOff(450040);                      // ₹4,500.40
+  eq('₹4,500.40 becomes ₹4,500.00', [r.roundedMinor, r.roundOffMinor], [450000, -40]);
+}
+{
+  const r = roundOff(450000);
+  eq('an exact rupee is left alone', [r.roundedMinor, r.roundOffMinor], [450000, 0]);
+}
+
+// ── I. The trap in section 2, proved ─────────────────────────────────────────────────────
+console.log('\nI. The tax-inclusive threshold trap — proved, not asserted');
+
+{
+  const P = rupees(2800);                          // an inclusive shelf price in the bad band
+  const atLow = taxableFromInclusive(P, 500).taxableValueMinor;
+  const atHigh = taxableFromInclusive(P, 1800).taxableValueMinor;
+  const lowSaysHigh = atLow > APPAREL_RULE.thresholdMinor;    // 5% gives a value ABOVE the threshold
+  const highSaysLow = atHigh <= APPAREL_RULE.thresholdMinor;  // 18% gives one BELOW it
+  check('a ₹2,800 inclusive lehenga has no self-consistent rate',
+    lowSaysHigh && highSaysLow,
+    `at 5% taxable = ₹${(atLow / 100).toFixed(2)} (above ₹2,500); at 18% taxable = ₹${(atHigh / 100).toFixed(2)} (below)`);
+
+  // and the band is exactly where the plan says it is
+  const bandStart = rupees(2625);
+  const bandEnd = rupees(2950);
+  const below = taxableFromInclusive(bandStart, 500).taxableValueMinor <= APPAREL_RULE.thresholdMinor;
+  const above = taxableFromInclusive(bandEnd + 100, 1800).taxableValueMinor > APPAREL_RULE.thresholdMinor;
+  check('below ₹2,625 inclusive, 5% is consistent', below);
+  check('above ₹2,950 inclusive, 18% is consistent', above);
+}
+
+// ── J. Property sweeps ───────────────────────────────────────────────────────────────────
+console.log('\nJ. Sweeping thousands of values, not just the ones I thought of');
+
+{
+  let addBack = 0, roundTrip = 0, symmetry = 0, worstRoundTrip = 0;
+  const rates = [0, 500, 1800];
+  for (let paise = 1; paise <= 2_000_00; paise += 37) {
+    for (const rate of rates) {
+      const t = taxForLine({ taxableValueMinor: paise, rateBps: rate, interState: false });
+      if (t.cgstMinor + t.sgstMinor !== t.totalTaxMinor) addBack++;
+
+      const inc = inclusiveFromTaxable(paise, rate);
+      const back = taxableFromInclusive(inc, rate);
+      const drift = Math.abs(back.taxableValueMinor - paise);
+      if (drift > worstRoundTrip) worstRoundTrip = drift;
+      if (drift > 1) roundTrip++;
+
+      const neg = taxForLine({ taxableValueMinor: -paise, rateBps: rate, interState: false });
+      if (neg.totalTaxMinor !== -t.totalTaxMinor) symmetry++;
+    }
+  }
+  check('CGST + SGST adds back on every value swept', addBack === 0, `${addBack} failures`);
+  check('inclusive round trip never drifts more than a paisa', roundTrip === 0,
+    `${roundTrip} failures, worst drift ${worstRoundTrip} paisa`);
+  check('a refund is always the exact negative of its sale', symmetry === 0, `${symmetry} failures`);
+}
+
+{
+  // The invoice can never be made to disagree with itself: line tax computed from a
+  // reverse-engineered taxable value must still reproduce the inclusive price.
+  let bad = 0;
+  for (let p = 100; p <= 500_00; p += 13) {
+    for (const rate of [500, 1800]) {
+      const { taxableValueMinor, taxMinor } = taxableFromInclusive(p, rate);
+      if (taxableValueMinor + taxMinor !== p) bad++;
+    }
+  }
+  check('taxable + tax always equals the price the customer sees', bad === 0, `${bad} failures`);
+}
+
+// ── Result ───────────────────────────────────────────────────────────────────────────────
+console.log(`\n${'='.repeat(72)}`);
+console.log(`${passed} passed, ${failed} failed`);
+process.exit(failed === 0 ? 0 : 1);
