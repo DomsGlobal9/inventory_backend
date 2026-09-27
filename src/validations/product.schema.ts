@@ -18,6 +18,23 @@ export const createProductSchema = z.object({
   fabric: z.string().optional(),
   craft: z.string().optional(),
   brand: z.string().optional(),
+
+  /*
+   * GST. Optional everywhere, because a DRAFT is a save-point for something unfinished and a shop
+   * that is not GST-registered never needs any of it. What stops an unfinished product reaching a
+   * tax invoice is buildBill, not this schema -- refusing here would block saving a draft, which
+   * is the same mistake basePrice once made.
+   *
+   * 4, 6 or 8 digits: the length is the shop's own choice of precision, and what gets PRINTED is
+   * trimmed to 4 or 6 by turnover.
+   */
+  hsnCode: z.string().trim().regex(/^\d{4}$|^\d{6}$|^\d{8}$/, 'An HSN code is 4, 6 or 8 digits.').optional().or(z.literal('')),
+  /** Basis points: 500 = 5%, 1800 = 18%, 0 = exempt. */
+  taxRateBps: z.number().int().min(0, 'A tax rate cannot be negative.').max(10000, 'A tax rate cannot be more than 100%.').optional(),
+  /** True for stitched apparel, where the rate depends on what one piece sells for. */
+  taxSlabbed: z.boolean().optional(),
+  /** Stitched apparel must be priced without tax -- see PLAN-gst.md section 2. */
+  priceIsExclusive: z.boolean().optional(),
   // Non-negative here, with the "must be positive" rule applied below only to products
   // that are actually going live. A DRAFT is a save-point for something unfinished -- the
   // price is often the last thing decided -- and every comparable catalogue (Shopify, Zoho)

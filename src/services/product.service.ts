@@ -55,6 +55,12 @@ export class ProductService {
       brand: data.brand,
       basePrice: data.basePrice,
       status: data.status,
+      // An empty HSN box means "not set", not an empty string -- null is what buildBill looks for
+      // when it decides a product is not ready to appear on a tax invoice.
+      hsnCode: data.hsnCode ? data.hsnCode : null,
+      taxRateBps: data.taxRateBps ?? null,
+      taxSlabbed: data.taxSlabbed ?? false,
+      priceIsExclusive: data.priceIsExclusive ?? false,
       // Published straight from the wizard rather than saved as a draft first, which is the
       // common path. See updateProduct for why this column needs setting at all.
       publishedAt: data.status === 'ACTIVE' ? new Date() : null
@@ -93,6 +99,11 @@ export class ProductService {
     // Re-generate slug if title changes, suffixed with the product's own (already
     // unique) productCode for the same reason as createProduct above.
     let updateData = { ...data };
+
+    // Clearing the HSN box means "not set", which is null. An empty string would look like a code
+    // to every query that asks whether one exists.
+    if ('hsnCode' in updateData && !updateData.hsnCode) updateData.hsnCode = null as any;
+
     if (data.title) {
       const existing = await this.getProductById(id, clientId);
       updateData.slug = `${this.generateSlug(data.title)}-${existing.productCode.toLowerCase()}`;
