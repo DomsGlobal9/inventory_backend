@@ -23,7 +23,7 @@
  * Everything is in paise, integers, like the rest of pricing.
  */
 
-import { allocate } from './money';
+import { allocate } from './allocate';
 
 /** 500 = 5%, 1800 = 18%, 0 = exempt. Basis points, so a half-percent rate is expressible. */
 export type RateBps = number;

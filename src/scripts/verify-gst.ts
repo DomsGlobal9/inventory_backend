@@ -26,6 +26,8 @@ import {
 import { suggestHsn, effectiveTaxFor, hsnForInvoice } from '../services/pricing/hsn';
 import { buildBill, financialYearOf, type BillLineInput } from '../services/pricing/bill';
 import { freezeTaxForLine, type ProductTaxStanding } from '../services/pricing/freezeTax';
+import { buildDocument, type DocumentOrder, type DocumentShop } from '../services/invoicing/document';
+import { formatInvoiceNumber, SERIES } from '../services/invoicing/invoiceNumber';
 
 let passed = 0;
 let failed = 0;
@@ -464,6 +466,112 @@ const P1 = (unit: number, qty = 1) =>
   check('and the tax is the same amount either way',
     Math.round((Number(here.cgst) + Number(here.sgst)) * 100) === Math.round(Number(away.igst) * 100));
 }
+
+
+// -- V. The document a sale becomes --------------------------------------------------------
+console.log('\nV. The document');
+
+const SHOP: DocumentShop = {
+  businessName: 'SPHL', businessAddress: 'Hyderabad', businessPhone: '9999999999',
+  gstNumber: '36AAAAA0000A1Z5', gstStateCode: '36', gstRegistration: 'REGULAR',
+  turnoverAboveFiveCrore: false, receiptFooter: 'Exchange within 7 days'
+};
+
+const ORDER = (over: Partial<DocumentOrder> = {}): DocumentOrder => ({
+  orderNumber: 'SO-000042', createdAt: new Date('2026-09-27T11:00:00'),
+  documentKind: 'TAX_INVOICE', invoiceSeries: 'CTR', invoiceNumber: 7,
+  invoiceFinancialYear: '2026-27', placeOfSupplyStateCode: '36', interState: false,
+  roundOff: -0.4, total: 3121,
+  lines: [{
+    description: 'Kanchipuram saree', quantity: 1, unitPrice: 3121, lineTotal: 3121,
+    hsnCode: '5007', taxRateBps: 500, taxableValue: 2972.38, cgst: 74.31, sgst: 74.31, igst: 0
+  }],
+  ...over
+});
+
+{
+  const d = buildDocument(ORDER(), SHOP, null);
+  eq('a registered shop prints TAX INVOICE', d.heading, 'TAX INVOICE');
+  eq('numbered from its own series', d.number, 'CTR/2026-27/00007');
+  check('and it is issuable', d.problems.length === 0, d.problems.join(' | '));
+  eq('the HSN is trimmed to four digits for a small shop', d.lines[0].hsn, '5007');
+  eq('the rate is shown as a percent, not basis points', d.lines[0].ratePercent, 5);
+  check('the totals add up from the lines',
+    d.totals.cgst === 74.31 && d.totals.sgst === 74.31 && d.totals.totalTax === 148.62,
+    JSON.stringify(d.totals));
+}
+{
+  const big = buildDocument(ORDER(), { ...SHOP, turnoverAboveFiveCrore: true }, null);
+  eq('a shop over Rs 5 crore would print six digits', big.lines[0].hsn, '5007');
+}
+{
+  const d = buildDocument(
+    ORDER({ documentKind: 'BILL_OF_SUPPLY', invoiceSeries: 'CTR', invoiceNumber: 7 }),
+    { ...SHOP, gstRegistration: 'COMPOSITION' }, null);
+  eq('a composition dealer prints BILL OF SUPPLY', d.heading, 'BILL OF SUPPLY');
+  check('and MUST say it cannot collect tax',
+    d.declarations.some(x => /not eligible to collect tax/i.test(x)), d.declarations.join(' | '));
+}
+{
+  const d = buildDocument(ORDER({ documentKind: 'RECEIPT' }), SHOP, null);
+  eq('an unregistered shop prints RECEIPT', d.heading, 'RECEIPT');
+  check('with no declaration', d.declarations.length === 0);
+}
+
+// -- W. What makes a document WRONG rather than merely plain -------------------------------
+console.log('\nW. Refusals on the document');
+
+{
+  const d = buildDocument(ORDER({ invoiceNumber: null, invoiceSeries: null, invoiceFinancialYear: null }), SHOP, null);
+  check('a tax invoice with no number is called out', d.problems.some(p => /unbroken series/i.test(p)),
+    d.problems.join(' | '));
+  eq('and it falls back to the order number rather than inventing one', d.number, 'SO-000042');
+}
+{
+  const d = buildDocument(ORDER(), { ...SHOP, gstNumber: null }, null);
+  check('a tax invoice from a shop with no GSTIN is called out',
+    d.problems.some(p => /GSTIN/i.test(p)), d.problems.join(' | '));
+}
+{
+  const noHsn = ORDER();
+  noHsn.lines[0].hsnCode = null;
+  const d = buildDocument(noHsn, SHOP, null);
+  check('a line with no HSN is called out by name',
+    d.problems.some(p => p.includes('Kanchipuram saree')), d.problems.join(' | '));
+}
+{
+  // inter-state, unregistered customer, over Rs 2.5 lakh -> the address becomes mandatory
+  const d = buildDocument(
+    ORDER({ interState: true, placeOfSupplyStateCode: '29', total: 300000 }),
+    SHOP,
+    { name: 'A customer', phone: '9999999999', gstNumber: null, address: null }
+  );
+  check('a big inter-state sale to an unregistered customer needs their address',
+    d.problems.some(p => /2,50,000/.test(p)), d.problems.join(' | '));
+
+  const withAddress = buildDocument(
+    ORDER({ interState: true, placeOfSupplyStateCode: '29', total: 300000 }),
+    SHOP,
+    { name: 'A customer', phone: '9999999999', gstNumber: null, address: 'Bengaluru' }
+  );
+  check('and is fine once it has one', withAddress.problems.length === 0, withAddress.problems.join(' | '));
+
+  const registered = buildDocument(
+    ORDER({ interState: true, placeOfSupplyStateCode: '29', total: 300000 }),
+    SHOP,
+    { name: 'A business', phone: '9999999999', gstNumber: '29BBBBB1111B1Z5', address: null }
+  );
+  check('a REGISTERED customer does not need one', registered.problems.length === 0,
+    registered.problems.join(' | '));
+}
+
+// -- X. The printed number ------------------------------------------------------------------
+console.log('\nX. How a number prints');
+
+eq('padded to five', formatInvoiceNumber('CTR', '2026-27', 7), 'CTR/2026-27/00007');
+eq('and not truncated past it', formatInvoiceNumber('WEB', '2026-27', 123456), 'WEB/2026-27/123456');
+eq('the till and the shop have different prefixes', [SERIES.COUNTER, SERIES.ONLINE], ['CTR', 'WEB']);
+eq('and credit notes their own', SERIES.CREDIT_NOTE, 'CRN');
 
 // ── Result ───────────────────────────────────────────────────────────────────────────────
 console.log(`\n${'='.repeat(72)}`);

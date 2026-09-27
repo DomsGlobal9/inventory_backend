@@ -85,56 +85,14 @@ export function applyPercent(minor: number, percent: number): number {
 }
 
 /**
- * Split an amount across several lines so that the parts add up to EXACTLY the whole.
+ * Split an amount so the parts add up to EXACTLY the whole.
  *
- * This is the largest-remainder method, and it exists because the obvious implementation is
- * wrong in a way that shows up on the very first three-line order: ₹100 across three equal
- * lines is 33.33 three times, which is ₹99.99, and one paisa has gone missing. Over a month
- * that is a day book that does not balance and nobody can say why.
- *
- * Each line gets the floor of its exact share; the paise left over are then handed out one at a
- * time, largest fractional part first. Ties go to the earlier line, so the same input always
- * produces the same output -- an order re-saved must not redistribute its own discount.
- *
- * `weights` are normally the gross line totals. When they are all zero -- a whole order of
- * zero-priced items with a discount typed against it, which should not happen but does -- the
- * amount is spread as evenly as it can be rather than thrown away.
+ * The implementation moved to ./allocate, which imports nothing at all -- this file imports Prisma
+ * for its Decimal type, and that one dependency was the only thing stopping tax.ts, bill.ts and
+ * hsn.ts from being a set the POS and the online shop can take whole. Re-exported here so every
+ * existing caller is unchanged and there is still exactly one implementation.
  */
-export function allocate(totalMinor: number, weights: number[]): number[] {
-  if (weights.length === 0) return [];
-  if (totalMinor === 0) return weights.map(() => 0);
-
-  const negative = totalMinor < 0;
-  const total = Math.abs(totalMinor);
-
-  const safeWeights = weights.map(w => (Number.isFinite(w) && w > 0 ? w : 0));
-  const weightSum = safeWeights.reduce((a, b) => a + b, 0);
-
-  // Nothing to weight by. Even split, remainder to the earliest lines.
-  if (weightSum === 0) {
-    const base = Math.floor(total / weights.length);
-    const shares = weights.map(() => base);
-    let left = total - base * weights.length;
-    for (let i = 0; left > 0; i++, left--) shares[i] += 1;
-    return negative ? shares.map(s => -s) : shares;
-  }
-
-  const exact = safeWeights.map(w => (total * w) / weightSum);
-  const shares = exact.map(v => Math.floor(v));
-  let remaining = total - shares.reduce((a, b) => a + b, 0);
-
-  // Largest fractional part first; index ascending on a tie, so this is a total ordering and
-  // the result is reproducible.
-  const order = exact
-    .map((v, index) => ({ index, fraction: v - Math.floor(v) }))
-    .sort((a, b) => (b.fraction - a.fraction) || (a.index - b.index));
-
-  for (let i = 0; remaining > 0; i = (i + 1) % order.length, remaining--) {
-    shares[order[i].index] += 1;
-  }
-
-  return negative ? shares.map(s => -s) : shares;
-}
+export { allocate } from './allocate';
 
 /**
  * A net unit price to show, derived from the line total rather than kept alongside it.
