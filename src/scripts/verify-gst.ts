@@ -23,6 +23,7 @@ import {
   mayChargeTax, documentKindFor, APPAREL_RULE, FABRIC_RULE,
   type RateRule, type GstRegistration
 } from '../services/pricing/tax';
+import { suggestHsn, effectiveTaxFor, hsnForInvoice } from '../services/pricing/hsn';
 
 let passed = 0;
 let failed = 0;
@@ -212,6 +213,54 @@ console.log('\nJ. Sweeping thousands of values, not just the ones I thought of')
   }
   check('taxable + tax always equals the price the customer sees', bad === 0, `${bad} failures`);
 }
+
+
+// -- K. Suggesting an HSN from what the shop already typed --------------------------------
+console.log('\nK. HSN suggestions -- a first guess, never a decision');
+
+{
+  const silkSaree = suggestHsn({ dressType: 'Saree', fabric: 'Silk' });
+  eq('a silk saree suggests 5007 at 5%, not slabbed',
+    [silkSaree?.hsnCode, silkSaree?.taxRateBps, silkSaree?.taxSlabbed], ['5007', 500, false]);
+
+  const cotton = suggestHsn({ dressType: 'Saree', fabric: 'Cotton' });
+  eq('a cotton saree suggests 5208', [cotton?.hsnCode, cotton?.taxSlabbed], ['5208', false]);
+
+  const lehenga = suggestHsn({ dressType: 'Lehenga', fabric: 'Silk' });
+  eq('a lehenga suggests 6204 and IS slabbed',
+    [lehenga?.hsnCode, lehenga?.taxSlabbed], ['6204', true]);
+
+  check('THE TRAP: "Silk Lehenga" is apparel, not fabric',
+    suggestHsn({ dressType: 'Silk Lehenga' })?.taxSlabbed === true,
+    'reading the material first would tax a Rs 30,000 silk lehenga at 5% instead of 18%');
+
+  check('every suggestion asks to be confirmed',
+    [silkSaree, cotton, lehenga].every(x => x?.needsConfirming === true));
+
+  eq('nothing recognisable suggests nothing at all', suggestHsn({ dressType: 'Widget' }), null);
+  eq('and empty input suggests nothing', suggestHsn({}), null);
+}
+
+// -- L. The variant override, and what a sale is refused on --------------------------------
+console.log('\nL. Which code actually applies');
+
+{
+  const product = { hsnCode: '5007', taxRateBps: 500, taxSlabbed: false };
+  eq('the product is used when the variant says nothing',
+    effectiveTaxFor(product, { hsnCode: null, taxRateBps: null }).hsnCode, '5007');
+  eq('the variant wins where it has its own',
+    effectiveTaxFor(product, { hsnCode: '6206', taxRateBps: 500 }).hsnCode, '6206');
+  eq('an unset product yields nulls, which is what blocks a tax invoice',
+    effectiveTaxFor({ hsnCode: null, taxRateBps: null, taxSlabbed: false }).taxRateBps, null);
+}
+
+// -- M. HSN digits on the invoice ------------------------------------------------------------
+console.log('\nM. Four digits up to Rs 5 crore, six above');
+
+eq('a small shop prints four', hsnForInvoice('5007', false), '5007');
+eq('a big shop prints six', hsnForInvoice('520852', true), '520852');
+eq('a four-digit code is not padded for a big shop', hsnForInvoice('5007', true), '5007');
+eq('an eight-digit code is trimmed for a small shop', hsnForInvoice('52085210', false), '5208');
 
 // ── Result ───────────────────────────────────────────────────────────────────────────────
 console.log(`\n${'='.repeat(72)}`);
