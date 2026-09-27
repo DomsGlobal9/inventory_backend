@@ -668,6 +668,68 @@ async function main() {
       tooMany.data?.data?.answer === 'QTY_EXCEEDS_SOLD', JSON.stringify(tooMany.data?.data));
   }
 
+  console.log('\nO. A REFUND SPLIT ACROSS TWO METHODS');
+  {
+    const inv = `INV/2026-27/SP${Date.now() % 10000}`;
+    await prisma.inventoryStock.updateMany({
+      where: { clientId: CLIENT, variantId: variant.id }, data: { quantity: 10, reservedQty: 0 }
+    });
+    await sendEvent(key, {
+      kind: 'sale.completed', invoiceNo: inv, occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 2, unitPricePaise: 300000, lineTotalPaise: 600000 }],
+      totals: {}, payments: [{ method: 'CASH', amountPaise: 600000 }]
+    });
+
+    // one piece back: 3000, given back as 1800 UPI + 1200 cash
+    const cn = `CN/2026-27/SP${Date.now() % 10000}`;
+    const ret = await sendEvent(key, {
+      kind: 'sale.returned', creditNoteNo: cn, againstInvoiceNo: inv,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {},
+      refund: { method: 'UPI', reference: 'utr-9931' },
+      refunds: [
+        { method: 'UPI', amountPaise: 180000, reference: 'utr-9931' },
+        { method: 'CASH', amountPaise: 120000 }
+      ]
+    });
+    check('a split refund is APPLIED', ret.data?.data?.answer === 'APPLIED',
+      JSON.stringify(ret.data?.data));
+
+    const rows = await prisma.salesOrderPayment.findMany({
+      where: { clientId: CLIENT, kind: 'REFUND', salesOrder: { externalOrderId: inv } },
+      select: { method: true, amount: true, reference: true }
+    });
+    check('it is TWO rows, not one -- the day book sees each method',
+      rows.length === 2, JSON.stringify(rows.map(r => `${r.method} ${r.amount}`)));
+    check('the UPI part kept its reference',
+      rows.some(r => r.method === 'UPI' && Number(r.amount) === 1800 && r.reference === 'utr-9931'),
+      JSON.stringify(rows.map(r => ({ m: r.method, a: String(r.amount), ref: r.reference }))));
+    check('and the two add up to what came back',
+      rows.reduce((a, r) => a + Number(r.amount), 0) === 3000,
+      String(rows.reduce((a, r) => a + Number(r.amount), 0)));
+
+    // a split that does NOT add up must not quietly write wrong books
+    const cn2 = `CN/2026-27/SQ${Date.now() % 10000}`;
+    const bad = await sendEvent(key, {
+      kind: 'sale.returned', creditNoteNo: cn2, againstInvoiceNo: inv,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {},
+      refund: { method: 'CASH' },
+      refunds: [{ method: 'CASH', amountPaise: 250000 }]
+    });
+    check('a split that does not add up is still APPLIED -- a cashier cannot fix it',
+      bad.data?.data?.answer === 'APPLIED', JSON.stringify(bad.data?.data));
+    check('but it warns, naming both figures',
+      (bad.data?.data?.warnings ?? []).some((w) => /2500.00/.test(w) && /3000.00/.test(w)),
+      JSON.stringify(bad.data?.data?.warnings));
+
+    const after = await prisma.salesOrderPayment.findMany({
+      where: { clientId: CLIENT, kind: 'REFUND', salesOrder: { externalOrderId: inv } },
+      select: { amount: true }
+    });
+    check('and the books stay consistent: one row for it, at OUR figure',
+      after.length === 3 && after.some(r => Number(r.amount) === 3000),
+      JSON.stringify(after.map(r => String(r.amount))));
+  }
+
 }
 
 main()

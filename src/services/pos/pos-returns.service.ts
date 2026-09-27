@@ -39,10 +39,46 @@ export type PosReturnEvent = {
   creditNoteNo?: string;
   againstInvoiceNo?: string;
   lines?: PosLine[];
-  /** How the money actually went back at the till. CASH when the till does not say. */
+  /** The largest part, when a refund was split. CASH when the till does not say. */
   refund?: { method?: string; reference?: string } | null;
+  /** Every part of a split refund. A till can give half back on UPI and half in cash. */
+  refunds?: { method?: string; amountPaise?: number; reference?: string }[] | null;
   note?: string;
 };
+
+/**
+ * A split refund, merged by method and only if it adds up.
+ *
+ * Merged, because two rows of the same method would each try to post store credit under the same
+ * once-key. Only if it adds up, because the alternative is books whose refund rows and whose
+ * return total disagree -- and a shop reconciling a drawer at closing time cannot tell which of
+ * the two lied. When it does not add up we fall back to one row and say so, which is wrong in a
+ * way somebody can see rather than wrong in a way they cannot.
+ */
+function splitOf(event: PosReturnEvent, moneyMinor: number) {
+  const raw = Array.isArray(event.refunds) ? event.refunds : [];
+  if (!raw.length) return null;
+
+  const byMethod = new Map<RefundMethod, { amount: number; reference: string | null }>();
+  for (const r of raw) {
+    const m = String(r?.method ?? '').toUpperCase();
+    if (!(METHODS as string[]).includes(m)) return null;
+    const amount = Number(r?.amountPaise);
+    if (!Number.isInteger(amount) || amount <= 0) return null;
+    const at = byMethod.get(m as RefundMethod);
+    const reference = typeof r?.reference === 'string' ? r.reference.trim().slice(0, 100) || null : null;
+    if (at) { at.amount += amount; at.reference = at.reference ?? reference; }
+    else byMethod.set(m as RefundMethod, { amount, reference });
+  }
+
+  const total = [...byMethod.values()].reduce((a, x) => a + x.amount, 0);
+  if (total !== moneyMinor) return { mismatch: total, parts: [] as const };
+
+  return {
+    mismatch: null,
+    parts: [...byMethod.entries()].map(([method, x]) => ({ method, ...x }))
+  };
+}
 
 /**
  * Apply a return that has already happened.
@@ -154,6 +190,7 @@ export async function applyReturn(
     : null;
 
   const returnLocationId = locationId || order.locationId;
+  const warnings: string[] = [];
 
   const returnId = await runTransaction(async tx => {
     const created = await returnService.createReturnIn(
@@ -186,18 +223,54 @@ export async function applyReturn(
 
     const moneyMinor = toMinor(done.refundTotal as any);
     if (moneyMinor > 0) {
-      const creditBackMinor = await creditShare(tx, clientId, order.id, moneyMinor, created.id);
-      const recorded = await writeRefund(tx, {
-        clientId, orderId: order.id, returnId: created.id, returnNumber: done.returnNumber,
-        locationId: returnLocationId, customerId: order.customerId ?? null,
-        moneyMinor, creditBackMinor, method, reference,
-        // No person did this. receivedById is nullable precisely for a machine.
-        userId: null
-      });
-      await tx.salesReturn.update({
-        where: { id: created.id },
-        data: { refundStatus: 'REFUNDED', refundMethod: recorded, refundedAt: new Date() }
-      });
+      const split = splitOf(event, moneyMinor);
+
+      if (split?.mismatch != null) {
+        warnings.push(
+          `${creditNoteNo}: the till says it gave back ${(split.mismatch / 100).toFixed(2)} across its ` +
+          `methods, this return comes to ${(moneyMinor / 100).toFixed(2)}. Recorded as one ` +
+          `${method.toLowerCase()} refund of the second figure -- somebody should settle which is right.`
+        );
+      }
+
+      if (split?.parts.length) {
+        /*
+         * Exactly how the till gave it back, one row per method.
+         *
+         * No creditShare here, and that is deliberate: creditShare decides how much SHOULD go
+         * back as store credit when the bill was partly paid with it. The till has already
+         * handed the money over in whatever form it chose, and inventing a different split
+         * afterwards would put rows in the books describing something that did not happen.
+         */
+        let biggest = -1;
+        let headline: RefundMethod | null = null;
+        for (const part of split.parts) {
+          await writeRefund(tx, {
+            clientId, orderId: order.id, returnId: created.id, returnNumber: done.returnNumber,
+            locationId: returnLocationId, customerId: order.customerId ?? null,
+            moneyMinor: part.amount, creditBackMinor: 0, method: part.method,
+            reference: part.reference, userId: null
+          });
+          if (part.amount > biggest) { biggest = part.amount; headline = part.method; }
+        }
+        await tx.salesReturn.update({
+          where: { id: created.id },
+          data: { refundStatus: 'REFUNDED', refundMethod: headline, refundedAt: new Date() }
+        });
+      } else {
+        const creditBackMinor = await creditShare(tx, clientId, order.id, moneyMinor, created.id);
+        const recorded = await writeRefund(tx, {
+          clientId, orderId: order.id, returnId: created.id, returnNumber: done.returnNumber,
+          locationId: returnLocationId, customerId: order.customerId ?? null,
+          moneyMinor, creditBackMinor, method, reference,
+          // No person did this. receivedById is nullable precisely for a machine.
+          userId: null
+        });
+        await tx.salesReturn.update({
+          where: { id: created.id },
+          data: { refundStatus: 'REFUNDED', refundMethod: recorded, refundedAt: new Date() }
+        });
+      }
     }
 
     return created.id;
@@ -218,6 +291,7 @@ export async function applyReturn(
   return {
     answer: 'APPLIED',
     orderNumber: out.returnNumber,
+    ...(warnings.length ? { warnings } : {}),
     detail: `${creditNoteNo} taken back against ${order.orderNumber} as ${out.returnNumber}: ` +
       `${Number(out.refundTotal).toFixed(2)} back${out.refundMethod ? ` by ${String(out.refundMethod).toLowerCase()}` : ''}.`
   };
