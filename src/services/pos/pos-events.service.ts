@@ -285,8 +285,24 @@ export async function writeSaleInTransaction(
      * if those ever differ it is a bug worth failing on rather than papering over.
      */
     if (event.payments?.length) {
+      /*
+       * Checked against what the till says it TOOK, not against the bill.
+       *
+       * planPayments' only mode insists the rows add up to the whole bill, which is right where a
+       * cashier is typing: they should not be able to close a sale having taken too little. It is
+       * wrong here twice over. A kept order takes a deposit and collects the rest next week --
+       * refused outright until now, which also made payment.updated unreachable, since there was
+       * no part-paid bill for it to complete. And an exchange pays only the difference in money;
+       * the rest is settled against the credit note by a row written outside this function.
+       *
+       * Passing the sum keeps every other check planPayments makes -- the method shapes, one cash
+       * row, change never negative -- and drops only the one that does not apply. What is still
+       * owed is not lost: paymentSummary derives it from the bill and its rows, and already has a
+       * PART_PAID state for exactly this.
+       */
+      const takenMinor = event.payments.reduce((a, p) => a + Math.round(p.amountPaise), 0);
       const planned = planPayments(
-        toMinor(made.total),
+        takenMinor,
         event.payments.map(p => ({ method: p.method as any, amount: p.amountPaise / 100 })),
         'FULL'
       );
