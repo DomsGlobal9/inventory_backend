@@ -242,7 +242,12 @@ async function worth(db: Prisma.TransactionClient | typeof prisma, clientId: str
  */
 export async function creditShare(db: Prisma.TransactionClient | typeof prisma, clientId: string, orderId: string, moneyMinor: number, excludeReturnId?: string) {
   if (moneyMinor <= 0) return 0;
-  const pays = await db.salesOrderPayment.findMany({ where: { clientId, salesOrderId: orderId, kind: 'PAYMENT' }, select: { method: true, amount: true } });
+  const pays = await db.salesOrderPayment.findMany({
+    // Settlement rows wear CREDIT without being store credit -- an exchange paid in goods. Counted
+    // here they would send a later refund back as credit the customer never had.
+    where: { clientId, salesOrderId: orderId, kind: 'PAYMENT', settlesReturnId: null },
+    select: { method: true, amount: true }
+  });
   const creditPaid = pays.filter(p => p.method === 'CREDIT').reduce((a, p) => a + toMinor(p.amount as any), 0);
   const moneyPaid = pays.filter(p => p.method !== 'POINTS').reduce((a, p) => a + toMinor(p.amount as any), 0);
   if (creditPaid <= 0 || moneyPaid <= 0) return 0;

@@ -1524,6 +1524,9 @@ model SalesReturn {
   @@index([salesOrderId])
   @@index([clientId, status])
   @@map("sales_returns")
+  /// Bills settled by this credit note in an exchange -- see SalesOrderPayment.settlesReturnId.
+  settledPayments SalesOrderPayment[] @relation("PaymentSettledByReturn")
+
 }
 
 model SalesReturnItem {
@@ -2363,6 +2366,18 @@ model SalesOrderPayment {
 
   receivedById String? @map("received_by_id")
   receivedBy   User?   @relation("PaymentReceivedBy", fields: [receivedById], references: [id], onDelete: SetNull)
+
+  /// Goods paid for with goods, not with money.
+  ///
+  /// An exchange settles the new bill against the credit note for what came back. That has to be
+  /// recorded, or the order looks unpaid and the shop chases a customer who owes nothing -- but
+  /// it is not takings, and writing it as cash would put money in the owner's Day Book that never
+  /// existed and cannot be found in the bank. So: a row that makes the bill paid, naming the
+  /// return it was settled against, and excluded from every figure that means money.
+  ///
+  /// Null on every ordinary payment. Set only by an exchange.
+  settlesReturnId String?      @map("settles_return_id")
+  settlesReturn   SalesReturn? @relation("PaymentSettledByReturn", fields: [settlesReturnId], references: [id], onDelete: SetNull)
 
   /// One payment per key, enforced by the database rather than by looking first.
   ///

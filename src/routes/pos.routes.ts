@@ -19,7 +19,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateStorefront, storefrontContext } from '../middleware/storefront.middleware';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
 import { checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
-import { acceptSale, acceptReturn, acceptPaymentUpdate, saleStatus } from '../services/pos/pos-queue.service';
+import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptExchange, saleStatus } from '../services/pos/pos-queue.service';
 
 const router = Router();
 
@@ -217,11 +217,25 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
     }
 
     if (kind === 'sale.exchanged') {
-      const notYet: PosEventResult = {
-        answer: 'BAD_PAYLOAD',
-        detail: 'Exchanges are not finished here. Nothing has been recorded.'
-      };
-      res.status(422).json({ success: false, data: notYet });
+      /*
+       * A return and a sale in one act, applied in one transaction. Taken in like both of them,
+       * for the same reason: the customer has already walked out with the difference.
+       */
+      const locationId = ctx.locationIds[0];
+      if (!locationId) {
+        res.status(422).json({
+          success: false,
+          data: { answer: 'BAD_PAYLOAD', detail: 'This connection has no location, so an exchange has nowhere to happen.' } as PosEventResult
+        });
+        return;
+      }
+      const swapped = await acceptExchange(ctx.clientId, locationId, event);
+      if (swapped.answer === 'ACCEPTED') {
+        res.status(202).json({ success: true, data: swapped });
+        return;
+      }
+      const ok = swapped.answer === 'APPLIED' || swapped.answer === 'ALREADY_APPLIED';
+      res.status(ok ? 200 : 422).json({ success: ok, data: swapped });
       return;
     }
 

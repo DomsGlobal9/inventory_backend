@@ -70,7 +70,9 @@ async function sendEvent(key: string, body: any) {
    * bill can legitimately collect money more than once.
    */
   const number = String(
-    body.kind === 'payment.updated' ? body.idempotencyKey : (body.creditNoteNo ?? body.invoiceNo ?? '')
+    body.kind === 'payment.updated' ? body.idempotencyKey
+    : body.kind === 'sale.exchanged' ? body.exchangeNo
+    : (body.creditNoteNo ?? body.invoiceNo ?? '')
   );
 
   const until = Date.now() + 180_000;
@@ -814,6 +816,122 @@ async function main() {
     check('recorded on the side it belongs on: a REFUND, not a payment of less than nothing',
       reversal?.kind === 'REFUND' && Number(reversal?.amount) === 2000,
       JSON.stringify(reversal));
+  }
+
+  console.log('\nQ. A SWAP: GOODS BACK, GOODS OUT, AND NO PHANTOM CASH');
+  {
+    const inv = `INV/2026-27/EX${Date.now() % 10000}`;
+    await prisma.inventoryStock.updateMany({
+      where: { clientId: CLIENT, variantId: variant.id }, data: { quantity: 10, reservedQty: 0 }
+    });
+    await sendEvent(key, {
+      kind: 'sale.completed', invoiceNo: inv, occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 2, unitPricePaise: 300000, lineTotalPaise: 600000 }],
+      totals: {}, payments: [{ method: 'CASH', amountPaise: 600000 }]
+    });
+    const soldOut = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('the bill being exchanged against went out', soldOut?.quantity === 8, String(soldOut?.quantity));
+
+    // an EVEN swap: one piece back, one of the same out, no money at all
+    const ex = `EXC/2026-27/${Date.now() % 10000}`;
+    const out = await sendEvent(key, {
+      kind: 'sale.exchanged', exchangeNo: ex, againstInvoiceNo: inv,
+      occurredAt: new Date().toISOString(),
+      returned: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }],
+      sold: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }],
+      payments: []
+    });
+    check('an even swap is APPLIED', out.data?.data?.answer === 'APPLIED', JSON.stringify(out.data?.data));
+    check('and it says no money moved', /even swap/i.test(out.data?.data?.detail ?? ''),
+      out.data?.data?.detail);
+
+    const afterSwap = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('one piece came back and one went out, so the count is unchanged',
+      afterSwap?.quantity === 8, String(afterSwap?.quantity));
+
+    const newOrder = await prisma.salesOrder.findFirst({
+      where: { clientId: CLIENT, externalOrderId: ex },
+      select: { id: true, total: true, orderNumber: true }
+    });
+    check('a new bill exists for what went out', Number(newOrder?.total) === 3000,
+      String(newOrder?.total));
+
+    const settle = await prisma.salesOrderPayment.findMany({
+      where: { clientId: CLIENT, settlesReturnId: { not: null } },
+      select: { kind: true, method: true, amount: true, salesOrderId: true }
+    });
+    check('the swap is settled by TWO rows -- one off the credit note, one onto the new bill',
+      settle.length === 2 && settle.every(r => Number(r.amount) === 3000),
+      JSON.stringify(settle.map(r => `${r.kind} ${r.method} ${r.amount}`)));
+    check('and the new bill is paid, so nobody chases a customer who owes nothing',
+      settle.some(r => r.kind === 'PAYMENT' && r.salesOrderId === newOrder?.id), JSON.stringify(settle));
+
+    // the whole point of B: none of that is money
+    const cash = await prisma.salesOrderPayment.findMany({
+      where: { clientId: CLIENT, settlesReturnId: null, salesOrderId: newOrder?.id },
+      select: { amount: true }
+    });
+    check('NO cash row was invented for the swap -- the day book stays truthful',
+      cash.length === 0, JSON.stringify(cash.map(c => String(c.amount))));
+
+    // the same exchange again must not do it twice
+    const again = await sendEvent(key, {
+      kind: 'sale.exchanged', exchangeNo: ex, againstInvoiceNo: inv,
+      returned: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }],
+      sold: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }],
+      payments: []
+    });
+    check('sending the same exchange again is ALREADY_APPLIED',
+      again.data?.data?.answer === 'ALREADY_APPLIED', JSON.stringify(again.data?.data));
+    const orders = await prisma.salesOrder.count({ where: { clientId: CLIENT, externalOrderId: ex } });
+    check('and there is exactly ONE new bill', orders === 1, String(orders));
+  }
+
+  console.log('\nR. A SWAP WHERE MONEY REALLY DOES MOVE');
+  {
+    const inv = `INV/2026-27/EY${Date.now() % 10000}`;
+    await prisma.inventoryStock.updateMany({
+      where: { clientId: CLIENT, variantId: variant.id }, data: { quantity: 20, reservedQty: 0 }
+    });
+    await sendEvent(key, {
+      kind: 'sale.completed', invoiceNo: inv, occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }],
+      totals: {}, payments: [{ method: 'CASH', amountPaise: 300000 }]
+    });
+
+    // swap a 3,000 for a 4,500: only the 1,500 is new money
+    const ex = `EXC/2026-27/U${Date.now() % 10000}`;
+    const up = await sendEvent(key, {
+      kind: 'sale.exchanged', exchangeNo: ex, againstInvoiceNo: inv,
+      occurredAt: new Date().toISOString(),
+      returned: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }],
+      sold: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 450000, lineTotalPaise: 450000 }],
+      payments: [{ method: 'CASH', amountPaise: 150000 }]
+    });
+    check('a swap upwards is APPLIED', up.data?.data?.answer === 'APPLIED', JSON.stringify(up.data?.data));
+    check('and it names only the real difference as paid',
+      /1500.00 paid by the customer/.test(up.data?.data?.detail ?? ''), up.data?.data?.detail);
+
+    const order = await prisma.salesOrder.findFirst({
+      where: { clientId: CLIENT, externalOrderId: ex }, select: { id: true }
+    });
+    const rows = await prisma.salesOrderPayment.findMany({
+      where: { clientId: CLIENT, salesOrderId: order?.id },
+      select: { method: true, amount: true, settlesReturnId: true }
+    });
+    const money = rows.filter(r => r.settlesReturnId === null);
+    const settled = rows.filter(r => r.settlesReturnId !== null);
+    check('the bill is paid 3,000 by the returned goods and 1,500 in real cash',
+      settled.length === 1 && Number(settled[0].amount) === 3000 &&
+      money.length === 1 && Number(money[0].amount) === 1500 && money[0].method === 'CASH',
+      JSON.stringify(rows.map(r => `${r.method} ${r.amount} ${r.settlesReturnId ? 'settled' : 'money'}`)));
+    check('so the takings show 1,500, not 4,500',
+      money.reduce((a, r) => a + Number(r.amount), 0) === 1500,
+      String(money.reduce((a, r) => a + Number(r.amount), 0)));
   }
 
 }

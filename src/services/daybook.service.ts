@@ -544,7 +544,15 @@ export class DayBookService {
     // Points and store credit are listed but are not money in the drawer.
     const payRows = await prisma.salesOrderPayment.groupBy({
       by: ['kind', 'method'],
-      where: { clientId, receivedAt: { gte: start, lt: end }, ...(locationId ? { locationId } : {}) },
+      where: {
+        clientId, receivedAt: { gte: start, lt: end }, ...(locationId ? { locationId } : {}),
+        /*
+         * Goods paid for with goods are not takings. An exchange settles the new bill against the
+         * credit note for what came back; counting it here would show an owner money that never
+         * existed and cannot be found in the bank.
+         */
+        settlesReturnId: null
+      },
       _sum: { amount: true },
       _count: { _all: true }
     });

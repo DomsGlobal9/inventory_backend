@@ -134,7 +134,12 @@ export async function payOut(actor: Actor, customerId: string, input: { amount: 
     // add up to what went back for its goods (a new row would push a part-returned bill to
     // "Refunded"), and the Day Book sees the cash leave the drawer today.
     const creditRows = await tx.salesOrderPayment.findMany({
-      where: { clientId: actor.clientId, kind: 'REFUND', method: 'CREDIT', salesOrder: { customerId } },
+      where: {
+        clientId: actor.clientId, kind: 'REFUND', method: 'CREDIT', salesOrder: { customerId },
+        // An exchange settlement wears CREDIT but is not credit the shop owes: it was paid in
+        // goods, there and then. Paying it out would hand over cash for a debt that never existed.
+        settlesReturnId: null
+      },
       orderBy: [{ receivedAt: 'desc' }, { id: 'desc' }],
       select: { id: true, amount: true, salesOrderId: true, salesReturnId: true, locationId: true }
     });

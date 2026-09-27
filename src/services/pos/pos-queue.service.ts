@@ -24,6 +24,7 @@ import { env } from '../../config/env';
 import { applySale, POS_SOURCE, type PosEventResult } from './pos-events.service';
 import { applyReturn } from './pos-returns.service';
 import { applyPaymentUpdate, faultInPaymentShape } from './pos-payments.service';
+import { applyExchange, faultInExchangeShape } from './pos-exchange.service';
 
 /** How many events one tick may take on. */
 const BATCH = 10;
@@ -109,6 +110,22 @@ export async function acceptPaymentUpdate(
   const fault = faultInPaymentShape(event);
   if (fault) return { answer: 'BAD_PAYLOAD', detail: fault };
   return accept(clientId, locationId, 'payment.updated', String(event.idempotencyKey), event);
+}
+
+/**
+ * A swap, taken in like everything else.
+ *
+ * Filed under the exchange number. The pieces coming back and the pieces going out are one act
+ * and one row here, because they are applied in one transaction.
+ */
+export async function acceptExchange(
+  clientId: string,
+  locationId: string,
+  event: any
+): Promise<PosAcceptResult> {
+  const fault = faultInExchangeShape(event);
+  if (fault) return { answer: 'BAD_PAYLOAD', detail: fault };
+  return accept(clientId, locationId, 'sale.exchanged', String(event.exchangeNo), event);
 }
 
 async function accept(
@@ -235,6 +252,7 @@ async function runOne(id: string): Promise<boolean> {
   try {
     const out =
       row.kind === 'sale.returned' ? await applyReturn(row.clientId, row.locationId, row.payload as any)
+      : row.kind === 'sale.exchanged' ? await applyExchange(row.clientId, row.locationId, row.payload as any)
       : row.kind === 'payment.updated' ? await applyPaymentUpdate(row.clientId, row.locationId, row.payload as any)
       : await applySale(row.clientId, row.locationId, row.payload as any);
 
@@ -343,5 +361,5 @@ export async function recoverStranded(): Promise<number> {
 }
 
 export const posQueue = {
-  acceptSale, acceptReturn, acceptPaymentUpdate, saleStatus, tick, recoverStranded, faultInSaleShape, POS_SOURCE
+  acceptSale, acceptReturn, acceptPaymentUpdate, acceptExchange, saleStatus, tick, recoverStranded, faultInSaleShape, POS_SOURCE
 };
