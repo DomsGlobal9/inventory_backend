@@ -1,6 +1,20 @@
 # Moving the database to Singapore
 
-Status: planned, not started.
+Status: **done.** Cut over on 2026-09-11 to `izrzvdejtfhpzrxzkasu` (`ap-southeast-1`, Singapore).
+The Sydney project `psexbaagmgeoyvtbdbbm` is retired; its connection strings survive only as
+commented-out lines in `.env`, to be deleted once the old project is gone. `db-migration-singapore.md`
+is the runbook that was followed.
+
+This line said "planned, not started" for sixteen days after the move. That is worth more than an
+apology in a changelog, because a stale status is not a small error: on 2026-09-27 it sent somebody
+looking for a migration to plan while the plan was already six days old, and the two documents in
+this folder said opposite things about the same event. If you do the next migration, change this
+line as part of the cutover, not afterwards.
+
+**Still worth confirming in the Render dashboard, because it cannot be read from this repository:**
+the Inventory service's region, and that its `DATABASE_URL` points at `izrzvde...` rather than the
+retired `psexbaa...`. Step 6 of the runbook ("Switch Render over") carries no completion marker.
+A Singapore backend still pointed at the retired Sydney project would be the worst of both.
 
 ## Why
 
