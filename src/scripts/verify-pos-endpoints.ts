@@ -524,6 +524,59 @@ async function main() {
       JSON.stringify(after.data?.data));
   }
 
+  console.log('\nM. RETRY CLEARS A REJECTION');
+  {
+    /*
+     * An event the shop can fix: an item code we do not know. It settles REJECTED, and the owner
+     * is meant to correct it and press Retry. If a resend handed the stored rejection back, Retry
+     * could never clear anything -- which is exactly what it did until the POS session asked.
+     */
+    const invoiceNo = `INV/2026-27/X${Date.now() % 10000}`;
+    const base = {
+      kind: 'sale.completed', invoiceNo,
+      occurredAt: new Date().toISOString(),
+      totals: {}, payments: [{ method: 'CASH', amountPaise: 300000 }]
+    };
+
+    const bad = await sendEvent(key, {
+      ...base, lines: [{ itemCode: 'NO-SUCH-ITEM', qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }]
+    });
+    check('an unknown item settles as a rejection, naming it',
+      bad.data?.data?.answer === 'UNKNOWN_ITEM', JSON.stringify(bad.data?.data));
+
+    const st = await api(key).get(`/events/status?invoiceNo=${encodeURIComponent(invoiceNo)}`);
+    check('and its STATUS is REJECTED, not APPLIED with a bad answer',
+      st.data?.data?.status === 'REJECTED', JSON.stringify(st.data?.data?.status));
+
+    const stock0 = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+
+    // the owner fixes the item code and presses Retry
+    const fixed = await sendEvent(key, {
+      ...base, lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }]
+    });
+    check('resending the corrected sale is re-evaluated, not handed the old rejection',
+      fixed.data?.data?.answer === 'APPLIED', JSON.stringify(fixed.data?.data));
+
+    const st2 = await api(key).get(`/events/status?invoiceNo=${encodeURIComponent(invoiceNo)}`);
+    check('and it is APPLIED now, with an order number',
+      st2.data?.data?.status === 'APPLIED' && String(st2.data?.data?.orderNumber ?? '').startsWith('SO-'),
+      JSON.stringify(st2.data?.data?.orderNumber));
+
+    const stock1 = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('the rejected attempt moved no stock; only the corrected one did',
+      (stock0?.quantity ?? 0) - (stock1?.quantity ?? 0) === 1,
+      `${stock0?.quantity} -> ${stock1?.quantity}`);
+
+    const orders = await prisma.salesOrder.count({
+      where: { clientId: CLIENT, externalOrderId: invoiceNo }
+    });
+    check('and exactly ONE order came out of the whole exchange', orders === 1, String(orders));
+  }
+
 }
 
 main()

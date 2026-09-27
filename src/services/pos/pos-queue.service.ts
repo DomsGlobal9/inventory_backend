@@ -20,10 +20,11 @@
  * change what the till does next.
  */
 import { prisma } from '../../lib/prisma';
+import { env } from '../../config/env';
 import { applySale, POS_SOURCE, type PosEventResult } from './pos-events.service';
 
 /** How many events one tick may take on. */
-const BATCH = 5;
+const BATCH = 10;
 
 /** A row left on RUNNING longer than this belonged to an instance that died. */
 const STRANDED_MS = 5 * 60 * 1000;
@@ -80,15 +81,41 @@ export async function acceptSale(
       invoiceNo: String(event.invoiceNo), payload: event
     },
     // Deliberately empty. A resend must not overwrite the event we are already working on: the
-    // first version is the one the answer will be about.
+    // first version is the one the answer will be about. A REJECTED one is different -- see below.
     update: {},
     select: {
       id: true, status: true, answer: true, orderNumber: true, detail: true, warnings: true
     }
   });
 
+  /*
+   * A resend of a REJECTED event RE-OPENS it, with the new payload.
+   *
+   * REJECTED means "nobody should keep retrying this on its own" -- an item the shop does not
+   * sell, or a fault that outlasted five attempts. The owner is meant to fix the cause and press
+   * Retry, and if we handed the stored rejection straight back, Retry could never clear anything.
+   * Pointed out by the POS session before it could bite a shop.
+   *
+   * Safe to re-run because applySale is idempotent in its own right: if an earlier attempt did
+   * commit before we lost the answer, it finds that order by its invoice number and reports
+   * ALREADY_APPLIED rather than selling anything twice.
+   *
+   * Checked AFTER the upsert rather than before it, so an ordinary sale still costs exactly one
+   * round trip and only the rare rejected resend pays for a second.
+   */
+  if (row.status === 'REJECTED') {
+    await prisma.posInboundEvent.update({
+      where: { id: row.id },
+      data: {
+        status: 'QUEUED', payload: event, attempts: 0,
+        answer: null, detail: null, warnings: undefined, settledAt: null
+      }
+    });
+    return { answer: 'ACCEPTED', reference: row.id };
+  }
+
   // Already finished while the till was retrying: give it the real answer, not a queue position.
-  if (row.status === 'APPLIED' || row.status === 'REJECTED') {
+  if (row.status === 'APPLIED') {
     /*
      * APPLIED becomes ALREADY_APPLIED, because that is what it is from the sender's side.
      *
@@ -157,14 +184,19 @@ async function runOne(id: string): Promise<boolean> {
     const out = await applySale(row.clientId, row.locationId, row.payload as any);
 
     /*
-     * Settled either way. APPLIED and ALREADY_APPLIED are obviously done, but so is anything the
-     * event itself is wrong about: an item this shop does not sell will still not exist on the
-     * fiftieth attempt, and retrying it forever buries the one event somebody needs to look at.
+     * Settled either way, but NOT under the same status.
+     *
+     * APPLIED and ALREADY_APPLIED are done. Anything else -- an item this shop does not sell --
+     * is settled in the sense that retrying it unchanged will never help, and REJECTED is what
+     * that is. Recording it as APPLIED with a failing answer, which is what this did first, gave
+     * a till no way to tell a sale that went through from one that needs a person: both said
+     * APPLIED and only the answer field differed.
      */
+    const wentThrough = out.answer === 'APPLIED' || out.answer === 'ALREADY_APPLIED';
     await prisma.posInboundEvent.update({
       where: { id },
       data: {
-        status: 'APPLIED',
+        status: wentThrough ? 'APPLIED' : 'REJECTED',
         answer: out.answer,
         orderNumber: out.orderNumber ?? null,
         detail: out.detail ?? null,
@@ -219,13 +251,30 @@ export async function tick(onlyClients?: string[]): Promise<number> {
     select: { id: true }
   });
 
-  let did = 0;
   /*
-   * One at a time on purpose. These are long sequential transactions against a database an ocean
-   * away; five at once would hold five connections for ten seconds each and starve everything
-   * else the server is doing, for throughput nobody is waiting on.
+   * A few at a time, not one, and not all of them.
+   *
+   * This ran strictly one at a time, which was the right instinct and the wrong number. A sale is
+   * ten seconds of WAITING on a database an ocean away -- the server does almost nothing during
+   * it -- so serialising them meant a shop ringing up three items in a row watched the third
+   * appear thirty seconds later, for no gain.
+   *
+   * Not unbounded either. Each sale holds one pooled connection inside an open transaction for
+   * its whole length, and the pooler in front of Postgres has its own ceiling: ten at once would
+   * hold ten connections for ten seconds and starve every ordinary request the server is serving
+   * at the same time. Three is the compromise, and POS_QUEUE_CONCURRENCY moves it without a
+   * deploy if a shop turns out to need more.
+   *
+   * Sales for the same variant still serialise on the variant lock inside applyMovement, which is
+   * correct and costs only waiting -- the lock is what keeps two sales of the last saree honest.
    */
-  for (const w of waiting) if (await runOne(w.id)) did++;
+  const limit = Math.max(1, env.POS_QUEUE_CONCURRENCY);
+  let did = 0;
+  for (let i = 0; i < waiting.length; i += limit) {
+    const slice = waiting.slice(i, i + limit);
+    const results = await Promise.all(slice.map(w => runOne(w.id)));
+    did += results.filter(Boolean).length;
+  }
   return did;
 }
 

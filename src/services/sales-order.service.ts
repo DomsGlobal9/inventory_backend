@@ -330,20 +330,32 @@ export class SalesOrderService {
         tax: { hsnCode: string | null; taxRateBps: number | null; taxSlabbed: boolean; priceIsExclusive: boolean };
       }[] = [];
 
-      for (const item of data.items) {
-        const variant = await tx.productVariant.findFirst({
-          where: { id: item.variantId, clientId },
-          include: {
-            locationProfiles: true,
-            // The tax fields come too, so the rate charged can be frozen onto the line below.
-            product: {
-              select: {
-                basePrice: true,
-                hsnCode: true, taxRateBps: true, taxSlabbed: true, priceIsExclusive: true
-              }
+      /*
+       * Every line's variant in ONE read, not one read per line.
+       *
+       * This was a findFirst inside the loop, and on a database an ocean away a three-item bill
+       * spent two of its twenty-five seconds here doing the same kind of lookup three times.
+       * Nothing in this loop writes a variant -- the stock movements happen later, in dispatch --
+       * so reading them all up front sees exactly what reading them one at a time would have.
+       */
+      const wantedVariantIds = [...new Set(data.items.map((i: any) => i.variantId))];
+      const variantRows = await tx.productVariant.findMany({
+        where: { id: { in: wantedVariantIds }, clientId },
+        include: {
+          locationProfiles: true,
+          // The tax fields come too, so the rate charged can be frozen onto the line below.
+          product: {
+            select: {
+              basePrice: true,
+              hsnCode: true, taxRateBps: true, taxSlabbed: true, priceIsExclusive: true
             }
           }
-        });
+        }
+      });
+      const variantById = new Map<string, any>(variantRows.map((v: any) => [v.id, v]));
+
+      for (const item of data.items) {
+        const variant = variantById.get(item.variantId);
         if (!variant) throw notFound(`Variant not found: ${item.variantId}`);
 
         const locationConfig = resolveVariantForLocation(variant, locationId, Number(variant.product.basePrice));

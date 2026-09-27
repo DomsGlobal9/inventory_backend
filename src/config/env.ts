@@ -219,6 +219,11 @@ const envSchema = z.object({
   // be asked for by name rather than assumed, and scoped to the test shop when it is on.
   POS_QUEUE_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
   POS_QUEUE_ONLY_CLIENTS: optionalStr(z.string()),
+  // How many sales the worker applies at once. Three, not one, and not ten -- see tick().
+  POS_QUEUE_CONCURRENCY: z.preprocess(
+    (v) => (v === undefined || v === '' ? 3 : Number(v)),
+    z.number().int().min(1).max(10).default(3)
+  ),
 
   // --- Shopify -----------------------------------------------------------------------
   //
