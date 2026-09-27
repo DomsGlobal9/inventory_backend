@@ -18,7 +18,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateStorefront, storefrontContext } from '../middleware/storefront.middleware';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
-import { applySale, checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
+import { checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
+import { acceptSale, saleStatus } from '../services/pos/pos-queue.service';
 
 const router = Router();
 
@@ -142,7 +143,25 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
         return;
       }
 
-      const out = await applySale(ctx.clientId, locationId, event);
+      /*
+       * WRITTEN DOWN, THEN ANSWERED -- the till does not wait for the bookkeeping.
+       *
+       * Applying a sale is about thirty-seven round trips to Singapore, eight to twelve seconds
+       * with a customer at the counter, and not one of those trips needs the customer present.
+       * The POS has already taken the money and printed the bill. So the event is committed in
+       * one round trip and the answer goes back at once; the worker applies it moments later.
+       *
+       * 202, not 200, because the difference is real and a till should be able to see it: the
+       * sale is safely ours, and it has not been applied yet.
+       */
+      const out = await acceptSale(ctx.clientId, locationId, event);
+
+      if (out.answer === 'ACCEPTED') {
+        res.status(202).json({ success: true, data: out });
+        return;
+      }
+
+      // A resend that arrived after the work finished gets the real answer, not a queue position.
       const ok = out.answer === 'APPLIED' || out.answer === 'ALREADY_APPLIED';
       res.status(ok ? 200 : 422).json({ success: ok, data: out });
       return;
@@ -161,6 +180,40 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
       success: false,
       data: { answer: 'BAD_PAYLOAD', detail: `Unknown event kind "${kind}".` } as PosEventResult
     });
+  } catch (error) { next(error); }
+});
+
+/**
+ * Where did that sale get to?
+ *
+ * The other half of answering before the work is done: a till that wants certainty can ask, and
+ * anything watching a queue drain can see it drain. invoiceNo goes in the query string rather
+ * than the path because a real one is "INV/2026-27/0001" and those slashes are not path
+ * separators.
+ */
+router.get('/events/status', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+
+    const invoiceNo = String(req.query.invoiceNo ?? '').trim();
+    if (!invoiceNo) {
+      res.status(400).json({
+        success: false,
+        data: { answer: 'BAD_PAYLOAD', detail: 'Say which invoice, with ?invoiceNo=' } as PosEventResult
+      });
+      return;
+    }
+
+    const found = await saleStatus(ctx.clientId, invoiceNo);
+    if (!found) {
+      res.status(404).json({
+        success: false,
+        data: { answer: 'UNKNOWN_ORDER', detail: `Nothing here for invoice ${invoiceNo}.` } as PosEventResult
+      });
+      return;
+    }
+    res.json({ success: true, data: found });
   } catch (error) { next(error); }
 });
 

@@ -1,5 +1,6 @@
 import { CampaignsScheduler } from './jobs/campaigns.scheduler';
 import { PhotoJobsScheduler } from './jobs/photo-jobs.scheduler';
+import { PosQueueScheduler } from './jobs/pos-queue.scheduler';
 import express from 'express'; // Restart trigger 2
 import cors from 'cors';
 import { env } from './config/env';
@@ -268,4 +269,5 @@ app.listen(PORT, () => {
    * PHOTO_JOBS_IN_DEV and PHOTO_JOBS_ONLY_CLIENTS and decides for itself.
    */
   PhotoJobsScheduler.start();
+  PosQueueScheduler.start();
 });

@@ -28,6 +28,7 @@ const ITEMS = [
 async function teardown(clientId: string) {
   const w = { clientId };
   const steps: [string, () => Promise<unknown>][] = [
+    ['pos events',   () => prisma.posInboundEvent.deleteMany({ where: w })],
     ['deliveries',   () => prisma.storefrontDelivery.deleteMany({ where: w })],
     ['events',       () => prisma.storefrontEvent.deleteMany({ where: w })],
     ['payments',     () => prisma.salesOrderPayment.deleteMany({ where: w })],

@@ -53,6 +53,34 @@ inst.interceptors.response.use(
          return Promise.reject(e); }
 ); return inst; };
 
+/**
+ * Post an event and, if it was only taken in, wait for the worker to finish it.
+ *
+ * /events stopped doing the work in-line -- it writes the event down, answers 202 ACCEPTED and a
+ * worker applies it a moment later. A test that asserts on the OUTCOME therefore has to wait for
+ * the outcome. Shaped like the axios response the assertions already read, so this is one
+ * function rather than forty edits, and every existing check keeps meaning what it meant.
+ */
+async function sendEvent(key: string, body: any) {
+  const r = await sendEvent(key, body);
+  if (r.data?.data?.answer !== 'ACCEPTED') return r;
+
+  const until = Date.now() + 180_000;
+  while (Date.now() < until) {
+    const s = await api(key).get(`/events/status?invoiceNo=${encodeURIComponent(String(body.invoiceNo))}`);
+    const d = s.data?.data;
+    if (d && (d.status === 'APPLIED' || d.status === 'REJECTED')) {
+      const ok = d.answer === 'APPLIED' || d.answer === 'ALREADY_APPLIED';
+      return { ...r, status: ok ? 200 : 422,
+        data: { success: ok, data: {
+          answer: d.answer, orderNumber: d.orderNumber, detail: d.detail, warnings: d.warnings
+        } } };
+    }
+    await new Promise(res => setTimeout(res, 400));
+  }
+  throw new Error(`event ${body.invoiceNo} never settled -- is the POS worker running? (POS_QUEUE_IN_DEV=true)`);
+}
+
 async function main() {
   // ── a shop, a location, a product that can be billed ────────────────────────────────────
   const location = await prisma.stockLocation.create({
@@ -136,7 +164,7 @@ async function main() {
 
   console.log('\nD. A RETURN IS CHECKED BEFORE ANYTHING IS WRITTEN');
   {
-    const r = await api(key).post('/events', {
+    const r = await sendEvent(key, {
       kind: 'sale.returned', creditNoteNo: 'CN/2026-27/0001',
       againstInvoiceNo: 'INV/2026-27/9999',
       lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {}
@@ -145,12 +173,12 @@ async function main() {
       r.data?.data?.answer === 'UNKNOWN_ORDER', JSON.stringify(r.data?.data));
   }
   {
-    const r = await api(key).post('/events', { kind: 'nonsense' });
+    const r = await sendEvent(key, { kind: 'nonsense' });
     check('an unknown kind is BAD_PAYLOAD', r.data?.data?.answer === 'BAD_PAYLOAD',
       JSON.stringify(r.data?.data));
   }
   {
-    const r = await api(key).post('/events', { kind: 'sale.completed', invoiceNo: 'INV/1', lines: [] });
+    const r = await sendEvent(key, { kind: 'sale.completed', invoiceNo: 'INV/1', lines: [] });
     check('a sale with no lines is BAD_PAYLOAD and says so plainly',
       r.data?.data?.answer === 'BAD_PAYLOAD' && /no lines/i.test(r.data?.data?.detail ?? ''),
       r.data?.data?.detail);
@@ -169,7 +197,7 @@ async function main() {
 
   let orderNumber = '';
   {
-    const r = await api(key).post('/events', saleBody);
+    const r = await sendEvent(key, saleBody);
     check('a sale is APPLIED', r.data?.data?.answer === 'APPLIED', JSON.stringify(r.data?.data));
     orderNumber = r.data?.data?.orderNumber ?? '';
     check('and comes back with Inventory\'s own order number', Boolean(orderNumber), orderNumber);
@@ -205,7 +233,7 @@ async function main() {
 
   {
     // the whole point of at-least-once delivery
-    const again = await api(key).post('/events', saleBody);
+    const again = await sendEvent(key, saleBody);
     check('sending it AGAIN is ALREADY_APPLIED, not a second sale',
       again.data?.data?.answer === 'ALREADY_APPLIED', JSON.stringify(again.data?.data));
     check('and it returns the same order number', again.data?.data?.orderNumber === orderNumber);
@@ -219,7 +247,7 @@ async function main() {
   }
 
   {
-    const r = await api(key).post('/events', { ...saleBody, invoiceNo: `${invoiceNo}-X`, lines: [{ itemCode: 'NOPE', qty: 1, lineTotalPaise: 100 }] });
+    const r = await sendEvent(key, { ...saleBody, invoiceNo: `${invoiceNo}-X`, lines: [{ itemCode: 'NOPE', qty: 1, lineTotalPaise: 100 }] });
     check('an unknown item is UNKNOWN_ITEM and names it',
       r.data?.data?.answer === 'UNKNOWN_ITEM' && /NOPE/.test(r.data?.data?.detail ?? ''),
       JSON.stringify(r.data?.data));
@@ -228,14 +256,14 @@ async function main() {
   console.log('\nF. A RETURN AGAINST THAT REAL SALE');
   {
     // one piece of two: half of 5700 is 2850
-    const ok = await api(key).post('/events', {
+    const ok = await sendEvent(key, {
       kind: 'sale.returned', creditNoteNo: 'CN/2026-27/0001', againstInvoiceNo: invoiceNo,
       lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 285000 }], totals: {}
     });
     check('the right amount passes the check',
       ok.data?.data?.answer !== 'AMOUNT_MISMATCH', JSON.stringify(ok.data?.data));
 
-    const wrong = await api(key).post('/events', {
+    const wrong = await sendEvent(key, {
       kind: 'sale.returned', creditNoteNo: 'CN/2026-27/0002', againstInvoiceNo: invoiceNo,
       lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {}
     });
@@ -243,7 +271,7 @@ async function main() {
       wrong.data?.data?.answer === 'AMOUNT_MISMATCH' && /285000/.test(wrong.data?.data?.detail ?? ''),
       wrong.data?.data?.detail);
 
-    const tooMany = await api(key).post('/events', {
+    const tooMany = await sendEvent(key, {
       kind: 'sale.returned', creditNoteNo: 'CN/2026-27/0003', againstInvoiceNo: invoiceNo,
       lines: [{ itemCode: variant.variantCode, qty: 5, lineTotalPaise: 1425000 }], totals: {}
     });
@@ -262,7 +290,7 @@ async function main() {
       totals: {},
       payments: [{ method: 'CASH', amountPaise: 300000 }]
     };
-    const r = await api(key).post('/events', walkIn);
+    const r = await sendEvent(key, walkIn);
     check('a sale with NO customer is APPLIED, not refused',
       r.data?.data?.answer === 'APPLIED', JSON.stringify(r.data?.data));
 
@@ -276,7 +304,7 @@ async function main() {
       /walk-in/i.test(walk?.name ?? ''), walk?.name);
 
     // a second walk-in reuses the same row rather than making another
-    const again = await api(key).post('/events', { ...walkIn, invoiceNo: `${walkIn.invoiceNo}-2` });
+    const again = await sendEvent(key, { ...walkIn, invoiceNo: `${walkIn.invoiceNo}-2` });
     check('a second walk-in sale also applies', again.data?.data?.answer === 'APPLIED',
       JSON.stringify(again.data?.data));
     const walkRows = await prisma.customer.count({
@@ -298,7 +326,7 @@ async function main() {
       totals: {},
       payments: [{ method: 'CASH', amountPaise: 300000 }]
     };
-    const r = await api(key).post('/events', odd);
+    const r = await sendEvent(key, odd);
     check('a sale whose tax disagrees is still APPLIED -- a cashier cannot fix a rate',
       r.data?.data?.answer === 'APPLIED', JSON.stringify(r.data?.data));
     check('and it comes back with a warning naming both rates',
@@ -333,7 +361,7 @@ async function main() {
       payments: [{ method: 'CASH', amountPaise: 600000 }]
     };
 
-    const r = await api(key).post('/events', oversold);
+    const r = await sendEvent(key, oversold);
     check('a sale for stock we did not have is APPLIED, not refused',
       r.data?.data?.answer === 'APPLIED', JSON.stringify(r.data?.data));
     check('and warns, naming the item and what the count became',
@@ -355,7 +383,7 @@ async function main() {
       String(order?.total));
 
     // and the queue keeps moving: the very next sale still works
-    const next = await api(key).post('/events', { ...oversold, invoiceNo: `${oversold.invoiceNo}-2` });
+    const next = await sendEvent(key, { ...oversold, invoiceNo: `${oversold.invoiceNo}-2` });
     check('the queue is NOT stopped -- the next sale applies too',
       next.data?.data?.answer === 'APPLIED', JSON.stringify(next.data?.data));
   }
@@ -370,10 +398,90 @@ async function main() {
       r.data?.data?.[0]?.available === 0, String(r.data?.data?.[0]?.available));
   }
 
+  console.log('
+J. THE TILL DOES NOT WAIT');
+  {
+    const quick = {
+      kind: 'sale.completed',
+      invoiceNo: `INV/2026-27/Q${Date.now() % 10000}`,
+      occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }],
+      totals: {},
+      payments: [{ method: 'CASH', amountPaise: 300000 }]
+    };
+
+    const t0 = Date.now();
+    const r = await api(key).post('/events', quick);
+    const waited = Date.now() - t0;
+
+    check('the answer is 202 -- taken in, not yet applied', r.status === 202, `status ${r.status}`);
+    check('and it says ACCEPTED with a reference to ask about later',
+      r.data?.data?.answer === 'ACCEPTED' && Boolean(r.data?.data?.reference),
+      JSON.stringify(r.data?.data));
+
+    /*
+     * The whole point of the change, so it is asserted rather than admired. Three seconds is not
+     * the target -- one round trip is under a second -- it is the line past which somebody at a
+     * counter starts wondering whether the till has frozen.
+     */
+    check('and the till waited under 3 seconds, not twelve', waited < 3000, `${waited}ms`);
+
+    // a resend while it is still queued must not make a second sale
+    const again = await api(key).post('/events', quick);
+    check('a resend while it is still queued is not a second sale',
+      again.data?.data?.reference === r.data?.data?.reference ||
+      again.data?.data?.answer === 'APPLIED' || again.data?.data?.answer === 'ALREADY_APPLIED',
+      JSON.stringify(again.data?.data));
+
+    // and it really does get done
+    const until = Date.now() + 180_000;
+    let settled: any = null;
+    while (Date.now() < until && !settled) {
+      const st = await api(key).get(`/events/status?invoiceNo=${encodeURIComponent(quick.invoiceNo)}`);
+      if (st.data?.data?.status === 'APPLIED' || st.data?.data?.status === 'REJECTED') settled = st.data.data;
+      else await new Promise(res => setTimeout(res, 400));
+    }
+    check('the worker finishes it', settled?.status === 'APPLIED', JSON.stringify(settled)?.slice(0, 160));
+    check('and the status says which order it became',
+      typeof settled?.orderNumber === 'string' && settled.orderNumber.startsWith('SO-'),
+      String(settled?.orderNumber));
+
+    const onBooks = await prisma.salesOrder.count({
+      where: { clientId: CLIENT, externalOrderId: quick.invoiceNo }
+    });
+    check('exactly ONE order, despite the resend', onBooks === 1, String(onBooks));
+
+    const st = await api(key).get('/events/status?invoiceNo=INV/2026-27/NOPE');
+    check('asking about an invoice we never saw is a plain 404', st.status === 404, `status ${st.status}`);
+
+    const noArg = await api(key).get('/events/status');
+    check('and asking without an invoice number is a plain 400', noArg.status === 400, `status ${noArg.status}`);
+  }
+
+  console.log('
+K. A FAULT IN THE MESSAGE IS STILL REFUSED AT THE DOOR');
+  {
+    // These need no database, so they must not be queued and discovered later.
+    const t0 = Date.now();
+    const r = await api(key).post('/events', {
+      kind: 'sale.completed', invoiceNo: `INV/2026-27/B${Date.now() % 10000}`,
+      lines: [{ itemCode: variant.variantCode, qty: 1.5, unitPricePaise: 300000, lineTotalPaise: 300000 }],
+      totals: {}, payments: []
+    });
+    const waited = Date.now() - t0;
+    check('half a piece is refused outright, not accepted then rejected',
+      r.status === 422 && r.data?.data?.answer === 'BAD_PAYLOAD', JSON.stringify(r.data?.data));
+    check('and refused without a database round trip to decide it', waited < 3000, `${waited}ms`);
+
+    const queued = await prisma.posInboundEvent.count({ where: { clientId: CLIENT, status: 'QUEUED' } });
+    check('nothing was left sitting in the queue', queued === 0, String(queued));
+  }
+
 }
 
 main()
   .then(async () => {
+    await prisma.posInboundEvent.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.salesOrderPayment.deleteMany({ where: { clientId: CLIENT } });
     await prisma.salesOrder.deleteMany({ where: { clientId: CLIENT } });
     await prisma.inventoryTransaction.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
@@ -388,6 +496,7 @@ main()
   })
   .catch(async e => {
     console.error('CRASHED:', e.message);
+    await prisma.posInboundEvent.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.inventoryStock.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.productVariant.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.product.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});

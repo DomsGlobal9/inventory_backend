@@ -4271,3 +4271,62 @@ model PhotoJob {
   @@index([status, createdAt])
   @@map("photo_jobs")
 }
+
+/// A POS event as it arrived, before anybody worked out what it means.
+///
+/// WHY A QUEUE AND NOT JUST DOING IT. Applying a sale is about thirty-seven database round trips
+/// to Singapore, and the till was waiting for every one of them -- eight to twelve seconds with a
+/// customer standing at the counter. None of that work needs the customer present: the POS has
+/// already taken the money and printed the bill, and Inventory is the record kept behind it. So
+/// the event is written down here in ONE round trip, the till is told it is safely received, and
+/// the bookkeeping happens a moment later.
+///
+/// WHY IT IS SAFE TO ANSWER BEFORE DOING THE WORK. Because this row IS the promise. It is
+/// committed before the till is told anything, so a crash between the answer and the work loses
+/// nothing -- the row is still QUEUED and the worker picks it up. Answering first would be
+/// dishonest only if the event could evaporate, and it cannot.
+///
+/// THE UNIQUE KEY IS THE IDEMPOTENCY. The POS retries on a timeout, and a timeout is
+/// indistinguishable from success that did not make it back. An upsert on this key means a repeat
+/// finds the original row and reports where it got to, rather than selling the saree twice -- and
+/// it costs the same single round trip as a first send.
+///
+model PosInboundEvent {
+  id String @id @default(uuid())
+
+  clientId   String @map("client_id")
+  locationId String @map("location_id")
+
+  /// sale.completed and so on -- part of the key, so a return and a sale can share an invoice.
+  kind String
+
+  /// The till's own invoice number. Never ours: this row exists before we have made anything.
+  invoiceNo String @map("invoice_no")
+
+  /// Exactly what arrived. Kept whole and unedited, so a bug in how we READ an event can be
+  /// replayed against the real thing rather than reconstructed from what we thought it said.
+  payload Json
+
+  /// QUEUED -> RUNNING -> APPLIED or REJECTED. A plain string, like every other job here.
+  status String @default("QUEUED")
+
+  attempts Int @default(0)
+
+  /// What applySale finally answered, so a till asking "did that go through?" gets the real
+  /// answer rather than "it is in a queue somewhere".
+  answer      String?
+  orderNumber String? @map("order_number")
+  detail      String? @db.Text
+  warnings    Json?
+
+  /// Last sign of life from the worker holding this row, so a dead instance's work can be found.
+  heartbeatAt DateTime? @map("heartbeat_at")
+
+  receivedAt DateTime  @default(now()) @map("received_at")
+  settledAt  DateTime? @map("settled_at")
+
+  @@unique([clientId, kind, invoiceNo], map: "uq_pos_inbound_event")
+  @@index([status, receivedAt])
+  @@index([clientId, status])
+  @@map("pos_inbound_events")
+}

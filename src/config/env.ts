@@ -214,6 +214,12 @@ const envSchema = z.object({
   // cannot reach into a real one. Comma-separated client ids.
   PHOTO_JOBS_ONLY_CLIENTS: optionalStr(z.string()),
 
+  // The POS event worker. Same shape as the photo-job switches above and for the same reason: a
+  // development machine points at the production database, so a worker that writes sales has to
+  // be asked for by name rather than assumed, and scoped to the test shop when it is on.
+  POS_QUEUE_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
+  POS_QUEUE_ONLY_CLIENTS: optionalStr(z.string()),
+
   // --- Shopify -----------------------------------------------------------------------
   //
   // All optional, and the integration fails SAFE without them: the OAuth routes refuse to
