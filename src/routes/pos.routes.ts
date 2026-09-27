@@ -19,7 +19,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateStorefront, storefrontContext } from '../middleware/storefront.middleware';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
 import { checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
-import { acceptSale, acceptReturn, saleStatus } from '../services/pos/pos-queue.service';
+import { acceptSale, acceptReturn, acceptPaymentUpdate, saleStatus } from '../services/pos/pos-queue.service';
 
 const router = Router();
 
@@ -190,6 +190,29 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
       // A resend that arrived after the work finished gets the real answer, not a queue position.
       const ok = out.answer === 'APPLIED' || out.answer === 'ALREADY_APPLIED';
       res.status(ok ? 200 : 422).json({ success: ok, data: out });
+      return;
+    }
+
+    if (kind === 'payment.updated') {
+      /*
+       * Money that arrived after the bill: a kept order's balance, a cheque that cleared, or a
+       * reversal when one bounced. Nothing about it needs the customer present either.
+       */
+      const locationId = ctx.locationIds[0];
+      if (!locationId) {
+        res.status(422).json({
+          success: false,
+          data: { answer: 'BAD_PAYLOAD', detail: 'This connection has no location, so a payment has nowhere to be recorded.' } as PosEventResult
+        });
+        return;
+      }
+      const took = await acceptPaymentUpdate(ctx.clientId, locationId, event);
+      if (took.answer === 'ACCEPTED') {
+        res.status(202).json({ success: true, data: took });
+        return;
+      }
+      const ok = took.answer === 'APPLIED' || took.answer === 'ALREADY_APPLIED';
+      res.status(ok ? 200 : 422).json({ success: ok, data: took });
       return;
     }
 

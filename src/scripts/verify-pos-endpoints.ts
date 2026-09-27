@@ -64,8 +64,14 @@ inst.interceptors.response.use(
 async function sendEvent(key: string, body: any) {
   const r = await api(key).post('/events', body);
   if (r.data?.data?.answer !== 'ACCEPTED') return r;
-  // A sale is filed under its invoice number, a return under its credit note number.
-  const number = String(body.creditNoteNo ?? body.invoiceNo ?? '');
+  /*
+   * Filed under whichever number identifies the EVENT, not the bill: a sale under its invoice, a
+   * return under its credit note, and a payment update under its idempotency key -- because one
+   * bill can legitimately collect money more than once.
+   */
+  const number = String(
+    body.kind === 'payment.updated' ? body.idempotencyKey : (body.creditNoteNo ?? body.invoiceNo ?? '')
+  );
 
   const until = Date.now() + 180_000;
   while (Date.now() < until) {
@@ -728,6 +734,86 @@ async function main() {
     check('and the books stay consistent: one row for it, at OUR figure',
       after.length === 3 && after.some(r => Number(r.amount) === 3000),
       JSON.stringify(after.map(r => String(r.amount))));
+  }
+
+  console.log('\nP. MONEY THAT ARRIVES AFTER THE BILL');
+  {
+    const inv = `INV/2026-27/PB${Date.now() % 10000}`;
+    await prisma.inventoryStock.updateMany({
+      where: { clientId: CLIENT, variantId: variant.id }, data: { quantity: 10, reservedQty: 0 }
+    });
+    // A kept order: goods out, only part of the money taken.
+    await sendEvent(key, {
+      kind: 'sale.completed', invoiceNo: inv, occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }],
+      totals: {}, payments: [{ method: 'CASH', amountPaise: 100000 }]
+    });
+
+    const missingKey = await api(key).post('/events', {
+      kind: 'payment.updated', invoiceNo: inv,
+      payments: [{ method: 'CASH', amountPaise: 200000 }]
+    });
+    check('a payment update with no idempotencyKey is refused at the door, and says why',
+      missingKey.status === 422 && /idempotencyKey/.test(missingKey.data?.data?.detail ?? ''),
+      missingKey.data?.data?.detail);
+
+    const nobill = await sendEvent(key, {
+      kind: 'payment.updated', invoiceNo: 'INV/2026-27/NOPE', idempotencyKey: `k${Date.now()}`,
+      payments: [{ method: 'CASH', amountPaise: 100 }]
+    });
+    check('against a bill we never saw it is UNKNOWN_ORDER',
+      nobill.data?.data?.answer === 'UNKNOWN_ORDER', JSON.stringify(nobill.data?.data));
+
+    const onceKey = `pay-${Date.now()}`;
+    const paid = await sendEvent(key, {
+      kind: 'payment.updated', invoiceNo: inv, idempotencyKey: onceKey,
+      occurredAt: new Date().toISOString(),
+      payments: [{ method: 'UPI', amountPaise: 200000, reference: 'utr-5512' }]
+    });
+    check('the balance collected later is APPLIED', paid.data?.data?.answer === 'APPLIED',
+      JSON.stringify(paid.data?.data));
+    check('and it says what is left owing', /Paid in full/.test(paid.data?.data?.detail ?? ''),
+      paid.data?.data?.detail);
+
+    const rows = await prisma.salesOrderPayment.findMany({
+      where: { clientId: CLIENT, salesOrder: { externalOrderId: inv } },
+      select: { kind: true, method: true, amount: true, reference: true }
+    });
+    check('the day book now sees both the deposit and the balance',
+      rows.length === 2 && rows.reduce((a, r) => a + Number(r.amount), 0) === 3000,
+      JSON.stringify(rows.map(r => `${r.kind} ${r.method} ${r.amount}`)));
+    check('and the UPI reference was kept',
+      rows.some(r => r.method === 'UPI' && r.reference === 'utr-5512'), JSON.stringify(rows));
+
+    // the same collection again must not take the money twice
+    const twice = await sendEvent(key, {
+      kind: 'payment.updated', invoiceNo: inv, idempotencyKey: onceKey,
+      payments: [{ method: 'UPI', amountPaise: 200000, reference: 'utr-5512' }]
+    });
+    check('the same idempotencyKey again is ALREADY_APPLIED',
+      twice.data?.data?.answer === 'ALREADY_APPLIED', JSON.stringify(twice.data?.data));
+    const after = await prisma.salesOrderPayment.count({
+      where: { clientId: CLIENT, salesOrder: { externalOrderId: inv } }
+    });
+    check('and the customer was not charged twice', after === 2, String(after));
+
+    // the cheque bounced: a negative delta
+    const back = await sendEvent(key, {
+      kind: 'payment.updated', invoiceNo: inv, idempotencyKey: `rev-${Date.now()}`,
+      payments: [{ method: 'UPI', amountPaise: -200000, reference: 'reversed' }]
+    });
+    check('a negative delta is APPLIED -- money can go back out',
+      back.data?.data?.answer === 'APPLIED', JSON.stringify(back.data?.data));
+    check('and the bill is owing again', /2000.00 still owing/.test(back.data?.data?.detail ?? ''),
+      back.data?.data?.detail);
+
+    const reversal = await prisma.salesOrderPayment.findFirst({
+      where: { clientId: CLIENT, salesOrder: { externalOrderId: inv }, reference: 'reversed' },
+      select: { kind: true, amount: true }
+    });
+    check('recorded on the side it belongs on: a REFUND, not a payment of less than nothing',
+      reversal?.kind === 'REFUND' && Number(reversal?.amount) === 2000,
+      JSON.stringify(reversal));
   }
 
 }

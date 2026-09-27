@@ -23,6 +23,7 @@ import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
 import { applySale, POS_SOURCE, type PosEventResult } from './pos-events.service';
 import { applyReturn } from './pos-returns.service';
+import { applyPaymentUpdate, faultInPaymentShape } from './pos-payments.service';
 
 /** How many events one tick may take on. */
 const BATCH = 10;
@@ -92,6 +93,22 @@ export async function acceptReturn(
   const creditNoteNo = String(event?.creditNoteNo ?? '').trim();
   if (!creditNoteNo) return { answer: 'BAD_PAYLOAD', detail: 'The return has no credit note number.' };
   return accept(clientId, locationId, 'sale.returned', creditNoteNo, event);
+}
+
+/**
+ * Money that arrived after the bill, taken in like everything else.
+ *
+ * Filed under the idempotencyKey, NOT the invoice number: a kept order legitimately collects
+ * money more than once, so the invoice cannot tell a repeat from a second instalment.
+ */
+export async function acceptPaymentUpdate(
+  clientId: string,
+  locationId: string,
+  event: any
+): Promise<PosAcceptResult> {
+  const fault = faultInPaymentShape(event);
+  if (fault) return { answer: 'BAD_PAYLOAD', detail: fault };
+  return accept(clientId, locationId, 'payment.updated', String(event.idempotencyKey), event);
 }
 
 async function accept(
@@ -216,8 +233,9 @@ async function runOne(id: string): Promise<boolean> {
   if (!row) return false;
 
   try {
-    const out = row.kind === 'sale.returned'
-      ? await applyReturn(row.clientId, row.locationId, row.payload as any)
+    const out =
+      row.kind === 'sale.returned' ? await applyReturn(row.clientId, row.locationId, row.payload as any)
+      : row.kind === 'payment.updated' ? await applyPaymentUpdate(row.clientId, row.locationId, row.payload as any)
       : await applySale(row.clientId, row.locationId, row.payload as any);
 
     /*
@@ -325,5 +343,5 @@ export async function recoverStranded(): Promise<number> {
 }
 
 export const posQueue = {
-  acceptSale, acceptReturn, saleStatus, tick, recoverStranded, faultInSaleShape, POS_SOURCE
+  acceptSale, acceptReturn, acceptPaymentUpdate, saleStatus, tick, recoverStranded, faultInSaleShape, POS_SOURCE
 };

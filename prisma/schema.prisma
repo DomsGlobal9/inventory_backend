@@ -2364,6 +2364,15 @@ model SalesOrderPayment {
   receivedById String? @map("received_by_id")
   receivedBy   User?   @relation("PaymentReceivedBy", fields: [receivedById], references: [id], onDelete: SetNull)
 
+  /// One payment per key, enforced by the database rather than by looking first.
+  ///
+  /// A till collects the balance on a kept order, or a cheque clears, and tells us afterwards.
+  /// That event is retried on a timeout like every other, and a retry that records the money a
+  /// second time is the worst kind of bug here: the books say a customer paid twice and nothing
+  /// in the rows says which one was real. Null for every payment written by a person at a
+  /// counter, where the press of a button is its own key.
+  onceKey String? @unique @map("once_key")
+
   receivedAt DateTime @default(now()) @map("received_at")
   createdAt  DateTime @default(now()) @map("created_at")
 

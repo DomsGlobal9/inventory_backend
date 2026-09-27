@@ -81,6 +81,198 @@ function splitOf(event: PosReturnEvent, moneyMinor: number) {
 }
 
 /**
+ * Which dispatch row each returned item belongs to, and whether it can still come back.
+ *
+ * Shared with the exchange, which returns pieces exactly the way a return does and then sells
+ * others in the same breath.
+ */
+export async function planReturnLines(
+  clientId: string,
+  againstInvoiceNo: string,
+  lines: PosLine[],
+  creditNoteNo: string
+) {
+  /*
+   * The bill, and which dispatch row each returned item belongs to.
+   *
+   * The POS names pieces by variantCode or sku; a return is recorded against the DISPATCH item,
+   * because that is the row that knows how many actually went out of the door and how many have
+   * already come back. Matching on the sale line instead would let a bill dispatched twice have
+   * its return applied against the wrong half.
+   */
+  const order = await prisma.salesOrder.findFirst({
+    where: { clientId, externalOrderId: againstInvoiceNo, sourceSystem: POS_SOURCE, deletedAt: null },
+    select: {
+      id: true, orderNumber: true, customerId: true, locationId: true,
+      dispatches: {
+        select: {
+          items: {
+            select: {
+              id: true, quantity: true, returnedQty: true,
+              returnItems: {
+                where: { salesReturn: { status: { in: ['REQUESTED', 'RECEIVED', 'INSPECTED'] } } },
+                select: { quantity: true }
+              },
+              salesOrderItem: {
+                select: { variant: { select: { variantCode: true, sku: true } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  if (!order) {
+    return { ok: false as const, result: { answer: 'UNKNOWN_ORDER' as const, detail: `No sale here for invoice ${againstInvoiceNo}.` } };
+  }
+
+  const dispatchLines = order.dispatches.flatMap(d => d.items.map(i => ({
+    dispatchItemId: i.id,
+    variantCode: i.salesOrderItem.variant.variantCode,
+    sku: i.salesOrderItem.variant.sku,
+    free: Math.max(0, i.quantity - i.returnedQty - i.returnItems.reduce((s, r) => s + r.quantity, 0))
+  })));
+
+  /*
+   * Spread across dispatch rows, because one bill can have gone out in two parcels.
+   *
+   * Two pieces of the same saree can sit on two dispatch rows with one free each, and a return of
+   * two would not fit on either alone. Taking what each row can still give, in order, is what the
+   * counter screen does when a cashier ticks the same item twice.
+   */
+  const taking: { dispatchItemId: string; quantity: number }[] = [];
+  for (const line of lines) {
+    let left = line.qty;
+    for (const d of dispatchLines) {
+      if (left <= 0) break;
+      if (d.variantCode !== line.itemCode && d.sku !== line.itemCode) continue;
+      const take = Math.min(left, d.free);
+      if (take <= 0) continue;
+      taking.push({ dispatchItemId: d.dispatchItemId, quantity: take });
+      d.free -= take;
+      left -= take;
+    }
+    if (left > 0) {
+      return {
+        ok: false as const,
+        result: {
+          answer: 'QTY_EXCEEDS_SOLD' as const,
+          detail: `${line.itemCode}: ${line.qty} coming back on ${creditNoteNo}, but only ${line.qty - left} of that bill ${line.qty - left === 1 ? 'is' : 'are'} still returnable.`
+        }
+      };
+    }
+  }
+
+  return { ok: true as const, order, taking };
+}
+
+/**
+ * The writes a POS return makes, inside a transaction the caller already holds.
+ *
+ * Split out so an EXCHANGE can put the return and the new sale in ONE transaction. Handing a
+ * saree back and walking out with another is one act; recorded as two that can half-fail it
+ * leaves the shop either short of stock it has or holding stock it gave away.
+ */
+export async function writeReturnInTransaction(tx: any, p: {
+  clientId: string;
+  order: { id: string; customerId: string | null };
+  taking: { dispatchItemId: string; quantity: number }[];
+  key: string;
+  returnLocationId: string;
+  method: RefundMethod;
+  reference: string | null;
+  creditNoteNo: string;
+  event: PosReturnEvent;
+  warnings: string[];
+  note?: string;
+}) {
+  const { clientId, order, taking, key, returnLocationId, method, reference, creditNoteNo, event, warnings } = p;
+
+  const created = await returnService.createReturnIn(
+    tx, clientId, order.id, taking,
+    event.note ? String(event.note).slice(0, 500) : `POS credit note ${creditNoteNo}`,
+    'OTHER'
+  );
+
+  /*
+   * Everything goes back on sale. The till has no "damaged" tick in the event, and a piece
+   * handed back over a counter is on the shelf again by the time this arrives -- so RESTOCK is
+   * what actually happened. When the POS grows a condition field this is where it lands.
+   */
+  for (const item of created.items) {
+    await tx.salesReturnItem.update({ where: { id: item.id }, data: { disposition: 'RESTOCK' } });
+  }
+
+  await tx.salesReturn.update({
+    where: { id: created.id },
+    data: { status: 'INSPECTED', atCounter: true, counterKey: key, locationId: returnLocationId }
+  });
+
+  // Puts the pieces back and works out what the refund comes to.
+  await returnService.completeReturnIn(tx, clientId, created.id, { restockAt: returnLocationId });
+
+  const done = await tx.salesReturn.findUniqueOrThrow({
+    where: { id: created.id },
+    select: { refundTotal: true, returnNumber: true }
+  });
+
+  const moneyMinor = toMinor(done.refundTotal as any);
+  if (moneyMinor > 0) {
+    const split = splitOf(event, moneyMinor);
+
+    if (split?.mismatch != null) {
+      warnings.push(
+        `${creditNoteNo}: the till says it gave back ${(split.mismatch / 100).toFixed(2)} across its ` +
+        `methods, this return comes to ${(moneyMinor / 100).toFixed(2)}. Recorded as one ` +
+        `${method.toLowerCase()} refund of the second figure -- somebody should settle which is right.`
+      );
+    }
+
+    if (split?.parts.length) {
+      /*
+       * Exactly how the till gave it back, one row per method.
+       *
+       * No creditShare here, and that is deliberate: creditShare decides how much SHOULD go
+       * back as store credit when the bill was partly paid with it. The till has already
+       * handed the money over in whatever form it chose, and inventing a different split
+       * afterwards would put rows in the books describing something that did not happen.
+       */
+      let biggest = -1;
+      let headline: RefundMethod | null = null;
+      for (const part of split.parts) {
+        await writeRefund(tx, {
+          clientId, orderId: order.id, returnId: created.id, returnNumber: done.returnNumber,
+          locationId: returnLocationId, customerId: order.customerId ?? null,
+          moneyMinor: part.amount, creditBackMinor: 0, method: part.method,
+          reference: part.reference, userId: null
+        });
+        if (part.amount > biggest) { biggest = part.amount; headline = part.method; }
+      }
+      await tx.salesReturn.update({
+        where: { id: created.id },
+        data: { refundStatus: 'REFUNDED', refundMethod: headline, refundedAt: new Date() }
+      });
+    } else {
+      const creditBackMinor = await creditShare(tx, clientId, order.id, moneyMinor, created.id);
+      const recorded = await writeRefund(tx, {
+        clientId, orderId: order.id, returnId: created.id, returnNumber: done.returnNumber,
+        locationId: returnLocationId, customerId: order.customerId ?? null,
+        moneyMinor, creditBackMinor, method, reference,
+        // No person did this. receivedById is nullable precisely for a machine.
+        userId: null
+      });
+      await tx.salesReturn.update({
+        where: { id: created.id },
+        data: { refundStatus: 'REFUNDED', refundMethod: recorded, refundedAt: new Date() }
+      });
+    }
+  }
+
+  return created.id;
+}
+
+/**
  * Apply a return that has already happened.
  *
  * Assumes checkReturnAmounts has passed: the invoice is here, every line was on it, no line
@@ -114,74 +306,9 @@ export async function applyReturn(
     };
   }
 
-  /*
-   * The bill, and which dispatch row each returned item belongs to.
-   *
-   * The POS names pieces by variantCode or sku; a return is recorded against the DISPATCH item,
-   * because that is the row that knows how many actually went out of the door and how many have
-   * already come back. Matching on the sale line instead would let a bill dispatched twice have
-   * its return applied against the wrong half.
-   */
-  const order = await prisma.salesOrder.findFirst({
-    where: { clientId, externalOrderId: againstInvoiceNo, sourceSystem: POS_SOURCE, deletedAt: null },
-    select: {
-      id: true, orderNumber: true, customerId: true, locationId: true,
-      dispatches: {
-        select: {
-          items: {
-            select: {
-              id: true, quantity: true, returnedQty: true,
-              returnItems: {
-                where: { salesReturn: { status: { in: ['REQUESTED', 'RECEIVED', 'INSPECTED'] } } },
-                select: { quantity: true }
-              },
-              salesOrderItem: {
-                select: { variant: { select: { variantCode: true, sku: true } } }
-              }
-            }
-          }
-        }
-      }
-    }
-  });
-
-  if (!order) {
-    return { answer: 'UNKNOWN_ORDER', detail: `No sale here for invoice ${againstInvoiceNo}.` };
-  }
-
-  const dispatchLines = order.dispatches.flatMap(d => d.items.map(i => ({
-    dispatchItemId: i.id,
-    variantCode: i.salesOrderItem.variant.variantCode,
-    sku: i.salesOrderItem.variant.sku,
-    free: Math.max(0, i.quantity - i.returnedQty - i.returnItems.reduce((s, r) => s + r.quantity, 0))
-  })));
-
-  /*
-   * Spread across dispatch rows, because one bill can have gone out in two parcels.
-   *
-   * Two pieces of the same saree can sit on two dispatch rows with one free each, and a return of
-   * two would not fit on either alone. Taking what each row can still give, in order, is what the
-   * counter screen does when a cashier ticks the same item twice.
-   */
-  const taking: { dispatchItemId: string; quantity: number }[] = [];
-  for (const line of lines) {
-    let left = line.qty;
-    for (const d of dispatchLines) {
-      if (left <= 0) break;
-      if (d.variantCode !== line.itemCode && d.sku !== line.itemCode) continue;
-      const take = Math.min(left, d.free);
-      if (take <= 0) continue;
-      taking.push({ dispatchItemId: d.dispatchItemId, quantity: take });
-      d.free -= take;
-      left -= take;
-    }
-    if (left > 0) {
-      return {
-        answer: 'QTY_EXCEEDS_SOLD',
-        detail: `${line.itemCode}: ${line.qty} coming back on ${creditNoteNo}, but only ${line.qty - left} of that bill ${line.qty - left === 1 ? 'is' : 'are'} still returnable.`
-      };
-    }
-  }
+  const planned = await planReturnLines(clientId, againstInvoiceNo, lines, creditNoteNo);
+  if (!planned.ok) return planned.result;
+  const { order, taking } = planned;
 
   const wanted = String(event.refund?.method ?? 'CASH').toUpperCase();
   const method: RefundMethod = (METHODS as string[]).includes(wanted) ? wanted as RefundMethod : 'CASH';
@@ -192,89 +319,11 @@ export async function applyReturn(
   const returnLocationId = locationId || order.locationId;
   const warnings: string[] = [];
 
-  const returnId = await runTransaction(async tx => {
-    const created = await returnService.createReturnIn(
-      tx, clientId, order.id, taking,
-      event.note ? String(event.note).slice(0, 500) : `POS credit note ${creditNoteNo}`,
-      'OTHER'
-    );
-
-    /*
-     * Everything goes back on sale. The till has no "damaged" tick in the event, and a piece
-     * handed back over a counter is on the shelf again by the time this arrives -- so RESTOCK is
-     * what actually happened. When the POS grows a condition field this is where it lands.
-     */
-    for (const item of created.items) {
-      await tx.salesReturnItem.update({ where: { id: item.id }, data: { disposition: 'RESTOCK' } });
-    }
-
-    await tx.salesReturn.update({
-      where: { id: created.id },
-      data: { status: 'INSPECTED', atCounter: true, counterKey: key, locationId: returnLocationId }
-    });
-
-    // Puts the pieces back and works out what the refund comes to.
-    await returnService.completeReturnIn(tx, clientId, created.id, { restockAt: returnLocationId });
-
-    const done = await tx.salesReturn.findUniqueOrThrow({
-      where: { id: created.id },
-      select: { refundTotal: true, returnNumber: true }
-    });
-
-    const moneyMinor = toMinor(done.refundTotal as any);
-    if (moneyMinor > 0) {
-      const split = splitOf(event, moneyMinor);
-
-      if (split?.mismatch != null) {
-        warnings.push(
-          `${creditNoteNo}: the till says it gave back ${(split.mismatch / 100).toFixed(2)} across its ` +
-          `methods, this return comes to ${(moneyMinor / 100).toFixed(2)}. Recorded as one ` +
-          `${method.toLowerCase()} refund of the second figure -- somebody should settle which is right.`
-        );
-      }
-
-      if (split?.parts.length) {
-        /*
-         * Exactly how the till gave it back, one row per method.
-         *
-         * No creditShare here, and that is deliberate: creditShare decides how much SHOULD go
-         * back as store credit when the bill was partly paid with it. The till has already
-         * handed the money over in whatever form it chose, and inventing a different split
-         * afterwards would put rows in the books describing something that did not happen.
-         */
-        let biggest = -1;
-        let headline: RefundMethod | null = null;
-        for (const part of split.parts) {
-          await writeRefund(tx, {
-            clientId, orderId: order.id, returnId: created.id, returnNumber: done.returnNumber,
-            locationId: returnLocationId, customerId: order.customerId ?? null,
-            moneyMinor: part.amount, creditBackMinor: 0, method: part.method,
-            reference: part.reference, userId: null
-          });
-          if (part.amount > biggest) { biggest = part.amount; headline = part.method; }
-        }
-        await tx.salesReturn.update({
-          where: { id: created.id },
-          data: { refundStatus: 'REFUNDED', refundMethod: headline, refundedAt: new Date() }
-        });
-      } else {
-        const creditBackMinor = await creditShare(tx, clientId, order.id, moneyMinor, created.id);
-        const recorded = await writeRefund(tx, {
-          clientId, orderId: order.id, returnId: created.id, returnNumber: done.returnNumber,
-          locationId: returnLocationId, customerId: order.customerId ?? null,
-          moneyMinor, creditBackMinor, method, reference,
-          // No person did this. receivedById is nullable precisely for a machine.
-          userId: null
-        });
-        await tx.salesReturn.update({
-          where: { id: created.id },
-          data: { refundStatus: 'REFUNDED', refundMethod: recorded, refundedAt: new Date() }
-        });
-      }
-    }
-
-    return created.id;
-  }, {
+  const returnId = await runTransaction(
+    tx => writeReturnInTransaction(tx, {
+      clientId, order, taking, key, returnLocationId, method, reference, creditNoteNo, event, warnings
+    }),
+    {
     label: 'take a POS return back',
     isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     tooSlowMessage: 'Taking this return back took too long, so nothing was recorded. Send it again.',

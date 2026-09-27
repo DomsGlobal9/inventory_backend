@@ -164,6 +164,143 @@ async function findByExternal(clientId: string, externalOrderId: string) {
 }
 
 /**
+ * The writes a POS sale makes, inside a transaction the caller already holds.
+ *
+ * Split out so an EXCHANGE can put the return and the new sale in ONE transaction. A customer who
+ * hands back a saree and walks out with another has done one thing, and recording it as two that
+ * can half-fail would leave either the shop short of stock it has, or holding stock it gave away.
+ *
+ * Extracted rather than copied for the usual reason: a second copy of this would drift, and what
+ * it would drift on is which of the order, the dispatch and the payments got written.
+ */
+export async function writeSaleInTransaction(
+  tx: any,
+  clientId: string,
+  locationId: string,
+  event: PosSaleEvent,
+  byCode: Map<string, string>
+) {
+  /*
+   * A WALK-IN IS NOT A PAYLOAD FAULT.
+   *
+   * I had this wrong: a missing phone answered BAD_PAYLOAD, which would have stopped a shop's
+   * whole queue on its first cash sale to somebody who did not want to give a number. Most POS
+   * sales are exactly that.
+   *
+   * Inventory's own counter sale has no walk-in path -- it requires a phone, deliberately, so
+   * that a shop's customer history is never split across two rows for one person. That rule is
+   * right for a till where somebody is typing, and wrong as a reason to refuse a sale that has
+   * already happened. So a sale with no phone is recorded against an explicit per-shop walk-in
+   * customer: one row per shop, found or created on first use, named so it can never be mistaken
+   * for a real person, and never carrying a phone.
+   */
+  const customerPhone = String(event.customer?.phone ?? '').trim();
+
+    /*
+     * THE POS'S OWN FIGURES, recorded rather than recalculated.
+     *
+     * writeFullOrderInTransaction prices from the catalogue unless the caller supplies its own,
+     * which is the path Shopify orders already take. The POS is the system of record for this
+     * bill -- it took the money and printed the invoice -- so its numbers go in as given, and
+     * mayOverridePrices says so explicitly rather than by omission.
+     */
+    const made: any = await salesOrderService.writeFullOrderInTransaction(
+      tx, clientId, locationId,
+      {
+        /*
+         * Found or made by the POS's own identity for this person, not by ours.
+         *
+         * externalId is the path Shopify orders already take, and it is the lenient one: the
+         * phone goes through phoneForOutsideCustomer, which keeps a number only when nobody
+         * else in the shop has it and otherwise saves the order WITHOUT it. A sale must never
+         * be refused because two people share a number -- that would stop the queue over
+         * somebody else's data.
+         */
+        customer: customerPhone
+          ? {
+              externalId: `POS:${customerPhone}`,
+              name: event.customer?.name ?? 'Counter customer',
+              phone: customerPhone
+            }
+          : {
+              /*
+               * One walk-in row per shop, reached through the same externalId path so it is
+               * found rather than made again. The name is unmistakable on purpose: it will
+               * appear in the customer list, and it must never read like somebody's name.
+               */
+              externalId: WALK_IN_KEY,
+              name: 'Walk-in customer (no details taken)',
+              phone: null
+            },
+        externalOrderId: event.invoiceNo,
+        sourceSystem: POS_SOURCE,
+        /*
+         * This event REPORTS a sale; it does not make one. The customer left with the goods
+         * whatever the count says, so refusing on stock would stop the shop's queue on a fact
+         * that can never change back. The count goes negative instead, which is the honest
+         * record until somebody counts the shelf.
+         */
+        allowOversell: true,
+        status: 'CONFIRMED',
+        handover: 'TAKEN_NOW',
+        items: event.lines.map(l => ({
+          variantId: byCode.get(l.itemCode)!,
+          quantity: l.qty,
+          // Net per piece, worked from the line total so the two can never disagree.
+          unitPrice: fromMinor(Math.round(l.lineTotalPaise / l.qty)),
+          listUnitPrice: l.unitPricePaise != null
+            ? fromMinor(l.unitPricePaise)
+            : fromMinor(Math.round(l.lineTotalPaise / l.qty)),
+          lineDiscount: l.discountPaise != null ? fromMinor(l.discountPaise) : undefined,
+          /*
+           * THE POS'S TAX, STORED AS SENT.
+           *
+           * The POS invoice is the document the customer is holding, so it is the legal record
+           * of what was charged. If Inventory computed its own figure, one bill would have two
+           * tax records that could disagree -- and today they would, because the POS's own
+           * rates are still being settled. Ours becomes a check that warns.
+           */
+          taxRateBps: l.taxRateBps ?? undefined,
+          taxPaise: l.taxPaise ?? undefined
+        }))
+      },
+      'POS',
+      null,
+      { userId: null, manualLimitPercent: null, mayOverridePrices: true, lean: true }
+    );
+
+    /*
+     * Dispatched in the same transaction, including a KEPT sale. The goods left the shop when
+     * the till said so; an order that exists here without its stock having moved would be a
+     * shop whose count is wrong until somebody notices.
+     */
+    await dispatchService.dispatchInTransaction(
+      tx, clientId, made.id,
+      made.items.map((i: any) => ({ salesOrderItemId: i.id, quantity: i.quantity })),
+      { allowNegative: true }
+    );
+
+    /*
+     * The money. Against the bill as Inventory wrote it, not the figure the till displayed --
+     * if those ever differ it is a bug worth failing on rather than papering over.
+     */
+    if (event.payments?.length) {
+      const planned = planPayments(
+        toMinor(made.total),
+        event.payments.map(p => ({ method: p.method as any, amount: p.amountPaise / 100 })),
+        'FULL'
+      );
+      await recordPayments(
+        tx,
+        { clientId, salesOrderId: made.id, locationId, receivedById: null },
+        planned
+      );
+    }
+
+  return made;
+}
+
+/**
  * A sale the till has already completed.
  *
  * Deliberately NOT a re-pricing. The lines arrive with their own totals and are written as given;
@@ -184,21 +321,6 @@ export async function applySale(
     return bad('Every line needs a whole number of paise, zero or more.');
   }
 
-  /*
-   * A WALK-IN IS NOT A PAYLOAD FAULT.
-   *
-   * I had this wrong: a missing phone answered BAD_PAYLOAD, which would have stopped a shop's
-   * whole queue on its first cash sale to somebody who did not want to give a number. Most POS
-   * sales are exactly that.
-   *
-   * Inventory's own counter sale has no walk-in path -- it requires a phone, deliberately, so
-   * that a shop's customer history is never split across two rows for one person. That rule is
-   * right for a till where somebody is typing, and wrong as a reason to refuse a sale that has
-   * already happened. So a sale with no phone is recorded against an explicit per-shop walk-in
-   * customer: one row per shop, found or created on first use, named so it can never be mistaken
-   * for a real person, and never carrying a phone.
-   */
-  const customerPhone = String(event.customer?.phone ?? '').trim();
 
   /*
    * Together, because neither needs the other's answer.
@@ -250,110 +372,9 @@ export async function applySale(
      * already wrote and returns that, rather than failing. It is a better version of catching
      * P2002 by hand, because it also covers a timeout that actually committed.
      */
-    const order = await runTransaction(async tx => {
-      /*
-       * THE POS'S OWN FIGURES, recorded rather than recalculated.
-       *
-       * writeFullOrderInTransaction prices from the catalogue unless the caller supplies its own,
-       * which is the path Shopify orders already take. The POS is the system of record for this
-       * bill -- it took the money and printed the invoice -- so its numbers go in as given, and
-       * mayOverridePrices says so explicitly rather than by omission.
-       */
-      const made: any = await salesOrderService.writeFullOrderInTransaction(
-        tx, clientId, locationId,
-        {
-          /*
-           * Found or made by the POS's own identity for this person, not by ours.
-           *
-           * externalId is the path Shopify orders already take, and it is the lenient one: the
-           * phone goes through phoneForOutsideCustomer, which keeps a number only when nobody
-           * else in the shop has it and otherwise saves the order WITHOUT it. A sale must never
-           * be refused because two people share a number -- that would stop the queue over
-           * somebody else's data.
-           */
-          customer: customerPhone
-            ? {
-                externalId: `POS:${customerPhone}`,
-                name: event.customer?.name ?? 'Counter customer',
-                phone: customerPhone
-              }
-            : {
-                /*
-                 * One walk-in row per shop, reached through the same externalId path so it is
-                 * found rather than made again. The name is unmistakable on purpose: it will
-                 * appear in the customer list, and it must never read like somebody's name.
-                 */
-                externalId: WALK_IN_KEY,
-                name: 'Walk-in customer (no details taken)',
-                phone: null
-              },
-          externalOrderId: event.invoiceNo,
-          sourceSystem: POS_SOURCE,
-          /*
-           * This event REPORTS a sale; it does not make one. The customer left with the goods
-           * whatever the count says, so refusing on stock would stop the shop's queue on a fact
-           * that can never change back. The count goes negative instead, which is the honest
-           * record until somebody counts the shelf.
-           */
-          allowOversell: true,
-          status: 'CONFIRMED',
-          handover: 'TAKEN_NOW',
-          items: event.lines.map(l => ({
-            variantId: byCode.get(l.itemCode)!,
-            quantity: l.qty,
-            // Net per piece, worked from the line total so the two can never disagree.
-            unitPrice: fromMinor(Math.round(l.lineTotalPaise / l.qty)),
-            listUnitPrice: l.unitPricePaise != null
-              ? fromMinor(l.unitPricePaise)
-              : fromMinor(Math.round(l.lineTotalPaise / l.qty)),
-            lineDiscount: l.discountPaise != null ? fromMinor(l.discountPaise) : undefined,
-            /*
-             * THE POS'S TAX, STORED AS SENT.
-             *
-             * The POS invoice is the document the customer is holding, so it is the legal record
-             * of what was charged. If Inventory computed its own figure, one bill would have two
-             * tax records that could disagree -- and today they would, because the POS's own
-             * rates are still being settled. Ours becomes a check that warns.
-             */
-            taxRateBps: l.taxRateBps ?? undefined,
-            taxPaise: l.taxPaise ?? undefined
-          }))
-        },
-        'POS',
-        null,
-        { userId: null, manualLimitPercent: null, mayOverridePrices: true, lean: true }
-      );
-
-      /*
-       * Dispatched in the same transaction, including a KEPT sale. The goods left the shop when
-       * the till said so; an order that exists here without its stock having moved would be a
-       * shop whose count is wrong until somebody notices.
-       */
-      await dispatchService.dispatchInTransaction(
-        tx, clientId, made.id,
-        made.items.map((i: any) => ({ salesOrderItemId: i.id, quantity: i.quantity })),
-        { allowNegative: true }
-      );
-
-      /*
-       * The money. Against the bill as Inventory wrote it, not the figure the till displayed --
-       * if those ever differ it is a bug worth failing on rather than papering over.
-       */
-      if (event.payments?.length) {
-        const planned = planPayments(
-          toMinor(made.total),
-          event.payments.map(p => ({ method: p.method as any, amount: p.amountPaise / 100 })),
-          'FULL'
-        );
-        await recordPayments(
-          tx,
-          { clientId, salesOrderId: made.id, locationId, receivedById: null },
-          planned
-        );
-      }
-
-      return made;
-    }, {
+    const order = await runTransaction(
+      tx => writeSaleInTransaction(tx, clientId, locationId, event, byCode),
+      {
       label: `pos sale ${event.invoiceNo}`,
       alreadyDone: () => findByExternal(clientId, event.invoiceNo) as any,
       tooSlowMessage: 'The shop took too long to record this sale. It has not been recorded; the till will send it again.'

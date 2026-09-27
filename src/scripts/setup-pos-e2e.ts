@@ -32,6 +32,9 @@ async function teardown(clientId: string) {
     ['deliveries',   () => prisma.storefrontDelivery.deleteMany({ where: w })],
     ['events',       () => prisma.storefrontEvent.deleteMany({ where: w })],
     ['payments',     () => prisma.salesOrderPayment.deleteMany({ where: w })],
+    // Returns point at the order, so they go before it or the order will not delete.
+    ['return items', () => prisma.salesReturnItem.deleteMany({ where: { salesReturn: w } })],
+    ['returns',      () => prisma.salesReturn.deleteMany({ where: w })],
     ['orders',       () => prisma.salesOrder.deleteMany({ where: w })],
     ['transactions', () => prisma.inventoryTransaction.deleteMany({ where: w })],
     ['customers',    () => prisma.customer.deleteMany({ where: w })],
