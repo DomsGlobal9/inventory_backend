@@ -125,38 +125,24 @@ async function resolveItems(clientId: string, codes: string[]) {
   const wanted = [...new Set(codes)];
   const found = await prisma.productVariant.findMany({
     where: { clientId, OR: [{ variantCode: { in: wanted } }, { sku: { in: wanted } }] },
-    select: { id: true, variantCode: true, sku: true }
-  });
-  const byCode = new Map<string, string>();
-  for (const v of found) {
-    byCode.set(v.variantCode, v.id);
-    if (!byCode.has(v.sku)) byCode.set(v.sku, v.id);
-  }
-  return byCode;
-}
-
-/**
- * What Inventory's own products say the rate is, for the comparison only.
- *
- * Never used to CHANGE what is recorded -- the POS's figure is what goes on the line. This exists
- * so a disagreement can be named rather than discovered in a return months later.
- */
-async function taxStandingByCode(clientId: string, codes: string[]) {
-  const wanted = [...new Set(codes)];
-  const rows = await prisma.productVariant.findMany({
-    where: { clientId, OR: [{ variantCode: { in: wanted } }, { sku: { in: wanted } }] },
     select: {
-      variantCode: true, sku: true, taxRateBps: true,
+      id: true, variantCode: true, sku: true, taxRateBps: true,
       product: { select: { taxRateBps: true } }
     }
   });
-  const map = new Map<string, { taxRateBps: number | null }>();
-  for (const v of rows) {
-    const entry = { taxRateBps: v.taxRateBps ?? v.product.taxRateBps ?? null };
-    map.set(v.variantCode, entry);
-    if (!map.has(v.sku)) map.set(v.sku, entry);
+
+  const byCode = new Map<string, string>();
+  const taxByCode = new Map<string, { taxRateBps: number | null }>();
+  for (const v of found) {
+    byCode.set(v.variantCode, v.id);
+    if (!byCode.has(v.sku)) byCode.set(v.sku, v.id);
+
+    // The variant's own rate wins over the product's -- a variant is the more specific answer.
+    const standing = { taxRateBps: v.taxRateBps ?? v.product.taxRateBps ?? null };
+    taxByCode.set(v.variantCode, standing);
+    if (!taxByCode.has(v.sku)) taxByCode.set(v.sku, standing);
   }
-  return map;
+  return { byCode, taxByCode };
 }
 
 /** The order this event is about, if Inventory has already seen it. */
@@ -204,29 +190,43 @@ export async function applySale(
    */
   const customerPhone = String(event.customer?.phone ?? '').trim();
 
-  const already = await findByExternal(clientId, event.invoiceNo);
+  /*
+   * Together, because neither needs the other's answer.
+   *
+   * These ran one after the other and the sale paid for both. Outside a transaction each gets
+   * its own pooled connection, so two queries cost one query's wait. A repeat invoice does throw
+   * away the variant read, but a repeat is the rare path and it costs no extra wall-clock time.
+   */
+  const [already, { byCode, taxByCode }] = await Promise.all([
+    findByExternal(clientId, event.invoiceNo),
+    resolveItems(clientId, event.lines.map(l => l.itemCode))
+  ]);
   if (already) return { answer: 'ALREADY_APPLIED', orderNumber: already.orderNumber };
 
-  const byCode = await resolveItems(clientId, event.lines.map(l => l.itemCode));
   const missing = event.lines.map(l => l.itemCode).filter(c => !byCode.has(c));
   if (missing.length) {
     return { answer: 'UNKNOWN_ITEM', detail: `Not in this shop's catalogue: ${missing.join(', ')}.` };
   }
 
-  // What Inventory believes the rate is, purely so a difference can be pointed out afterwards.
-  const taxByCode = await taxStandingByCode(clientId, event.lines.map(l => l.itemCode));
-
   /*
    * What the count said BEFORE this sale, so the warning can name what it became. Read outside
    * the transaction on purpose: it is for a sentence to a shopkeeper, not for a decision.
+   *
+   * ONE query for the whole basket, not one per line. A real bill is five or six items, and a
+   * read per line put a third of a second on the sale for each one -- the shape of slowness that
+   * never shows up in a test with a single line in it.
    */
+  const stockRows = await prisma.inventoryStock.findMany({
+    where: {
+      clientId, locationId,
+      variantId: { in: [...new Set(event.lines.map(l => byCode.get(l.itemCode)!))] }
+    },
+    select: { variantId: true, quantity: true, reservedQty: true }
+  });
+  const freeByVariant = new Map(stockRows.map(r => [r.variantId, r.quantity - r.reservedQty]));
   const stockBefore = new Map<string, number>();
   for (const line of event.lines) {
-    const variantId = byCode.get(line.itemCode)!;
-    const row = await prisma.inventoryStock.findFirst({
-      where: { clientId, variantId, locationId }, select: { quantity: true, reservedQty: true }
-    });
-    stockBefore.set(line.itemCode, (row?.quantity ?? 0) - (row?.reservedQty ?? 0));
+    stockBefore.set(line.itemCode, freeByVariant.get(byCode.get(line.itemCode)!) ?? 0);
   }
 
   try {
@@ -359,20 +359,31 @@ export async function applySale(
      */
     const warnings: string[] = [];
 
-    for (const line of event.lines) {
-      const had = stockBefore.get(line.itemCode) ?? 0;
-      if (line.qty <= had) continue;
-
-      /*
-       * Read back rather than worked out. The count this sale STARTED from may already have been
-       * negative from an earlier one, so "had minus sold" gives a number that is arithmetically
-       * tidy and factually wrong -- and this sentence is the one a shopkeeper walks to the shelf
-       * with. One extra read is worth it for a figure somebody is going to act on.
-       */
-      const after = await prisma.inventoryStock.findFirst({
-        where: { clientId, variantId: byCode.get(line.itemCode)!, locationId },
-        select: { quantity: true }
+    /*
+     * The lines that outran the shelf, and what the count actually became.
+     *
+     * Read back rather than worked out: the count this sale STARTED from may already have been
+     * negative from an earlier one, so "had minus sold" gives a number that is arithmetically
+     * tidy and factually wrong -- and this sentence is the one a shopkeeper walks to the shelf
+     * with. One read for all of them, though, not one per line: this runs after the sale is
+     * committed, so it is pure delay in front of a customer who is waiting for a receipt.
+     */
+    const oversold = event.lines.filter(l => l.qty > (stockBefore.get(l.itemCode) ?? 0));
+    const afterByVariant = new Map<string, number>();
+    if (oversold.length) {
+      const rows = await prisma.inventoryStock.findMany({
+        where: {
+          clientId, locationId,
+          variantId: { in: [...new Set(oversold.map(l => byCode.get(l.itemCode)!))] }
+        },
+        select: { variantId: true, quantity: true }
       });
+      for (const r of rows) afterByVariant.set(r.variantId, r.quantity);
+    }
+
+    for (const line of oversold) {
+      const had = stockBefore.get(line.itemCode) ?? 0;
+      const after = { quantity: afterByVariant.get(byCode.get(line.itemCode)!) ?? 0 };
       warnings.push(
         `${line.itemCode}: sold ${line.qty - Math.max(0, had)} more than Inventory had at this ` +
         `store; stock is now ${after?.quantity ?? 0}. Count it at the next stock check.`
