@@ -35,7 +35,15 @@ export class DispatchService {
    * read the order before it began, so it could not be part of anything larger; and a dispatch
    * racing a cancel read an order that was no longer what it checked.
    */
-  async dispatchInTransaction(tx: any, clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[]) {
+  /**
+   * `allowNegative` is for a dispatch that RECORDS goods already gone.
+   *
+   * A POS sale reaches Inventory after the customer has walked out with the pieces. The count
+   * going negative is the honest record of that; refusing would stop the shop's queue on a fact
+   * that can never change back. Off for every other caller, who are all deciding whether goods
+   * MAY leave.
+   */
+  async dispatchInTransaction(tx: any, clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[], opts: { allowNegative?: boolean } = {}) {
     if (!Array.isArray(items) || items.length === 0) {
       throw badRequest('Choose at least one item to send out.');
     }
@@ -127,6 +135,7 @@ export class DispatchService {
           referenceType: 'DISPATCH',
           referenceId: dispatch.id,
           spots: pickedFrom.get(dItem.salesOrderItemId),
+          allowNegative: opts.allowNegative,
           tx
         });
 

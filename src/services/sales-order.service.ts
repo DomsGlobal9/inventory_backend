@@ -705,7 +705,9 @@ export class SalesOrderService {
       });
 
       if (data.status === 'CONFIRMED' && reservationItems.length > 0) {
-        await reservationService.reserveStock(clientId, locationId, reservationItems, tx);
+        // Set only by callers reporting a sale that already happened -- see reserveStock.
+        await reservationService.reserveStock(clientId, locationId, reservationItems, tx,
+          { allowOversell: Boolean(data.allowOversell) });
       }
 
       return updatedOrder;

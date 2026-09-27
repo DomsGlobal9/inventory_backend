@@ -42,7 +42,19 @@ export class ReservationService {
    * Attempts to reserve stock for multiple items.
    * Runs in a transaction to ensure either all items are reserved or none are.
    */
-  async reserveStock(clientId: string, locationId: string, items: { variantId: string; salesOrderItemId: string; quantity: number }[], txClient?: any) {
+  /**
+   * `allowOversell` is for events that REPORT a sale rather than make one.
+   *
+   * A POS sale arrives after the customer has walked out with the goods. Refusing it because the
+   * count says zero does not put the saree back -- it stops the shop's queue on a fact, and a
+   * queue stopped behind a fact can never clear, because the stock is not coming. So the sale is
+   * recorded, the count goes negative, and negative is exactly what "we sold something we did not
+   * know we had" should look like until somebody counts the shelf.
+   *
+   * Off by default, and every other caller leaves it off: they are deciding whether to sell, and
+   * for them the refusal is the whole point.
+   */
+  async reserveStock(clientId: string, locationId: string, items: { variantId: string; salesOrderItemId: string; quantity: number }[], txClient?: any, opts: { allowOversell?: boolean } = {}) {
     const execute = async (tx: any) => {
       const reservations = [];
 
@@ -60,15 +72,24 @@ export class ReservationService {
 
         // Said with the item's name and the store's. A cashier could do nothing with two ids.
         if (stocks.length === 0) {
-          const { item: label, store } = await describeVariant(tx, clientId, item.variantId, locationId);
-          throw Object.assign(conflict(`Insufficient stock: ${label} is not stocked at ${store}.`),
-            { details: { code: 'OUT_OF_STOCK', variantId: item.variantId, available: 0 } });
+          if (opts.allowOversell) {
+            // Nothing here to reserve against, so the row is made at zero and goes negative on
+            // dispatch -- the honest record of a sale from a shelf the system did not know about.
+            await tx.inventoryStock.create({
+              data: { clientId, variantId: item.variantId, locationId, quantity: 0, reservedQty: 0 }
+            });
+            stocks.push({ id: null, quantity: 0, reservedQty: 0 });
+          } else {
+            const { item: label, store } = await describeVariant(tx, clientId, item.variantId, locationId);
+            throw Object.assign(conflict(`Insufficient stock: ${label} is not stocked at ${store}.`),
+              { details: { code: 'OUT_OF_STOCK', variantId: item.variantId, available: 0 } });
+          }
         }
 
         const stock = stocks[0];
         const availableQty = Math.max(0, stock.quantity - stock.reservedQty);
 
-        if (item.quantity > availableQty) {
+        if (item.quantity > availableQty && !opts.allowOversell) {
           const { item: label, store } = await describeVariant(tx, clientId, item.variantId, locationId);
           throw Object.assign(
             conflict(`Insufficient stock: only ${availableQty} of ${label} free at ${store}, and ${item.quantity} ${item.quantity === 1 ? 'is' : 'are'} needed.`),

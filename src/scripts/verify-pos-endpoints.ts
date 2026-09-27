@@ -23,12 +23,35 @@ const check = (name: string, ok: boolean, detail = '') => {
   else { failed++; console.log(`  [FAIL] ${name}${detail ? '  -- ' + detail : ''}`); }
 };
 
-const api = (key: string) => axios.create({
+const api = (key: string) => slowlog(axios.create({
   baseURL: BASE,
   headers: { 'X-Storefront-Key': key },
   validateStatus: () => true,
-  timeout: 30_000
-});
+  /*
+   * 60s, not the 30s this started with, and the reason is measured rather than guessed.
+   *
+   * The database is in Singapore and one sale is about a dozen sequential statements inside a
+   * single transaction -- pg_stat_activity shows the backend sitting in "idle in transaction /
+   * ClientRead", i.e. waiting on US between round trips. A sale costs ~11s on a good connection.
+   * At 30s the suite was dying on network wobble and the failure moved between groups every run,
+   * which reads exactly like a code bug and is not one.
+   */
+  timeout: 60_000
+}));
+
+/*
+ * How long each call took, so a slow run SAYS it was slow instead of just dying. A failure that
+ * only appears under latency is the kind that gets mistaken for a logic bug, and was.
+ */
+const slowlog = (inst: any) => { inst.interceptors.request.use(c => { (c as any).t0 = Date.now(); return c; });
+inst.interceptors.response.use(
+  r => { const ms = Date.now() - (r.config as any).t0;
+         if (ms > 5000) console.log(`      [slow ${ms}ms] ${r.config.method?.toUpperCase()} ${r.config.url}`);
+         return r; },
+  e => { const ms = Date.now() - (e.config?.t0 ?? Date.now());
+         console.log(`      [HUNG ${ms}ms] ${e.config?.method?.toUpperCase()} ${e.config?.url} :: ${e.message}`);
+         return Promise.reject(e); }
+); return inst; };
 
 async function main() {
   // ── a shop, a location, a product that can be billed ────────────────────────────────────
@@ -291,6 +314,60 @@ async function main() {
     check('and the till\'s tax was split in half, adding back exactly',
       Math.round((Number(line?.cgst) + Number(line?.sgst)) * 100) === 32143,
       `${line?.cgst} + ${line?.sgst}`);
+  }
+
+  console.log('\nH. A SALE FOR STOCK WE DID NOT THINK WE HAD');
+  {
+    // Empty the shelf first, so the next sale is a genuine oversell.
+    await prisma.inventoryStock.updateMany({
+      where: { clientId: CLIENT, variantId: variant.id },
+      data: { quantity: 0, reservedQty: 0 }
+    });
+
+    const oversold = {
+      kind: 'sale.completed',
+      invoiceNo: `INV/2026-27/O${Date.now() % 1000}`,
+      occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 2, unitPricePaise: 300000, lineTotalPaise: 600000 }],
+      totals: {},
+      payments: [{ method: 'CASH', amountPaise: 600000 }]
+    };
+
+    const r = await api(key).post('/events', oversold);
+    check('a sale for stock we did not have is APPLIED, not refused',
+      r.data?.data?.answer === 'APPLIED', JSON.stringify(r.data?.data));
+    check('and warns, naming the item and what the count became',
+      (r.data?.data?.warnings ?? []).some((w) =>
+        w.startsWith(variant.variantCode) && /sold 2 more/.test(w) && /now -2/.test(w)),
+      JSON.stringify(r.data?.data?.warnings));
+
+    const stock = await prisma.inventoryStock.findFirst({
+      where: { clientId: CLIENT, variantId: variant.id }, select: { quantity: true }
+    });
+    check('the count went NEGATIVE rather than being clamped', stock?.quantity === -2,
+      String(stock?.quantity));
+
+    const order = await prisma.salesOrder.findFirst({
+      where: { clientId: CLIENT, externalOrderId: oversold.invoiceNo },
+      select: { total: true }
+    });
+    check('and the sale is on the books in full', Number(order?.total) === 6000,
+      String(order?.total));
+
+    // and the queue keeps moving: the very next sale still works
+    const next = await api(key).post('/events', { ...oversold, invoiceNo: `${oversold.invoiceNo}-2` });
+    check('the queue is NOT stopped -- the next sale applies too',
+      next.data?.data?.answer === 'APPLIED', JSON.stringify(next.data?.data));
+  }
+
+  console.log('\nI. A SALE WHEN THE SHOP STILL DECIDES -- unchanged');
+  {
+    // The counter-sale path is the one that must still refuse, because somebody is choosing.
+    const r = await api(key).get(`/stock?codes=${variant.variantCode}`);
+    check('and /stock reports the negative honestly',
+      r.data?.data?.[0]?.quantity === -4, JSON.stringify(r.data?.data?.[0]));
+    check('while available never goes below zero -- nothing is promisable',
+      r.data?.data?.[0]?.available === 0, String(r.data?.data?.[0]?.available));
   }
 
 }

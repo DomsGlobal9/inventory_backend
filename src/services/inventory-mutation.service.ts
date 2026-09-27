@@ -22,6 +22,8 @@ function queueStorefrontNotification(clientId: string, variantId: string, previo
 }
 
 interface MovementInput {
+  /** Record the movement even if it takes the count below zero. See applyMovement. */
+  allowNegative?: boolean;
   clientId: string;
   variantId: string;
   locationId: string; // NEW: Required for multi-location
@@ -50,7 +52,8 @@ export class InventoryMutationService {
   async applyMovement(input: MovementInput) {
     const {
       clientId, variantId, locationId, movementType, reason, quantityDelta,
-      unitCost, notes, referenceType, referenceId, createdBy, tx: externalTx, spots
+      unitCost, notes, referenceType, referenceId, createdBy, tx: externalTx, spots,
+      allowNegative
     } = input;
 
     // A move between shelves changes where pieces are, never how many the location holds.
@@ -115,7 +118,18 @@ export class InventoryMutationService {
       const oldLocationQty = stock ? stock.quantity : 0;
       const newLocationQty = oldLocationQty + quantityDelta;
 
-      if (newLocationQty < 0) {
+      /*
+       * `allowNegative` is for a movement that RECORDS what already happened.
+       *
+       * A POS sale arrives after the customer has left with the goods. Refusing it because the
+       * count says zero does not put them back; it stops the shop's queue on a fact that can
+       * never change. The count goes negative instead, which is precisely what "we sold something
+       * we did not know we had" should look like until somebody counts the shelf.
+       *
+       * Off for every other caller, because they are all deciding whether a movement MAY happen,
+       * and for those this refusal is the whole point.
+       */
+      if (newLocationQty < 0 && !allowNegative) {
         throw Object.assign(
           new Error("Insufficient stock in this location to complete the transaction."),
           { statusCode: 400 }

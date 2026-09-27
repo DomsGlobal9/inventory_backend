@@ -216,6 +216,19 @@ export async function applySale(
   // What Inventory believes the rate is, purely so a difference can be pointed out afterwards.
   const taxByCode = await taxStandingByCode(clientId, event.lines.map(l => l.itemCode));
 
+  /*
+   * What the count said BEFORE this sale, so the warning can name what it became. Read outside
+   * the transaction on purpose: it is for a sentence to a shopkeeper, not for a decision.
+   */
+  const stockBefore = new Map<string, number>();
+  for (const line of event.lines) {
+    const variantId = byCode.get(line.itemCode)!;
+    const row = await prisma.inventoryStock.findFirst({
+      where: { clientId, variantId, locationId }, select: { quantity: true, reservedQty: true }
+    });
+    stockBefore.set(line.itemCode, (row?.quantity ?? 0) - (row?.reservedQty ?? 0));
+  }
+
   try {
     /*
      * runTransaction, not prisma.$transaction, and the reason is measurable: the database is in
@@ -266,6 +279,13 @@ export async function applySale(
               },
           externalOrderId: event.invoiceNo,
           sourceSystem: POS_SOURCE,
+          /*
+           * This event REPORTS a sale; it does not make one. The customer left with the goods
+           * whatever the count says, so refusing on stock would stop the shop's queue on a fact
+           * that can never change back. The count goes negative instead, which is the honest
+           * record until somebody counts the shelf.
+           */
+          allowOversell: true,
           status: 'CONFIRMED',
           handover: 'TAKEN_NOW',
           items: event.lines.map(l => ({
@@ -301,7 +321,8 @@ export async function applySale(
        */
       await dispatchService.dispatchInTransaction(
         tx, clientId, made.id,
-        made.items.map((i: any) => ({ salesOrderItemId: i.id, quantity: i.quantity }))
+        made.items.map((i: any) => ({ salesOrderItemId: i.id, quantity: i.quantity })),
+        { allowNegative: true }
       );
 
       /*
@@ -337,6 +358,27 @@ export async function applySale(
      * these to the owner; the money and the stock are already recorded.
      */
     const warnings: string[] = [];
+
+    for (const line of event.lines) {
+      const had = stockBefore.get(line.itemCode) ?? 0;
+      if (line.qty <= had) continue;
+
+      /*
+       * Read back rather than worked out. The count this sale STARTED from may already have been
+       * negative from an earlier one, so "had minus sold" gives a number that is arithmetically
+       * tidy and factually wrong -- and this sentence is the one a shopkeeper walks to the shelf
+       * with. One extra read is worth it for a figure somebody is going to act on.
+       */
+      const after = await prisma.inventoryStock.findFirst({
+        where: { clientId, variantId: byCode.get(line.itemCode)!, locationId },
+        select: { quantity: true }
+      });
+      warnings.push(
+        `${line.itemCode}: sold ${line.qty - Math.max(0, had)} more than Inventory had at this ` +
+        `store; stock is now ${after?.quantity ?? 0}. Count it at the next stock check.`
+      );
+    }
+
     for (const line of event.lines) {
       if (line.taxRateBps == null) continue;
       const standing = taxByCode.get(line.itemCode);
