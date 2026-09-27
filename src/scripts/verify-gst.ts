@@ -24,6 +24,7 @@ import {
   type RateRule, type GstRegistration
 } from '../services/pricing/tax';
 import { suggestHsn, effectiveTaxFor, hsnForInvoice } from '../services/pricing/hsn';
+import { buildBill, financialYearOf, type BillLineInput } from '../services/pricing/bill';
 
 let passed = 0;
 let failed = 0;
@@ -261,6 +262,152 @@ eq('a small shop prints four', hsnForInvoice('5007', false), '5007');
 eq('a big shop prints six', hsnForInvoice('520852', true), '520852');
 eq('a four-digit code is not padded for a big shop', hsnForInvoice('5007', true), '5007');
 eq('an eight-digit code is trimmed for a small shop', hsnForInvoice('52085210', false), '5208');
+
+
+// -- N. A whole bill, end to end -----------------------------------------------------------
+console.log('\nN. A whole bill');
+
+const SAREE_LINE = (label: string, total: number, qty = 1): BillLineInput => ({
+  label, quantity: qty, netUnitPriceMinor: Math.round(total / qty), lineTotalMinor: total,
+  hsnCode: '5007', taxRateBps: 500, taxSlabbed: false, priceIsExclusive: false
+});
+const LEHENGA_EX = (label: string, total: number, qty = 1): BillLineInput => ({
+  label, quantity: qty, netUnitPriceMinor: Math.round(total / qty), lineTotalMinor: total,
+  hsnCode: '6204', taxRateBps: 500, taxSlabbed: true, priceIsExclusive: true
+});
+
+{
+  const bill = buildBill({
+    registration: 'REGULAR', shopStateCode: '36',
+    lines: [SAREE_LINE('PRD-1 saree', rupees(3121))]
+  });
+  check('a registered shop issues a tax invoice', bill.documentKind === 'TAX_INVOICE');
+  check('and it is issuable', bill.issuable, bill.problems.join(' | '));
+  check('an inclusive price is unchanged by tax -- taxable + tax = the tag',
+    bill.grossMinor === rupees(3121), `gross ${bill.grossMinor} vs tag ${rupees(3121)}`);
+  check('in-state gives CGST and SGST, no IGST',
+    bill.cgstMinor > 0 && bill.sgstMinor > 0 && bill.igstMinor === 0);
+  check('the halves add to the total tax',
+    bill.cgstMinor + bill.sgstMinor === bill.totalTaxMinor);
+}
+
+// -- O. Mixed basket, and the slab following the discount ----------------------------------
+console.log('\nO. A mixed basket');
+
+{
+  const bill = buildBill({
+    registration: 'REGULAR', shopStateCode: '36',
+    lines: [SAREE_LINE('saree', rupees(5000)), LEHENGA_EX('lehenga', rupees(2600))]
+  });
+  eq('the saree is 5%', bill.lines[0].rateBpsCharged, 500);
+  eq('the lehenga above Rs 2,500 is 18%', bill.lines[1].rateBpsCharged, 1800);
+  check('two rates on one bill, taxed per line', bill.issuable, bill.problems.join(' | '));
+}
+{
+  // the same lehenga, discounted below the threshold
+  const bill = buildBill({
+    registration: 'REGULAR', shopStateCode: '36',
+    lines: [LEHENGA_EX('lehenga after an offer', rupees(2400))]
+  });
+  eq('an offer that crosses the threshold changes the rate too',
+    bill.lines[0].rateBpsCharged, 500);
+}
+{
+  const bill = buildBill({
+    registration: 'REGULAR', shopStateCode: '36',
+    lines: [LEHENGA_EX('three lehengas', rupees(6000), 3)]
+  });
+  eq('the threshold is per piece: 3 x Rs 2,000 is 5%, not 18%',
+    bill.lines[0].rateBpsCharged, 500);
+}
+
+// -- P. Who may charge, and who may not ----------------------------------------------------
+console.log('\nP. Composition and unregistered shops');
+
+{
+  const bill = buildBill({
+    registration: 'COMPOSITION', shopStateCode: '36',
+    lines: [SAREE_LINE('saree', rupees(3121))]
+  });
+  eq('a composition dealer issues a Bill of Supply', bill.documentKind, 'BILL_OF_SUPPLY');
+  check('and charges no tax at all', bill.totalTaxMinor === 0);
+  check('the customer pays the shelf price and nothing more',
+    bill.payableMinor === rupees(3121), `${bill.payableMinor}`);
+  check('a missing HSN does not even block it -- it owes no tax', bill.issuable);
+}
+{
+  const bill = buildBill({
+    registration: 'UNREGISTERED', shopStateCode: null,
+    lines: [SAREE_LINE('saree', rupees(999))]
+  });
+  eq('an unregistered shop issues a plain receipt', bill.documentKind, 'RECEIPT');
+  check('with no tax and no state-code complaint', bill.totalTaxMinor === 0 && bill.issuable);
+}
+
+// -- Q. What it refuses, and why -----------------------------------------------------------
+console.log('\nQ. Refusals, rather than a quietly wrong invoice');
+
+{
+  const noHsn: BillLineInput = { ...SAREE_LINE('PRD-9 saree', rupees(2000)), hsnCode: null, taxRateBps: null };
+  const bill = buildBill({ registration: 'REGULAR', shopStateCode: '36', lines: [noHsn] });
+  check('a registered shop cannot bill a product with no HSN', !bill.issuable);
+  check('and says which product, in words a shopkeeper can act on',
+    bill.problems.some(p => p.includes('PRD-9')), bill.problems[0] ?? '(none)');
+}
+{
+  // the section 2 trap: slabbed AND inclusive
+  const trap: BillLineInput = { ...LEHENGA_EX('lehenga', rupees(2800)), priceIsExclusive: false };
+  const bill = buildBill({ registration: 'REGULAR', shopStateCode: '36', lines: [trap] });
+  check('stitched clothing priced WITH tax is refused, not guessed at', !bill.issuable);
+  check('and the reason explains the circularity',
+    bill.problems.some(p => /cannot decide its own rate/.test(p)), bill.problems[0] ?? '(none)');
+}
+{
+  const bill = buildBill({ registration: 'REGULAR', shopStateCode: null, lines: [SAREE_LINE('s', 100000)] });
+  check('a registered shop with no state code is refused', !bill.issuable);
+}
+
+// -- R. Place of supply --------------------------------------------------------------------
+console.log('\nR. Which state the goods are going to');
+
+{
+  const here = buildBill({ registration: 'REGULAR', shopStateCode: '36', lines: [SAREE_LINE('s', rupees(5000))] });
+  const away = buildBill({
+    registration: 'REGULAR', shopStateCode: '36', placeOfSupplyStateCode: '29',
+    lines: [SAREE_LINE('s', rupees(5000))]
+  });
+  check('a counter sale (no place of supply given) is NOT inter-state', !here.interState,
+    'the customer is standing in the shop');
+  check('another state is', away.interState);
+  check('and the customer pays exactly the same either way',
+    here.payableMinor === away.payableMinor, `${here.payableMinor} vs ${away.payableMinor}`);
+  check('but the split differs', here.cgstMinor > 0 && away.igstMinor > 0 && away.cgstMinor === 0);
+}
+
+// -- S. Rounding the bill once, at the end -------------------------------------------------
+console.log('\nS. Rounding, and the round-off line');
+
+{
+  const bill = buildBill({
+    registration: 'REGULAR', shopStateCode: '36',
+    lines: [SAREE_LINE('odd', 333333)]           // Rs 3,333.33 inclusive
+  });
+  check('the payable total is a whole number of rupees',
+    bill.payableMinor % 100 === 0, `${bill.payableMinor}`);
+  check('and gross + round-off = payable, exactly',
+    bill.grossMinor + bill.roundOffMinor === bill.payableMinor,
+    `${bill.grossMinor} + ${bill.roundOffMinor} = ${bill.payableMinor}`);
+  check('the tax was never bent to make the total tidy',
+    bill.cgstMinor + bill.sgstMinor === bill.totalTaxMinor);
+}
+
+// -- T. The financial year an invoice belongs to -------------------------------------------
+console.log('\nT. April to March');
+
+eq('27 Sep 2026 is 2026-27', financialYearOf(new Date('2026-09-27T00:00:00')), '2026-27');
+eq('31 Mar 2027 is still 2026-27', financialYearOf(new Date('2027-03-31T00:00:00')), '2026-27');
+eq('1 Apr 2027 starts 2027-28', financialYearOf(new Date('2027-04-01T00:00:00')), '2027-28');
+eq('1 Jan 2027 is 2026-27, not 2027-28', financialYearOf(new Date('2027-01-01T00:00:00')), '2026-27');
 
 // ── Result ───────────────────────────────────────────────────────────────────────────────
 console.log(`\n${'='.repeat(72)}`);
