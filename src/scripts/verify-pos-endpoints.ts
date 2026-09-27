@@ -477,6 +477,56 @@ K. A FAULT IN THE MESSAGE IS STILL REFUSED AT THE DOOR');
     check('nothing was left sitting in the queue', queued === 0, String(queued));
   }
 
+  console.log('
+L. A RETURN THAT OVERTAKES ITS OWN SALE');
+  {
+    /*
+     * Only possible since sales became asynchronous: the POS sends the return after the sale, but
+     * the sale is applied a moment later, so the return can arrive first. This must be retryable,
+     * never UNKNOWN_ORDER -- a shop's queue stopping over a two-second race is the exact failure
+     * the whole design exists to avoid.
+     */
+    const race = {
+      kind: 'sale.completed',
+      invoiceNo: `INV/2026-27/R${Date.now() % 10000}`,
+      occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300000, lineTotalPaise: 300000 }],
+      totals: {},
+      payments: [{ method: 'CASH', amountPaise: 300000 }]
+    };
+    const accepted = await api(key).post('/events', race);
+    check('the sale is taken in', accepted.status === 202, `status ${accepted.status}`);
+
+    // straight away, before the worker can have finished it
+    const ret = await api(key).post('/events', {
+      kind: 'sale.returned', creditNoteNo: `CN/2026-27/R${Date.now() % 10000}`,
+      againstInvoiceNo: race.invoiceNo,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {}
+    });
+    check('a return against a sale still in the queue is NOT UNKNOWN_ORDER',
+      ret.data?.data?.answer !== 'UNKNOWN_ORDER', JSON.stringify(ret.data?.data));
+    check('it says the sale is not applied yet, and says so retryably',
+      ret.data?.data?.answer === 'SALE_NOT_YET_APPLIED' && ret.status === 409,
+      `${ret.status} ${JSON.stringify(ret.data?.data)}`);
+
+    // and once the sale lands, the same return is checked properly
+    const until = Date.now() + 180_000;
+    while (Date.now() < until) {
+      const st = await api(key).get(`/events/status?invoiceNo=${encodeURIComponent(race.invoiceNo)}`);
+      if (st.data?.data?.status === 'APPLIED') break;
+      await new Promise(res => setTimeout(res, 400));
+    }
+    const after = await api(key).post('/events', {
+      kind: 'sale.returned', creditNoteNo: `CN/2026-27/S${Date.now() % 10000}`,
+      againstInvoiceNo: race.invoiceNo,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {}
+    });
+    check('once the sale has landed the return is checked on its merits',
+      after.data?.data?.answer !== 'SALE_NOT_YET_APPLIED' &&
+      after.data?.data?.answer !== 'UNKNOWN_ORDER',
+      JSON.stringify(after.data?.data));
+  }
+
 }
 
 main()

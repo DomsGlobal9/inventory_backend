@@ -117,7 +117,13 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
         Array.isArray(event.lines) ? event.lines : []
       );
       if (problem) {
-        res.status(422).json({ success: false, data: problem });
+        /*
+         * 409, not 422, when the sale is simply not applied yet. 422 says "this message is wrong
+         * and will stay wrong"; a till that reads it that way would stop its queue over a race
+         * that clears in two seconds. 409 says "not now, try again", which is the truth.
+         */
+        const retryable = problem.answer === 'SALE_NOT_YET_APPLIED';
+        res.status(retryable ? 409 : 422).json({ success: false, data: problem });
         return;
       }
       const notYet: PosEventResult = {

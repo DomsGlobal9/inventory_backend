@@ -41,7 +41,15 @@ export const POS_SOURCE = 'SCALEEZY_POS';
  */
 export const WALK_IN_KEY = 'POS:WALK-IN';
 
-/** What the POS is told. Permanent codes stop that shop's queue for a person to look at. */
+/**
+ * What the POS is told. Permanent codes stop that shop's queue for a person to look at.
+ *
+ * SALE_NOT_YET_APPLIED is the one that does NOT. It is a race, not a fault: sales are taken in
+ * and applied a moment later, so a return can now reach us while its own sale is still in the
+ * queue. Answering UNKNOWN_ORDER there would stop a shop's queue over something that fixes
+ * itself in two seconds, which is the exact failure this whole design is meant to avoid. The
+ * distinction did not exist before sales became asynchronous, and it had to be added with them.
+ */
 export type PosAnswer =
   | 'APPLIED'
   | 'ALREADY_APPLIED'
@@ -49,7 +57,9 @@ export type PosAnswer =
   | 'UNKNOWN_ORDER'
   | 'BAD_PAYLOAD'
   | 'QTY_EXCEEDS_SOLD'
-  | 'AMOUNT_MISMATCH';
+  | 'AMOUNT_MISMATCH'
+  /** Retryable. The sale this return is against has been taken in but not applied yet. */
+  | 'SALE_NOT_YET_APPLIED';
 
 export interface PosEventResult {
   answer: PosAnswer;
@@ -450,6 +460,27 @@ export async function checkReturnAmounts(
   });
 
   if (!order) {
+    /*
+     * Is it missing, or merely not applied yet?
+     *
+     * The POS sends a return after its sale, but sales are now taken in and applied a moment
+     * later, so a return can legitimately overtake one. Telling the till UNKNOWN_ORDER there
+     * would stop the shop's queue over a two-second race. This costs one extra query and only
+     * on the path where we were about to refuse anyway.
+     */
+    const queued = await prisma.posInboundEvent.findFirst({
+      where: {
+        clientId, kind: 'sale.completed', invoiceNo: againstInvoiceNo,
+        status: { in: ['QUEUED', 'RUNNING'] }
+      },
+      select: { id: true }
+    });
+    if (queued) {
+      return {
+        answer: 'SALE_NOT_YET_APPLIED',
+        detail: `Invoice ${againstInvoiceNo} has been taken in but not applied yet. Send this return again in a moment.`
+      };
+    }
     return { answer: 'UNKNOWN_ORDER', detail: `No sale here for invoice ${againstInvoiceNo}.` };
   }
 
