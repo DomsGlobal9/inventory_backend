@@ -323,6 +323,8 @@ export class SalesOrderService {
        * something between lines you have not finished counting. So this is two passes -- resolve
        * and price, then allocate, then write.
        */
+      let taxOnLinesMinor = 0;
+
       const resolved: {
         item: any; unitCostMinor: number; priced: PricedLine;
         manual: ManualDiscount | null; orderItemId?: string;
@@ -545,6 +547,19 @@ export class SalesOrderService {
             }
           : ourTax;
 
+        /*
+         * The bill's own tax total, added up from the lines that were just frozen.
+         *
+         * PLAN-gst.md flagged this in its very first section -- taxAmount "is stored but never
+         * computed" -- and it stayed that way, so a GST-registered shop's order screen said
+         * "Tax +Rs 0" while every line underneath carried 5%. Found by looking at the screen,
+         * not by any API test: each line was individually correct, and only the sum was missing.
+         */
+        taxOnLinesMinor +=
+          toMinor((frozenTax as any).cgst ?? 0) +
+          toMinor((frozenTax as any).sgst ?? 0) +
+          toMinor((frozenTax as any).igst ?? 0);
+
         const orderItem = await tx.salesOrderItem.create({
           data: {
             salesOrderId: order.id,
@@ -709,6 +724,20 @@ export class SalesOrderService {
           // discounts this is what makes the order's figure and its lines agree.
           discountAmount: fromMinor(totals.discountMinor),
           total: fromMinor(totals.totalMinor),
+          /*
+           * Recorded, and deliberately NOT added to the total above.
+           *
+           * orderTotalsFrom computes subtotal - discount + tax + shipping, which is right when a
+           * shop prices its goods EXCLUSIVE of tax. These prices are inclusive: the 5% is already
+           * inside each line's total, so adding it again would put 5% on top of every bill in the
+           * shop. This column says how much of the total IS tax; it does not add to it.
+           *
+           * And only when the caller did not state one. A caller that sends taxAmount has said
+           * what the tax is and had it added to the total above -- overwriting that with our own
+           * sum would make the column disagree with the total it is part of. Shopify orders
+           * arrive that way, carrying tax we are told to trust rather than recompute.
+           */
+          ...(data.taxAmount == null ? { taxAmount: fromMinor(taxOnLinesMinor) } : {}),
           status: data.status === 'CONFIRMED' ? 'CONFIRMED' : 'DRAFT'
         },
         // A counter sale needs only the lines to send out; every relation included is another

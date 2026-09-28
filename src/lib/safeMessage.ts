@@ -38,12 +38,55 @@ const PATTERNS: RegExp[] = [
   /\b(?:postgres|postgresql|mysql|redis|mongodb):\/\//, // a connection string
 ];
 
+/**
+ * Names of the machinery we buy in, which a shopkeeper has never heard of.
+ *
+ * A second KIND of leak, and the first one this file did not catch. Production showed a saree
+ * shop this, on the product page, in plain English:
+ *
+ *   Goldenrod -- Gemini API produced no response after retries.
+ *
+ * Nothing in PATTERNS matches it. There is no path, no ORM call, no host and no stack frame; it
+ * is a well-formed sentence, so it sailed through. But it names a supplier the shop has no
+ * account with, no relationship to and no way to act on. "API" and "after retries" say only that
+ * we tried something technical.
+ *
+ * Whose photo studio we use is our business, and it changes. The shop's question is only ever
+ * "did my photographs get made, and what do I do now" -- which is what each caller's fallback
+ * answers. Kept separate from PATTERNS because the reason differs: those hide the shape of the
+ * building, these hide who we buy from.
+ */
+const SUPPLIERS: RegExp[] = [
+  /\bgemini\b/i,
+  /\bopen ?ai\b/i,
+  /\banthropic\b/i,
+  /\bclaude\b/i,
+  /\breplicate\b/i,
+  /\bstability\s?ai\b/i,
+  /\bhugging\s?face\b/i,
+  /\bsupabase\b/i,
+  /\bcloudinary\b/i,
+  /\bvertex\s?ai\b/i,
+  /\btwilio\b/i,
+  /\bevolution\s?api\b/i,
+  /\brender\.com\b/i,
+  // The words that give away one machine talking to another, whoever it is.
+  /\bAPI\b/,
+  /\bSDK\b/,
+  /\bendpoint\b/i,
+  /\bafter retries\b/i,
+  /\bstatus code \d{3}\b/i,
+  /\bHTTP \d{3}\b/i,
+  /\bnull\b/,
+  /\bundefined\b/
+];
+
 /** What to say instead. Vague on purpose: the real text is in the log and in clientErrorLog. */
 export const SAFE_GENERIC = 'Something went wrong at our end. Please try again.';
 
 export function looksInternal(message: unknown): boolean {
   const text = String(message ?? '');
-  return PATTERNS.some(p => p.test(text));
+  return PATTERNS.some(p => p.test(text)) || SUPPLIERS.some(p => p.test(text));
 }
 
 /** The message if it is fit to show, otherwise `fallback` -- or the generic. */

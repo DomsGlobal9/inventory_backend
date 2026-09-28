@@ -121,6 +121,23 @@ async function main() {
   // A connection credential, minted by the app's own helper rather than hand-rolled -- the
   // format is sk_<prefix>_<secret> and the hash is of the whole string, which a test that
   // guesses at it gets subtly wrong and then "proves" the gate is broken.
+  /*
+   * A GST-REGISTERED shop, because most of what is tested below only exists for one.
+   *
+   * The default is UNREGISTERED, and that default is right: a shop that has merely typed a GST
+   * number is not a regular dealer, and an unregistered one charges nothing and issues a plain
+   * receipt. But it meant the tax on every line froze as null, so the credit note had no rate to
+   * reverse -- the suite was quietly testing the no-tax path and calling it the tax path.
+   */
+  await prisma.clientSettings.upsert({
+    where: { clientId: CLIENT },
+    create: {
+      clientId: CLIENT, gstRegistration: 'REGULAR',
+      gstNumber: '36AABCU9603R1ZX', gstStateCode: '36'
+    },
+    update: { gstRegistration: 'REGULAR', gstStateCode: '36' }
+  });
+
   const cred = generateCredential();
   await prisma.storefrontConnection.create({
     data: {
@@ -932,6 +949,84 @@ async function main() {
     check('so the takings show 1,500, not 4,500',
       money.reduce((a, r) => a + Number(r.amount), 0) === 1500,
       String(money.reduce((a, r) => a + Number(r.amount), 0)));
+  }
+
+  console.log('\nS. THE CREDIT NOTE A RETURN IS');
+  {
+    const inv = `INV/2026-27/CN${Date.now() % 10000}`;
+    await prisma.inventoryStock.updateMany({
+      where: { clientId: CLIENT, variantId: variant.id }, data: { quantity: 30, reservedQty: 0 }
+    });
+    // three pieces at 3,000 each, 5% GST included
+    await sendEvent(key, {
+      kind: 'sale.completed', invoiceNo: inv, occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: variant.variantCode, qty: 3, unitPricePaise: 300000, lineTotalPaise: 900000 }],
+      totals: {}, payments: [{ method: 'CASH', amountPaise: 900000 }]
+    });
+
+    const saleLine = await prisma.salesOrderItem.findFirst({
+      where: { salesOrder: { clientId: CLIENT, externalOrderId: inv } },
+      select: { taxRateBps: true, cgst: true, sgst: true, taxableValue: true }
+    });
+    check('the sale line froze a rate to reverse later', saleLine?.taxRateBps === 500,
+      String(saleLine?.taxRateBps));
+    const saleTaxPaise = Math.round((Number(saleLine?.cgst ?? 0) + Number(saleLine?.sgst ?? 0)) * 100);
+
+    // one of the three back
+    const cn1 = `CN/2026-27/A${Date.now() % 10000}`;
+    const r1 = await sendEvent(key, {
+      kind: 'sale.returned', creditNoteNo: cn1, againstInvoiceNo: inv,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {},
+      refund: { method: 'CASH' }
+    });
+    check('the return applied', r1.data?.data?.answer === 'APPLIED', JSON.stringify(r1.data?.data));
+
+    const ret1 = await prisma.salesReturn.findFirst({
+      where: { clientId: CLIENT, returnNumber: r1.data?.data?.orderNumber },
+      select: { creditNoteNo: true, cgst: true, sgst: true, taxableValue: true }
+    });
+    check('it was given a credit note number in its own series',
+      String(ret1?.creditNoteNo ?? '').startsWith('CRN/'), String(ret1?.creditNoteNo));
+    check('and the credit note is NOT an invoice number',
+      !String(ret1?.creditNoteNo ?? '').startsWith('INV/'), String(ret1?.creditNoteNo));
+
+    const back1 = Math.round((Number(ret1?.cgst ?? 0) + Number(ret1?.sgst ?? 0)) * 100);
+    check('it reverses one third of the tax the bill charged',
+      back1 === Math.round(saleTaxPaise / 3) || Math.abs(back1 - saleTaxPaise / 3) <= 1,
+      `${back1} of ${saleTaxPaise}`);
+
+    const line1 = await prisma.salesReturnItem.findFirst({
+      where: { salesReturn: { clientId: CLIENT, creditNoteNo: ret1?.creditNoteNo } },
+      select: { taxRateBps: true, hsnCode: true }
+    });
+    check('the line carries the ORIGINAL rate, not one looked up today',
+      line1?.taxRateBps === 500 && line1?.hsnCode === '5208',
+      `${line1?.taxRateBps} / ${line1?.hsnCode}`);
+
+    // the other two, one at a time -- the whole point of apportioning over a range
+    const cn2 = `CN/2026-27/B${Date.now() % 10000}`;
+    await sendEvent(key, {
+      kind: 'sale.returned', creditNoteNo: cn2, againstInvoiceNo: inv,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {},
+      refund: { method: 'CASH' }
+    });
+    const cn3 = `CN/2026-27/C${Date.now() % 10000}`;
+    await sendEvent(key, {
+      kind: 'sale.returned', creditNoteNo: cn3, againstInvoiceNo: inv,
+      lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300000 }], totals: {},
+      refund: { method: 'CASH' }
+    });
+
+    const all = await prisma.salesReturn.findMany({
+      where: { clientId: CLIENT, salesOrder: { externalOrderId: inv } },
+      select: { creditNoteNo: true, cgst: true, sgst: true }
+    });
+    const totalBack = all.reduce(
+      (a, r) => a + Math.round((Number(r.cgst ?? 0) + Number(r.sgst ?? 0)) * 100), 0);
+    check('three separate returns give back EXACTLY what the bill charged -- not a paisa more or less',
+      totalBack === saleTaxPaise, `${totalBack} vs ${saleTaxPaise}`);
+    check('and each got its own credit note number',
+      new Set(all.map(r => r.creditNoteNo)).size === 3, JSON.stringify(all.map(r => r.creditNoteNo)));
   }
 
 }
