@@ -1,0 +1,14 @@
+-- UNSTITCHED, which the product form has offered all along and the column could not hold.
+--
+-- The Add Product wizard shows READY TO WEAR / UNSTITCHED, and the mapper turned anything it did
+-- not recognise into READY_TO_WEAR. So a shop selecting UNSTITCHED saw it selected, saved it, and
+-- got a ready-to-wear product back -- which also decides the GST treatment, since unstitched
+-- fabric is 5% flat while stitched apparel is 5% or 18% depending on what one piece sells for.
+--
+-- ORDER MATTERS ON DEPLOY. This value must exist in the database before any deployed code writes
+-- it. Nothing writes UNSTITCHED until the frontend carrying the fix is live, so there is no
+-- window in which an older Prisma client reads a value it has never heard of -- the failure that
+-- took the alerts endpoint down on 23 September. Run this with, or before, the backend deploy.
+--
+-- IF NOT EXISTS so re-running is harmless.
+ALTER TYPE "ProductType" ADD VALUE IF NOT EXISTS 'UNSTITCHED';

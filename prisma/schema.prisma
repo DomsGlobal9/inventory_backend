@@ -72,6 +72,11 @@ enum TransferStatus {
 enum ProductType {
   READY_TO_WEAR
   CUSTOM
+  /// Fabric sold by the piece -- a saree, a dress material, anything the customer has made up.
+  /// The form has offered this since it was written; the column could not hold it, so the
+  /// mapper quietly turned it into READY_TO_WEAR. It also decides the GST treatment: unstitched
+  /// fabric is 5% flat, while stitched apparel is 5% or 18% depending on the price of one piece.
+  UNSTITCHED
 }
 
 enum BarcodeType {
