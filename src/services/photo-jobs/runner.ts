@@ -323,6 +323,18 @@ export class PhotoJobRunner {
           category: job.category,
           // A URL, not bytes: the far end fetches it itself.
           saree: job.sourceImageUrl,
+          /*
+           * The other pieces the shop photographed: the blouse, or the top and bottom.
+           *
+           * The photos step has always asked for these separately and only the one image was
+           * ever sent, so the model was dressed in whatever happened to be draped in the main
+           * photograph. The far end takes each of these as its own reference and ignores what
+           * shows in that one.
+           *
+           * Spread, so a piece that was never photographed is ABSENT rather than null: each
+           * field is read as "a reference has been provided", and an empty one is not one.
+           */
+          ...(job.referenceUrls && typeof job.referenceUrls === 'object' ? job.referenceUrls : {}),
           // Only a colour job recolours. Border and blouse are deliberately left alone -- they
           // are usually a contrast the shop chose, and recolouring them sells a garment that
           // does not exist.

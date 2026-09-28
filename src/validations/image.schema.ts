@@ -33,6 +33,17 @@ export const createImageSchema = z.object({
    * Absent for a photograph the shop took itself -- those are not a view of anything.
    */
   view: z.enum(['front', 'left', 'right', 'back']).optional(),
+  /**
+   * Which garment piece this photograph is, from the slot it was uploaded into.
+   *
+   * The wizard asks a saree shop for the drape and, optionally, the blouse piece, and used to
+   * discard which was which -- so the four-view job took "the primary, or else the first", and a
+   * shop that added the blouse first had the blouse sent as the saree.
+   *
+   * A closed list, because these are the slots the form offers; anything else is a typo, and a
+   * typo here silently costs a generation.
+   */
+  slot: z.enum(['saree', 'blouse', 'full-dress', 'top', 'top-front', 'top-back', 'bottom']).optional(),
   orderIndex: z.number().int().default(0),
   storagePath: z.string().optional(),
   fileName: z.string().optional(),

@@ -141,6 +141,7 @@ export class ImageService {
       generated: data.generated ?? false,
       generatedFromId: data.generatedFromId ?? null,
       view: data.view ?? null,
+      slot: data.slot ?? null,
       url: data.url,
       storagePath: data.storagePath,
       fileName: data.fileName,

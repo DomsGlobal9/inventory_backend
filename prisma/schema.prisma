@@ -751,6 +751,18 @@ model ProductImage {
   /// view of the colour a shopper is looking at -- a fact worth a column, not an alt text to parse.
   view String?
 
+  /// Which garment piece this photograph is: 'saree', 'blouse', 'top', 'bottom', 'full-dress'.
+  /// Null for anything uploaded without saying, which is every photograph taken before this
+  /// existed and every one added from the gallery.
+  ///
+  /// The wizard has always asked a saree shop for the drape AND, optionally, the blouse piece,
+  /// and then discarded which was which -- so the four-view job took "the primary, or else the
+  /// first" and a shop that added the blouse first had the blouse sent as the saree.
+  ///
+  /// Plain text rather than an enum, like `view` and `generated` above: a new enum value breaks
+  /// the build already deployed against this database, and this list will grow.
+  slot String?
+
   /// The flat-lay this was generated from, when it was.
   generatedFromId String?        @map("generated_from_id")
   generatedFrom   ProductImage?  @relation("GeneratedFrom", fields: [generatedFromId], references: [id], onDelete: SetNull, onUpdate: Cascade)
@@ -4279,6 +4291,21 @@ model PhotoJob {
   /// deleted while the job is still running.
   sourceImageId  String? @map("source_image_id")
   sourceImageUrl String  @map("source_image_url") @db.Text
+
+  /// The OTHER pieces this job should dress the model in: {"blouse": url}, or {"top": url,
+  /// "bottom": url} for a two-piece outfit. The garment itself is source_image_url above.
+  ///
+  /// The photos step has always collected these -- a saree's blouse piece, a suit's top and
+  /// bottom -- and the job sent only one image, so they never reached the photo studio at all.
+  /// The far end takes each as its own reference and ignores whatever is visible in the main
+  /// photograph, which is the point: a flat-lay of a drape rarely shows the blouse actually sold
+  /// with it.
+  ///
+  /// Resolved when the job is queued rather than when it runs, for the same reason as the
+  /// address above: the image rows may be deleted while the job is still waiting. One JSON
+  /// column rather than a column per piece, because the set of pieces belongs to the far end's
+  /// API and will change without this table having an opinion about it.
+  referenceUrls Json? @map("reference_urls")
 
   /// What the far end is told to call this job, and therefore what cancelling it has to name.
   /// The suffix only: the tenant is put in front by jobKeyFor, never by the browser.

@@ -41,7 +41,7 @@ type ColourGroup = {
   name: string;
   hex: string | null;
   variantIds: string[];
-  images: { id: string; url: string; imageType: string; isPrimary: boolean; generated: boolean; view: string | null }[];
+  images: { id: string; url: string; imageType: string; isPrimary: boolean; generated: boolean; view: string | null; slot: string | null }[];
 };
 
 /** The colours of a product, each with its variants and its photographs. */
@@ -53,7 +53,7 @@ async function coloursOf(productId: string, clientId: string): Promise<ColourGro
     }),
     prisma.productImage.findMany({
       where: { productId, product: { clientId } },
-      select: { id: true, url: true, imageType: true, isPrimary: true, generated: true, view: true, variantId: true }
+      select: { id: true, url: true, imageType: true, isPrimary: true, generated: true, view: true, variantId: true, slot: true }
     })
   ]);
 
@@ -99,12 +99,51 @@ function hasWholeSet(colour: ColourGroup) {
  */
 function sourceForViews(colour: ColourGroup) {
   const own = colour.images.filter(i => !i.generated);
-  return own.find(i => i.imageType === 'RAW_UPLOAD')
-    ?? own.find(i => i.isPrimary)
-    ?? own[0]
+  /*
+   * The garment itself, never the blouse piece.
+   *
+   * The slot is asked outright now. Before it existed this fell through to "the primary, or else
+   * the first", and a shop that uploaded the blouse before the drape had the blouse sent as the
+   * saree -- the model was then photographed wearing a blouse piece as a drape, with nothing
+   * failing and nothing said. Old rows have no slot, so the previous order still applies to them,
+   * minus anything now known to be a blouse.
+   */
+  const notBlouse = own.filter(i => i.slot !== 'blouse');
+  return own.find(i => i.slot === 'saree' || i.slot === 'full-dress')
+    ?? notBlouse.find(i => i.imageType === 'RAW_UPLOAD')
+    ?? notBlouse.find(i => i.isPrimary)
+    ?? notBlouse[0]
     ?? colour.images.find(i => i.generated && i.view === 'front')
-    ?? colour.images[0]
+    ?? colour.images.find(i => i.slot !== 'blouse')
     ?? null;
+}
+
+/**
+ * The pieces that go WITH the garment, named as the far end names them.
+ *
+ * The photos step has always asked for these separately -- a saree's blouse piece, a suit's top
+ * and bottom -- and the job sent one image, so they were collected from the shop and never used.
+ * The far end reads each as its own reference and ignores whatever shows in the main photograph.
+ *
+ * Only the shop's own photographs: a generated view is already a dressed model.
+ */
+function referencesFor(colour: ColourGroup): Record<string, string> {
+  const of = (slot: string) => colour.images.find(i => !i.generated && i.slot === slot)?.url;
+  const refs: Record<string, string> = {};
+  // Left-hand side is the far end's field name; right-hand side is our slot.
+  const pairs: Array<[string, string[]]> = [
+    ['blouse', ['blouse']],
+    ['top', ['top', 'top-front']],
+    ['topBack', ['top-back']],
+    ['bottom', ['bottom']]
+  ];
+  for (const [field, slots] of pairs) {
+    for (const slot of slots) {
+      const url = of(slot);
+      if (url) { refs[field] = url; break; }
+    }
+  }
+  return refs;
 }
 
 /**
@@ -219,6 +258,16 @@ export class PhotoJobQueue {
             variantIds: colour.variantIds,
             sourceImageId: source.id,
             sourceImageUrl: source.url,
+            /*
+             * Only a VIEWS job dresses a model. A COLOUR job copies an already-finished front
+             * view and recolours the cloth in it -- the blouse and the bottom in that picture
+             * are the ones the shop already approved, and handing the far end the flat pieces
+             * again would invite it to redraw what is already right.
+             */
+            referenceUrls: req.kind === 'COLOUR' ? undefined : (() => {
+              const refs = referencesFor(colour);
+              return Object.keys(refs).length ? refs : undefined;
+            })(),
             // The suffix only. The tenant is put in front by jobKeyFor when the far end is told.
             jobKey: `${req.kind === 'COLOUR' ? 'colour' : 'views'}-${colour.name}`,
             category,
