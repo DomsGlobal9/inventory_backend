@@ -104,6 +104,22 @@ export class ProductRepository {
             select: { url: true },
             orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
             take: 1
+          },
+
+          /*
+           * Photographs being made right now, so the grid can say so.
+           *
+           * A colour whose four views are still generating has no picture yet, and the card said
+           * "No photo" -- which is what it says about a colour nobody has photographed and never
+           * will. The two look identical and mean opposite things: one is a job to do, the other
+           * is a job in progress that will finish on its own.
+           *
+           * variantIds comes back so the card can match a colour exactly, rather than the
+           * browser re-deriving colourKey's case folding and getting it subtly different.
+           */
+          photoJobs: {
+            where: { status: { in: ['QUEUED', 'RUNNING'] } },
+            select: { status: true, viewsDone: true, viewsTotal: true, variantIds: true }
           }
         }
       }),
@@ -139,7 +155,7 @@ export class ProductRepository {
        * better shown as the saree in another colour than as a grey box, because the shape, the
        * border and the drape are the same garment.
        */
-      const { variants, _count, images, ...rest } = product as any;
+      const { variants, _count, images, photoJobs, ...rest } = product as any;
       const cover = images?.[0]?.url ?? null;
       const colours = (variants ?? []).map((v: any) => ({
         id: v.id,
@@ -155,6 +171,12 @@ export class ProductRepository {
         ...rest,
         coverImageUrl: cover,
         colours,
+        generating: (photoJobs ?? []).map((j: any) => ({
+          status: j.status,
+          viewsDone: j.viewsDone,
+          viewsTotal: j.viewsTotal,
+          variantIds: j.variantIds ?? []
+        })),
         imageCount: _count?.images ?? 0,
         variantSummary: { variantCount, totalUnits, lowStockVariants, variantsWithoutImages }
       };
