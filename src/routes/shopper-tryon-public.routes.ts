@@ -62,9 +62,14 @@ const generateLimiter = rateLimit({
  */
 router.get('/:clientId/:productCode', lookupLimiter, async (req, res, next) => {
   try {
+    /*
+     * ?variant= is what a swing tag carries. Optional, and a scan without it -- every tag printed
+     * before this existed -- resolves exactly as it always did.
+     */
     const garment = await shopperTryOnProductService.resolve(
       String(req.params.clientId),
-      String(req.params.productCode)
+      String(req.params.productCode),
+      typeof req.query.variant === 'string' ? req.query.variant : null
     );
 
     if (!garment) {
@@ -80,7 +85,10 @@ router.get('/:clientId/:productCode', lookupLimiter, async (req, res, next) => {
         title: garment.title,
         productCode: garment.productCode,
         imageUrl: garment.imageUrl,
-        category: garment.category
+        category: garment.category,
+        // So the page can say which colour it is showing, rather than leaving a shopper to
+        // wonder whether the tag they scanned was the one they are holding.
+        ...(garment.variantCode ? { variantCode: garment.variantCode, colourName: garment.colourName ?? null } : {})
       }
     });
   } catch (error) {

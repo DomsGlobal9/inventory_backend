@@ -28,6 +28,9 @@ export type ScannedGarment = {
   title: string;
   imageUrl: string;
   category: TryOnCategory;
+  /** Set only when the scan named a colour this product actually has. */
+  variantCode?: string;
+  colourName?: string | null;
 };
 
 /**
@@ -151,8 +154,16 @@ export class ShopperTryOnProductService {
    * draft" and "that product has no photograph" are all the same answer to someone who is not
    * signed in, and distinguishing them turns this into a tool for probing what a shop has.
    */
-  async resolve(clientId: string, productCode: string): Promise<ScannedGarment | null> {
+  async resolve(
+    clientId: string,
+    productCode: string,
+    variantCode?: string | null
+  ): Promise<ScannedGarment | null> {
     if (!clientId || !productCode) return null;
+
+    // Through the same gate every other scan parameter passes: a malformed one is dropped and
+    // the rest of the link still resolves.
+    const wanted = safeToken(variantCode);
 
     const product = await prisma.product.findFirst({
       where: {
@@ -170,11 +181,43 @@ export class ShopperTryOnProductService {
           orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
           take: 1,
           select: { url: true }
-        }
+        },
+        /*
+         * The colour the tag was tied to, if the scan named one.
+         *
+         * A swing tag hangs on ONE saree, and its code carries ?variant=. A customer holding the
+         * goldenrod one has already chosen; showing them the crimson because it happens to be the
+         * product's cover is worse than showing them nothing, because they believe it.
+         *
+         * Matched against this product's own variants, never trusted from the query: otherwise a
+         * made-up code would be a way to point one shop's try-on at another shop's photograph.
+         */
+        variants: wanted
+          ? {
+              where: { variantCode: wanted },
+              take: 1,
+              select: {
+                variantCode: true, colorName: true,
+                images: {
+                  orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
+                  take: 1,
+                  select: { url: true }
+                }
+              }
+            }
+          : false
       }
     });
 
-    const imageUrl = product?.images?.[0]?.url;
+    /*
+     * The variant's photograph when there is one, the product's otherwise.
+     *
+     * Falling back rather than refusing, because a tag outlives the data behind it: a colour
+     * gets renamed, a photograph is removed, and the tag is still hanging on the garment. A
+     * shopper scanning it should see the saree, not an error about a variant code.
+     */
+    const chosen = (product as any)?.variants?.[0];
+    const imageUrl = chosen?.images?.[0]?.url ?? product?.images?.[0]?.url;
     // No photograph means no try-on. Saying so here is honest; letting it through means the
     // shopper uploads a selfie, waits twenty seconds and then meets a failure.
     if (!product || !imageUrl) return null;
@@ -185,7 +228,9 @@ export class ShopperTryOnProductService {
       productCode: product.productCode,
       title: product.title,
       imageUrl,
-      category: categoryFor(product.dressType)
+      category: categoryFor(product.dressType),
+      // Only when the scan actually landed on one, so the page can name the colour it is showing.
+      ...(chosen ? { variantCode: chosen.variantCode, colourName: chosen.colorName ?? null } : {})
     };
   }
 }
