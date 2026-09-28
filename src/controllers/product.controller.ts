@@ -58,6 +58,26 @@ export class ProductController {
     }
   }
 
+  /**
+   * What a new base price would carry with it, before anything is saved.
+   *
+   * So the screen can say "changes 1 of 2 variants" while the shopkeeper is still deciding,
+   * rather than reporting it once the money has already moved.
+   */
+  async priceImpact(req: Request, res: Response, next: NextFunction) {
+    try {
+      const clientId = (req as any).clientId as string;
+      const basePrice = Number(req.query.basePrice);
+      if (!Number.isFinite(basePrice) || basePrice < 0) {
+        return res.status(400).json({ success: false, message: 'Give the new price as a number.' });
+      }
+      const out = await productService.variantsFollowingBase(req.params.id as string, clientId, basePrice);
+      res.status(200).json({ success: true, data: out });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   /** Publish or unpublish a selection at once. See productService.bulkSetStatus. */
   async bulkStatus(req: Request, res: Response, next: NextFunction) {
     try {

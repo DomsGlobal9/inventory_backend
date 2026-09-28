@@ -14,6 +14,8 @@ router.use(tenantMiddleware);
 router.post('/', requirePermission('product:create'), productController.create);
 router.get('/', requirePermission('product:view'), productController.getAll);
 router.get('/:id', requirePermission('product:view'), productController.getOne);
+// Asked while the shopkeeper is still typing, so it reads rather than writes.
+router.get('/:id/price-impact', requirePermission('product:update'), productController.priceImpact);
 router.patch('/:id', requirePermission('product:update'), productController.update);
 
 // Lifecycle Commands

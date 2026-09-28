@@ -118,6 +118,33 @@ export class ProductService {
     const before = await this.getProductById(id, clientId);
     if (data.status === 'ACTIVE' && !before.publishedAt) updateData.publishedAt = new Date();
 
+    /*
+     * A new base price carries the variants that were FOLLOWING it.
+     *
+     * basePrice is only a fallback: what a customer pays comes from the variant's own
+     * sellingPrice, or a per-location override on top of that. So changing the base alone changes
+     * nothing at the till on any product whose variants carry prices -- which is most of them --
+     * and a shopkeeper who edits the price, sees the old one still charged, and concludes the app
+     * is broken would be right to.
+     *
+     * Only the ones that MATCHED the old base move. A variant someone deliberately priced
+     * differently -- the XL at three hundred more -- was a decision, and a decision is not
+     * something to overwrite because a neighbouring number changed. Those keep their own price,
+     * and the screen says how many will move before anything is saved.
+     *
+     * Before the write, while the old base price is still knowable.
+     */
+    let followedTheBase = 0;
+    const newBase = updateData.basePrice;
+    const oldBase = Number(before.basePrice);
+    if (newBase != null && Number(newBase) !== oldBase) {
+      const moved = await prisma.productVariant.updateMany({
+        where: { productId: id, clientId, sellingPrice: oldBase },
+        data: { sellingPrice: Number(newBase) }
+      });
+      followedTheBase = moved.count;
+    }
+
     const updated = await productRepository.updateSafe(id, clientId, updateData);
 
     const wasVisible = before.status === 'ACTIVE' && !before.trashedAt;
@@ -126,7 +153,25 @@ export class ProductService {
     else if (wasVisible && !isVisible) notifyStorefronts(clientId, id, 'PRODUCT_UNPUBLISHED');
     else if (isVisible) notifyStorefronts(clientId, id, 'PRODUCT_UPDATED');
 
-    return updated;
+    // The count travels with the product so the screen can say "and 2 variants followed".
+    return { ...updated, variantsRepriced: followedTheBase };
+  }
+
+  /**
+   * How many variants a new base price would carry with it.
+   *
+   * Asked before saving, so the screen can say what is about to happen rather than reporting it
+   * afterwards. Same rule as the write: only the ones still matching the old base.
+   */
+  async variantsFollowingBase(id: string, clientId: string, newBase: number) {
+    const product = await this.getProductById(id, clientId);
+    const oldBase = Number(product.basePrice);
+    if (Number(newBase) === oldBase) return { follow: 0, keepTheirOwn: 0 };
+    const [follow, total] = await Promise.all([
+      prisma.productVariant.count({ where: { productId: id, clientId, sellingPrice: oldBase } }),
+      prisma.productVariant.count({ where: { productId: id, clientId } })
+    ]);
+    return { follow, keepTheirOwn: total - follow };
   }
 
   /**
