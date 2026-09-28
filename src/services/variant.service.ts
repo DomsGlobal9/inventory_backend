@@ -3,6 +3,7 @@ import { productRepository } from '../repositories/product.repository';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { InventoryAlertService } from './inventory-alert.service';
+import { shopperTryOnProductService } from './shopper-tryon';
 import { generateUniqueCode, generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { valuationService } from './valuation.service';
@@ -466,10 +467,27 @@ export class VariantService {
 
       // Flattened off the Prisma _count so the browser reads a plain number rather than
       // learning the shape of a Prisma include.
-      const { _count, ...variant } = v;
+      // The gallery rows themselves are not the browser's business -- one url is.
+      const { _count, images, ...variant } = v;
+      const photoUrl = images?.[0]?.url ?? null;
+
+      /*
+       * Where a tag hung on THIS colour sends a shopper.
+       *
+       * Built on the server, like the product's own, so every QR that ends up printed on a
+       * garment is one decision in one place -- a tag outlives every deploy, and where it points
+       * has to be changeable in configuration rather than by reprinting what is already in a shop.
+       */
+      const tryOnScanUrl = v.product?.productCode
+        ? shopperTryOnProductService.scanUrlFor(clientId, v.product.productCode, {
+            source: 'label-sheet', variantCode: v.variantCode
+          })
+        : null;
 
       return {
         ...variant,
+        photoUrl,
+        tryOnScanUrl,
         imageCount: _count?.images ?? 0,
         totalQuantity,
         stockByLocation,

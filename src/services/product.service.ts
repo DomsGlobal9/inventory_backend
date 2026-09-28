@@ -89,8 +89,26 @@ export class ProductService {
     // scanOptions carries where the shopper should be returned to. It is passed through rather
     // than assembled here because only the caller knows which page it is putting the link on,
     // and it is validated inside scanUrlFor rather than trusted.
+    /*
+     * And one per VARIANT, because a tag hangs on a particular saree.
+     *
+     * A customer holding the goldenrod one has already chosen the colour; making them pick it
+     * again on the phone is asking a question they have answered by standing there. The variant
+     * rides as a query parameter, so a tag printed today still works against a try-on app that
+     * does not read it yet -- see ScanUrlOptions.variantCode.
+     */
+    const variants = Array.isArray((product as any).variants)
+      ? (product as any).variants.map((v: any) => ({
+          ...v,
+          tryOnScanUrl: shopperTryOnProductService.scanUrlFor(clientId, product.productCode, {
+            ...scanOptions, variantCode: v.variantCode
+          })
+        }))
+      : (product as any).variants;
+
     return {
       ...product,
+      ...(variants ? { variants } : {}),
       tryOnScanUrl: shopperTryOnProductService.scanUrlFor(clientId, product.productCode, scanOptions)
     };
   }

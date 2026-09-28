@@ -39,6 +39,17 @@ export type ScanUrlOptions = {
   returnUrl?: string | null;
   /** Which surface produced this link: 'product-screen', 'label-sheet', 'storefront'. */
   source?: string | null;
+  /**
+   * The exact colour and size the tag is tied to.
+   *
+   * A QUERY PARAMETER rather than another path segment, and the difference decides whether tags
+   * printed today are still right tomorrow. A path the try-on app does not serve is a 404 in a
+   * customer's hand; an unknown query parameter is ignored and they get the product, which is
+   * exactly what they get now. So every tag can carry its variant from the first print run, and
+   * the day the try-on app learns to read it, every tag already hanging on a saree starts
+   * opening the right colour -- with nothing reprinted.
+   */
+  variantCode?: string | null;
 };
 
 /**
@@ -124,6 +135,10 @@ export class ShopperTryOnProductService {
     // us having to guess from the referrer later.
     const source = safeToken(options.source);
     if (source) params.set('source', source);
+
+    // See ScanUrlOptions.variantCode: safe to send before anything reads it.
+    const variant = safeToken(options.variantCode);
+    if (variant) params.set('variant', variant);
 
     const query = params.toString();
     return query ? `${url}?${query}` : url;
