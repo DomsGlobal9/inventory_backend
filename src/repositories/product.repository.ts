@@ -59,6 +59,26 @@ export class ProductRepository {
         include: {
           variants: {
             select: {
+              /*
+               * Enough to draw a card per COLOUR, and not one field more.
+               *
+               * A saree is chosen by colour, so the photo view shows one card per variant rather
+               * than one per product -- a card whose photograph is the goldenrod one while it
+               * stands for three colours is a card somebody scrolls past looking for the crimson.
+               *
+               * This runs for fifty products on every visit to the page, so it is the card's
+               * fields only: what it shows, what it costs, what is left, and one picture.
+               */
+              id: true,
+              variantCode: true,
+              colorName: true,
+              size: true,
+              sellingPrice: true,
+              images: {
+                select: { url: true },
+                orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
+                take: 1
+              },
               reorderLevel: true,
               stocks: { select: { quantity: true } },
               // Per variant, so the list can say how many SIZES AND COLOURS have no
@@ -112,10 +132,29 @@ export class ProductRepository {
        * take: 1 and a url only. This list is fifty products on every visit to the page, and the
        * rest of the image row -- storage path, alt text, dimensions -- is nothing the list shows.
        */
+      /*
+       * The colours, flattened for the card that draws each one.
+       *
+       * photoUrl falls back to the product's cover: a variant with no picture of its own is far
+       * better shown as the saree in another colour than as a grey box, because the shape, the
+       * border and the drape are the same garment.
+       */
       const { variants, _count, images, ...rest } = product as any;
+      const cover = images?.[0]?.url ?? null;
+      const colours = (variants ?? []).map((v: any) => ({
+        id: v.id,
+        variantCode: v.variantCode,
+        colorName: v.colorName,
+        size: v.size,
+        sellingPrice: v.sellingPrice,
+        photoUrl: v.images?.[0]?.url ?? cover,
+        units: (v.stocks ?? []).reduce((acc: number, s: any) => acc + s.quantity, 0)
+      }));
+
       return {
         ...rest,
-        coverImageUrl: images?.[0]?.url ?? null,
+        coverImageUrl: cover,
+        colours,
         imageCount: _count?.images ?? 0,
         variantSummary: { variantCount, totalUnits, lowStockVariants, variantsWithoutImages }
       };
