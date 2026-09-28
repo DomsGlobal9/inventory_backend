@@ -71,7 +71,20 @@ export class ProductRepository {
           // A count, not the rows. Publishing in bulk has to be able to say how many of the
           // selected products would go live with no photograph of them, and scrolling the
           // list to find out is not an answer for a merchant with 123 drafts.
-          _count: { select: { images: true } }
+          _count: { select: { images: true } },
+
+          /*
+           * And ONE photograph, for a list somebody looks at rather than reads.
+           *
+           * The same reasoning as the count above, in reverse: a url, and nothing else off the
+           * image row. This runs for fifty products on every visit to the page, and storage
+           * paths, alt text and file sizes are not what a grid of sarees shows.
+           */
+          images: {
+            select: { url: true },
+            orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
+            take: 1
+          }
         }
       }),
       prisma.product.count({ where })
@@ -90,9 +103,19 @@ export class ProductRepository {
       
       const variantsWithoutImages = product.variants.filter((v: any) => (v._count?.images ?? 0) === 0).length;
 
-      const { variants, _count, ...rest } = product as any;
+      /*
+       * One photograph, for a list somebody looks at rather than reads.
+       *
+       * A saree is recognised by eye: a grid of names is a grid a shopkeeper has to translate
+       * back into pieces they know. The cover if one is marked, otherwise the first.
+       *
+       * take: 1 and a url only. This list is fifty products on every visit to the page, and the
+       * rest of the image row -- storage path, alt text, dimensions -- is nothing the list shows.
+       */
+      const { variants, _count, images, ...rest } = product as any;
       return {
         ...rest,
+        coverImageUrl: images?.[0]?.url ?? null,
         imageCount: _count?.images ?? 0,
         variantSummary: { variantCount, totalUnits, lowStockVariants, variantsWithoutImages }
       };
