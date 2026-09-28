@@ -111,7 +111,11 @@ export class ServiceCredentialService {
       addedByAdmin: active ? row!.addedByAdmin : null,
       addedAt: active ? row!.addedAt : null,
       lastUsedAt: active ? row!.lastUsedAt : null,
-      usingSharedFallback: !active && Boolean(env.CATALOG_TRYON_API_KEY)
+      // Per service, like keyFor. This read CATALOG_TRYON_API_KEY whichever service was asked
+      // about, so a shopper try-on summary claimed there was a shared key to fall back on
+      // because the catalogue one happened to be set -- and the screen said "active on the
+      // shared key" about a client whose next try-on would fail with a 503.
+      usingSharedFallback: !active && Boolean(SHARED_KEY_FOR[service]())
     };
   }
 
