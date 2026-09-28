@@ -6,6 +6,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { notFound, conflict, badRequest } from '../utils/httpError';
 import { portionOf, toMinor, fromMinor } from './pricing';
+import { issueCreditNote } from './invoicing/creditNote';
 
 export class ReturnService {
   /**
@@ -332,6 +333,16 @@ export class ReturnService {
       // Loyalty points on the bill: those used on these goods come back as points (and the money
       // owed drops by as much), those earned on them are taken back. Nothing for a bill without points.
       await settleReturn(tx as any, clientId, id);
+
+      /*
+       * The credit note, inside the same transaction as the return it belongs to.
+       *
+       * A return with no credit note is a refund a registered shop cannot account for, and a
+       * credit note with no return is a document reversing nothing. They are one thing, so they
+       * commit together. Shops that charge no tax get the refund and no document -- see
+       * issueCreditNote.
+       */
+      await issueCreditNote(tx, clientId, id);
 
       return tx.salesReturn.update({
         where: { id },

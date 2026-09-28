@@ -1491,6 +1491,22 @@ model SalesReturn {
   /// worth -- and with discounts on a line the answer is emphatically not the list price. For a
   /// Shopify refund this is a RECORD: Shopify has already moved the money.
   refundTotal     Decimal @default(0) @map("refund_total") @db.Decimal(10, 2)
+
+  /// The credit note this return is, under GST.
+  ///
+  /// A return is not a negative invoice. It is a credit note: its own unbroken series per
+  /// financial year, a reference to the bill it reverses, and the tax taken back at the rate the
+  /// ORIGINAL line carried -- read from the frozen line, never looked up again, because a rate
+  /// that changed in between must not rewrite what a customer was charged.
+  ///
+  /// Null on returns taken before this existed, and on returns for a shop that charges no tax.
+  creditNoteNo String? @map("credit_note_no")
+
+  /// What the credit note reverses, frozen the same way an invoice's figures are.
+  taxableValue Decimal? @map("taxable_value") @db.Decimal(15, 2)
+  cgst         Decimal? @db.Decimal(15, 2)
+  sgst         Decimal? @db.Decimal(15, 2)
+  igst         Decimal? @db.Decimal(15, 2)
   /// NONE | PENDING | REFUNDED | FAILED
   refundStatus    String  @default("NONE") @map("refund_status")
   /// Of what came back, the part the customer had paid with loyalty points goes back as points,
@@ -1521,6 +1537,7 @@ model SalesReturn {
   refunds     SalesOrderPayment[]
 
   @@unique([clientId, returnNumber])
+  @@unique([clientId, creditNoteNo], map: "uq_sales_return_credit_note")
   @@index([salesOrderId])
   @@index([clientId, status])
   @@map("sales_returns")
@@ -1549,6 +1566,19 @@ model SalesReturnItem {
 
   /// What was actually given back for these units. Net, never list.
   refundAmount Decimal @default(0) @map("refund_amount") @db.Decimal(10, 2)
+
+  /// The tax coming back on this line, at the rate the ORIGINAL sale line carried.
+  ///
+  /// Taken over a RANGE of the sale line's pieces rather than as a fraction of it, so three
+  /// separate returns of one saree give back exactly what one return of three would. Copied from
+  /// the frozen sale line, never recomputed: sarees went from 12% to 5% on 22 September 2025, and
+  /// one sold on the 21st and returned on the 23rd must give back the 12% that was charged.
+  hsnCode      String?  @map("hsn_code")
+  taxRateBps   Int?     @map("tax_rate_bps")
+  taxableValue Decimal? @map("taxable_value") @db.Decimal(15, 2)
+  cgst         Decimal? @db.Decimal(15, 2)
+  sgst         Decimal? @db.Decimal(15, 2)
+  igst         Decimal? @db.Decimal(15, 2)
 
   disposition ReturnDisposition @default(PENDING)
 
