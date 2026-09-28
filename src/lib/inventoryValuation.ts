@@ -128,6 +128,61 @@ export const PRICED_NOT_COSTED = Prisma.sql`
   COALESCE(NULLIF(v.average_cost, 0), NULLIF(v.last_purchase_cost, 0), NULLIF(v.cost_price, 0)) IS NULL
   AND COALESCE(NULLIF(v.selling_price, 0), NULLIF(v.compare_at_price, 0), NULLIF(p.base_price, 0), 0) > 0`;
 
+/**
+ * Where a unit cost came from, so a screen can say so rather than printing a bare number.
+ *
+ * The first three are costs -- what the goods actually cost. The next three are PRICES, which
+ * overstate by the margin and must be shown as estimates wherever they are used.
+ */
+export type CostBasis =
+  | 'AVERAGE' | 'LAST_PURCHASE' | 'COST_PRICE'
+  | 'SELLING' | 'COMPARE_AT' | 'BASE'
+  | 'NONE';
+
+/** True for the bases that are a price standing in for a cost. */
+export const isEstimatedBasis = (basis: CostBasis) =>
+  basis === 'SELLING' || basis === 'COMPARE_AT' || basis === 'BASE';
+
+/**
+ * FOURTH RENDERING, AND DELIBERATELY IN THIS FILE.
+ *
+ * UNIT_COST above is SQL, for the queries that sum across a whole tenant. This is the same rule
+ * applied to one row already in memory, for the screens that list variants through Prisma and
+ * cannot reach a raw fragment. Writing it in the service that needed it is exactly how this rule
+ * came to have three copies that disagreed -- so it lives here, next to the SQL, in the same
+ * order, and verify-one-inventory-value checks the two against each other on real data.
+ *
+ * ANY CHANGE TO THE ORDER MUST BE MADE IN BOTH.
+ */
+export function unitCostOf(
+  v: {
+    averageCost?: unknown; lastPurchaseCost?: unknown; costPrice?: unknown;
+    sellingPrice?: unknown; compareAtPrice?: unknown;
+  },
+  basePrice?: unknown
+): { unitCost: number; basis: CostBasis } {
+  // NULLIF's counterpart: these columns hold 0 rather than null when unset, and a plain
+  // fallback chain that accepts 0 stops at the first one and returns nothing.
+  const num = (x: unknown) => {
+    const n = Number(x);
+    return Number.isFinite(n) && n !== 0 ? n : null;
+  };
+
+  const chain: Array<[CostBasis, number | null]> = [
+    ['AVERAGE', num(v.averageCost)],
+    ['LAST_PURCHASE', num(v.lastPurchaseCost)],
+    ['COST_PRICE', num(v.costPrice)],
+    ['SELLING', num(v.sellingPrice)],
+    ['COMPARE_AT', num(v.compareAtPrice)],
+    ['BASE', num(basePrice)]
+  ];
+
+  for (const [basis, value] of chain) {
+    if (value !== null) return { unitCost: value, basis };
+  }
+  return { unitCost: 0, basis: 'NONE' };
+}
+
 export type ValuationCaveat = {
   /** Units counted at a selling price because nothing better was known. */
   unitsValuedAtPrice: number;

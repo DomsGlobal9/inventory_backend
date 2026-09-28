@@ -3,6 +3,7 @@ import { TransactionType, InventoryReason, Prisma } from '@prisma/client';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { prisma } from '../lib/prisma';
 import { isLowStock, lowStockThreshold } from '../lib/lowStock';
+import { unitCostOf, isEstimatedBasis } from '../lib/inventoryValuation';
 
 export class InventoryService {
   
@@ -93,7 +94,14 @@ export class InventoryService {
     // badge uses, so the filter and the badge can no longer disagree.
     const isLowStockView = status === 'LOW_STOCK' || lowStock === 'true';
     const isHealthyView = status === 'HEALTHY';
-    const needsComputedPass = sortBy === 'quantity' || isLowStockView || isHealthyView;
+    /*
+     * Sorting by cost or value is computed too, now that the figure shown is a fallback chain
+     * rather than one column. Ordering by average_cost in the database would sort almost every
+     * row of a shop that has never entered costs as 0 while the table displayed a price beside
+     * it -- a column that visibly is not in the order it claims to be.
+     */
+    const isCostSort = sortBy === 'averageCost' || sortBy === 'inventoryValue';
+    const needsComputedPass = sortBy === 'quantity' || isLowStockView || isHealthyView || isCostSort;
 
     if (status === 'ARCHIVED') {
       where.product = { status: { in: ['ARCHIVED', 'TRASHED'] as any } };
@@ -112,7 +120,7 @@ export class InventoryService {
     const orderBy: any = {};
     if (sortBy === 'productTitle') {
       orderBy.product = { title: order };
-    } else if (['sku', 'averageCost', 'inventoryValue', 'updatedAt'].includes(sortBy)) {
+    } else if (['sku', 'updatedAt'].includes(sortBy)) {
       orderBy[sortBy] = order;
     } else {
       orderBy.createdAt = 'desc';
@@ -146,18 +154,25 @@ export class InventoryService {
         select: {
           id: true,
           reorderLevel: true,
-          stocks: { select: { locationId: true, quantity: true } }
+          stocks: { select: { locationId: true, quantity: true } },
+          // Only when the sort needs them: this pulls every matching variant, unpaginated, and
+          // six more columns across a large catalogue is not free.
+          ...(isCostSort ? {
+            averageCost: true, lastPurchaseCost: true, costPrice: true,
+            sellingPrice: true, compareAtPrice: true,
+            product: { select: { basePrice: true } }
+          } : {})
         }
       });
 
       // reorderLevel is carried through rather than pre-reduced to a threshold, because
       // "not tracked" is a third answer that a single number cannot express: such a variant
       // is neither low nor, meaningfully, healthy-by-comparison.
-      let computed = candidates.map(v => ({
-        id: v.id,
-        qty: onHand(v.stocks),
-        reorderLevel: v.reorderLevel
-      }));
+      let computed = candidates.map((v: any) => {
+        const qty = onHand(v.stocks);
+        const cost = isCostSort ? unitCostOf(v, v.product?.basePrice).unitCost : 0;
+        return { id: v.id, qty, reorderLevel: v.reorderLevel, cost, value: qty * cost };
+      });
 
       if (isLowStockView) {
         /*
@@ -179,6 +194,9 @@ export class InventoryService {
 
       if (sortBy === 'quantity') {
         computed.sort((a, b) => (order === 'desc' ? b.qty - a.qty : a.qty - b.qty));
+      } else if (isCostSort) {
+        const of = (r: typeof computed[number]) => (sortBy === 'averageCost' ? r.cost : r.value);
+        computed.sort((a, b) => (order === 'desc' ? of(b) - of(a) : of(a) - of(b)));
       }
 
       total = computed.length;
@@ -188,7 +206,7 @@ export class InventoryService {
         ? await prisma.productVariant.findMany({
             where: { id: { in: pageIds } },
             include: {
-              product: { select: { title: true, category: true, status: true } },
+              product: { select: { title: true, category: true, status: true, basePrice: true } },
               stocks: true
             }
           })
@@ -205,7 +223,7 @@ export class InventoryService {
           skip,
           take: Number(limit),
           include: {
-            product: { select: { title: true, category: true, status: true } },
+            product: { select: { title: true, category: true, status: true, basePrice: true } },
             stocks: true
           }
         }),
@@ -227,10 +245,32 @@ export class InventoryService {
         inventoryStatus = 'LOW_STOCK';
       }
 
-      // averageCost/inventoryValue are company-wide weighted-average figures (not tracked per location);
-      // when scoped to a location, inventoryValue is recomputed as scoped qty x company-wide average cost.
-      const averageCost = Number(v.averageCost);
-      const inventoryValue = locationId ? qty * averageCost : Number(v.inventoryValue);
+      /*
+       * The same valuation chain the dashboard and the reports use.
+       *
+       * This table read average_cost alone, and average_cost is 0 for any shop that set opening
+       * stock without a costed purchase. Measured on swathy-reddy-boutique: 110 units, this
+       * screen said the stock was worth nothing while the dashboard said 13,76,334 -- the same
+       * goods, two screens, and no way for the owner to tell which was lying. That is the exact
+       * disagreement lib/inventoryValuation exists to end; this screen simply never got joined
+       * to it.
+       *
+       * basis comes back with the figure so the row can be marked as an estimate. The last three
+       * steps of the chain are PRICES, so they overstate by the margin, and a number like that
+       * shown without a word is worse than the zero it replaced.
+       */
+      const { unitCost, basis } = unitCostOf(v, v.product?.basePrice);
+      const averageCost = unitCost;
+      /*
+       * Computed, never read from the stored inventory_value column.
+       *
+       * That column is written by inventory-mutation.service as quantity x averageCost, so it is
+       * only as fresh as the last movement -- a variant given an average cost by any other route
+       * has a real cost sitting beside a stored value of zero. The row then contradicts itself in
+       * public: 1,200 in the cost column, 3 on hand, and 0 in the value column. Multiplying the
+       * two figures the row is already showing cannot do that.
+       */
+      const inventoryValue = qty * unitCost;
 
       return {
         variantId: v.id,
@@ -241,6 +281,13 @@ export class InventoryService {
         quantity: qty,
         averageCost,
         inventoryValue,
+        /*
+         * Said, not implied. AVERAGE/LAST_PURCHASE/COST_PRICE are what the goods cost;
+         * SELLING/COMPARE_AT/BASE are what they sell for, standing in because nothing better was
+         * ever recorded. NONE means the figure really is nothing yet.
+         */
+        costBasis: basis,
+        costIsEstimate: isEstimatedBasis(basis),
         status: v.product.status,
         inventoryStatus,
         // Sent so the screen can work out the badge for itself after it has moved a quantity
