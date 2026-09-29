@@ -1,6 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { onlineShop, shopBanners, shopIcon, shopInterest, OnlineShopRuleError } from '../services/online-shop';
 import { requirePermission } from '../middleware/permission.middleware';
+import { holdsEverything } from '../config/permissions';
+import { paymentAccounts } from '../services/payments/account.service';
+import { GatewayError } from '../services/payments/gateway';
 
 /**
  * Settings -> Online shop: the owner's side. The shopper's side is shop-public.routes.ts, which is
@@ -64,6 +67,41 @@ router.post('/waiting/:id/handled', handle(req => shopInterest.markHandled(clien
  */
 router.post('/icon', handle(req => shopIcon.setIcon(clientId(req), req.body ?? {})));
 router.delete('/icon', handle(req => shopIcon.clearIcon(clientId(req))));
+
+// ── Payments ──────────────────────────────────────────────────────────────────────────────
+// The shop connects its OWN Razorpay account (PLAN-online-shop-payments.md). Reading how it is
+// set up needs admin:online_shop like the rest of this file; changing where the money goes needs
+// the account owner.
+
+/** This API's own address, for the webhook URL the owner pastes into Razorpay. */
+const apiBase = (req: Request) =>
+  (process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+
+/**
+ * Only the account owner changes where a customer's money lands. requireAccountOwner asks the same
+ * question, but its refusal talks about the shop's name and logo; this one says what it is about.
+ */
+const ownerOnly = (req: Request, res: Response, next: NextFunction) => {
+  const user = (req as any).user;
+  if (!user || !holdsEverything(user.permissions, user.roles)) {
+    return res.status(403).json({ success: false, message: 'Only the account owner can connect or change the shop’s payment account.' });
+  }
+  next();
+};
+
+/** Reports a gateway that did not answer as a sentence, not a crash: the owner can try again. */
+const paying = (fn: (req: Request) => Promise<unknown>) => handle(async (req) => {
+  try { return await fn(req); } catch (e) {
+    if (e instanceof GatewayError) throw new OnlineShopRuleError(e.message);
+    throw e;
+  }
+});
+
+router.get('/payments', handle(req => paymentAccounts.describe(clientId(req), apiBase(req))));
+router.put('/payments', ownerOnly, paying(req => paymentAccounts.save(clientId(req), userId(req), req.body ?? {}, apiBase(req))));
+router.post('/payments/check', paying(req => paymentAccounts.check(clientId(req), apiBase(req))));
+router.post('/payments/webhook-secret', ownerOnly, handle(req => paymentAccounts.newWebhookSecret(clientId(req), apiBase(req))));
+router.delete('/payments', ownerOnly, handle(req => paymentAccounts.remove(clientId(req), apiBase(req))));
 
 router.get('/banners', handle(req => shopBanners.listFor(clientId(req))));
 router.post('/banners', handle(req => shopBanners.add(clientId(req), userId(req), req.body ?? {})));
