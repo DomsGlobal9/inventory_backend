@@ -79,6 +79,19 @@ router.get('/:clientId/:productCode', lookupLimiter, async (req, res, next) => {
       });
     }
 
+    /*
+     * The colours this garment comes in, so the page can ask which one before trying anything on.
+     *
+     * A product QR names no colour, so the try-on used the cover -- a shopper at a rack of the
+     * same saree in five colours saw themselves in whichever one the shop leads with, and nothing
+     * said so. Fetched even when the scan DID name a colour, so the page can offer the others: a
+     * customer holding the crimson one is exactly the person who wants to see the indigo.
+     */
+    const colours = await shopperTryOnProductService.coloursFor(
+      String(req.params.clientId),
+      String(req.params.productCode)
+    );
+
     res.json({
       success: true,
       data: {
@@ -86,6 +99,9 @@ router.get('/:clientId/:productCode', lookupLimiter, async (req, res, next) => {
         productCode: garment.productCode,
         imageUrl: garment.imageUrl,
         category: garment.category,
+        // One entry per colour, with a picture. Empty for a garment that has no variants at all,
+        // which the page reads as "nothing to choose" rather than "something went wrong".
+        colours,
         // So the page can say which colour it is showing, rather than leaving a shopper to
         // wonder whether the tag they scanned was the one they are holding.
         ...(garment.variantCode ? { variantCode: garment.variantCode, colourName: garment.colourName ?? null } : {})
@@ -120,9 +136,21 @@ router.post('/:clientId/:productCode/generate', generateLimiter, async (req, res
       });
     }
 
-    // Resolved from the code rather than taken from the request. If the garment came from the
-    // body, anyone could ask us to try on any image at all, at this shop's expense.
-    const garment = await shopperTryOnProductService.resolve(clientId, productCode);
+    /*
+     * Resolved from the code rather than taken from the request. If the garment came from the
+     * body, anyone could ask us to try on any image at all, at this shop's expense.
+     *
+     * The COLOUR does come from the request, and safely: it is a variant code, matched inside
+     * resolve against this product's own variants and dropped if it does not belong to them. It
+     * was not passed at all before, so a swing tag that correctly SHOWED the goldenrod one
+     * generated the shopper wearing the cover -- the lookup honoured the colour and the
+     * generation quietly ignored it.
+     */
+    const garment = await shopperTryOnProductService.resolve(
+      clientId,
+      productCode,
+      typeof req.body?.variant === 'string' ? req.body.variant : null
+    );
     if (!garment) {
       return res.status(404).json({
         success: false,

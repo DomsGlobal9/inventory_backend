@@ -8,8 +8,13 @@ import { categoryFor, TryOnCategory } from './gateway.service';
  * The caller here is ANONYMOUS -- a shopper holding a phone in a shop, with no account and no
  * session. That single fact drives every decision in this file:
  *
- *   - it returns the least it can. A title and one image. Not cost, not stock, not supplier,
- *     not the variant list, not the product's internal id.
+ *   - it returns the least it can. A title, one image, and the colours that garment comes in.
+ *     Not cost, not stock, not supplier, not the product's internal id.
+ *
+ *     The colours were once withheld too, and that was wrong: a shopper scanning the tag on a
+ *     rack of one saree in five colours was tried on in whichever one happened to be the cover,
+ *     with nothing on the screen to say so. A colour name and a photograph are what is already
+ *     hanging in front of them.
  *   - it is addressed by (clientId, productCode), not by a database id. A UUID in a printed
  *     QR code invites walking the table; a product code is already public, printed on the tag
  *     and shown to customers.
@@ -232,6 +237,73 @@ export class ShopperTryOnProductService {
       // Only when the scan actually landed on one, so the page can name the colour it is showing.
       ...(chosen ? { variantCode: chosen.variantCode, colourName: chosen.colorName ?? null } : {})
     };
+  }
+
+  /**
+   * The colours this garment comes in, for the shopper to pick from before trying it on.
+   *
+   * A QR code on a product -- the one on the product screen, not a swing tag -- names no colour,
+   * so the try-on used the cover photograph. A shopper standing at a rack of the same saree in
+   * five colours was shown themselves in whichever one the shop happened to lead with, with
+   * nothing on the screen admitting it. Asking first is the only honest version.
+   *
+   * Public, so it carries a colour, a code and a picture and nothing else -- no price, no stock,
+   * no ids. One entry per COLOUR rather than per variant: red/S, red/M and red/L are the same
+   * garment and the same photographs, and offering the shopper three identical choices is
+   * offering them a decision they do not have.
+   *
+   * A colour with no photograph of its own is included using the cover, because it is genuinely
+   * on the rack; it simply looks like the product. A colour whose only picture is not publicly
+   * fetchable is dropped, for the reason in resolve: the gateway downloads these itself.
+   */
+  async coloursFor(
+    clientId: string,
+    productCode: string
+  ): Promise<Array<{ variantCode: string; colourName: string | null; imageUrl: string }>> {
+    if (!clientId || !productCode) return [];
+
+    const product = await prisma.product.findFirst({
+      where: { clientId, productCode, status: 'ACTIVE' },
+      select: {
+        images: {
+          orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
+          take: 1,
+          select: { url: true }
+        },
+        variants: {
+          orderBy: [{ colorName: 'asc' }, { variantCode: 'asc' }],
+          select: {
+            variantCode: true,
+            colorName: true,
+            images: {
+              orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
+              take: 1,
+              select: { url: true }
+            }
+          }
+        }
+      }
+    });
+    if (!product) return [];
+
+    const cover = product.images?.[0]?.url ?? null;
+    const seen = new Set<string>();
+    const out: Array<{ variantCode: string; colourName: string | null; imageUrl: string }> = [];
+
+    for (const v of product.variants) {
+      // One per colour. A variant with no colour name is its own entry -- there is nothing to
+      // group it by, and dropping it would hide a garment that is on the rack.
+      const key = (v.colorName ?? `~${v.variantCode}`).trim().toLowerCase();
+      if (seen.has(key)) continue;
+
+      const imageUrl = v.images?.[0]?.url ?? cover;
+      if (!imageUrl || !/^https:\/\//i.test(imageUrl)) continue;
+
+      seen.add(key);
+      out.push({ variantCode: v.variantCode, colourName: v.colorName ?? null, imageUrl });
+    }
+
+    return out;
   }
 }
 
