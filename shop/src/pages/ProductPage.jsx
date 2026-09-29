@@ -93,13 +93,38 @@ function Gallery({ photos, title }) {
     el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
   };
 
+  /*
+   * Zoom on a laptop: point at the zari and it comes up close.
+   *
+   * A saree is bought on the weave, and at 560px wide a border's motifs are a blur. With a mouse,
+   * the photograph magnifies under the pointer and follows it; leave it and it settles back.
+   *
+   * Mouse only. A finger on this strip means "next photograph" -- the swipe is the browser's own
+   * scroll-snap -- and a phone already pinch-zooms the page natively (the viewport allows it), so
+   * touch is left entirely alone. The CSS is gated the same way, by (hover: hover) and
+   * (pointer: fine).
+   *
+   * Written straight to the figure's style rather than through state: a pointermove is sixty
+   * events a second, and re-rendering the gallery for each one is how a phone-first shop gets
+   * sluggish on a laptop.
+   */
+  const zoomFollow = (e) => {
+    if (e.pointerType !== 'mouse') return;
+    const fig = e.currentTarget;
+    const r = fig.getBoundingClientRect();
+    fig.style.setProperty('--zx', `${((e.clientX - r.left) / r.width) * 100}%`);
+    fig.style.setProperty('--zy', `${((e.clientY - r.top) / r.height) * 100}%`);
+    if (fig.dataset.zoom !== 'on') fig.dataset.zoom = 'on';
+  };
+  const zoomOut = (e) => { delete e.currentTarget.dataset.zoom; };
+
   return (
     <div className="gallery" data-many={photos.length > 1}>
       <div className="frame">
         <div className="swipe" ref={strip}
           onScroll={e => setAt(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}>
           {photos.map((img, i) => (
-            <figure key={img.url}>
+            <figure key={img.url} onPointerMove={zoomFollow} onPointerLeave={zoomOut}>
               <img src={img.url} alt={i === 0 ? title : ''}
                 loading={i === 0 ? 'eager' : 'lazy'} decoding="async" />
             </figure>
