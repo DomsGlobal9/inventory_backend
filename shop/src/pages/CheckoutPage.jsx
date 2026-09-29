@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   priceBag, placeOrder, sendCode, checkCode, money,
-  myAddresses, heldProof, holdProof, dropProof
+  myAddresses, heldProof, holdProof, dropProof,
+  startPayment, confirmPayment
 } from '../api';
+import { openCheckout } from '../razorpay';
 import { useBag, emptyBag, placementKey, clearPlacementKey } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag } from '../components/Motion';
@@ -23,7 +25,8 @@ import { EmptyBag } from '../components/Motion';
 
 const PAY = {
   ON_DELIVERY: { title: 'Pay when it arrives', note: 'Cash or UPI to the delivery person.' },
-  ONLINE: { title: 'Pay now', note: 'Card, UPI or net banking.' }
+  // UPI first: on a saree it costs the shop a fraction of what a card does (see the payments plan).
+  ONLINE: { title: 'Pay now', note: 'UPI, card or net banking — securely through Razorpay.' }
 };
 
 export default function CheckoutPage({ shop }) {
@@ -223,6 +226,44 @@ export default function CheckoutPage({ shop }) {
 
   const proved = proof.state === 'done' && proof.forPhone === form.phone;
 
+  /*
+   * PAYING ONLINE.
+   *
+   * The shop prices the bag and sets the pieces aside; Razorpay's own checkout takes the money; and
+   * then this page does NOT decide anything happened. It hands Razorpay's reply to the shop and goes
+   * to the payment page, which waits for the shop's answer -- so a refresh, a locked phone or a UPI
+   * app that took them away cannot leave a paid customer staring at an empty checkout.
+   *
+   * The bag is emptied only when there is an order (on the payment page). A customer who closes
+   * Razorpay without paying still has everything they chose.
+   */
+  const payOnline = async (details) => {
+    const started = await startPayment(slug, details);
+    if (started.state === 'PLACED') {
+      // This bag was already paid for -- another tab, or a payment that went through after all.
+      emptyBag(slug);
+      clearPlacementKey(slug);
+      nav(`/${slug}/order/${started.orderToken}`, { replace: true });
+      return;
+    }
+    let handback;
+    try {
+      handback = await openCheckout(started.checkout);
+    } catch (why) {
+      setPlacing(false);
+      if (why?.unavailable) {
+        setRefused('The payment page could not open on this connection. Nothing was charged. Try again, or choose to pay when it arrives.');
+      } else {
+        setRefused('Payment not completed. Nothing was charged — your bag is still here when you are ready.');
+      }
+      return;
+    }
+    // Paid in Razorpay. Straight to the page that waits for the shop's confirmation; the handback is
+    // passed on first, and if that fails the webhook and the shop's own checks still settle it.
+    await confirmPayment(slug, started.token, handback).catch(() => null);
+    nav(`/${slug}/pay/${started.token}`, { replace: true });
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     const wrong = missing();
@@ -238,13 +279,20 @@ export default function CheckoutPage({ shop }) {
         }));
       } catch { /* fine */ }
 
-      const order = await placeOrder(slug, {
+      const details = {
         placementKey: placementKey(slug),
         lines: lines.map(l => ({ variantCode: l.variantCode, quantity: l.quantity })),
         couponCodes: codes,
         name: form.name, phone: form.phone, email: form.email,
         address: form.address, pincode: form.pincode, payWay: form.payWay
-      });
+      };
+
+      if (form.payWay === 'ONLINE') {
+        await payOnline(details);
+        return;
+      }
+
+      const order = await placeOrder(slug, details);
 
       // Only once the shop has it. Emptying the bag before this would lose the order on a refusal.
       emptyBag(slug);
@@ -460,7 +508,7 @@ export default function CheckoutPage({ shop }) {
               {refused ? <p className="refused" role="alert">{refused}</p> : null}
 
               <button type="submit" className="go" disabled={placing || state.loading}>
-                {placing ? 'Sending your order…'
+                {placing ? (form.payWay === 'ONLINE' ? 'Opening the payment page…' : 'Sending your order…')
                   : form.payWay === 'ONLINE' ? `Pay ${money(bag.total, currency)}`
                   : `Place order · ${money(bag.total, currency)}`}
               </button>

@@ -32,6 +32,48 @@ export const webhookPath = (token: string) => `/api/v1/payments/webhooks/razorpa
 
 const newSecret = (bytes: number) => crypto.randomBytes(bytes).toString('base64url');
 
+/**
+ * Whether TEST keys may take (pretend) money here.
+ *
+ * Never in production, whatever the flag says. A Razorpay test payment is a real CAPTURED payment
+ * as far as the API is concerned -- it just involves no money -- so a shop running on test keys in
+ * front of real customers would ship real sarees against pretend payments, marked paid. Test keys
+ * are for a developer's machine and nothing else, and only when asked for explicitly.
+ */
+export const testKeysAllowed = () =>
+  process.env.NODE_ENV !== 'production' && process.env.PAYMENTS_ALLOW_TEST_KEYS === 'true';
+
+/**
+ * A shop whose account could be in the middle of moving money: a customer paying right now, or a
+ * refund that has not finished. The account must not be pulled out from under either -- with no
+ * keys, a payment in flight can neither be confirmed nor returned, and the customer's money sits
+ * in the shop's Razorpay account with no order and nobody told.
+ *
+ * Read here directly rather than from online-payment.service, which imports this file.
+ */
+async function moneyInFlight(clientId: string): Promise<{ paying: number; refunding: number }> {
+  const [paying, refunding] = await Promise.all([
+    prisma.onlinePayment.count({ where: { clientId, status: { in: ['STARTING', 'WAITING'] } } }),
+    prisma.onlineRefund.count({ where: { clientId, status: { in: ['REQUESTING', 'PENDING'] } } })
+  ]);
+  return { paying, refunding };
+}
+
+function refuseWhileMoneyMoves(f: { paying: number; refunding: number }, doing: string) {
+  if (f.paying > 0) {
+    throw new OnlineShopRuleError(
+      `A customer is paying right now, so the account cannot be ${doing} yet. Try again in 20 minutes -- ` +
+      'every payment in progress finishes or lapses by then.'
+    );
+  }
+  if (f.refunding > 0) {
+    throw new OnlineShopRuleError(
+      `${f.refunding === 1 ? 'A refund is' : `${f.refunding} refunds are`} still going through Razorpay, so the ` +
+      `account cannot be ${doing} yet. Try again once ${f.refunding === 1 ? 'it has' : 'they have'} finished.`
+    );
+  }
+}
+
 export interface PaymentAccountView {
   connected: boolean;
   gateway: 'RAZORPAY' | null;
@@ -67,9 +109,15 @@ function view(row: Row | null, apiBase: string): PaymentAccountView {
     checkMessage: row.checkMessage,
     webhookUrl: `${apiBase}${webhookPath(row.webhookToken)}`,
     webhookEvents: WEBHOOK_EVENTS,
-    readyForCustomers: row.status === 'CONNECTED' && row.mode === 'LIVE',
+    readyForCustomers: isReady(row),
     help
   };
+}
+
+/** The one rule for "customers may pay this shop online", used by every gate that asks. */
+function isReady(row: { status: string; mode: string } | null): boolean {
+  if (!row || row.status !== 'CONNECTED') return false;
+  return row.mode === 'LIVE' || testKeysAllowed();
 }
 
 export class PaymentAccountService {
@@ -112,6 +160,12 @@ export class PaymentAccountService {
     }
 
     const existing = await prisma.shopPaymentAccount.findUnique({ where: { clientId } });
+    // Moving to a DIFFERENT Razorpay account while a customer is paying into the old one would leave
+    // that payment with no keys that can see it. New keys for the SAME account are fine -- the
+    // account's payments stay visible to them -- but from here the two cannot be told apart.
+    if (existing && existing.keyId !== keyId) {
+      refuseWhileMoneyMoves(await moneyInFlight(clientId), 'changed');
+    }
     const webhookSecret = existing ? null : newSecret(24);
     const data = {
       gateway: 'RAZORPAY',
@@ -176,10 +230,33 @@ export class PaymentAccountService {
     return { account: view(row, apiBase), webhookSecret };
   }
 
-  /** Disconnect. Removes the keys outright -- nothing of them is kept. */
+  /**
+   * Disconnect. Removes the keys outright -- nothing of them is kept.
+   *
+   * Refused while money is moving, and it switches paying online off in the same step: a shop with
+   * no keys that still offered "Pay online" would take a customer as far as the Pay button and then
+   * refuse them, which is worse than never offering it.
+   */
   async remove(clientId: string, apiBase: string): Promise<PaymentAccountView> {
-    await prisma.shopPaymentAccount.deleteMany({ where: { clientId } });
+    refuseWhileMoneyMoves(await moneyInFlight(clientId), 'disconnected');
+    await prisma.$transaction([
+      prisma.shopPaymentAccount.deleteMany({ where: { clientId } }),
+      prisma.onlineShop.updateMany({ where: { clientId, payOnline: true }, data: { payOnline: false } })
+    ]);
     return view(null, apiBase);
+  }
+
+  /** Whether this shop's customers may pay online right now, and if not, why -- in the owner's words. */
+  async readiness(clientId: string): Promise<{ ready: boolean; why: string | null }> {
+    const row = await prisma.shopPaymentAccount.findUnique({ where: { clientId }, select: { status: true, mode: true } });
+    if (!row) return { ready: false, why: 'Connect your Razorpay account first, in Settings → Online shop → Payments.' };
+    if (row.status !== 'CONNECTED') {
+      return { ready: false, why: 'Your Razorpay keys are not working. Check them in Settings → Online shop → Payments.' };
+    }
+    if (!isReady(row)) {
+      return { ready: false, why: 'These are Razorpay TEST keys, which cannot take real money. Connect your LIVE keys to take payments.' };
+    }
+    return { ready: true, why: null };
   }
 
   /**

@@ -1,8 +1,8 @@
 import axios, { AxiosError, AxiosInstance } from 'axios';
 import crypto from 'crypto';
 import {
-  CreatedOrder, GatewayCheck, GatewayError, GatewayMode, GatewayPayment, PaymentGateway,
-  RefundResult, WebhookEvent
+  CreatedOrder, GatewayCheck, GatewayError, GatewayMode, GatewayPayment, GatewayPaymentDetail,
+  GatewayRefund, PaymentGateway, RefundResult, WebhookEvent
 } from './types';
 
 /**
@@ -154,7 +154,7 @@ export class RazorpayGateway implements PaymentGateway {
     }
   }
 
-  async refund(paymentId: string, amountPaise: number, reason: string): Promise<RefundResult> {
+  async refund(paymentId: string, amountPaise: number, reason: string, ref?: string): Promise<RefundResult> {
     if (!str(paymentId)) throw new GatewayError('A refund needs the payment it is for.', 'BAD_REQUEST');
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
       throw new GatewayError(`A refund has to be a whole, positive number of paise (got ${amountPaise}).`, 'BAD_REQUEST');
@@ -162,7 +162,9 @@ export class RazorpayGateway implements PaymentGateway {
     try {
       const { data } = await this.http.post(`/payments/${encodeURIComponent(paymentId)}/refund`, {
         amount: amountPaise,
-        notes: { reason: String(reason || '').slice(0, 250) }
+        // `speed: normal` is the default and costs the shop nothing extra; instant refunds are a
+        // paid Razorpay feature the shop can choose in its own dashboard.
+        notes: { reason: String(reason || '').slice(0, 250), ...(ref ? { ref: String(ref).slice(0, 250) } : {}) }
       });
       const s = String(data?.status || '').toLowerCase();
       return {
@@ -186,6 +188,58 @@ export class RazorpayGateway implements PaymentGateway {
         amountPaise: paise(p.amount) ?? 0,
         failReason: str(p.error_description)
       }));
+    } catch (e) { return this.fail(e); }
+  }
+
+  private detail(p: any): GatewayPaymentDetail {
+    const known: Record<string, GatewayPaymentDetail['status']> = {
+      captured: 'CAPTURED', authorized: 'AUTHORIZED', failed: 'FAILED', refunded: 'REFUNDED', created: 'CREATED'
+    };
+    if (!str(p?.id)) throw new GatewayError('Razorpay answered without a payment.', 'UNAVAILABLE');
+    return {
+      paymentId: String(p.id),
+      gatewayOrderId: str(p.order_id),
+      status: known[String(p.status)] ?? 'OTHER',
+      amountPaise: paise(p.amount) ?? 0,
+      currency: str(p.currency) ?? 'INR',
+      method: str(p.method),
+      failReason: str(p.error_description)
+    };
+  }
+
+  async fetchPayment(paymentId: string): Promise<GatewayPaymentDetail> {
+    if (!/^pay_[A-Za-z0-9]{6,40}$/.test(String(paymentId))) {
+      throw new GatewayError('That is not a Razorpay payment id.', 'BAD_REQUEST');
+    }
+    try {
+      const { data } = await this.http.get(`/payments/${encodeURIComponent(paymentId)}`);
+      return this.detail(data);
+    } catch (e) { return this.fail(e); }
+  }
+
+  async capture(paymentId: string, amountPaise: number): Promise<GatewayPaymentDetail> {
+    if (!Number.isInteger(amountPaise) || amountPaise < MIN_PAISE) {
+      throw new GatewayError(`A capture has to be a whole number of paise, at least ₹1 (got ${amountPaise}).`, 'BAD_REQUEST');
+    }
+    try {
+      const { data } = await this.http.post(`/payments/${encodeURIComponent(paymentId)}/capture`, { amount: amountPaise, currency: 'INR' });
+      return this.detail(data);
+    } catch (e) { return this.fail(e); }
+  }
+
+  async refundsForPayment(paymentId: string): Promise<GatewayRefund[]> {
+    try {
+      const { data } = await this.http.get(`/payments/${encodeURIComponent(paymentId)}/refunds`);
+      const items: any[] = Array.isArray(data?.items) ? data.items : [];
+      return items.map((r) => {
+        const s = String(r.status || '').toLowerCase();
+        return {
+          refundId: String(r.id),
+          status: s === 'processed' ? 'PROCESSED' : s === 'failed' ? 'FAILED' : 'PENDING',
+          amountPaise: paise(r.amount) ?? 0,
+          ref: str(r.notes?.ref)
+        };
+      });
     } catch (e) { return this.fail(e); }
   }
 

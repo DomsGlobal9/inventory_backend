@@ -58,6 +58,10 @@ enum PaymentMethod {
   /// Store credit: money the shop owes the customer from a return, spent on a bill (or given as
   /// credit instead of money on a refund row).
   CREDIT
+  /// Paid through the shop's own payment gateway in the online shop (Razorpay). Its own method,
+  /// not UPI or CARD: it settles to the bank through the gateway days later, and has to be
+  /// reconciled against the gateway's settlements, not against the till.
+  ONLINE
 }
 
 enum TransferStatus {
@@ -4134,6 +4138,163 @@ model ShopPaymentAccount {
   /// Two shops, one gateway account: refused (PLAN, "What can go wrong").
   @@unique([gateway, keyId])
   @@map("shop_payment_accounts")
+}
+
+/// One attempt to pay online for a bag (PLAN-online-shop-payments.md).
+///
+/// THE ORDER DOES NOT EXIST YET. Pressing Pay makes this row and a short hold on the stock -- not a
+/// sales order. The order is written only when the payment is confirmed: our server asked Razorpay
+/// directly, or Razorpay's signed webhook said so. Until then nothing appears in Orders, the Day
+/// Book or anybody's notifications, and an abandoned payment leaves nothing behind.
+///
+/// status, in order of life:
+///   STARTING     row and stock hold made; the gateway order not yet
+///   WAITING      the gateway order exists; the customer is paying
+///   PAID         confirmed and the order written (salesOrderId set)
+///   EXPIRED      nobody paid before the hold ran out; stock let go
+///   SUPERSEDED   the same bag was changed and paid for afresh; stock let go
+///   NOT_STARTED  the gateway could not be reached or refused; stock let go
+///   REFUNDED_BACK paid, but no order could be written -- the piece had gone, the price was too
+///                old, or it was a second payment for one bag -- so the money went straight back
+///   ATTENTION    paid, and something is wrong that a person must look at (attentionReason)
+/// TEXT, not an enum, for the reason given on ShopPaymentAccount.
+model OnlinePayment {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+
+  /// The customer's link to this payment's progress. 24 random bytes: the only way in.
+  token String @unique
+
+  /// The checkout's once-only key from the browser. Two tabs and a double tap of one bag share it;
+  /// at most one payment per key ever becomes an order, and a second one is refunded by itself.
+  placementKey String @map("placement_key")
+
+  gateway String @default("RAZORPAY")
+  /// The shop's key id when this was taken. A payment belongs to the account it was paid into:
+  /// after a shop changes accounts, a refund of an older payment must not go to the new one.
+  keyId   String @map("key_id")
+
+  gatewayOrderId   String? @unique @map("gateway_order_id")
+  gatewayPaymentId String? @unique @map("gateway_payment_id")
+
+  /// OUR figure, never the browser's (rule P4). Integer paise.
+  amountPaise Int    @map("amount_paise")
+  currency    String @default("INR")
+
+  status String @default("STARTING")
+  /// How the customer paid, in the gateway's word: upi, card, netbanking, wallet...
+  method String?
+
+  /// The checkout exactly as it was checked and priced: who, where, what. The order is written
+  /// from this, never from anything the browser sends later. Cleared from payments that never
+  /// became orders once they are a month old -- nobody needs a stranger's address for longer.
+  checkout  Json?
+  /// Fingerprint of the bag and the details. The same Pay pressed twice is the same payment.
+  inputHash String @map("input_hash")
+  quoteId   String @map("quote_id")
+
+  /// When the stock hold lapses if nothing is paid. Null once the hold is gone either way.
+  holdExpiresAt DateTime? @map("hold_expires_at")
+
+  salesOrderId String? @unique @map("sales_order_id")
+
+  /// The gateway's words for the last failed try -- a customer may retry inside one checkout.
+  lastFailReason  String? @map("last_fail_reason")
+  /// What a person has to look at, in a sentence.
+  attentionReason String? @map("attention_reason")
+
+  paidAt    DateTime? @map("paid_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  holds   OnlinePaymentHold[]
+  refunds OnlineRefund[]
+
+  @@index([clientId, placementKey])
+  @@index([status, holdExpiresAt])
+  @@index([clientId, createdAt])
+  @@map("online_payments")
+}
+
+/// Stock set aside while a customer pays -- the reason no order is needed to protect the last saree.
+///
+/// Counted in InventoryStock.reservedQty exactly as an order's reservation is, so every screen and
+/// every storefront already treats it as not for sale. Released exactly once: releasedAt is set in
+/// the same transaction that gives the quantity back.
+model OnlinePaymentHold {
+  id              String        @id @default(uuid())
+  clientId        String        @map("client_id")
+  onlinePaymentId String        @map("online_payment_id")
+  onlinePayment   OnlinePayment @relation(fields: [onlinePaymentId], references: [id], onDelete: Cascade)
+  variantId       String        @map("variant_id")
+  locationId      String        @map("location_id")
+  quantity        Int
+  releasedAt      DateTime?     @map("released_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  @@index([onlinePaymentId])
+  @@index([clientId])
+  @@map("online_payment_holds")
+}
+
+/// Money going back to a customer through the gateway.
+///
+/// Written BEFORE the gateway is asked, under a key that says why, so a timeout or a retry can never
+/// refund twice: the row is found again and the gateway is asked what it already did. Recorded in the
+/// books (a SalesOrderPayment REFUND) only once the gateway says the money has actually gone.
+model OnlineRefund {
+  id              String        @id @default(uuid())
+  clientId        String        @map("client_id")
+  onlinePaymentId String        @map("online_payment_id")
+  onlinePayment   OnlinePayment @relation(fields: [onlinePaymentId], references: [id], onDelete: Cascade)
+  salesOrderId    String?       @map("sales_order_id")
+
+  /// CANCELLED | DUPLICATE | STOCK_GONE | PRICE_EXPIRED | AMOUNT_WRONG | OWNER
+  purpose String
+  /// One refund per reason: CANCEL:<order>, DUPLICATE:<payment>, OWNER:<key from the screen>...
+  onceKey String @unique @map("once_key")
+
+  amountPaise Int @map("amount_paise")
+  /// REQUESTING (asked, answer not in yet) | PENDING | PROCESSED | FAILED
+  status          String  @default("REQUESTING")
+  gatewayRefundId String? @unique @map("gateway_refund_id")
+  reason          String?
+  /// A person's id, or null when the system did it (a duplicate, a piece that had gone).
+  requestedById   String? @map("requested_by_id")
+  failReason      String? @map("fail_reason")
+
+  processedAt DateTime? @map("processed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([onlinePaymentId])
+  @@index([clientId, createdAt])
+  @@index([status])
+  @@map("online_refunds")
+}
+
+/// Every webhook a gateway sends, kept raw with whether its signature held, so a disputed payment
+/// can be answered months later. Badly signed ones are kept too (unlike ShopifyWebhookReceipt):
+/// they are either noise or an attack, and both are worth being able to see.
+model GatewayWebhookReceipt {
+  id             String  @id @default(uuid())
+  /// Null only when the address named no shop at all -- those are not kept.
+  clientId       String? @map("client_id")
+  gateway        String
+  eventId        String? @map("event_id")
+  event          String?
+  signatureValid Boolean @map("signature_valid")
+  rawBody        String  @map("raw_body")
+  /// APPLIED | DUPLICATE | IGNORED | FAILED | REFUSED
+  outcome        String?
+  error          String?
+  processedAt    DateTime? @map("processed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  /// A repeat delivery of one event is recognised and not applied twice.
+  @@unique([gateway, clientId, eventId])
+  @@index([clientId, createdAt])
+  @@map("gateway_webhook_receipts")
 }
 
 /// A code sent to a shopper's WhatsApp to prove the number they typed is theirs.

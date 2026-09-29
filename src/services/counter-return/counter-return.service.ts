@@ -27,6 +27,8 @@ import { returnService } from '../return.service';
 import { shareOfBill, shareBetween } from '../loyalty';
 import { post as postCredit, rupees } from '../store-credit';
 import { normalisePhone } from '../../lib/phone';
+import * as onlinePayments from '../payments/online-payment.service';
+import { OnlineShopRuleError } from '../online-shop/rules';
 
 export type Actor = { id: string; clientId: string; name?: string | null; permissions?: string[]; roles?: string[] };
 const may = (a: Actor, key: string) => holdsEverything(a.permissions, a.roles) || grants(a.permissions ?? [], key);
@@ -40,6 +42,13 @@ function requireCounter(a: Actor) {
 export type RefundMethod = 'CASH' | 'UPI' | 'CARD' | 'CREDIT';
 const METHODS: RefundMethod[] = ['CASH', 'UPI', 'CARD', 'CREDIT'];
 const METHOD_WORD: Record<RefundMethod, string> = { CASH: 'cash', UPI: 'UPI', CARD: 'card', CREDIT: 'store credit' };
+/**
+ * The counter's ways, plus ONLINE: back through Razorpay to however the customer paid. Only for a bill
+ * paid online, and only from the counter's screens -- the till records what IT did, and cannot send
+ * a Razorpay refund.
+ */
+export type CounterMethod = RefundMethod | 'ONLINE';
+const COUNTER_METHODS: CounterMethod[] = [...METHODS, 'ONLINE'];
 const DAY = 86_400_000;
 
 // ── The shop's rules ───────────────────────────────────────────────────────────────────────
@@ -149,6 +158,8 @@ export async function saleForReturn(clientId: string, orderId: string) {
     };
   }));
   const paidWith = [...new Set(order.payments.filter(p => p.kind === 'PAYMENT').map(p => p.method))];
+  // Paid online: what is still the customer's to get back, after Razorpay refunds and counter refunds.
+  const room = paidWith.includes('ONLINE') ? await onlinePayments.roomToGiveBack(prisma, clientId, order.id, false) : null;
   return {
     id: order.id, orderNumber: order.orderNumber, createdAt: order.createdAt, daysAgo: days,
     total: Number(order.total), store: order.location?.name ?? null, locationId: order.locationId,
@@ -158,6 +169,7 @@ export async function saleForReturn(clientId: string, orderId: string) {
       storeCredit: order.customer.storeCreditPaise / 100, points: order.customer.loyaltyPoints
     } : (order.customerName ? { id: null, name: order.customerName, phone: null, storeCredit: 0, points: 0 } : null),
     paidWith,
+    paidOnline: room ? { left: room.leftPaise / 100, backOnline: room.onlineBackPaise / 100, backElsewhere: room.elsewherePaise / 100 } : null,
     lines,
     window: rules.returnWindowDays === null ? null : { days: rules.returnWindowDays, over: days > rules.returnWindowDays }
   };
@@ -260,6 +272,50 @@ export async function creditShare(db: Prisma.TransactionClient | typeof prisma, 
 }
 
 /**
+ * The money going back on a return, when the bill was paid ONLINE -- two rules the counter never
+ * needed while every bill was paid at the counter:
+ *
+ *   - never more than is left of what was paid. The owner may already have refunded part of it
+ *     through Razorpay; a cash refund for the same piece on top of that paid the same money twice.
+ *   - it can go back through Razorpay (ONLINE), to however the customer paid, instead of from the
+ *     drawer. The refund is written inside this transaction and sent once it commits.
+ *
+ * A bill not paid online goes straight to writeRefund, exactly as before.
+ */
+async function giveBack(tx: Prisma.TransactionClient, input: Omit<Parameters<typeof writeRefund>[1], 'method'> & { method: CounterMethod | null }): Promise<CounterMethod | null> {
+  const room = await onlinePayments.roomToGiveBack(tx, input.clientId, input.orderId);
+  if (!room) {
+    if (input.method === 'ONLINE') throw badRequest('This bill was not paid online. Give the money back another way.');
+    return writeRefund(tx, { ...input, method: input.method as RefundMethod | null });
+  }
+  if (input.moneyMinor > room.leftPaise) {
+    const already = [
+      room.onlineBackPaise > 0 ? `${rupees(room.onlineBackPaise)} through Razorpay` : '',
+      room.elsewherePaise > 0 ? `${rupees(room.elsewherePaise)} at the counter` : ''
+    ].filter(Boolean).join(' and ');
+    throw badRequest(room.leftPaise <= 0
+      ? `Everything paid for this bill has already been given back (${already}). Nothing more can go back on it.`
+      : `Only ${rupees(room.leftPaise)} of this bill is left to give back — ${already} already went back. This return comes to ${rupees(input.moneyMinor)}.`);
+  }
+  if (input.method !== 'ONLINE') return writeRefund(tx, { ...input, method: input.method });
+
+  // A store-credit share, if the bill had one, still goes back as credit; the rest through Razorpay.
+  if (input.creditBackMinor > 0) await writeRefund(tx, { ...input, moneyMinor: input.creditBackMinor, method: 'CREDIT' });
+  const onlineMinor = input.moneyMinor - input.creditBackMinor;
+  if (onlineMinor <= 0) return input.creditBackMinor > 0 ? 'CREDIT' : null;
+  try {
+    await onlinePayments.refundForReturn(tx, {
+      clientId: input.clientId, salesOrderId: input.orderId, returnId: input.returnId, returnNumber: input.returnNumber,
+      amountPaise: onlineMinor, requestedById: input.userId
+    });
+  } catch (e) {
+    if (e instanceof OnlineShopRuleError) throw badRequest(e.message);
+    throw e;
+  }
+  return 'ONLINE';
+}
+
+/**
  * The refund rows for one return: the store-credit share as credit, the rest the way chosen. Store
  * credit rows also add to the customer's credit. Returns the method recorded on the return.
  */
@@ -354,7 +410,7 @@ export async function complete(actor: Actor, input: {
   if (!reason) throw badRequest('Say why it is coming back.');
   const note = typeof input.note === 'string' && input.note.trim() ? input.note.trim().slice(0, 500) : undefined;
   const exchange = input.exchange === true;
-  const method: RefundMethod | null = exchange ? 'CREDIT' : (METHODS.includes(input.refund?.method as RefundMethod) ? input.refund!.method as RefundMethod : null);
+  const method: CounterMethod | null = exchange ? 'CREDIT' : (COUNTER_METHODS.includes(input.refund?.method as CounterMethod) ? input.refund!.method as CounterMethod : null);
 
   // The same press again: the same return, whatever happened to the first answer.
   const already = await prisma.salesReturn.findFirst({ where: { counterKey: key }, select: { id: true, clientId: true, salesOrderId: true } });
@@ -372,7 +428,7 @@ export async function complete(actor: Actor, input: {
   const before = await worth(prisma, actor.clientId, orderId, lines);
   if (before.cashMinor > 0 && !method) throw badRequest('Say how the money goes back: cash, UPI, card or store credit.');
   if (method === 'CREDIT' && !sale.customer?.id) throw badRequest('Store credit needs a customer on the bill. Give the money back another way.');
-  const reference = method ? cleanReference(method, input.refund?.reference) : null;
+  const reference = method && method !== 'ONLINE' ? cleanReference(method, input.refund?.reference) : null;
   // Store credit going back is not money leaving the drawer, so only the rest counts to the limit.
   const block = needsManager(actor, sale.daysAgo, before.cashMinor, rules);
   if (block && !isManager(actor)) throw forbidden(block);
@@ -392,7 +448,7 @@ export async function complete(actor: Actor, input: {
     const moneyMinor = toMinor(done.refundTotal as any);
     if (moneyMinor > 0) {
       const creditBackMinor = await creditShare(tx, actor.clientId, orderId, moneyMinor, created.id);
-      const recorded = await writeRefund(tx, {
+      const recorded = await giveBack(tx, {
         clientId: actor.clientId, orderId, returnId: created.id, returnNumber: done.returnNumber, locationId,
         customerId: sale.customer?.id ?? null, moneyMinor, creditBackMinor, method, reference, userId: actor.id, exchange
       });
@@ -431,13 +487,16 @@ async function summary(clientId: string, returnId: string) {
   const money = Number(r.refundTotal);
   // How it actually went back, from the refund rows: "₹1,000 in cash and ₹2,000 in store credit".
   const rows = await prisma.salesOrderPayment.findMany({ where: { clientId, salesReturnId: r.id, kind: 'REFUND' }, select: { method: true, amount: true }, orderBy: { amount: 'asc' } });
-  const words = rows.map(x => `${rupees(toMinor(x.amount as any))} in ${METHOD_WORD[x.method as RefundMethod] ?? x.method}`).join(' and ');
+  const online = r.refundMethod === 'ONLINE' ? await onlinePayments.refundOfReturn(clientId, r.id) : null;
+  // A Razorpay refund is not in the books until Razorpay has sent it; the screen says it is on its way.
+  const words = rows.filter(x => x.method !== 'ONLINE')
+    .map(x => `${rupees(toMinor(x.amount as any))} in ${METHOD_WORD[x.method as RefundMethod] ?? x.method}`).join(' and ');
   return {
     returnId: r.id, returnNumber: r.returnNumber, orderId: r.salesOrder.id, orderNumber: r.salesOrder.orderNumber,
     customer: r.salesOrder.customer ? { id: r.salesOrder.customer.id, name: r.salesOrder.customer.name, storeCredit: r.salesOrder.customer.storeCreditPaise / 100 } : null,
     pieces: r.items.reduce((s, i) => s + i.quantity, 0),
     backOnSale: r.items.filter(i => i.disposition === 'RESTOCK').reduce((s, i) => s + i.quantity, 0),
-    money, refundMethod: r.refundMethod, refundWords: words || null,
+    money, refundMethod: r.refundMethod, refundWords: words || null, online,
     pointsBack: r.pointsBack, pointsBackValue: Number(r.pointsBackValue), pointsTakenBack: r.pointsTakenBack
   };
 }
@@ -450,9 +509,9 @@ async function summary(clientId: string, returnId: string) {
  */
 export async function recordRefund(actor: Actor, returnId: string, input: { method?: unknown; reference?: unknown; locationId?: unknown }) {
   if (!isManager(actor) && !may(actor, 'return:counter')) throw forbidden('Paying back a return is not part of your role.');
-  const method = METHODS.includes(input.method as RefundMethod) ? input.method as RefundMethod : null;
+  const method = COUNTER_METHODS.includes(input.method as CounterMethod) ? input.method as CounterMethod : null;
   if (!method) throw badRequest('Say how the money went back: cash, UPI, card or store credit.');
-  const reference = cleanReference(method, input.reference);
+  const reference = method === 'ONLINE' ? null : cleanReference(method, input.reference);
   const ret = await prisma.salesReturn.findFirst({
     where: { id: returnId, clientId: actor.clientId },
     select: { id: true, status: true, refundStatus: true, refundTotal: true, returnNumber: true, locationId: true, salesOrderId: true, salesOrder: { select: { locationId: true, customerId: true } } }
@@ -472,7 +531,7 @@ export async function recordRefund(actor: Actor, returnId: string, input: { meth
     });
     if (claimed.count === 0) throw conflict('The money for this return has just been recorded by somebody else.');
     const creditBackMinor = await creditShare(tx, actor.clientId, ret.salesOrderId, moneyMinor, ret.id);
-    const recorded = await writeRefund(tx, {
+    const recorded = await giveBack(tx, {
       clientId: actor.clientId, orderId: ret.salesOrderId, returnId: ret.id, returnNumber: ret.returnNumber, locationId,
       customerId: ret.salesOrder.customerId, moneyMinor, creditBackMinor, method, reference, userId: actor.id
     });

@@ -25,7 +25,12 @@ const h = React.createElement;
 const money = (v: unknown) => `Rs. ${Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 
 /** Taken and paid back at the counter, one row per way of paying that was used. */
-const METHOD_NAMES: Record<string, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Loyalty points', CREDIT: 'Store credit' };
+/*
+ * ONLINE is here because the rows below are drawn by walking THIS list, not the takings: a method
+ * missing from it is not printed at all. Money paid through the online shop would have vanished from
+ * the Day Book PDF, with the totals still counting it -- a report that does not add up to itself.
+ */
+const METHOD_NAMES: Record<string, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Loyalty points', CREDIT: 'Store credit', ONLINE: 'Online (Razorpay)' };
 function moneyRows(d: any): string[][] {
   const taken = d.money?.taken ?? {}, back = d.money?.paidBack ?? {};
   return Object.keys(METHOD_NAMES).filter(m => taken[m] || back[m]).map(m => [

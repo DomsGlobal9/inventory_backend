@@ -1,6 +1,7 @@
 import { CampaignsScheduler } from './jobs/campaigns.scheduler';
 import { PhotoJobsScheduler } from './jobs/photo-jobs.scheduler';
 import { PosQueueScheduler } from './jobs/pos-queue.scheduler';
+import { PaymentsScheduler } from './jobs/payments.scheduler';
 import express from 'express'; // Restart trigger 2
 import cors from 'cors';
 import { env } from './config/env';
@@ -130,6 +131,9 @@ app.use('/api/v1/products/import', carriesLogin, express.json({ limit: '10mb' })
 // their own paths so nothing else gains a larger body.
 app.use('/api/v1/whatsapp/send', carriesLogin, express.json({ limit: '8mb' }));
 app.use('/api/v1/whatsapp/events', express.raw({ type: '*/*', limit: '1mb' }));
+// Razorpay signs its webhooks over the raw bytes, exactly like Shopify above. A real delivery is a few
+// kilobytes; the cap keeps a stranger who has learnt the address from sending anything large.
+app.use('/api/v1/payments/webhooks', express.raw({ type: '*/*', limit: '256kb' }));
 // A campaign picture travels as base64 inside JSON: 15 MB of photo is about 20 MB encoded. Only for
 // a signed-in caller, like the other large bodies above; the picture is checked and remade server-side.
 app.use('/api/v1/campaigns/media', carriesLogin, express.json({ limit: '21mb' }),
@@ -210,8 +214,10 @@ app.get('/ready', async (req, res) => {
 // gives up on a store whose webhooks keep failing; every one is HMAC-verified before anything is
 // read. A storefront has its own, higher limit per connection (storefront-public.routes). The
 // WhatsApp Service's events come the same way -- a burst of ticks from one address, each signed.
+// Razorpay's payment webhooks likewise: every shop's confirmations arrive from Razorpay's few
+// addresses, and a limiter counting them together would drop one shop's payments for another's.
 app.use('/api', (req, res, next) =>
-  /^\/v1\/(shopify|storefront)\/|^\/v1\/whatsapp\/events$/.test(req.path) ? next() : tenantRateLimiter(req, res, next));
+  /^\/v1\/(shopify|storefront|payments\/webhooks)\/|^\/v1\/whatsapp\/events$/.test(req.path) ? next() : tenantRateLimiter(req, res, next));
 
 // Every response here is per-authenticated-user data (never a static public asset),
 // and Express auto-generates an ETag on JSON bodies by default. Without an explicit
@@ -270,4 +276,6 @@ app.listen(PORT, () => {
    */
   PhotoJobsScheduler.start();
   PosQueueScheduler.start();
+  // Same shape: safe on two servers, off on a development machine unless asked and scoped.
+  PaymentsScheduler.start();
 });

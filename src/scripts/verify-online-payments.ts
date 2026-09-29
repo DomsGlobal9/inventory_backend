@@ -195,7 +195,7 @@ async function main() {
   if (!exists[0]?.t) {
     console.log('  - SKIPPED: the migration 20260929120000_shop_payment_accounts is not in this database yet.');
   } else {
-    const { paymentAccounts } = await import('../services/payments/account.service');
+    const { paymentAccounts, testKeysAllowed } = await import('../services/payments/account.service');
     const STAMP = Date.now();
     const A = `paytest-${STAMP}-a`;
     const B = `paytest-${STAMP}-b`;
@@ -224,7 +224,9 @@ async function main() {
       const url = first.account.webhookUrl;
       const again = await paymentAccounts.save(A, 'user-1', TEST, BASE);
       check('replacing the keys keeps the webhook address and secret (nothing to re-paste in Razorpay)',
-        again.webhookSecret === null && again.account.webhookUrl === url && again.account.mode === 'TEST' && !again.account.readyForCustomers);
+        again.webhookSecret === null && again.account.webhookUrl === url && again.account.mode === 'TEST' &&
+        // TEST keys take customers only on a developer's machine that asks for it -- never in production.
+        again.account.readyForCustomers === testKeysAllowed());
 
       const gw = await paymentAccounts.gatewayFor(A);
       const body = Buffer.from('{"event":"payment.captured"}');

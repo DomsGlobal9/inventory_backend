@@ -28,7 +28,7 @@ async function describeVariant(tx: any, clientId: string, variantId: string, loc
  * the real work, a notification must not be able to fail it or hold its transaction open, and one
  * sent from inside a caller's transaction must not describe stock that has not been saved yet.
  */
-function notifyStorefrontsOfAvailability(clientId: string, variantIds: string[]) {
+export function notifyStorefrontsOfAvailability(clientId: string, variantIds: string[]) {
   afterCommit(() => {
     for (const variantId of [...new Set(variantIds)]) {
       void storefrontEventService.stockUpdated(clientId, variantId)

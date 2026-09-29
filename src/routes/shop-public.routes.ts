@@ -1,6 +1,8 @@
 import express, { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, shopInterest, OnlineShopRuleError } from '../services/online-shop';
+import * as onlinePayments from '../services/payments/online-payment.service';
+import { prisma } from '../lib/prisma';
 
 /**
  * What a shopper's browser asks for at `shop.scaleezy.com/<slug>`.
@@ -183,11 +185,68 @@ router.post('/:slug/bag', priceLimiter, buying(async (req) => {
   return shopCheckout.priceBag(shop.clientId, req.body?.lines, req.body?.couponCodes);
 }));
 
-/** Place the order. */
+/** Place an order to be paid on delivery. */
 router.post('/:slug/orders', buyLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  /*
+   * The same bag may have had an online payment started and abandoned: settle that first. If it was
+   * in fact paid, that IS the order; otherwise its stock hold is let go so this order can have it.
+   */
+  const paid = await onlinePayments.beforeOrderingOnDelivery(shop.clientId, req.body?.placementKey);
+  if (paid) return shopCheckout.summary(shop.clientId, paid);
   return shopCheckout.place(shop.clientId, req.body ?? {});
+}));
+
+/*
+ * ── Paying online ──────────────────────────────────────────────────────────────────────────
+ *
+ * Pay: the checkout is checked and priced exactly as an order on delivery is, the pieces are set
+ * aside, and Razorpay's checkout is opened for OUR figure. No order exists yet.
+ * Confirm: the browser's "paid" handback -- only ever the cue for us to ask Razorpay ourselves.
+ * Status: what the customer's page shows while it waits. Addressed by a 24-byte token.
+ */
+router.post('/:slug/pay', buyLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  const visible = shop as { name?: string; accent?: string | null };
+  return onlinePayments.start(shop.clientId, visible.name ?? 'the shop', visible.accent ?? null, req.body ?? {});
+}));
+
+router.post('/:slug/pay/:token/confirm', buyLimiter, buying(async (req) => {
+  /*
+   * NOT refused when the shop has closed since. The customer has already paid: a shop that goes
+   * offline while they were on Razorpay's page must still be told about their money, or the order
+   * waits on the webhook and the customer stares at "not confirmed" for something they paid for.
+   * Only an unknown shop is refused -- and the payment's own token is the real key anyway.
+   */
+  const clientId = await clientIdForSlug(req.params.slug);
+  if (!clientId) throw new OnlineShopRuleError('That payment could not be found.');
+  return onlinePayments.confirm(clientId, req.params.token, req.body ?? {});
+}));
+
+/**
+ * The shop behind a slug, open or closed. For the two payment routes that must answer a customer
+ * who has already paid, whatever state the shop has got into since.
+ */
+async function clientIdForSlug(slugRaw: unknown): Promise<string | null> {
+  const slug = typeof slugRaw === 'string' ? slugRaw.trim().toLowerCase() : '';
+  if (!slug || slug.length > 40) return null;
+  const row = await prisma.onlineShop.findUnique({ where: { slug }, select: { clientId: true } });
+  return row?.clientId ?? null;
+}
+
+router.get('/:slug/pay/:token', priceLimiter, buying(async (req) => {
+  /*
+   * Answered even while the shop is closed: a customer who has just paid must be able to see so.
+   *
+   * It said that before and did not do it. publicShop answers a closed shop with its name only --
+   * no clientId -- so this passed undefined along and every payment on a closed shop came back
+   * "could not be found", to a customer who had just been charged.
+   */
+  const clientId = await clientIdForSlug(req.params.slug);
+  if (!clientId) throw new OnlineShopRuleError('That payment could not be found.');
+  return onlinePayments.status(clientId, req.params.token);
 }));
 
 /**
@@ -206,7 +265,10 @@ router.get('/:slug/orders/:token', priceLimiter, buying(async (req) => {
 router.post('/:slug/orders/:token/cancel', buyLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
-  return shopCheckout.cancel(shop.clientId, req.params.token);
+  const summary = await shopCheckout.cancel(shop.clientId, req.params.token);
+  // Paid online: the money goes back now, before the customer's page says "cancelled". Never throws.
+  await onlinePayments.afterCancelledByToken(shop.clientId, req.params.token);
+  return summary;
 }));
 
 /*

@@ -25,6 +25,7 @@ import {
 } from '../pricing';
 import { facetsFor, type Facets } from './facets';
 import { canVerify } from './otp';
+import { paymentAccounts } from '../payments/account.service';
 
 export { OnlineShopRuleError };
 
@@ -199,10 +200,16 @@ export async function save(clientId: string, input: {
    *
    * Refused here rather than hidden in the screen, because the screen is not the only way in.
    */
+  /*
+   * Paying online is switched on only when it can actually take money: the shop's own Razorpay
+   * account, keys that work, and LIVE keys. It was refused outright while nothing took the money;
+   * now the refusal says exactly what is missing. Turning it OFF is always allowed.
+   */
   if (input.payOnline === true && !shop.payOnline) {
-    throw new OnlineShopRuleError(
-      'Taking payment online is not ready yet, so it cannot be switched on. Take orders on delivery for now.'
-    );
+    const ready = await paymentAccounts.readiness(clientId);
+    if (!ready.ready) {
+      throw new OnlineShopRuleError(`Paying online cannot be switched on yet. ${ready.why}`);
+    }
   }
 
   const wantsOrders = input.acceptsOrders === true;
@@ -386,7 +393,7 @@ export async function publicShop(slugRaw: unknown): Promise<
   const shop = await prisma.onlineShop.findUnique({ where: { slug } });
   if (!shop) return { state: 'UNKNOWN' };
 
-  const [settings, seller, shown, facets, canProve] = await Promise.all([
+  const [settings, seller, shown, facets, canProve, payReady] = await Promise.all([
     getShopSettings(shop.clientId).catch(() => null),
     sellerDetails(shop.clientId),
     banners.publicFor(shop.clientId).catch(() => []),
@@ -396,9 +403,13 @@ export async function publicShop(slugRaw: unknown): Promise<
       .catch(() => ({ categories: [], dressTypes: [], fabrics: [], crafts: [], brands: [], price: null, total: 0 })),
     // Whether the shop's own WhatsApp is linked. Remembered for a minute inside canVerify, so this
     // is not a call to another service on every page load.
-    canVerify(shop.clientId).catch(() => false)
+    canVerify(shop.clientId).catch(() => false),
+    // Only asked when the switch is on: most shops never look at the payments table at all.
+    shop.payOnline ? paymentAccounts.readiness(shop.clientId).then(r => r.ready).catch(() => false) : Promise.resolve(false)
   ]);
   const name = shop.displayName?.trim() || settings?.businessName?.trim() || 'This shop';
+  // The switch alone is not enough: keys revoked, or swapped for test keys, since it was turned on.
+  const payOnlineNow = shop.payOnline && payReady;
   if (!shop.isLive) return { state: 'CLOSED', name };
 
   return {
@@ -431,10 +442,10 @@ export async function publicShop(slugRaw: unknown): Promise<
      */
     canVerifyPhone: canProve,
     buying: {
-      open: shop.acceptsOrders && (shop.payOnDelivery || shop.payOnline),
+      open: shop.acceptsOrders && (shop.payOnDelivery || payOnlineNow),
       payWays: [
         ...(shop.payOnDelivery ? ['ON_DELIVERY' as const] : []),
-        ...(shop.payOnline ? ['ONLINE' as const] : [])
+        ...(payOnlineNow ? ['ONLINE' as const] : [])
       ],
       deliveryFee: Number(shop.deliveryFee),
       freeDeliveryAbove: shop.freeDeliveryAbove == null ? null : Number(shop.freeDeliveryAbove),

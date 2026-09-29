@@ -15,6 +15,7 @@ const BagPage = lazy(() => import('./pages/BagPage'));
 const CheckoutPage = lazy(() => import('./pages/CheckoutPage'));
 const OrderPage = lazy(() => import('./pages/OrderPage'));
 const MyOrdersPage = lazy(() => import('./pages/MyOrdersPage'));
+const PaymentPage = lazy(() => import('./pages/PaymentPage'));
 import Nav from './components/Nav';
 import Footer from './components/Footer';
 import Banners from './components/Banners';
@@ -69,6 +70,21 @@ function Shop({ page }) {
     );
   }
 
+  /*
+   * A customer who has just paid must be able to see so, even if the shop closed while they were
+   * on Razorpay's page. Every other page of a closed shop says it is closed; this one carries on,
+   * in a plain frame, because it is about money already taken.
+   */
+  if (state.error && page === 'pay' && state.error.kind === 'CLOSED') {
+    return (
+      <main className="wrap grow">
+        <Suspense fallback={<div className="bone" style={{ height: 260, borderRadius: 14, margin: '20px 0' }} />}>
+          <PaymentPage shop={null} />
+        </Suspense>
+      </main>
+    );
+  }
+
   if (state.error) {
     return <div className="wrap"><Problem error={state.error} onRetry={() => setNonce(n => n + 1)} /></div>;
   }
@@ -97,6 +113,7 @@ function Shop({ page }) {
             : page === 'checkout' ? <CheckoutPage shop={shop} />
             : page === 'order' ? <OrderPage shop={shop} />
             : page === 'orders' ? <MyOrdersPage shop={shop} />
+            : page === 'pay' ? <PaymentPage shop={shop} />
             : <ShopHome slug={slug} shop={shop} />}
         </Suspense>
       </main>
@@ -126,6 +143,7 @@ export default function App() {
         <Route path="/:slug/checkout" element={<Shop page="checkout" />} />
         <Route path="/:slug/orders" element={<Shop page="orders" />} />
         <Route path="/:slug/order/:token" element={<Shop page="order" />} />
+        <Route path="/:slug/pay/:token" element={<Shop page="pay" />} />
         {/* Anything else inside a shop is that shop's front page, not a dead end. */}
         <Route path="/:slug/*" element={<Navigate to="." replace />} />
         <Route path="*" element={<Root />} />

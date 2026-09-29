@@ -6,6 +6,7 @@ import { respondWithError } from '../utils/respondWithError';
 import { requestsManualDiscount } from '../services/pricing';
 import { grants, holdsEverything } from '../config/permissions';
 import { onlineShopNotices } from '../services/online-shop';
+import * as onlinePayments from '../services/payments/online-payment.service';
 
 export const createOrder = async (req: Request, res: Response) => {
   try {
@@ -185,7 +186,13 @@ export const cancelOrder = async (req: Request, res: Response) => {
      * is safe for every order: one that did not come from the shop is skipped.
      */
     void onlineShopNotices.orderCancelled(clientId, req.params.id as string, 'SHOP');
-    res.json(order);
+    /*
+     * And if it was paid online, the money goes back -- awaited, so the screen can say "refund
+     * started" rather than leaving the owner to wonder whether cancelling returned anything. Safe for
+     * every order: one not paid online answers null, and it never throws.
+     */
+    const refund = await onlinePayments.afterCancelled(clientId, req.params.id as string, (req as any).user?.id ?? null);
+    res.json(refund ? { ...order, onlineRefund: refund } : order);
   } catch (error: any) {
     return respondWithError(res, error, { status: 400 });
   }

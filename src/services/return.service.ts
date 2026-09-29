@@ -420,7 +420,9 @@ export class ReturnService {
     if (!ret) throw notFound('Return not found');
     // Still open, on a bill paid partly with points: how the amount owed will split on completing.
     const pointsPreview = ret.status === 'COMPLETED' || ret.status === 'REJECTED' ? null : await previewReturn(clientId, id).catch(() => null);
-    return { ...ret, pointsPreview };
+    // A bill paid online can be paid back through Razorpay, to however the customer paid.
+    const paidOnline = (await prisma.salesOrderPayment.count({ where: { clientId, salesOrderId: ret.salesOrderId, kind: 'PAYMENT', method: 'ONLINE' } })) > 0;
+    return { ...ret, pointsPreview, paidOnline };
   }
 }
 

@@ -505,7 +505,7 @@ export default function ProductPage({ slug, shop }) {
                     {shop.buying.deliveryFee > 0 && shop.buying.freeDeliveryAbove
                       ? `Free on orders over ${money(shop.buying.freeDeliveryAbove, currency)}`
                       : 'Delivered to your address'}
-                    {shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Pay when it arrives' : ''}
+                    {shop.buying.payWays?.includes('ONLINE') && shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Pay online or when it arrives' : shop.buying.payWays?.includes('ONLINE') ? ' · Pay online' : shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Pay when it arrives' : ''}
                   </span>
                 </div>
               </div>

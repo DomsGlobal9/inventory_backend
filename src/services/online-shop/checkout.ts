@@ -10,6 +10,7 @@ import { OnlineShopRuleError } from './rules';
 import { sendOrderPlacedNotice, emailOrderPlaced, tellTheShop, orderCancelled } from './notices';
 import { rememberFromOrder as rememberAddress } from './addresses';
 import { isVerified } from './otp';
+import { paymentAccounts } from '../payments/account.service';
 
 /**
  * A customer buying from a shop's own online shop.
@@ -52,7 +53,9 @@ export async function orderingFor(clientId: string) {
   if (!shop) return null;
   const ways: ('ON_DELIVERY' | 'ONLINE')[] = [];
   if (shop.payOnDelivery) ways.push('ON_DELIVERY');
-  if (shop.payOnline) ways.push('ONLINE');
+  // The switch AND working live keys. A shop whose keys have since gone bad keeps its switch on but
+  // stops offering the option, so no customer is walked to a Pay button that will refuse them.
+  if (shop.payOnline && (await paymentAccounts.readiness(clientId)).ready) ways.push('ONLINE');
   return {
     ...shop,
     payWays: ways,
@@ -358,17 +361,43 @@ const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slic
 const digitsOnly = (v: unknown) => String(v ?? '').replace(/\D/g, '');
 
 /**
- * Place the order.
+ * What a checkout said, checked and priced -- and everything an order is later written from.
  *
- * ONE TRANSACTION, the same shape the counter sale uses: the customer, the price, and the order
- * with its stock held are all of them or none. A dropped connection halfway through must not leave
- * a shop holding stock for an order nobody has, or a customer who was charged for nothing.
- *
- * The goods are HELD, not sent: status CONFIRMED reserves the stock and the shop dispatches it from
- * the Orders screen when the box actually goes. An online order that marked itself dispatched would
- * take the stock off the shelf before anyone had packed it.
+ * Shared by paying on delivery and paying online, so both are held to exactly the same rules and
+ * produce exactly the same order. Paying online keeps this (as `OrderInput`, below) on the payment
+ * and writes the order only when the money is confirmed; paying on delivery writes it at once.
  */
-export async function place(clientId: string, input: PlaceInput) {
+export type OrderInput = {
+  placementKey: string;
+  payWay: 'ON_DELIVERY' | 'ONLINE';
+  name: string;
+  /** Normalised, as the shop dials it. */
+  phone: string;
+  email: string | null;
+  /** As typed, and with the PIN code added when the customer had not written it there. */
+  address: string;
+  fullAddress: string;
+  pincode: string;
+  /** Proved by a code the shop sent -- read from the shop's own record, never from the browser. */
+  proved: boolean;
+  locationId: string;
+  couponCodes: string[];
+  quoteId: string;
+  quoteReq: { locationId: string; channel: string; lines: { variantId: string; quantity: number }[]; couponCodes: string[] };
+  /** Delivery in rupees, as the order stores it. */
+  delivery: number;
+  /** The pieces, with enough of each to name it in a sentence ("Kanchi Silk (Red, Free size)"). */
+  items: { variantId: string; variantCode: string; quantity: number; title: string; colour: string | null; size: string | null }[];
+};
+
+export type PreparedCheckout = OrderInput & {
+  shop: NonNullable<Awaited<ReturnType<typeof orderingFor>>>;
+  /** The bag as the page shows it, total and all. */
+  bag: ReturnType<typeof view>;
+};
+
+/** The first thing every order passes: is this shop taking orders, and is this a real checkout. */
+export async function checkoutGate(clientId: string, input: PlaceInput) {
   const shop = await orderingFor(clientId);
   if (!shop) throw new OnlineShopRuleError('This shop is not taking orders.');
   if (!shop.isLive) throw new OnlineShopRuleError('This shop is closed just now.');
@@ -376,13 +405,20 @@ export async function place(clientId: string, input: PlaceInput) {
 
   const placementKey = text(input.placementKey, 64);
   if (placementKey.length < 16) throw new OnlineShopRuleError('That order could not be sent. Refresh the page and try again.');
+  return { shop, placementKey };
+}
 
-  // Already placed: the answer to "place this order" when it is already placed is the order.
-  const already = await prisma.onlineShopOrder.findUnique({
-    where: { clientId_placementKey: { clientId, placementKey } }
-  });
-  if (already) return summary(clientId, already.token);
-
+/**
+ * Check every answer on the checkout and price the bag, keeping the price.
+ *
+ * Nothing is written except the priced quote. Every refusal is a sentence the shopper can act on.
+ */
+export async function prepareCheckout(
+  clientId: string,
+  shop: NonNullable<Awaited<ReturnType<typeof orderingFor>>>,
+  placementKey: string,
+  input: PlaceInput
+): Promise<PreparedCheckout> {
   const payWay = String(input.payWay ?? '').toUpperCase();
   if (!shop.payWays.includes(payWay as any)) {
     throw new OnlineShopRuleError('Choose how you would like to pay.');
@@ -435,6 +471,7 @@ export async function place(clientId: string, input: PlaceInput) {
     couponCodes
   };
   const quote = await pricingQuoteService.quote(clientId, quoteReq);
+  if (!quote.quoteId) throw new Error('The price for this order could not be kept.');
   const bag = view(shop, items, quote, locationId);
 
   // Against the goods, not the goods plus delivery: a shop's minimum is about what is being
@@ -457,163 +494,164 @@ export async function place(clientId: string, input: PlaceInput) {
    * appending it blindly printed "Telangana - 500029" and then "500029" again on the packing slip.
    */
   const fullAddress = address.includes(pincode) ? address : `${address}\n${pincode}`;
-  const token = crypto.randomBytes(24).toString('base64url');
 
-  let salesOrderId: string;
-  // Carried out of the transaction so the address book can be filled once the order is really there.
-  let placedCustomerId: string | null = null;
-  try {
-  salesOrderId = await prisma.$transaction(async (tx) => {
-    let customerId: string;
-    let phoneOnOrder = phone.value;
+  return {
+    shop, bag,
+    placementKey, payWay: payWay as OrderInput['payWay'],
+    name, phone: phone.value, email, address, fullAddress, pincode, proved,
+    locationId, couponCodes, quoteId: quote.quoteId, quoteReq,
+    delivery: bag.delivery,
+    items: items.map(i => ({ variantId: i.variantId, variantCode: i.variantCode, quantity: i.quantity, title: i.title, colour: i.colour, size: i.size }))
+  };
+}
 
-    if (proved) {
+/** Only what writing the order needs, for keeping on a payment until the money is confirmed. */
+export const orderInputOf = (p: PreparedCheckout): OrderInput => {
+  const { shop: _shop, bag: _bag, ...rest } = p;
+  return rest;
+};
+
+/**
+ * Write the order: the customer, the order with its stock held, and the online-shop record.
+ *
+ * Inside the caller's transaction, so the order and whatever else must happen with it -- recording
+ * an online payment, letting go of the payment's stock hold -- are all of them or none.
+ *
+ * The goods are HELD, not sent: status CONFIRMED reserves the stock and the shop dispatches it from
+ * the Orders screen when the box actually goes. An online order that marked itself dispatched would
+ * take the stock off the shelf before anyone had packed it.
+ */
+export async function writeOrderInTx(
+  tx: any,
+  clientId: string,
+  p: OrderInput,
+  extra: { token: string; paid: boolean; holdExpiresAt: Date | null; gatewayOrderId?: string | null; gatewayPaymentId?: string | null }
+): Promise<{ salesOrderId: string; customerId: string }> {
+  let customerId: string;
+  let phoneOnOrder = p.phone;
+
+  if (p.proved) {
+    /*
+     * The number was proved, so this IS that customer: the same row the till knows, with their
+     * history and their points. This is the whole reason for asking for a code -- without proof
+     * the rule below has to make a new customer for every online order, and a regular buying
+     * online would be a stranger to their own shop.
+     */
+    const mine = await tx.customer.findFirst({
+      where: { clientId, phone: p.phone, deletedAt: null }, select: { id: true }
+    });
+    if (mine) {
+      customerId = mine.id;
       /*
-       * The number was proved, so this IS that customer: the same row the till knows, with their
-       * history and their points. This is the whole reason for asking for a code -- without proof
-       * the rule below has to make a new customer for every online order, and a regular buying
-       * online would be a stranger to their own shop.
+       * `shippingAddress` is ONE field, and this wrote over it on every order -- so a regular
+       * sending one saree to her sister replaced her own address with her sister's, and the
+       * next thing the till prefilled was wrong. It is now the address of the last order only
+       * where the customer has no book of their own yet; once they have saved addresses, that
+       * book is the record and this single field stops being rewritten behind them.
        */
-      const mine = await tx.customer.findFirst({
-        where: { clientId, phone: phone.value, deletedAt: null }, select: { id: true }
+      const hasBook = await tx.customerAddress.count({
+        where: { clientId, customerId: mine.id, deletedAt: null }
       });
-      if (mine) {
-        customerId = mine.id;
-        /*
-         * `shippingAddress` is ONE field, and this wrote over it on every order -- so a regular
-         * sending one saree to her sister replaced her own address with her sister's, and the
-         * next thing the till prefilled was wrong. It is now the address of the last order only
-         * where the customer has no book of their own yet; once they have saved addresses, that
-         * book is the record and this single field stops being rewritten behind them.
-         */
-        const hasBook = await tx.customerAddress.count({
-          where: { clientId, customerId: mine.id, deletedAt: null }
-        });
-        if (hasBook === 0) {
-          await tx.customer.update({ where: { id: mine.id }, data: { shippingAddress: fullAddress } });
-        }
-      } else {
-        customerId = (await tx.customer.create({
-          data: {
-            clientId,
-            customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any),
-            name, email, phone: phone.value, shippingAddress: fullAddress,
-            // The shop has their name, number and address: a person it can find again.
-            customerType: 'REGISTERED', status: 'ACTIVE'
-          },
-          select: { id: true }
-        })).id;
+      if (hasBook === 0) {
+        await tx.customer.update({ where: { id: mine.id }, data: { shippingAddress: p.fullAddress } });
       }
     } else {
-      /*
-       * Unproved, so the shop's own rule for somebody arriving from outside: the number is kept on
-       * the customer only when it belongs to nobody else. A number typed at a checkout is not proof
-       * of who they are, and matching on it would put a stranger's order on a regular's page.
-       */
-      const resolvedPhone = await phoneForOutsideCustomer(tx as any, clientId, phone.value);
-      phoneOnOrder = resolvedPhone.onOrder ?? phone.value;
       customerId = (await tx.customer.create({
         data: {
           clientId,
           customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any),
-          name, email, phone: resolvedPhone.onCustomer, shippingAddress: fullAddress,
+          name: p.name, email: p.email, phone: p.phone, shippingAddress: p.fullAddress,
+          // The shop has their name, number and address: a person it can find again.
           customerType: 'REGISTERED', status: 'ACTIVE'
         },
         select: { id: true }
       })).id;
     }
-
-    const order: any = await salesOrderService.writeFullOrderInTransaction(
-      tx, clientId, locationId,
-      {
-        customer: { id: customerId, name, phone: phoneOnOrder, shippingAddress: fullAddress },
-        externalOrderId: placementKey,
-        sourceSystem: SHOP_SOURCE,
-        status: 'CONFIRMED',
-        quoteId: quote.quoteId,
-        quoteHash: fingerprint(quoteReq as any),
-        shippingAmount: bag.delivery,
-        items: items.map(i => ({ variantId: i.variantId, quantity: i.quantity }))
-      },
-      'ONLINE',
-      null,
-      // No person rang this up, so no till limit applies and no price may be overridden: everything
-      // came from the shop's own prices and its own offers.
-      { userId: null, manualLimitPercent: null, mayOverridePrices: false, lean: true }
-    );
-
-    await tx.onlineShopOrder.create({
+  } else {
+    /*
+     * Unproved, so the shop's own rule for somebody arriving from outside: the number is kept on
+     * the customer only when it belongs to nobody else. A number typed at a checkout is not proof
+     * of who they are, and matching on it would put a stranger's order on a regular's page.
+     */
+    const resolvedPhone = await phoneForOutsideCustomer(tx as any, clientId, p.phone);
+    phoneOnOrder = resolvedPhone.onOrder ?? p.phone;
+    customerId = (await tx.customer.create({
       data: {
         clientId,
-        salesOrderId: order.id,
-        placementKey,
-        token,
-        customerPhone: phone.value,
-        phoneVerified: proved,
-        // An unproved order lets go of the shop's stock after a day; a proved one never does.
-        holdExpiresAt: proved ? null : new Date(Date.now() + UNPROVED_HOLD_MS),
-        payWay: payWay as any,
-        // Nothing is paid yet either way: on delivery the money comes later, and online it comes
-        // when the gateway says so and not a moment before.
-        paid: false
-      }
-    });
-
-    placedCustomerId = customerId;
-    return order.id as string;
-  }, { timeout: 30000, maxWait: 15000 });
-  } catch (e: any) {
-    /*
-     * TWO THINGS THAT HAPPEN TO REAL SHOPPERS AND ARE NOT CRASHES.
-     *
-     * Everything thrown out of here that is not an OnlineShopRuleError becomes
-     * "Something went wrong at the shop. Please try again." Both of the following threw exactly
-     * that, and both are ordinary: the first tells a customer to retry an order that actually
-     * succeeded, and the second tells them to retry for a piece that will never come back.
-     */
-
-    /*
-     * (a) THE SAME ORDER, TWICE, AT THE SAME MOMENT -- a double tap, or a slow line and an
-     * impatient thumb. The check at the top of `place` catches a second press that arrives after
-     * the first finished; two presses IN FLIGHT together both pass it, and the loser dies on the
-     * unique key. The order is on the shop's screen either way, so the answer to "place this
-     * order" is the same as it is anywhere else here: the order.
-     *
-     * Read by the key rather than by the error code on purpose -- whatever went wrong locally, a
-     * row under this key means the order is written, and that is what the customer needs to see.
-     */
-    const placed = await prisma.onlineShopOrder.findUnique({
-      where: { clientId_placementKey: { clientId, placementKey } },
-      select: { token: true }
-    }).catch(() => null);
-    if (placed) return summary(clientId, placed.token);
-
-    /*
-     * (b) SOMEBODY ELSE TOOK IT WHILE THIS ONE WAS BEING WRITTEN. The bag was priced against stock
-     * read before the transaction; the hold is taken inside it, under a row lock. Between the two,
-     * the last piece can go -- which is not a fault, it is a shop with one of something and two
-     * people who want it. `reserveStock` says so in the shop's own words ("Insufficient stock:
-     * only 0 of ... free at ..."), which is written for a cashier standing at a till, not for a
-     * stranger on a phone who has just typed out their address.
-     */
-    const outOfStock = e?.details?.code === 'OUT_OF_STOCK'
-      || (e?.statusCode === 409 && /insufficient stock/i.test(String(e?.message ?? '')));
-    if (outOfStock) {
-      const gone = items.find(i => i.variantId === e?.details?.variantId);
-      throw new OnlineShopRuleError(
-        gone
-          ? `${describePiece(gone)} has just been bought by someone else. ` +
-            'Take it out of your bag, or ask for fewer.'
-          : 'Something in your bag has just been bought by someone else. Refresh the page and try again.'
-      );
-    }
-
-    throw e;
+        customerCode: await generateSequentialCode(clientId, 'CUS', 'CUSTOMER', tx as any),
+        name: p.name, email: p.email, phone: resolvedPhone.onCustomer, shippingAddress: p.fullAddress,
+        customerType: 'REGISTERED', status: 'ACTIVE'
+      },
+      select: { id: true }
+    })).id;
   }
 
+  const order: any = await salesOrderService.writeFullOrderInTransaction(
+    tx, clientId, p.locationId,
+    {
+      customer: { id: customerId, name: p.name, phone: phoneOnOrder, shippingAddress: p.fullAddress },
+      externalOrderId: p.placementKey,
+      sourceSystem: SHOP_SOURCE,
+      status: 'CONFIRMED',
+      quoteId: p.quoteId,
+      quoteHash: fingerprint(p.quoteReq as any),
+      /*
+       * The codes the price was worked out with. Without them the order's own fingerprint of the
+       * basket left the codes out, never matched the quote's, and every order with a code was
+       * refused as "the basket has changed since that price was quoted".
+       */
+      couponCodes: p.couponCodes,
+      shippingAmount: p.delivery,
+      items: p.items.map(i => ({ variantId: i.variantId, quantity: i.quantity }))
+    },
+    'ONLINE',
+    null,
+    // No person rang this up, so no till limit applies and no price may be overridden: everything
+    // came from the shop's own prices and its own offers.
+    { userId: null, manualLimitPercent: null, mayOverridePrices: false, lean: true }
+  );
 
-  // Only once the order is really there. Inside the transaction these could tell a customer and a
-  // shop about an order that then failed to save.
+  await tx.onlineShopOrder.create({
+    data: {
+      clientId,
+      salesOrderId: order.id,
+      placementKey: p.placementKey,
+      token: extra.token,
+      customerPhone: p.phone,
+      phoneVerified: p.proved,
+      holdExpiresAt: extra.holdExpiresAt,
+      payWay: p.payWay as any,
+      paid: extra.paid,
+      gatewayOrderId: extra.gatewayOrderId ?? null,
+      gatewayPaymentId: extra.gatewayPaymentId ?? null
+    }
+  });
+
+  return { salesOrderId: order.id as string, customerId };
+}
+
+/**
+ * SOMEBODY ELSE TOOK IT WHILE THIS ONE WAS BEING WRITTEN, said to the shopper.
+ *
+ * The bag was priced against stock read before the transaction; the hold is taken inside it, under
+ * a row lock. Between the two, the last piece can go -- which is not a fault, it is a shop with one
+ * of something and two people who want it. `reserveStock` says so in the shop's own words
+ * ("Insufficient stock: only 0 of ... free at ..."), which is written for a cashier standing at a
+ * till, not for a stranger on a phone who has just typed out their address. Null when `e` is not
+ * that.
+ */
+export function goneMessage(e: any, items: OrderInput['items']): string | null {
+  const outOfStock = e?.details?.code === 'OUT_OF_STOCK'
+    || (e?.statusCode === 409 && /insufficient stock/i.test(String(e?.message ?? '')));
+  if (!outOfStock) return null;
+  const gone = items.find(i => i.variantId === e?.details?.variantId);
+  return gone
+    ? `${describePiece(gone as any)} has just been bought by someone else. Take it out of your bag, or ask for fewer.`
+    : 'Something in your bag has just been bought by someone else. Refresh the page and try again.';
+}
+
+/** Tell everybody once the order is really there -- never from inside a transaction that could still fail. */
+export function announcePlaced(clientId: string, token: string, salesOrderId: string, customerId: string | null, p: OrderInput) {
   afterCommit(() => {
     // Three separate promises on purpose: WhatsApp being refused to somebody who said STOP must
     // not stop their email, and neither must stop the shop being told.
@@ -629,13 +667,78 @@ export async function place(clientId: string, input: PlaceInput) {
      * proof of who they are, and building a book on that would put one person's address in
      * another person's account.
      */
-    if (proved && placedCustomerId) {
-      void rememberAddress(clientId, placedCustomerId, {
-        name, phone: phone.value, line: address, pincode
+    if (p.proved && customerId) {
+      void rememberAddress(clientId, customerId, {
+        name: p.name, phone: p.phone, line: p.address, pincode: p.pincode
       });
     }
   });
+}
 
+/**
+ * Place an order to be paid on delivery.
+ *
+ * ONE TRANSACTION, the same shape the counter sale uses: the customer, the price, and the order
+ * with its stock held are all of them or none. A dropped connection halfway through must not leave
+ * a shop holding stock for an order nobody has.
+ *
+ * Paying online does NOT come here: it goes through payments/online-payment.service, which holds
+ * the stock while the customer pays and writes the order -- with writeOrderInTx, like this -- only
+ * once the money is confirmed.
+ */
+export async function place(clientId: string, input: PlaceInput) {
+  const { shop, placementKey } = await checkoutGate(clientId, input);
+
+  // Already placed: the answer to "place this order" when it is already placed is the order.
+  const already = await prisma.onlineShopOrder.findUnique({
+    where: { clientId_placementKey: { clientId, placementKey } }
+  });
+  if (already) return summary(clientId, already.token);
+
+  if (String(input.payWay ?? '').toUpperCase() === 'ONLINE') {
+    throw new OnlineShopRuleError('Paying online opens the payment page first. Refresh the page and press Pay again.');
+  }
+
+  const p = await prepareCheckout(clientId, shop, placementKey, input);
+  const token = crypto.randomBytes(24).toString('base64url');
+
+  let written: { salesOrderId: string; customerId: string };
+  try {
+    written = await prisma.$transaction(
+      (tx) => writeOrderInTx(tx, clientId, p, {
+        token,
+        paid: false,
+        // An unproved order lets go of the shop's stock after a day; a proved one never does.
+        holdExpiresAt: p.proved ? null : new Date(Date.now() + UNPROVED_HOLD_MS)
+      }),
+      { timeout: 30000, maxWait: 15000 }
+    );
+  } catch (e: any) {
+    /*
+     * TWO THINGS THAT HAPPEN TO REAL SHOPPERS AND ARE NOT CRASHES.
+     *
+     * (a) THE SAME ORDER, TWICE, AT THE SAME MOMENT -- a double tap, or a slow line and an
+     * impatient thumb. The check at the top catches a second press that arrives after the first
+     * finished; two presses IN FLIGHT together both pass it, and the loser dies on the unique key.
+     * The order is on the shop's screen either way, so the answer is the order.
+     *
+     * Read by the key rather than by the error code on purpose -- whatever went wrong locally, a
+     * row under this key means the order is written, and that is what the customer needs to see.
+     */
+    const placed = await prisma.onlineShopOrder.findUnique({
+      where: { clientId_placementKey: { clientId, placementKey } },
+      select: { token: true }
+    }).catch(() => null);
+    if (placed) return summary(clientId, placed.token);
+
+    // (b) somebody else took the last piece while this one was being written.
+    const gone = goneMessage(e, p.items);
+    if (gone) throw new OnlineShopRuleError(gone);
+
+    throw e;
+  }
+
+  announcePlaced(clientId, token, written.salesOrderId, written.customerId, p);
   return summary(clientId, token);
 }
 

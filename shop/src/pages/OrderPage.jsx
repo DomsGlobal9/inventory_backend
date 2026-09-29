@@ -72,7 +72,15 @@ export default function OrderPage({ shop }) {
   const o = state.order;
   if (!o) return <Say title="That order could not be found" />;
 
-  const said = STATES[o.state] ?? STATES.PLACED;
+  /*
+   * "Nothing is owed" is the right thing to say about a cancelled order paid on delivery, and the
+   * wrong thing entirely to somebody who paid online -- they are owed their money, and it is being
+   * returned automatically. Said plainly, so they do not ring the shop to ask.
+   */
+  const refunding = o.state === 'CANCELLED' && o.paid && o.payWay === 'ONLINE';
+  const said = refunding
+    ? { title: 'This order was cancelled', note: 'Your payment is being refunded to how you paid. Banks usually take 5–7 working days to show it.' }
+    : (STATES[o.state] ?? STATES.PLACED);
   const ask = askOnWhatsApp(shop?.whatsapp, shop?.name, null);
   const when = new Date(o.placedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -148,8 +156,8 @@ export default function OrderPage({ shop }) {
           {/* The line a customer opens this page to read. */}
           <div className="due">
             <span>
-              {o.paid ? 'Paid in full' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
-              <span>{o.paid ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash or UPI when it arrives' : ''}</span>
+              {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
+              <span>{refunding ? 'Going back to how you paid' : o.paid ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash or UPI when it arrives' : ''}</span>
             </span>
             <b>{money(o.total)}</b>
           </div>
@@ -177,7 +185,12 @@ export default function OrderPage({ shop }) {
           {o.mayCancel && (
             calling === 'asking' ? (
               <div className="callingoff">
-                <p>Cancel {o.orderNumber}? The shop puts everything back and nothing is owed.</p>
+                <p>
+                  {/* Paid online, the customer IS owed something: their money, and they should know it comes back by itself. */}
+                  {o.paid && o.payWay === 'ONLINE'
+                    ? `Cancel ${o.orderNumber}? Your ${money(o.total)} goes back to how you paid, by itself — banks usually take 5–7 working days to show it.`
+                    : `Cancel ${o.orderNumber}? The shop puts everything back and nothing is owed.`}
+                </p>
                 {refused ? <p className="refused">{refused}</p> : null}
                 <div className="row">
                   <button type="button" className="go quiet" onClick={() => { setCalling('no'); setRefused(null); }}>

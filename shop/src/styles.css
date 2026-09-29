@@ -2110,3 +2110,17 @@ body { overflow-x: hidden; }
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: reduce) {
   .swipe > figure > img { transition: none; }
 }
+
+/* ── The payment page: waiting for the shop to confirm, then on to the order. ── */
+.paypage { max-width: 520px; margin: 0 auto; padding-bottom: 40px; }
+.paypage .landed p + p { margin-top: 10px; }
+.paypage .spin {
+  width: 34px; height: 34px; margin: 0 auto 14px; border-radius: 50%;
+  border: 3px solid var(--line, #e5e5e5); border-top-color: var(--accent, #222);
+  animation: payspin .9s linear infinite;
+}
+@keyframes payspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .paypage .spin { animation-duration: 3s; } }
+.payacts { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 6px; }
+.payacts .go { display: inline-flex; }
+.paynote { text-align: center; color: var(--faint); font-size: 12.5px; margin: 18px 16px 0; }

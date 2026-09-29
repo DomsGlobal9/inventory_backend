@@ -184,8 +184,15 @@ router.use((_req, res, next) => {
     "img-src 'self' data: https:",
     // The app styles components inline, as the rest of this codebase does.
     "style-src 'self' 'unsafe-inline'",
-    "script-src 'self'",
-    "connect-src 'self'",
+    /*
+     * Razorpay's checkout, and nothing wider. Its script comes from checkout.razorpay.com and the
+     * payment form itself runs in a frame from api.razorpay.com -- which is the point: card numbers
+     * and UPI PINs are typed into Razorpay's page, never ours (rule P3). Without these the Pay
+     * button loaded nothing and did nothing. lumberjack is Razorpay's own error reporting.
+     */
+    "script-src 'self' https://checkout.razorpay.com",
+    "frame-src https://api.razorpay.com https://checkout.razorpay.com",
+    "connect-src 'self' https://api.razorpay.com https://lumberjack.razorpay.com",
     "form-action 'none'",
     "frame-ancestors 'none'",
     "base-uri 'self'"

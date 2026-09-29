@@ -68,6 +68,22 @@ export interface GatewayPayment {
   failReason: string | null;
 }
 
+/** One payment as the gateway itself reports it -- asked for with the shop's keys, server to server. */
+export interface GatewayPaymentDetail extends GatewayPayment {
+  gatewayOrderId: string | null;
+  currency: string;
+  /** upi, card, netbanking, wallet, emi... */
+  method: string | null;
+}
+
+export interface GatewayRefund {
+  refundId: string;
+  status: RefundResult['status'];
+  amountPaise: number;
+  /** What we wrote on it when we asked -- how a refund we lost the answer to is found again. */
+  ref: string | null;
+}
+
 export interface GatewayCheck {
   ok: boolean;
   mode: GatewayMode;
@@ -89,11 +105,24 @@ export interface PaymentGateway {
   verifyWebhook(rawBody: Buffer | string, signature: string | undefined): boolean;
   parseWebhook(rawBody: Buffer | string, headers: Record<string, string | string[] | undefined>): WebhookEvent;
 
-  /** Always an explicit amount -- returning one saree of three is a partial refund (rule P7). */
-  refund(paymentId: string, amountPaise: number, reason: string): Promise<RefundResult>;
+  /**
+   * Always an explicit amount -- returning one saree of three is a partial refund (rule P7).
+   * `ref` is written onto the refund at the gateway, so one whose answer was lost to a timeout can
+   * be found again instead of being asked for twice.
+   */
+  refund(paymentId: string, amountPaise: number, reason: string, ref?: string): Promise<RefundResult>;
 
   /** For the sweeper: what the gateway knows about an order whose webhook never came. */
   paymentsForOrder(gatewayOrderId: string): Promise<GatewayPayment[]>;
+
+  /** One payment, asked of the gateway directly. The browser's word is never taken for any of it. */
+  fetchPayment(paymentId: string): Promise<GatewayPaymentDetail>;
+
+  /** For an account set to capture by hand: take the money that was authorised. */
+  capture(paymentId: string, amountPaise: number): Promise<GatewayPaymentDetail>;
+
+  /** Every refund already made against a payment. */
+  refundsForPayment(paymentId: string): Promise<GatewayRefund[]>;
 
   /** "Check it works" on the keys screen. */
   check(): Promise<GatewayCheck>;

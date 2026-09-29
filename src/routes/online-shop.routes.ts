@@ -4,6 +4,8 @@ import { requirePermission } from '../middleware/permission.middleware';
 import { holdsEverything } from '../config/permissions';
 import { paymentAccounts } from '../services/payments/account.service';
 import { GatewayError } from '../services/payments/gateway';
+import * as onlinePayments from '../services/payments/online-payment.service';
+import { requirePermission as can } from '../middleware/permission.middleware';
 
 /**
  * Settings -> Online shop: the owner's side. The shopper's side is shop-public.routes.ts, which is
@@ -102,6 +104,17 @@ router.put('/payments', ownerOnly, paying(req => paymentAccounts.save(clientId(r
 router.post('/payments/check', paying(req => paymentAccounts.check(clientId(req), apiBase(req))));
 router.post('/payments/webhook-secret', ownerOnly, handle(req => paymentAccounts.newWebhookSecret(clientId(req), apiBase(req))));
 router.delete('/payments', ownerOnly, handle(req => paymentAccounts.remove(clientId(req), apiBase(req))));
+
+/** What has been paid online lately, and what has gone back. */
+router.get('/payments/activity', handle(req => onlinePayments.activity(clientId(req), Number(req.query.limit) || 30)));
+
+/**
+ * Money back to a customer who paid online -- all of it or part, e.g. for a return. Needs the
+ * permission the till uses to pay money back. The money can only ever go back to the card or UPI
+ * it came from; there is no way to send it anywhere else.
+ */
+router.post('/payments/refund', can('return:counter'), paying(req =>
+  onlinePayments.refundByOwner(clientId(req), userId(req), req.body ?? {})));
 
 router.get('/banners', handle(req => shopBanners.listFor(clientId(req))));
 router.post('/banners', handle(req => shopBanners.add(clientId(req), userId(req), req.body ?? {})));

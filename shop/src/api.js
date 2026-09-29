@@ -112,6 +112,27 @@ export const cancelOrder = (slug, token, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/orders/${encodeURIComponent(token)}/cancel`, { ...opts, send: {} });
 
 /*
+ * ── Paying online ─────────────────────────────────────────────────────────────────────────
+ *
+ * Pay: the shop checks and prices the bag, sets the pieces aside and answers with what Razorpay's
+ * checkout needs -- or, if this bag is already paid for, with the order. The amount is the shop's;
+ * nothing this page sends can change it.
+ *
+ * Confirm: Razorpay's "paid" handback, passed straight on. It is only the shop's cue to ask
+ * Razorpay itself; this page never decides that anything was paid.
+ *
+ * Status: what the payment page shows while it waits, by the payment's own link.
+ */
+export const startPayment = (slug, order, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/pay`, { ...opts, send: order });
+
+export const confirmPayment = (slug, token, handback, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/pay/${encodeURIComponent(token)}/confirm`, { ...opts, send: handback });
+
+export const paymentStatus = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/pay/${encodeURIComponent(token)}`, opts);
+
+/*
  * Proving the number typed at the checkout belongs to whoever typed it.
  *
  * The page never decides this. It asks for a code and sends back what was typed; whether the

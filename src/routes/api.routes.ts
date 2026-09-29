@@ -34,6 +34,7 @@ import inventoryTransferRoutes from './inventory-transfer.routes';
 import inventoryAlertRoutes from './inventory-alert.routes';
 import internalRoutes from './internal.routes';
 import linksApiRoutes from './links-api.routes';
+import paymentWebhookRoutes from './payment-webhooks.routes';
 import { platformAdminAuthRoutes, platformAdminConsoleRoutes } from './platform-admin.routes';
 import leadRoutes from './lead.routes';
 import storefrontPublicRoutes from './storefront-public.routes';
@@ -106,6 +107,10 @@ router.use('/public/tryon', shopperTryOnPublicRoutes);
 // Delivery ticks and account changes from the ScaleEzy WhatsApp Service. Ahead of the gate: the
 // service has no session, and proves itself with a signature checked before anything is read.
 router.post('/whatsapp/events', whatsappEvents);
+
+// Payment confirmations from the shops' own Razorpay accounts. Ahead of the gate: Razorpay's servers
+// carry no session. Each delivery is checked against the signature of the shop its address names.
+router.use('/payments/webhooks', paymentWebhookRoutes);
 
 // Short links for other ScaleEzy services. Ahead of the gate: the caller is a service with a signed
 // token naming the shop, checked before anything is read (verifyServiceToken).
