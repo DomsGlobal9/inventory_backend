@@ -102,8 +102,6 @@ router.use('/shopify', shopifyPublicRoutes);
 // caller on this service, so it is also the most tightly limited. It reads only what is
 // already printed on the tag, and the shop's gateway key never leaves the server.
 router.use('/public/tryon', shopperTryOnPublicRoutes);
-// Try-on at the counter: signed in, the shop's own staff, the shop's own allowance.
-router.use('/tryon', tryOnCounterRoutes);
 
 // Delivery ticks and account changes from the ScaleEzy WhatsApp Service. Ahead of the gate: the
 // service has no session, and proves itself with a signature checked before anything is read.
@@ -144,6 +142,21 @@ router.use('/dashboard', hideCost, dashboardRoutes);
 router.use('/branding', brandingRoutes);
 router.use('/catalog', hideCost, catalogRoutes);
 router.use('/catalog-tryon', catalogTryOnRoutes);
+
+/*
+ * Try-on at the counter: signed in, the shop's own staff, the shop's own allowance.
+ *
+ * BELOW the authentication gate, which is where it always meant to be -- its own file says
+ * "SIGNED IN, and behind product:view". It was mounted above, next to the public shopper route
+ * it is named after, so `authenticate` never ran for it and requirePermission found no user at
+ * all. Every counter try-on answered "Unauthorized: User context missing", and because a 401
+ * anywhere in this app clears the session, pressing the button signed the shopkeeper out of
+ * their own till.
+ *
+ * The public one is /public/tryon, above the gate on purpose: that caller is a customer holding
+ * a tag, with no account and no reason to make one. This one is staff, and must be gated.
+ */
+router.use('/tryon', tryOnCounterRoutes);
 // Sets of photographs being made on this side, so the shop does not have to sit and watch.
 router.use('/photo-jobs', photoJobsRoutes);
 router.use('/search', hideCost, searchRoutes);
