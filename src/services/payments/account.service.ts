@@ -33,15 +33,18 @@ export const webhookPath = (token: string) => `/api/v1/payments/webhooks/razorpa
 const newSecret = (bytes: number) => crypto.randomBytes(bytes).toString('base64url');
 
 /**
- * Whether TEST keys may take (pretend) money here.
+ * Whether TEST keys may take (pretend) money on this deployment.
  *
- * Never in production, whatever the flag says. A Razorpay test payment is a real CAPTURED payment
- * as far as the API is concerned -- it just involves no money -- so a shop running on test keys in
- * front of real customers would ship real sarees against pretend payments, marked paid. Test keys
- * are for a developer's machine and nothing else, and only when asked for explicitly.
+ * Off unless whoever runs the server sets PAYMENTS_ALLOW_TEST_KEYS=true, because a Razorpay test
+ * payment is a real CAPTURED payment as far as the API is concerned -- it just involves no money.
+ * A shop left on test keys in front of real customers would ship real sarees against pretend
+ * payments, marked paid, and the Day Book would count money that never arrived.
+ *
+ * It used to refuse in production whatever the flag said, which also left a shop with no way to
+ * try the checkout before its Live keys arrive. The decision now belongs to the operator, who is
+ * the only one who can weigh it: one switch, off by default, for the whole deployment.
  */
-export const testKeysAllowed = () =>
-  process.env.NODE_ENV !== 'production' && process.env.PAYMENTS_ALLOW_TEST_KEYS === 'true';
+export const testKeysAllowed = () => process.env.PAYMENTS_ALLOW_TEST_KEYS === 'true';
 
 /**
  * A shop whose account could be in the middle of moving money: a customer paying right now, or a
@@ -254,7 +257,11 @@ export class PaymentAccountService {
       return { ready: false, why: 'Your Razorpay keys are not working. Check them in Settings → Online shop → Payments.' };
     }
     if (!isReady(row)) {
-      return { ready: false, why: 'These are Razorpay TEST keys, which cannot take real money. Connect your LIVE keys to take payments.' };
+      return {
+        ready: false,
+        why: 'These are Razorpay TEST keys, which cannot take real money. Connect your LIVE keys to take payments.'
+          + ' (To try the checkout with test keys first, ask us to switch test mode on for your shop.)'
+      };
     }
     return { ready: true, why: null };
   }

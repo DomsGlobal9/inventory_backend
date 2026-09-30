@@ -230,6 +230,17 @@ const envSchema = z.object({
   POS_QUEUE_IN_DEV: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
   POS_QUEUE_ONLY_CLIENTS: optionalStr(z.string()),
   /*
+   * Lets a shop on Razorpay TEST keys offer "Online" at its checkout, so the whole flow can be
+   * tried before Live keys arrive. Read straight from process.env in payments/account.service.
+   *
+   * OFF unless set, and it applies to the WHOLE deployment, not one shop: a test payment is a real
+   * captured payment to the API with no money behind it, so any shop left on test keys would show
+   * orders as paid, and the Day Book would count money that never came. Turn it off once a real
+   * shop is selling.
+   */
+  PAYMENTS_ALLOW_TEST_KEYS: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
+
+  /*
    * The online-payment sweeper: lapsed stock holds, payments whose webhook never came, refunds
    * whose answer was lost. It lets go of real customers' holds and asks real shops' Razorpay
    * accounts for refunds, so a development machine -- which shares the production database -- runs

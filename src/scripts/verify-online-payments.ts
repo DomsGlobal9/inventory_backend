@@ -225,7 +225,7 @@ async function main() {
       const again = await paymentAccounts.save(A, 'user-1', TEST, BASE);
       check('replacing the keys keeps the webhook address and secret (nothing to re-paste in Razorpay)',
         again.webhookSecret === null && again.account.webhookUrl === url && again.account.mode === 'TEST' &&
-        // TEST keys take customers only on a developer's machine that asks for it -- never in production.
+        // TEST keys take customers only where the operator switched PAYMENTS_ALLOW_TEST_KEYS on.
         again.account.readyForCustomers === testKeysAllowed());
 
       const gw = await paymentAccounts.gatewayFor(A);
