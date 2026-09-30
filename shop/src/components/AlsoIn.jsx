@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getProducts, money } from '../api';
 
@@ -12,8 +12,16 @@ import { getProducts, money } from '../api';
  * Asked for the same category first, and if the shop sells only one kind of thing that is simply
  * the rest of the shop, which is the right answer for a saree shop with sixty sarees.
  */
-export default function AlsoIn({ slug, product, shop }) {
+export default function AlsoIn({ slug, product, shop, onRows }) {
   const [rows, setRows] = useState(null);
+  const reel = useRef(null);
+  /* Tell the page what this row holds, so the grid further down does not repeat it. */
+  useEffect(() => { if (rows) onRows?.(rows); }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+  /* On a laptop there is no thumb to swipe with: most of a row per press. */
+  const slide = (dir) => {
+    const el = reel.current;
+    if (el) el.scrollBy({ left: dir * el.clientWidth * 0.85, behavior: 'smooth' });
+  };
 
   const dressType = product?.dressType ?? '';
   const category = product?.category ?? '';
@@ -55,10 +63,14 @@ export default function AlsoIn({ slug, product, shop }) {
     <section className="alsoin">
       <div className="head">
         <h2>{what}</h2>
-        <Link to={narrow && dressType ? `/${slug}?dressType=${encodeURIComponent(dressType)}` : `/${slug}`}>See all</Link>
+        <span className="ends">
+          <button type="button" className="nudge" aria-label="Scroll back" onClick={() => slide(-1)}>‹</button>
+          <button type="button" className="nudge" aria-label="Scroll on" onClick={() => slide(1)}>›</button>
+          <Link to={narrow && dressType ? `/${slug}?dressType=${encodeURIComponent(dressType)}` : `/${slug}`}>See all</Link>
+        </span>
       </div>
 
-      <div className="reel">
+      <div className="reel" ref={reel}>
         {rows === null
           ? Array.from({ length: 4 }, (_, i) => (
             <div key={i} className="small">

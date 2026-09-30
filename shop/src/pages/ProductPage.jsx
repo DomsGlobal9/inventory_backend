@@ -9,7 +9,7 @@ import { Problem, Say } from '../components/States';
    file reader and a whole sheet with it. */
 const TryOn = lazy(() => import('../components/TryOn'));
 import { Ticked } from '../components/Motion';
-import AlsoIn from '../components/AlsoIn';
+import MoreToExplore from '../components/MoreToExplore';
 
 /**
  * One piece: its photographs, the colours and sizes it comes in, and the way to buy it.
@@ -614,8 +614,9 @@ export default function ProductPage({ slug, shop }) {
         </div>
       </div>
 
-      {/* The page carries on being a shop rather than stopping at the description. */}
-      <AlsoIn slug={slug} product={p} shop={shop} />
+      {/* The page carries on being a shop rather than stopping at the description: an offer, more
+          like this, other fabrics and budgets, what they looked at before, then the rest of it. */}
+      <MoreToExplore slug={slug} product={p} shop={shop} />
 
       {trying ? (
         <Suspense fallback={null}>

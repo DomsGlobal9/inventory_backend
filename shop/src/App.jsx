@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, useParams, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useParams, Navigate, useLocation, useNavigationType } from 'react-router-dom';
 import { getShop } from './api';
 import ShopHome from './pages/ShopHome';
 import ProductPage from './pages/ProductPage';
@@ -35,6 +35,15 @@ function Shop({ page }) {
   const { slug } = useParams();
   const [state, setState] = useState({ loading: true, error: null, shop: null });
   const [nonce, setNonce] = useState(0);
+
+  /*
+   * A new page starts at the top. The browser keeps the scroll position across an in-app link, so
+   * tapping a fabric or a price chip far down a product page opened the shop already 900px down,
+   * past its own filters. Back (POP) is left alone: returning to where you were is the point of it.
+   */
+  const { pathname } = useLocation();
+  const how = useNavigationType();
+  useEffect(() => { if (how !== 'POP') window.scrollTo(0, 0); }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const ac = new AbortController();
