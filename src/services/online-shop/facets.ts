@@ -101,6 +101,21 @@ export async function facetsFor(
     prisma.product.count({ where })
   ]);
 
+  /*
+   * ...and the products' own prices, which the comment above always promised and the code never
+   * did. Most pieces carry no variant price of their own, so on Swathy Reddy Designer Studio (36
+   * sarees priced from ₹23 up to ₹29,500) the range came out as "₹29,500 to ₹29,500" -- the one variant
+   * that had a price. It matters twice over: the price filter itself works on basePrice, so a range
+   * read only from variants offered figures the filter then disagreed with.
+   */
+  const base = await prisma.product.aggregate({
+    where: { ...where, basePrice: { gt: 0 } },
+    _min: { basePrice: true },
+    _max: { basePrice: true }
+  });
+  const lows = [span._min.sellingPrice, base._min.basePrice].filter(v => v != null).map(Number);
+  const highs = [span._max.sellingPrice, base._max.basePrice].filter(v => v != null).map(Number);
+
   const value: Facets = {
     categories: rank(byCategory.map(r => ({ value: String(r.category), count: r._count._all })))
       .map(r => ({ ...r, label: label(r.value) })),
@@ -108,13 +123,13 @@ export async function facetsFor(
     fabrics: rank(byFabric.map(r => ({ value: String(r.fabric), count: r._count._all }))),
     crafts: rank(byCraft.map(r => ({ value: String(r.craft), count: r._count._all }))),
     brands: rank(byBrand.map(r => ({ value: String(r.brand), count: r._count._all }))),
-    price: span._min.sellingPrice === null || span._max.sellingPrice === null
+    price: !lows.length || !highs.length
       ? null
       : {
         // Rounded outwards to round figures, because "₹980 to ₹11,200" on a slider reads like a
         // mistake where "₹900 to ₹11,500" reads like a range.
-        min: Math.floor(Number(span._min.sellingPrice) / 100) * 100,
-        max: Math.ceil(Number(span._max.sellingPrice) / 100) * 100
+        min: Math.floor(Math.min(...lows) / 100) * 100,
+        max: Math.ceil(Math.max(...highs) / 100) * 100
       },
     total
   };

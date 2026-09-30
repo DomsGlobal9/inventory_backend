@@ -909,7 +909,7 @@ button.slide { cursor: pointer; }
 /* More of the shop, swiped, under the piece. */
 .alsoin { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 24px; padding-bottom: 34px; }
 .alsoin .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-.alsoin h2 { font-size: 16px; margin: 0; letter-spacing: -.02em; }
+.alsoin .head h2 { font-size: 16px; margin: 0; letter-spacing: -.02em; }
 .alsoin .head a { font-size: 12.5px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
 .reel {
   display: flex; gap: 11px; overflow-x: auto; padding-bottom: 4px;
@@ -1712,8 +1712,8 @@ button.slide { cursor: pointer; }
 /* ── A quiet rule, where a section change needs saying ───────────────────────────────── */
 
 .alsoin { border-top-color: color-mix(in srgb, var(--line) 80%, transparent); }
-.alsoin h2 { font-size: 19px; }
-@media (min-width: 880px) { .alsoin h2 { font-size: 22px; } }
+.alsoin .head h2 { font-size: 19px; }  /* the heading only: a bare h2 also caught the grid tiles' names */
+@media (min-width: 880px) { .alsoin .head h2 { font-size: 22px; } }
 
 @media (prefers-reduced-motion: reduce) {
   .tile .shot, .shot[data-state], .go, .pill, .opt { transition: none !important; }
@@ -2200,3 +2200,23 @@ body { overflow-x: hidden; }
 
 /* The endless grid sits under a heading like the rows above it. */
 .alsoin.endless .grid { padding-bottom: 6px; }
+
+/* ── Things that arrive late: a breathing shape, never a gap ─────────────────────────── */
+
+/* A photograph on its way breathes like every other placeholder, then fades up (.shot above). */
+.shot[data-state='waiting'] { animation: breathe 1.5s ease-in-out infinite; }
+/* The banner under a product, grey until its picture is in. */
+.promo.waiting { animation: breathe 1.5s ease-in-out infinite; }
+.promo.waiting .over { visibility: hidden; }
+/* A section's heading, as a bar, while the section is still to come. */
+.alsoin .head .bone.line { display: block; width: 190px; height: 20px; border-radius: 6px; }
+/* Fabric circles waiting for their photograph, and the photograph fading in once it lands. */
+.shopby .face.bone { border-color: transparent; border-radius: 50%; }
+.shopby .face img { opacity: 0; transition: opacity .2s ease; }
+.shopby .face img[data-in='true'] { opacity: 1; }
+/* Price chips' shapes while they are asked whether they lead anywhere. */
+.shopby .bands .chipbone { display: inline-block; width: 128px; height: 38px; border-radius: 999px; }
+@media (prefers-reduced-motion: reduce) {
+  .shot[data-state='waiting'], .promo.waiting { animation: none; }
+  .shopby .face img { transition: none; }
+}

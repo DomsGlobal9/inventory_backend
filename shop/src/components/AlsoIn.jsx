@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getProducts, money } from '../api';
+import Shot from './Shot';
 
 /**
  * More of the shop, under the piece being looked at.
@@ -51,7 +52,9 @@ export default function AlsoIn({ slug, product, shop, onRows }) {
         setNarrow(false);
         setRows(mine(wider).slice(0, 10));
       })
-      .catch(() => setRows([]));
+      // A request cancelled because the shopper moved to another piece is not "nothing to show":
+      // treating it so hid the whole row, placeholders and all, until the next piece's answer came.
+      .catch(e => { if (e?.name !== 'AbortError') setRows([]); });
     return () => ac.abort();
   }, [slug, dressType, category, product?.productCode]);
 
@@ -85,10 +88,10 @@ export default function AlsoIn({ slug, product, shop, onRows }) {
             return (
               <Link key={p.productCode} className={`small${sellable ? '' : ' gone'}`}
                 to={`/${slug}/p/${encodeURIComponent(p.productCode)}`}>
-                <div className="shot">
-                  {photo ? <img src={photo.url} alt={p.title} loading="lazy" decoding="async" /> : null}
+                {/* Shot: grey and breathing until the photograph is in, then it fades up. */}
+                <Shot src={photo?.url} alt={p.title}>
                   {!sellable ? <span className="tag out">Sold out</span> : null}
-                </div>
+                </Shot>
                 <h3>{p.title}</h3>
                 {from != null ? <p className="now">{money(from, p.variants?.[0]?.currency ?? 'INR')}</p> : null}
               </Link>

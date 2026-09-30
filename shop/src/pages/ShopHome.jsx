@@ -121,8 +121,8 @@ export default function ShopHome({ slug, shop }) {
   const total = state.data?.total ?? 0;
   const chosen = [q && ['q', `“${q}”`], category && ['category', category], fabric && ['fabric', fabric],
     craft && ['craft', craft],
-    dressType && ['dressType', dressType], maxPrice && ['maxPrice', `under ${money(maxPrice)}`],
-    minPrice && ['minPrice', `above ${money(minPrice)}`]].filter(Boolean);
+    dressType && ['dressType', dressType], maxPrice && ['maxPrice', `up to ${money(maxPrice)}`],
+    minPrice && ['minPrice', `${money(minPrice)} and up`]].filter(Boolean);
 
   /* Round figures a shopper actually thinks in, from the shop's own range. */
   const bands = facets.price
