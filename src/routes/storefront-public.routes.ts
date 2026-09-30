@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../lib/prisma';
-import { authenticateStorefront, storefrontContext, StorefrontContext } from '../middleware/storefront.middleware';
+import { authenticateStorefront, onlyWebsites, storefrontContext, StorefrontContext } from '../middleware/storefront.middleware';
 import { storefrontCatalogueService } from '../services/storefront-catalogue.service';
 import { pricingQuoteService } from '../services/pricing';
 import { respondWithError } from '../utils/respondWithError';
@@ -64,7 +64,7 @@ const quoteLimiter = rateLimit({
 });
 
 router.use(storefrontLimiter);
-router.use(authenticateStorefront);
+router.use(authenticateStorefront, onlyWebsites);
 
 /** Who am I, and what am I scoped to. The first call any integrator makes. */
 router.get('/me', async (req: Request, res: Response, next: NextFunction) => {

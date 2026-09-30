@@ -13,6 +13,7 @@
  */
 import { prisma } from '../lib/prisma';
 import { generateCredential } from '../utils/storefrontCredential';
+import { POS_BASE_URL } from '../utils/posConnection';
 
 const STOCK = 25;
 
@@ -95,7 +96,7 @@ async function main() {
   const cred = generateCredential();
   await prisma.storefrontConnection.create({
     data: {
-      clientId: CLIENT, name: 'POS end-to-end till', baseUrl: 'http://localhost:9999',
+      clientId: CLIENT, name: 'POS end-to-end till', baseUrl: POS_BASE_URL, // a till key (utils/posConnection): /pos/v1 refuses website keys
       credentialHash: cred.hash, credentialPrefix: cred.prefix,
       status: 'ACTIVE', locationIds: [location.id]
     }

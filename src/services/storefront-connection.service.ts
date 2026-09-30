@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { StorefrontConnectionStatus, StorefrontConnectionType, DeliveryStatus } from '@prisma/client';
 import { generateCredential } from '../utils/storefrontCredential';
 import { checkUrlShape, checkUrlDestination } from '../utils/storefrontUrl';
+import { WEBSITES_ONLY } from '../utils/posConnection';
 
 /**
  * The lifecycle of a merchant's storefront connection.
@@ -61,7 +62,7 @@ export class StorefrontConnectionService {
 
   async list(clientId: string) {
     return prisma.storefrontConnection.findMany({
-      where: { clientId },
+      where: { clientId, ...WEBSITES_ONLY },
       orderBy: { createdAt: 'asc' },
       select: {
         id: true, name: true, type: true, status: true, baseUrl: true,
@@ -73,7 +74,7 @@ export class StorefrontConnectionService {
 
   async get(clientId: string, id: string) {
     return prisma.storefrontConnection.findFirst({
-      where: { id, clientId },
+      where: { id, clientId, ...WEBSITES_ONLY },
       select: {
         id: true, name: true, type: true, status: true, baseUrl: true,
         credentialPrefix: true, locationIds: true,
@@ -83,7 +84,7 @@ export class StorefrontConnectionService {
   }
 
   async update(clientId: string, id: string, input: Partial<ConnectionInput>) {
-    const existing = await prisma.storefrontConnection.findFirst({ where: { id, clientId } });
+    const existing = await prisma.storefrontConnection.findFirst({ where: { id, clientId, ...WEBSITES_ONLY } });
     if (!existing) throw Object.assign(new Error('Connection not found'), { statusCode: 404 });
     if (existing.status === 'REVOKED') {
       throw Object.assign(new Error('A revoked connection cannot be edited.'), { statusCode: 400 });
@@ -220,7 +221,7 @@ export class StorefrontConnectionService {
   }
 
   private async requireOwned(clientId: string, id: string) {
-    const connection = await prisma.storefrontConnection.findFirst({ where: { id, clientId } });
+    const connection = await prisma.storefrontConnection.findFirst({ where: { id, clientId, ...WEBSITES_ONLY } });
     if (!connection) throw Object.assign(new Error('Connection not found'), { statusCode: 404 });
     return connection;
   }
@@ -249,7 +250,7 @@ export const storefrontConnectionService = new StorefrontConnectionService();
 /** Connections that should receive events right now. */
 export async function deliverableConnections(clientId: string) {
   return prisma.storefrontConnection.findMany({
-    where: { clientId, status: { in: [StorefrontConnectionStatus.ACTIVE, StorefrontConnectionStatus.PENDING_SYNC] } },
+    where: { clientId, ...WEBSITES_ONLY, status: { in: [StorefrontConnectionStatus.ACTIVE, StorefrontConnectionStatus.PENDING_SYNC] } },
     select: { id: true, status: true, locationIds: true }
   });
 }

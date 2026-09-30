@@ -45,6 +45,7 @@ import tryOnCounterRoutes from './tryon-counter.routes';
 import shopifyMerchantRoutes from './shopify-merchant.routes';
 import serviceCatalogueRoutes from './service-catalogue.routes';
 import storefrontConnectionRoutes from './storefront-connection.routes';
+import posConnectionRoutes from './pos-connection.routes';
 import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
 import dayBookRoutes from './daybook.routes';
@@ -192,6 +193,8 @@ router.use('/returns', hideCost, returnsRoutes);
 router.use('/locations', locationRoutes);
 // Managing storefront connections: the merchant's side, behind the normal session.
 router.use('/storefront-connections', storefrontConnectionRoutes);
+// Till keys for the POS, made by the owner in Settings. The till itself uses /pos/v1.
+router.use('/pos-connections', posConnectionRoutes);
 // Connecting and claiming a Shopify store. Behind the session, unlike /shopify above.
 router.use('/shopify-connect', shopifyMerchantRoutes);
 // What a merchant may see about the platform services their workspace uses. Read only, and

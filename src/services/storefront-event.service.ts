@@ -1,6 +1,7 @@
 import { Prisma, StorefrontEventType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { storefrontCatalogueService } from './storefront-catalogue.service';
+import { WEBSITES_ONLY } from '../utils/posConnection';
 
 /**
  * Raising an event, and fanning it out to every storefront that should hear it.
@@ -192,7 +193,8 @@ export class StorefrontEventService {
   ) {
     try {
       const connections = await prisma.storefrontConnection.findMany({
-        where: { clientId, status: { in: ['ACTIVE', 'PENDING_SYNC'] } },
+        // Websites only: a till has no address to send to (it asks /pos/v1 instead).
+        where: { clientId, ...WEBSITES_ONLY, status: { in: ['ACTIVE', 'PENDING_SYNC'] } },
         select: { id: true, locationIds: true }
       });
 

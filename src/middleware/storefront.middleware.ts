@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import { prefixOf, credentialMatches } from '../utils/storefrontCredential';
+import { isPosConnection } from '../utils/posConnection';
 
 /**
  * Authenticating a storefront reading the catalogue.
@@ -28,6 +29,8 @@ export interface StorefrontContext {
   locationIds: string[];
   connectionName: string;
   status: string;
+  /** A till (POS) or a website. Each may use only its own routes -- see onlyPos / onlyWebsites. */
+  kind: 'POS' | 'WEBSITE';
 }
 
 declare global {
@@ -71,7 +74,7 @@ export async function authenticateStorefront(req: Request, res: Response, next: 
     where: { credentialPrefix: prefix },
     select: {
       id: true, clientId: true, name: true, status: true,
-      credentialHash: true, locationIds: true
+      credentialHash: true, locationIds: true, baseUrl: true
     }
   });
 
@@ -102,7 +105,8 @@ export async function authenticateStorefront(req: Request, res: Response, next: 
     clientId: connection.clientId,
     locationIds: connection.locationIds,
     connectionName: connection.name,
-    status: connection.status
+    status: connection.status,
+    kind: isPosConnection(connection) ? 'POS' : 'WEBSITE'
   };
   next();
 }
@@ -114,4 +118,26 @@ export function storefrontContext(req: Request, res: Response): StorefrontContex
     return null;
   }
   return req.storefront;
+}
+
+/*
+ * A key opens only its own door.
+ *
+ * Until these existed any connection key worked everywhere: a website's key could post bills to
+ * /pos/v1, and a till's key could read the public feed. Mounted after authenticateStorefront.
+ */
+export function onlyPos(req: Request, res: Response, next: NextFunction) {
+  if (req.storefront?.kind !== 'POS') {
+    res.status(403).json({ success: false, message: 'This key is for a website, not a till. Create a till key in Inventory: Settings, POS (billing counter).' });
+    return;
+  }
+  next();
+}
+
+export function onlyWebsites(req: Request, res: Response, next: NextFunction) {
+  if (req.storefront?.kind !== 'WEBSITE') {
+    res.status(403).json({ success: false, message: 'This key is for a POS till, not a website.' });
+    return;
+  }
+  next();
 }

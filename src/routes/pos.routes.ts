@@ -16,14 +16,14 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { authenticateStorefront, storefrontContext } from '../middleware/storefront.middleware';
+import { authenticateStorefront, onlyPos, storefrontContext } from '../middleware/storefront.middleware';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
 import { checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
 import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptExchange, saleStatus } from '../services/pos/pos-queue.service';
 
 const router = Router();
 
-router.use(authenticateStorefront);
+router.use(authenticateStorefront, onlyPos);
 
 /**
  * One page of the catalogue.

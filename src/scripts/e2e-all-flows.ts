@@ -10,6 +10,7 @@
 import axios from 'axios';
 import { prisma } from '../lib/prisma';
 import { generateCredential } from '../utils/storefrontCredential';
+import { POS_BASE_URL } from '../utils/posConnection';
 
 const BASE = 'http://localhost:4006/api/v1/pos/v1';
 const CLIENT = 'verify-suites-tenant';
@@ -78,7 +79,7 @@ async function main() {
   const cred = generateCredential();
   await prisma.storefrontConnection.create({
     data: {
-      clientId: CLIENT, name: `E2E till ${STAMP}`, baseUrl: 'http://localhost:9999',
+      clientId: CLIENT, name: `E2E till ${STAMP}`, baseUrl: POS_BASE_URL, // a till key (utils/posConnection): /pos/v1 refuses website keys
       credentialHash: cred.hash, credentialPrefix: cred.prefix,
       status: 'ACTIVE', locationIds: [location.id]
     }
