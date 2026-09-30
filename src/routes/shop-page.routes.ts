@@ -247,6 +247,15 @@ export function shopHostGate(req: Request, res: Response, next: NextFunction) {
    * Nothing else on this host takes anything but a GET.
    */
   const buying = req.method === 'POST' && req.path.startsWith('/_api/shop/');
+  /*
+   * The one other POST: Razorpay confirming a payment. The shop's domain is the stable, branded
+   * address a shop can paste into Razorpay once (PUBLIC_API_URL points here), where the bare
+   * hosting address would have to be re-pasted by every shop if the API ever moved. It is the
+   * API's business, not the shop's, so it goes on down the stack -- and it is safe to open here:
+   * every call is checked against the shop's webhook secret, and a payment counts only once
+   * Razorpay's own API confirms it.
+   */
+  if (req.method === 'POST' && req.path.startsWith('/api/v1/payments/webhooks/')) return next();
   if (!buying && req.method !== 'GET' && req.method !== 'HEAD') {
     return res.status(405).type('text/plain').send('Not allowed here.');
   }

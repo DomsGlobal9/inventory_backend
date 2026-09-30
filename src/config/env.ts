@@ -63,8 +63,9 @@ const envSchema = z.object({
   // which shows up as inexplicable browser CORS errors while curl works fine.
   FRONTEND_URL: z.string().default('http://localhost:5173'),
 
-  // This API's own public address, e.g. https://api.scaleezy.com. Only used to tell a shop the
-  // webhook address to paste into Razorpay (Settings -> Online shop -> Payments). Unset, the
+  // The public address for Razorpay's webhooks, e.g. https://shop.scaleezy.com -- the shop host lets
+  // that one path through to the API (shopHostGate), so a branded, stable address can be pasted into
+  // Razorpay once. Only used to tell a shop the webhook address (Settings -> Payments). Unset, the
   // address is built from the request that asked for it -- right when the browser reaches the API
   // directly, and wrong behind a proxy that rewrites the host, which is when to set this.
   PUBLIC_API_URL: optionalStr(z.string().url("PUBLIC_API_URL must be a valid URL")),
