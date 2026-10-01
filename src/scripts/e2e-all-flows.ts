@@ -11,6 +11,28 @@ import axios from 'axios';
 import { prisma } from '../lib/prisma';
 import { generateCredential } from '../utils/storefrontCredential';
 import { POS_BASE_URL } from '../utils/posConnection';
+import { inventoryMutationService } from '../services/inventory-mutation.service';
+
+/*
+ * Stock is put on the shelf the way the app puts it there: as a recorded movement.
+ *
+ * This suite runs on the SHARED test shop and leaves its bills behind on purpose. It used to write
+ * the shelf count straight into inventory_stock (10, then 1 for the oversell, then 10 again), so
+ * the shop held units that no movement accounted for -- and the next verify-daybook read that as
+ * "calculated closing 51, measured 38" on every day since. A count set by hand is still a count
+ * somebody changed, and the books must say so.
+ */
+async function setShelf(variantId: string, locationId: string, target: number) {
+  const row = await prisma.inventoryStock.findFirst({ where: { clientId: CLIENT, variantId, locationId }, select: { quantity: true } });
+  const delta = target - (row?.quantity ?? 0);
+  if (delta === 0) return;
+  await inventoryMutationService.applyMovement({
+    clientId: CLIENT, variantId, locationId,
+    movementType: 'ADJUSTMENT', reason: 'MANUAL_ADJUSTMENT', quantityDelta: delta,
+    notes: `e2e-all-flows: shelf set to ${target} for the next step`, createdBy: 'e2e-all-flows',
+    allowNegative: true
+  });
+}
 
 const BASE = 'http://localhost:4006/api/v1/pos/v1';
 const CLIENT = 'verify-suites-tenant';
@@ -72,9 +94,7 @@ async function main() {
       variantCode: `E2EV-${STAMP}`, sku: `E2ES-${STAMP}`, sellingPrice: 3000
     }
   });
-  await prisma.inventoryStock.create({
-    data: { clientId: CLIENT, variantId: variant.id, locationId: location.id, quantity: 10, reservedQty: 0 }
-  });
+  await setShelf(variant.id, location.id, 10);
 
   const cred = generateCredential();
   await prisma.storefrontConnection.create({
@@ -135,9 +155,7 @@ async function main() {
 
   // ── 4. an oversell, then a return onto a negative shelf ──────────────────────────────────
   console.log('\n4. SELLING MORE THAN THE SHELF HAS, THEN TAKING ONE BACK');
-  await prisma.inventoryStock.updateMany({
-    where: { clientId: CLIENT, variantId: variant.id }, data: { quantity: 1, reservedQty: 0 }
-  });
+  await setShelf(variant.id, location.id, 1);
   const over = `INV/E2E/${STAMP}-OVER`;
   const oversold = await settle(key, {
     kind: 'sale.completed', invoiceNo: over, occurredAt: new Date().toISOString(),
@@ -162,9 +180,7 @@ async function main() {
 
   // ── 5. an exchange ──────────────────────────────────────────────────────────────────────
   console.log('\n5. A SWAP: 3,000 FOR 4,500, PAYING THE DIFFERENCE');
-  await prisma.inventoryStock.updateMany({
-    where: { clientId: CLIENT, variantId: variant.id }, data: { quantity: 10, reservedQty: 0 }
-  });
+  await setShelf(variant.id, location.id, 10);
   const base = `INV/E2E/${STAMP}-SWAPBASE`;
   await settle(key, {
     kind: 'sale.completed', invoiceNo: base, occurredAt: new Date().toISOString(),
