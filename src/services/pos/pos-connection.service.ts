@@ -23,6 +23,20 @@ async function requireTill(clientId: string, id: string) {
 }
 
 export const posConnectionService = {
+  /**
+   * Which stock locations bill at a POS till right now.
+   *
+   * Inventory hides its own New sale for those locations: a shop that rings sales up in two places
+   * has two invoice series and two answers to what was sold today. Only keys that work count --
+   * a disconnected till must not take the shop's only way of billing with it.
+   */
+  async billingLocationIds(clientId: string): Promise<string[]> {
+    const tills = await prisma.storefrontConnection.findMany({
+      where: { clientId, ...POS_ONLY, status: 'ACTIVE' }, select: { locationIds: true }
+    });
+    return [...new Set(tills.flatMap(t => t.locationIds))];
+  },
+
   /** Every till not disconnected, with where it sells from and when a bill last came in from there. */
   async list(clientId: string) {
     const tills = await prisma.storefrontConnection.findMany({

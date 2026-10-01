@@ -260,9 +260,25 @@ async function main() {
   // ─── SALES ──────────────────────────────────────────────────────────────────
   console.log('\nSALES');
   check('sales are reported', typeof lastDay?.sales?.revenue === 'number');
-  check('gross profit is revenue minus cost',
-    Math.abs((lastDay.sales.revenue - lastDay.sales.costOfGoods) - lastDay.sales.grossProfit) < 0.01,
-    `${lastDay.sales.revenue} - ${lastDay.sales.costOfGoods} != ${lastDay.sales.grossProfit}`);
+  /*
+   * Was "gross profit is revenue minus cost". That is the sum that counted GST as profit and never
+   * took a return back off, so it is no longer the rule -- see verify-daybook-profit for the real
+   * sale and return it is measured against. What is checked here is that the figures on the page
+   * are consistent with each other: the sales the shop keeps are what was billed, less its GST,
+   * less what came back (less that GST); the cost kept is the cost of what was sold, less the cost
+   * of what went back on the shelf; and profit is one minus the other.
+   */
+  const sl = lastDay.sales;
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.011;
+  check('sales you keep = billed, less GST, less returns',
+    near(sl.netSales, (sl.revenue - sl.gstCollected) - (sl.returns.value - sl.returns.gst)),
+    `(${sl.revenue} - ${sl.gstCollected}) - (${sl.returns.value} - ${sl.returns.gst}) != ${sl.netSales}`);
+  check('cost kept = cost of goods sold, less cost of what came back',
+    near(sl.netCost, sl.costOfGoods - sl.returns.cost), `${sl.costOfGoods} - ${sl.returns.cost} != ${sl.netCost}`);
+  check('gross profit is sales kept minus cost kept',
+    near(sl.grossProfit, sl.netSales - sl.netCost), `${sl.netSales} - ${sl.netCost} != ${sl.grossProfit}`);
+  check('GST and returns are never negative, and GST never exceeds what was billed',
+    sl.gstCollected >= 0 && sl.returns.value >= 0 && sl.gstCollected <= sl.revenue + 0.01);
 
   // Dispatches are the measure, so nothing should be counted that has not gone out.
   const anyDispatchDay = results.find(r => r.sales.dispatchCount > 0);

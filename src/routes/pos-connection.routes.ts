@@ -31,6 +31,16 @@ function fail(res: Response, error: any, next: NextFunction) {
   next(error);
 }
 
+/*
+ * Open to anyone signed in to the shop, not only people who may manage keys: a cashier's screen has
+ * to know whether to offer New sale. It says which locations have a till and nothing else.
+ */
+router.get('/billing-locations', async (req, res, next) => {
+  try {
+    res.json({ success: true, data: { locationIds: await posConnectionService.billingLocationIds(clientOf(req)) } });
+  } catch (error) { fail(res, error, next); }
+});
+
 router.get('/', requirePermission(PERMISSION), async (req, res, next) => {
   try {
     res.json({ success: true, data: await posConnectionService.list(clientOf(req)) });

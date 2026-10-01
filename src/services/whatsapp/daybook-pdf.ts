@@ -173,12 +173,16 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
       d.quiet ? h(Text, { style: styles.empty },
         `Nothing moved ${span}. No stock came in or went out${d.inProgress ? ' so far' : ''}, and nothing was dispatched.`) : null,
 
-      d.sales?.dispatchCount > 0 ? Section({ title: 'Sales dispatched', subtitle: 'Counted when the goods actually left, not when the order was written.' },
+      (d.sales?.dispatchCount > 0 || d.sales?.returns?.count > 0) ? Section({ title: 'Sales dispatched', subtitle: 'Counted when the goods actually left, not when the order was written.' },
         h(View, { style: styles.statRow },
           stat('Dispatches', num(d.sales.dispatchCount)),
           stat('Units sent', num(d.sales.unitsDispatched)),
-          stat('Revenue', money(d.sales.revenue)),
-          stat('What it cost you', money(d.sales.costOfGoods)),
+          stat('Billed', money(d.sales.revenue)),
+          // Only where they exist, as on the screen: GST is not the shop's, and a return is not a sale.
+          d.sales.gstCollected > 0 ? stat('GST in it', money(d.sales.gstCollected)) : null,
+          d.sales.returns?.value > 0 ? stat('Returned', '-' + money(d.sales.returns.value)) : null,
+          (d.sales.gstCollected > 0 || d.sales.returns?.value > 0) ? stat('Sales you keep', money(d.sales.netSales)) : null,
+          stat('What it cost you', money(d.sales.netCost ?? d.sales.costOfGoods)),
           stat('Profit', money(d.sales.grossProfit))),
         // A month of dispatches is pages of rows; a range shows its days instead (below).
         isRange ? null : Table({

@@ -1,5 +1,5 @@
 import { getShopSettings } from '../lib/clientSettings';
-import { InventoryReason, SalesOrderStatus } from '@prisma/client';
+import { InventoryReason, Prisma, SalesOrderStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import {
   localDayRange, localDayKey, localDayKeyFromParts, previousDayKey, isDayInProgress, todayKey, DEFAULT_TIMEZONE
@@ -65,8 +65,19 @@ export interface DayBookDayRow {
   closingUnits: number | null;
   dispatchCount: number;
   unitsDispatched: number;
+  /** What customers were billed that day, GST included. */
   revenue: number;
+  /** The GST inside revenue: collected for the government, never the shop's. */
+  gst: number;
+  /** The value of what came back that day, GST included, and the GST inside that. */
+  returned: number;
+  returnedGst: number;
+  /** Billed, less GST, less returns: what the shop actually keeps as sales. */
+  netSales: number;
   costOfGoods: number;
+  /** The cost of pieces that came back onto the shelf. */
+  returnedCost: number;
+  /** netSales less (costOfGoods less returnedCost). */
   grossProfit: number;
 }
 
@@ -270,7 +281,13 @@ export class DayBookService {
       // Filtered on dispatchedAt, not createdAt: a dispatch record can be prepared in advance
       // and only becomes a sale at the moment it goes out the door.
       prisma.dispatch.findMany({
-        where: { clientId, dispatchedAt: { gte: start, lt: end } },
+        /*
+         * One store's day is that store's sales. The location was applied to the stock movements
+         * and not here, so choosing a store showed its own stock going out against the WHOLE
+         * shop's revenue -- a branch that sold one saree reported every branch's takings as its
+         * own, and a profit to match.
+         */
+        where: { clientId, dispatchedAt: { gte: start, lt: end }, ...(locationId ? { salesOrder: { locationId } } : {}) },
         select: {
           id: true,
           dispatchNumber: true,
@@ -284,7 +301,8 @@ export class DayBookService {
           items: {
             select: {
               quantity: true,
-              salesOrderItem: { select: { unitPrice: true, variantId: true } }
+              // quantity and the three taxes: how much of the line's GST left with THIS dispatch.
+              salesOrderItem: { select: { unitPrice: true, variantId: true, quantity: true, cgst: true, sgst: true, igst: true } }
             }
           }
         }
@@ -309,7 +327,7 @@ export class DayBookService {
     const perDay = new Map<string, DayBookDayRow>();
     if (isRange) {
       for (const k of dayKeysBetween(fromKey, toKey, MAX_RANGE_DAYS)) {
-        perDay.set(k, { date: k, unitsIn: 0, unitsOut: 0, closingUnits: null, dispatchCount: 0, unitsDispatched: 0, revenue: 0, costOfGoods: 0, grossProfit: 0 });
+        perDay.set(k, { date: k, unitsIn: 0, unitsOut: 0, closingUnits: null, dispatchCount: 0, unitsDispatched: 0, revenue: 0, gst: 0, returned: 0, returnedGst: 0, netSales: 0, costOfGoods: 0, returnedCost: 0, grossProfit: 0 });
       }
     }
 
@@ -344,6 +362,7 @@ export class DayBookService {
       if (dayRow) {
         if (units > 0) dayRow.unitsIn += units; else dayRow.unitsOut += Math.abs(units);
         if (m.reason === InventoryReason.SALE && units < 0) dayRow.costOfGoods += value;
+        if (m.reason === InventoryReason.CUSTOMER_RETURN && units > 0) dayRow.returnedCost += value;
       }
 
       const bucket = units > 0 ? inbound : outbound;
@@ -433,23 +452,78 @@ export class DayBookService {
      * and contributes nothing.
      */
     const ledgerByDispatch = new Map<string, number>();
-    if (countable.length > 0) {
-      const rows = await prisma.salesLedger.findMany({
-        where: { clientId, dispatchId: { in: countable.map(d => d.id) } },
-        select: { dispatchId: true, revenue: true }
-      });
-      for (const row of rows) {
-        if (row.dispatchId) {
-          ledgerByDispatch.set(row.dispatchId, (ledgerByDispatch.get(row.dispatchId) || 0) + Number(row.revenue));
+    const [ledgerRows, returnRows] = await Promise.all([
+      countable.length > 0
+        ? prisma.salesLedger.findMany({
+          where: { clientId, dispatchId: { in: countable.map(d => d.id) } },
+          select: { dispatchId: true, revenue: true }
+        })
+        : Promise.resolve([] as { dispatchId: string | null; revenue: Prisma.Decimal }[]),
+      /*
+       * What came BACK in the period.
+       *
+       * A sale was counted the day the goods left and never taken off again, so a saree sold on
+       * Monday and returned on Tuesday stayed in the profit for good: the refund showed in the
+       * money and the piece showed back on the shelf, and the profit figure knew about neither.
+       * A return belongs to the day it was COMPLETED -- that is when the shop gave the value up.
+       * Rejected and unfinished returns have given nothing up.
+       */
+      prisma.salesReturn.findMany({
+        where: {
+          clientId, status: 'COMPLETED', completedAt: { gte: start, lt: end },
+          ...(locationId ? { salesOrder: { locationId } } : {})
+        },
+        select: {
+          completedAt: true,
+          items: { select: { quantity: true, refundAmount: true, cgst: true, sgst: true, igst: true } }
         }
+      })
+    ]);
+    for (const row of ledgerRows) {
+      if (row.dispatchId) {
+        ledgerByDispatch.set(row.dispatchId, (ledgerByDispatch.get(row.dispatchId) || 0) + Number(row.revenue));
       }
     }
 
+    // What customers were billed, GST and all: the figure that matches the bills and the money.
     const revenue = round(countable.reduce((s, d) => s + (ledgerByDispatch.get(d.id) || 0), 0));
+
+    /*
+     * The GST inside that.
+     *
+     * Revenue is what the customer paid, and for a registered shop part of it was never the
+     * shop's: it is tax collected for the government. Taking cost of goods off the GST-inclusive
+     * figure counted that tax as profit -- on a 12% saree, twelve rupees in every hundred and
+     * twelve of "profit" that is owed to somebody else. Each line already carries its own tax
+     * (worked out when the bill was made), so this is that tax, in the proportion that shipped.
+     * A shop that charges no tax has none recorded and nothing comes off.
+     */
+    const gstOf = (d: (typeof countable)[number]) => d.items.reduce((sum, i) => {
+      const line = i.salesOrderItem;
+      if (!line || !(line.quantity > 0)) return sum;
+      const tax = Number(line.cgst ?? 0) + Number(line.sgst ?? 0) + Number(line.igst ?? 0);
+      return sum + tax * Math.min(i.quantity || 0, line.quantity) / line.quantity;
+    }, 0);
+    const gstCollected = round(countable.reduce((s, d) => s + gstOf(d), 0));
+
+    const returnedValue = round(returnRows.reduce((s, r) => s + r.items.reduce((a, i) => a + Number(i.refundAmount ?? 0), 0), 0));
+    const returnedGst = round(returnRows.reduce((s, r) => s + r.items.reduce(
+      (a, i) => a + Number(i.cgst ?? 0) + Number(i.sgst ?? 0) + Number(i.igst ?? 0), 0), 0));
+    const returnedUnits = returnRows.reduce((s, r) => s + r.items.reduce((a, i) => a + (i.quantity || 0), 0), 0);
 
     // What those goods cost, taken from the stock movements rather than the order, so profit
     // compares like with like.
     const costOfGoods = soldLine?.value || 0;
+    /*
+     * Cost comes back only for what went back ON THE SHELF. A returned piece that is damaged is
+     * refunded all the same but its cost is not recovered, and the stock movements already know
+     * the difference: only a piece returned to stock writes a CUSTOMER_RETURN movement.
+     */
+    const returnedCost = round(inbound.get(InventoryReason.CUSTOMER_RETURN)?.value ?? 0);
+
+    // Sales the shop keeps: billed, less its GST, less what came back (less that GST).
+    const netSales = round((revenue - gstCollected) - (returnedValue - returnedGst));
+    const netCost = round(costOfGoods - returnedCost);
 
     // The daily rows: sales by the day the goods left, and a running closing count.
     for (const d of countable) {
@@ -458,13 +532,28 @@ export class DayBookService {
       row.dispatchCount += 1;
       row.unitsDispatched += d.items.reduce((a, i) => a + (i.quantity || 0), 0);
       row.revenue += ledgerByDispatch.get(d.id) || 0;
+      row.gst += gstOf(d);
+    }
+    for (const r of returnRows) {
+      const row = r.completedAt ? perDay.get(localDayKey(r.completedAt, timezone)) : undefined;
+      if (!row) continue;
+      for (const i of r.items) {
+        row.returned += Number(i.refundAmount ?? 0);
+        row.returnedGst += Number(i.cgst ?? 0) + Number(i.sgst ?? 0) + Number(i.igst ?? 0);
+      }
     }
     let running = opening ? opening.units : null;
     for (const row of perDay.values()) {
       if (running !== null) { running += row.unitsIn - row.unitsOut; row.closingUnits = running; }
       row.revenue = round(row.revenue);
+      row.gst = round(row.gst);
+      row.returned = round(row.returned);
+      row.returnedGst = round(row.returnedGst);
       row.costOfGoods = round(row.costOfGoods);
-      row.grossProfit = round(row.revenue - row.costOfGoods);
+      row.returnedCost = round(row.returnedCost);
+      row.netSales = round((row.revenue - row.gst) - (row.returned - row.returnedGst));
+      // Same rule as the total: tax is not the shop's, and what came back is not a sale.
+      row.grossProfit = round(row.netSales - (row.costOfGoods - row.returnedCost));
     }
 
     // ─── PER LOCATION ─────────────────────────────────────────────────────────
@@ -599,9 +688,20 @@ export class DayBookService {
       sales: {
         dispatchCount: countable.length,
         unitsDispatched: dispatchedUnits,
+        // Billed to customers, GST included -- the figure that agrees with the bills.
         revenue,
+        // The GST in it. Zero for a shop that charges none.
+        gstCollected,
+        // What came back in the period: its value (GST included), the GST in it, pieces, and the
+        // cost of those that went back on the shelf.
+        returns: { count: returnRows.length, units: returnedUnits, value: returnedValue, gst: returnedGst, cost: returnedCost },
+        // What the shop keeps: billed, less GST, less returns.
+        netSales,
         costOfGoods,
-        grossProfit: round(revenue - costOfGoods),
+        netCost,
+        // Profit on what was kept: netSales less netCost. Was revenue less cost of goods, which
+        // counted the GST as profit and never took a return back off.
+        grossProfit: round(netSales - netCost),
         // How much of that profit is a guess. Nonzero means some of what was sold had no cost
         // recorded, so its full selling price is sitting in the profit figure above.
         unitsSoldWithoutCost,

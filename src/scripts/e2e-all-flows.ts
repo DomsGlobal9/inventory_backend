@@ -97,7 +97,7 @@ async function main() {
   await setShelf(variant.id, location.id, 10);
 
   const cred = generateCredential();
-  await prisma.storefrontConnection.create({
+  const till = await prisma.storefrontConnection.create({
     data: {
       clientId: CLIENT, name: `E2E till ${STAMP}`, baseUrl: POS_BASE_URL, // a till key (utils/posConnection): /pos/v1 refuses website keys
       credentialHash: cred.hash, credentialPrefix: cred.prefix,
@@ -218,6 +218,13 @@ async function main() {
   console.log(`  Exchange     ${swapOrder?.orderNumber}  (${ex}) -- takings should read 1,500`);
   console.log(`  Day Book     today, at ${location.name}`);
   console.log('───────────────────────────────────────────');
+
+  /*
+   * The till is disconnected once its bills are in. Left ACTIVE, every run added another live till
+   * at this store -- and a store with a till hides Inventory's own New sale, so the shared test shop
+   * would have lost that button for every suite that came after. The bills stay, as intended.
+   */
+  await prisma.storefrontConnection.update({ where: { id: till.id }, data: { status: 'REVOKED' } });
 
   await prisma.$disconnect();
 }

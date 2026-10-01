@@ -762,7 +762,10 @@ export class SalesOrderService {
     // Where it came from, as a shop says it: the counter, Shopify, or anything else.
     if (filters.source === 'COUNTER') where.sourceSystem = COUNTER_SOURCE;
     else if (filters.source === 'SHOPIFY') where.sourceSystem = 'SHOPIFY';
-    else if (filters.source === 'OTHER') where.OR = [{ sourceSystem: null }, { sourceSystem: { notIn: [COUNTER_SOURCE, 'SHOPIFY'] } }];
+    // Bills from the POS till. The value is pos-events' POS_SOURCE, written out to avoid importing
+    // the POS service into the order service for one string.
+    else if (filters.source === 'POS') where.sourceSystem = 'SCALEEZY_POS';
+    else if (filters.source === 'OTHER') where.OR = [{ sourceSystem: null }, { sourceSystem: { notIn: [COUNTER_SOURCE, 'SHOPIFY', 'SCALEEZY_POS'] } }];
 
     /*
      * An order number, a phone number or a name -- what a customer at the counter actually says.
