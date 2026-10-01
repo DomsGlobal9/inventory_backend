@@ -266,7 +266,7 @@ export async function writeSaleInTransaction(
       },
       'POS',
       null,
-      { userId: null, manualLimitPercent: null, mayOverridePrices: true, lean: true }
+      { userId: null, manualLimitPercent: null, mayOverridePrices: true, lean: true, recordsWhatHappened: true }
     );
 
     /*
@@ -415,25 +415,51 @@ export async function applySale(
      * with. One read for all of them, though, not one per line: this runs after the sale is
      * committed, so it is pure delay in front of a customer who is waiting for a receipt.
      */
-    const oversold = event.lines.filter(l => l.qty > (stockBefore.get(l.itemCode) ?? 0));
-    const afterByVariant = new Map<string, number>();
-    if (oversold.length) {
-      const rows = await prisma.inventoryStock.findMany({
+    /*
+     * Judged by what the shelf BECAME, for every line, not only by what it was before.
+     *
+     * "Sold more than there was" used to be decided from the count read before the sale. Two
+     * tills selling the last piece in the same instant each read 1, each sold 1, and neither was
+     * told anything: the shelf went to minus one and no warning reached the owner at all. A shelf
+     * below zero after this sale is the fact, whoever got there first -- so that is what is asked.
+     * The read is for all the lines now; this runs in the queue worker, behind no waiting customer.
+     */
+    const [rows, store] = await Promise.all([
+      prisma.inventoryStock.findMany({
         where: {
           clientId, locationId,
-          variantId: { in: [...new Set(oversold.map(l => byCode.get(l.itemCode)!))] }
+          variantId: { in: [...new Set(event.lines.map(l => byCode.get(l.itemCode)!))] }
         },
         select: { variantId: true, quantity: true }
-      });
-      for (const r of rows) afterByVariant.set(r.variantId, r.quantity);
+      }),
+      prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { name: true, active: true } })
+    ]);
+    const afterByVariant = new Map<string, number>(rows.map(r => [r.variantId, r.quantity]));
+
+    for (const line of event.lines) {
+      const had = stockBefore.get(line.itemCode) ?? 0;
+      const after = afterByVariant.get(byCode.get(line.itemCode)!) ?? 0;
+      // Short by what this bill outran the count it saw, or by how far below zero the shelf now
+      // is (never more than this bill sold) -- whichever says more.
+      const short = Math.max(line.qty - Math.max(0, had), Math.min(line.qty, -after));
+      if (short <= 0) continue;
+      warnings.push(
+        `${line.itemCode}: sold ${short} more than Inventory had at this ` +
+        `store; stock is now ${after}. Count it at the next stock check.`
+      );
     }
 
-    for (const line of oversold) {
-      const had = stockBefore.get(line.itemCode) ?? 0;
-      const after = { quantity: afterByVariant.get(byCode.get(line.itemCode)!) ?? 0 };
+    /*
+     * A store that is switched off in Inventory. The bill is recorded all the same (see
+     * recordsWhatHappened in writeFullOrderInTransaction): the customer has the goods and a
+     * printed invoice, and refusing it only made Inventory's stock and Day Book wrong about a sale
+     * that happened. The owner is told, because a till still selling from a closed store is
+     * something only they can settle.
+     */
+    if (store && !store.active) {
       warnings.push(
-        `${line.itemCode}: sold ${line.qty - Math.max(0, had)} more than Inventory had at this ` +
-        `store; stock is now ${after?.quantity ?? 0}. Count it at the next stock check.`
+        `${store.name} is switched off in Inventory, but this till is still selling from it. ` +
+        `The bill was recorded. Switch the store back on, or disconnect the till.`
       );
     }
 

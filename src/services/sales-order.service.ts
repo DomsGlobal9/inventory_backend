@@ -162,7 +162,16 @@ export class SalesOrderService {
   async writeFullOrderInTransaction(
     tx: any, clientId: string, locationId: string, data: any, channel: any,
     orderManual: ManualDiscount | null,
-    who: { userId: string | null; manualLimitPercent: number | null; mayOverridePrices?: boolean; lean?: boolean } = { userId: null, manualLimitPercent: null }
+    who: {
+      userId: string | null; manualLimitPercent: number | null; mayOverridePrices?: boolean; lean?: boolean;
+      /**
+       * The order RECORDS a sale that has already happened somewhere else (a POS bill). It is then
+       * written even for a store that has since been switched off: refusing it does not undo the
+       * sale, it only leaves the stock and the books wrong about it. Never set for an order being
+       * TAKEN here, which a closed store must refuse.
+       */
+      recordsWhatHappened?: boolean;
+    } = { userId: null, manualLimitPercent: null }
   ) {
     /*
      * The till limit.
@@ -193,7 +202,7 @@ export class SalesOrderService {
         select: { id: true, active: true, name: true }
       });
       if (!store) throw notFound('That store was not found.');
-      if (!store.active) throw badRequest(`${store.name} is closed, so it cannot take orders.`);
+      if (!store.active && !who.recordsWhatHappened) throw badRequest(`${store.name} is closed, so it cannot take orders.`);
 
       /*
        * The order number, taken inside the transaction. Taken before it, an order refused for a
