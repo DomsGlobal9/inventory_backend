@@ -209,9 +209,12 @@ async function main() {
     const dBack = await send(t1.key, ret(`CN/BAD/${STAMP}-D1`, dInv, d.variant.variantCode, 1));
     check('the customer can still return it: the bill was real', dBack.answer === 'APPLIED', `${dBack.answer}: ${dBack.detail ?? ''}`.slice(0, 160));
     check('and the piece is back on the shelf', await shelf(d.variant.id) === 5, String(await shelf(d.variant.id)));
-    const dAgain = await send(t1.key, sale(`INV/BAD/${STAMP}-D2`, d.variant.variantCode, 1));
-    check('a NEW sale of the deleted product gets a named answer, never a crash', ['UNKNOWN_ITEM', 'APPLIED'].includes(dAgain.answer), `${dAgain.answer}: ${dAgain.detail ?? ''}`.slice(0, 160));
-    console.log(`     (a new sale of a deleted product is answered: ${dAgain.answer})`);
+    // A till that has not refreshed still sells it. Applied directly, like A and C: this is the
+    // code in this checkout, not what production is running.
+    const dAgain: any = await applySale(CLIENT, store.id, sale(`INV/BAD/${STAMP}-D2`, d.variant.variantCode, 1) as any);
+    check('a NEW sale of the deleted product is recorded: the piece left the shop', dAgain.answer === 'APPLIED', `${dAgain.answer}: ${dAgain.detail ?? ''}`.slice(0, 160));
+    check('and the owner is told the till sold something deleted here', (dAgain.warnings ?? []).some((w: string) => /has been deleted in Inventory/.test(w) && /Refresh the items on the till/.test(w)), JSON.stringify(dAgain.warnings ?? []).slice(0, 220));
+    check('its stock came off like any other sale', await shelf(d.variant.id) === 4, String(await shelf(d.variant.id)));
 
     // ── C ────────────────────────────────────────────────────────────────────────────────────
     console.log('\nC. THE STORE IS SWITCHED OFF WHILE ITS TILL IS CONNECTED');

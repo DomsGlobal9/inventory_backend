@@ -137,18 +137,22 @@ async function resolveItems(clientId: string, codes: string[]) {
     where: { clientId, OR: [{ variantCode: { in: wanted } }, { sku: { in: wanted } }] },
     select: {
       id: true, variantCode: true, sku: true, taxRateBps: true,
-      product: { select: { taxRateBps: true } }
+      // trashedAt and title: so a bill for a product deleted here can say so (see applySale).
+      product: { select: { taxRateBps: true, trashedAt: true, title: true } }
     }
   });
 
   const byCode = new Map<string, string>();
-  const taxByCode = new Map<string, { taxRateBps: number | null }>();
+  const taxByCode = new Map<string, { taxRateBps: number | null; deleted?: boolean; title?: string }>();
   for (const v of found) {
     byCode.set(v.variantCode, v.id);
     if (!byCode.has(v.sku)) byCode.set(v.sku, v.id);
 
     // The variant's own rate wins over the product's -- a variant is the more specific answer.
-    const standing = { taxRateBps: v.taxRateBps ?? v.product.taxRateBps ?? null };
+    const standing = {
+      taxRateBps: v.taxRateBps ?? v.product.taxRateBps ?? null,
+      deleted: v.product.trashedAt != null, title: v.product.title
+    };
     taxByCode.set(v.variantCode, standing);
     if (!taxByCode.has(v.sku)) taxByCode.set(v.sku, standing);
   }
@@ -460,6 +464,23 @@ export async function applySale(
       warnings.push(
         `${store.name} is switched off in Inventory, but this till is still selling from it. ` +
         `The bill was recorded. Switch the store back on, or disconnect the till.`
+      );
+    }
+
+    /*
+     * A product that has been deleted in Inventory but is still being sold at the till -- a till
+     * that has not refreshed its items, usually. The bill is recorded like any other (the piece
+     * left the shop), and it used to be recorded in silence: the owner had a deleted product
+     * selling and stock going out of it with nothing anywhere saying so.
+     */
+    const toldAbout = new Set<string>();
+    for (const line of event.lines) {
+      const standing = taxByCode.get(line.itemCode);
+      if (!standing?.deleted || toldAbout.has(line.itemCode)) continue;
+      toldAbout.add(line.itemCode);
+      warnings.push(
+        `${line.itemCode}: ${standing.title ?? 'this product'} has been deleted in Inventory, but the till ` +
+        `still sold it. The bill was recorded. Refresh the items on the till, or restore the product.`
       );
     }
 
