@@ -2,18 +2,18 @@
 # Inventory backend: create a Render Blueprint from this repo with Blueprint path
 # `whatsapp-service/render.yaml`. The Inventory backend's own Render service should ignore
 # `whatsapp-service/**` (its Build Filters > Ignored paths), so a WhatsApp change never redeploys it.
-# Render Blueprint for the ScaleEzy WhatsApp Service. Deployed 18 Sep 2026. Redis was removed on
-# 5 Oct 2026 to cut cost (see the engine's CACHE_* settings).
+# Render Blueprint for the ScaleEzy WhatsApp Service: two services, engine + service. Deployed
+# 18 Sep 2026. Cut on 5 Oct 2026 to save cost: Redis removed (engine caches in memory), engine on
+# Starter, and the database moved off Render's Postgres into Inventory's Supabase, in two schemas
+# of its own (`whatsapp` for the service, `evolution_api` for the engine) under a login,
+# whatsapp_svc, that cannot see Inventory's tables.
 #
-# REGION: every piece must be in the SAME region and workspace as the Inventory backend, so they
-# share Render's private network. `singapore` is a placeholder until that is confirmed in the
-# Render dashboard (PLAN-whatsapp.md section 8, item 1). Change all four together.
+# REGION: both services must be in the SAME region and workspace as the Inventory backend, so
+# they share Render's private network (Singapore, like the Supabase project).
 #
-# One-time steps after the first Blueprint sync (details in README.md, "Deploying to Render"):
-#   1. CREATE DATABASE evolution;  (on whatsapp-db, as its user) - the engine's own database
-#   2. Set the `sync: false` values below in the dashboard (engine DB URL, webhook URL,
-#      ENCRYPTION_KEY).
-#   3. Link the ScaleEzy number to the `scaleezy` instance (platform console / README).
+# On a fresh setup: create the whatsapp_svc login and the two schemas in Supabase, set the
+# `sync: false` values below in the dashboard (both database URLs, webhook URL, ENCRYPTION_KEY),
+# then link the ScaleEzy number (docs/HOW-IT-WORKS.md, "ScaleEzy's own number").
 
 envVarGroups:
   - name: whatsapp-shared
@@ -179,14 +179,3 @@ services:
         sync: false
       - key: LOG_LEVEL
         value: info
-
-databases:
-  # One Postgres server, two databases: `whatsapp` (ours, created here) and `evolution` (the
-  # engine's, created once by hand: CREATE DATABASE evolution;).
-  - name: whatsapp-db
-    region: singapore # must equal the Inventory backend's region (to confirm)
-    plan: basic-1gb
-    databaseName: whatsapp
-    user: whatsapp
-    postgresMajorVersion: "16"
-    ipAllowList: [] # no access from outside Render

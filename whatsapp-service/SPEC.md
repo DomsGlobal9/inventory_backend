@@ -58,6 +58,8 @@ Module auth: header `x-module-key`. Admin auth (platform console): header `x-adm
 Set the engine's global webhook (env in compose) to the service: locally `http://host.docker.internal:<port>/engine/events/<secret>`, on Render the service's private address. Update `engine/docker-compose.local.yml` accordingly (keep everything else).
 
 ## Render (`render.yaml`, do not deploy)
+> Superseded 5 Oct 2026: no `whatsapp-db` and no `whatsapp-cache` any more; the database is in Inventory's Supabase (schemas `whatsapp`, `evolution_api`) and the engine is on Starter. `render.yaml` and README "Deploying to Render" are current; the list below is the original build brief.
+
 - `whatsapp-engine`: private service, Docker from `engine/`, 2 GB plan, disk not needed (sessions in Postgres), env from group.
 - `whatsapp-service`: web service, Docker from `service/`, health check `/ready`.
 - `whatsapp-db`: Postgres (databases `evolution` and `whatsapp`; document the one-time `CREATE DATABASE`).

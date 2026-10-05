@@ -24,7 +24,7 @@ Background and decisions: `SPEC.md` (this repo) and `PLAN-whatsapp.md` in the In
 
 | Path | What |
 |---|---|
-| `engine/` | Our engine image: Evolution API 2.3.7 (pinned by digest) + three build-time patches: `patch-pairing.cjs` (QR linking), `patch-quiet-keys.cjs` (no keys in logs), `patch-logout.cjs` (Unlink waits for WhatsApp's answer, so the phone really drops the device). The build **fails** if a patch no longer fits. `docker-compose.local.yml` runs engine + Postgres + Redis on this PC. |
+| `engine/` | Our engine image: Evolution API 2.3.7 (pinned by digest) + three build-time patches: `patch-pairing.cjs` (QR linking), `patch-quiet-keys.cjs` (no keys in logs), `patch-logout.cjs` (Unlink waits for WhatsApp's answer, so the phone really drops the device). The build **fails** if a patch no longer fits. `docker-compose.local.yml` runs engine + Postgres + Redis on this PC (production has no Redis since 5 Oct 2026). |
 | `service/` | The WhatsApp Service (Node 22, TypeScript, Express, Prisma/Postgres). |
 | `render.yaml` | Render Blueprint for all four pieces (not deployed yet). |
 | `../.github/workflows/whatsapp-ci.yml` | Every push that touches `whatsapp-service/`: typecheck, all tests, build, and build **both** Docker images. (At the repo root, where GitHub reads it.) |
@@ -173,23 +173,35 @@ leaked key: `--name inventory --rotate-key` (the old key stops working at once).
 
 ## Deploying to Render
 
-1. **Confirm the region** of the Inventory backend and set it on all four pieces in
-   `render.yaml` (placeholder: `singapore`). They must share Render's private network.
+1. **Region:** both services in `render.yaml` must be in the Inventory backend's region
+   (Singapore), so they share Render's private network. Since 5 Oct 2026 there are only two:
+   no Render Postgres and no Redis (see step 4).
+
 2. Render → New → Blueprint → the inventory backend repo, **Blueprint path `whatsapp-service/render.yaml`**.
    The Inventory backend service itself ignores `whatsapp-service/**` (Build Filters), so the two deploy apart.
 3. Set the `sync: false` values in the dashboard:
    - `whatsapp-service` → `ENCRYPTION_KEY`:
      `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`
-   - `whatsapp-engine` → `DATABASE_CONNECTION_URI`: whatsapp-db's **internal** URL with the
-     database changed to `evolution` and `?schema=evolution_api` appended.
+   - `whatsapp-service` → `DATABASE_URL` and `whatsapp-engine` → `DATABASE_CONNECTION_URI`:
+     Inventory's Supabase, **session pooler** (port 5432), as the `whatsapp_svc` login, ending
+     `?schema=whatsapp&connection_limit=3` and `?schema=evolution_api&connection_limit=3`:
+     `postgresql://whatsapp_svc.<project>:<password>@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres?schema=...`
    - `whatsapp-engine` → `WEBHOOK_GLOBAL_URL`:
      `http://<whatsapp-service internal hostname>:10000/engine/events/<ENGINE_WEBHOOK_SECRET>`
      (hostname from the service's Connect → Internal tab; the secret from the `whatsapp-shared` group).
      **URL-encode the secret** (Render's generated value can contain `/`, `+`, `=`):
      `node -e "console.log(encodeURIComponent(process.argv[1]))" '<secret>'`. Pasted raw, a `/`
      splits the path and every engine event gets 404 (messages send, but ticks never arrive).
-4. One time, create the engine's database (Render Shell or psql with the external URL):
-   `CREATE DATABASE evolution;`
+4. One time, in Supabase's SQL editor (as postgres), create the login and its two schemas.
+   Membership first: Postgres 16+ only lets you create a schema owned by a role you belong to.
+   The login cannot read Inventory's tables (checked: "permission denied").
+   ```sql
+   create role whatsapp_svc login password '<long random password>';
+   grant whatsapp_svc to postgres;
+   create schema whatsapp authorization whatsapp_svc;
+   create schema evolution_api authorization whatsapp_svc;
+   ```
+   Both services create their own tables on first start (`prisma migrate deploy`).
 5. Create the module key for Inventory (above).
 6. Link the ScaleEzy number (the engine is private, so this goes through the admin API):
    `npm run link:scaleezy -- --base https://<whatsapp-service>.onrender.com` with `ADMIN_KEY` set,
