@@ -1,6 +1,6 @@
 import { prisma } from '../../lib/prisma';
 import { generateCredential } from '../../utils/storefrontCredential';
-import { POS_BASE_URL, POS_ONLY } from '../../utils/posConnection';
+import { POS_BASE_URL, POS_ONLY, SKIP_KIND } from '../../utils/posConnection';
 
 /**
  * Till keys: what an owner makes in Settings → POS (billing counter) and pastes into the POS.
@@ -54,7 +54,7 @@ export const posConnectionService = {
        */
       locationIds.length
         ? prisma.posInboundEvent.groupBy({
-          by: ['locationId'], where: { clientId, locationId: { in: locationIds } }, _max: { receivedAt: true }
+          by: ['locationId'], where: { clientId, locationId: { in: locationIds }, kind: { not: SKIP_KIND } }, _max: { receivedAt: true }
         })
         : Promise.resolve([] as { locationId: string; _max: { receivedAt: Date | null } }[])
     ]);
@@ -71,6 +71,33 @@ export const posConnectionService = {
         locationName: locationId ? nameOf.get(locationId) ?? 'A location that no longer exists' : null,
         createdAt: t.createdAt,
         lastBillAt: locationId ? lastAt.get(locationId) ?? null : null
+      };
+    });
+  },
+
+  /**
+   * Bills the owner left out of Inventory at the till, newest first.
+   *
+   * Not tied to a till, on purpose: the books stay short by a left-out bill after its till is
+   * disconnected, so the owner must still see it then.
+   */
+  async leftOut(clientId: string) {
+    const rows = await prisma.posInboundEvent.findMany({
+      where: { clientId, kind: SKIP_KIND }, orderBy: { receivedAt: 'desc' }, take: 50,
+      select: { invoiceNo: true, payload: true, receivedAt: true, locationId: true }
+    });
+    const stores = await prisma.stockLocation.findMany({
+      where: { clientId, id: { in: [...new Set(rows.map(r => r.locationId))] } }, select: { id: true, name: true }
+    });
+    const nameOf = new Map(stores.map(s => [s.id, s.name]));
+    return rows.map(r => {
+      const p = (r.payload ?? {}) as { reason?: string; skippedBy?: string; skippedAt?: string };
+      return {
+        document: r.invoiceNo,
+        locationName: nameOf.get(r.locationId) ?? null,
+        reason: p.reason ?? null,
+        skippedBy: p.skippedBy ?? null,
+        skippedAt: p.skippedAt ?? r.receivedAt
       };
     });
   },

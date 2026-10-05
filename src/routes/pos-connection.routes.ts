@@ -49,6 +49,12 @@ router.get('/', requirePermission(PERMISSION), async (req, res, next) => {
   } catch (error) { fail(res, error, next); }
 });
 
+router.get('/left-out', requirePermission(PERMISSION), async (req, res, next) => {
+  try {
+    res.json({ success: true, data: await posConnectionService.leftOut(clientOf(req)) });
+  } catch (error) { fail(res, error, next); }
+});
+
 router.post('/', requirePermission(PERMISSION), async (req, res, next) => {
   try {
     const parsed = createSchema.safeParse(req.body ?? {});

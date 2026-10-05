@@ -518,6 +518,41 @@ export async function applySale(
 }
 
 /**
+ * The caller found no order for this bill: is its sale merely on its way?
+ *
+ * Yes if it is still waiting or being applied. Also yes if it landed between the caller's read and
+ * this one: the worker commits the order, THEN marks its row APPLIED, and both can fall in that gap
+ * -- no order a moment ago, nothing waiting now. Answering UNKNOWN_ORDER there stops the shop's
+ * queue over a sale that exists (seen in verify-pos-endpoints section L under load, 1 and 5 Oct).
+ */
+async function saleOnItsWay(clientId: string, invoiceNo: string): Promise<boolean> {
+  const waiting = await prisma.posInboundEvent.findFirst({
+    where: { clientId, kind: 'sale.completed', invoiceNo, status: { in: ['QUEUED', 'RUNNING'] } },
+    select: { id: true }
+  });
+  if (waiting) return true;
+  return (await prisma.salesOrder.count({ where: { clientId, externalOrderId: invoiceNo, sourceSystem: POS_SOURCE } })) > 0;
+}
+
+const notAppliedYet = (invoiceNo: string, what: string): PosEventResult => ({
+  answer: 'SALE_NOT_YET_APPLIED',
+  detail: `Invoice ${invoiceNo} has been taken in but not applied yet. Send this ${what} again in a moment.`
+});
+
+/**
+ * An exchange is queued without a door check, so one sent straight after its sale -- a till
+ * catching up after the line was down -- could be applied before the sale and REJECTED for good.
+ * Only the not-yet case is stopped here (retryable); a bill that is truly unknown still goes
+ * through to the worker and is refused there, as before.
+ */
+export async function exchangeTooEarly(clientId: string, againstInvoiceNo: string): Promise<PosEventResult | null> {
+  if (!againstInvoiceNo) return null;
+  const order = await prisma.salesOrder.count({ where: { clientId, externalOrderId: againstInvoiceNo, sourceSystem: POS_SOURCE } });
+  if (order) return null;
+  return (await saleOnItsWay(clientId, againstInvoiceNo)) ? notAppliedYet(againstInvoiceNo, 'exchange') : null;
+}
+
+/**
  * What a return SHOULD be worth, by Inventory's own reckoning.
  *
  * Proven identical to the POS's rule over 1,040,312 apportionments, including every half-paisa
@@ -552,19 +587,7 @@ export async function checkReturnAmounts(
      * would stop the shop's queue over a two-second race. This costs one extra query and only
      * on the path where we were about to refuse anyway.
      */
-    const queued = await prisma.posInboundEvent.findFirst({
-      where: {
-        clientId, kind: 'sale.completed', invoiceNo: againstInvoiceNo,
-        status: { in: ['QUEUED', 'RUNNING'] }
-      },
-      select: { id: true }
-    });
-    if (queued) {
-      return {
-        answer: 'SALE_NOT_YET_APPLIED',
-        detail: `Invoice ${againstInvoiceNo} has been taken in but not applied yet. Send this return again in a moment.`
-      };
-    }
+    if (await saleOnItsWay(clientId, againstInvoiceNo)) return notAppliedYet(againstInvoiceNo, 'return');
     return { answer: 'UNKNOWN_ORDER', detail: `No sale here for invoice ${againstInvoiceNo}.` };
   }
 

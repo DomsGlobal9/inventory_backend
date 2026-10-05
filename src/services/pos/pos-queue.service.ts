@@ -25,6 +25,7 @@ import { applySale, POS_SOURCE, type PosEventResult } from './pos-events.service
 import { applyReturn } from './pos-returns.service';
 import { applyPaymentUpdate, faultInPaymentShape } from './pos-payments.service';
 import { applyExchange, faultInExchangeShape } from './pos-exchange.service';
+import { SKIP_KIND } from '../../utils/posConnection';
 
 /** How many events one tick may take on. */
 const BATCH = 10;
@@ -128,6 +129,39 @@ export async function acceptExchange(
   return accept(clientId, locationId, 'sale.exchanged', String(event.exchangeNo), event);
 }
 
+const SKIPPABLE = ['sale.completed', 'sale.returned', 'sale.exchanged', 'payment.updated'];
+
+function faultInSkipShape(event: any): string | null {
+  if (!String(event?.document ?? '').trim()) return 'Say which bill was left out, in "document".';
+  if (!SKIPPABLE.includes(String(event?.eventType ?? ''))) return `"eventType" must be one of ${SKIPPABLE.join(', ')}.`;
+  if (String(event?.reason ?? '').trim().length < 10) return 'Say why it was left out, in a sentence, in "reason".';
+  return null;
+}
+
+/**
+ * The owner left a bill out of Inventory at the till: one Inventory could never take.
+ *
+ * RECORDED, NEVER APPLIED. The bill was left out because it could not be applied, so this moves no
+ * stock and no money -- it is how Inventory knows its books are short by that bill. The till has
+ * already moved on without it; this only stops the gap being silent.
+ *
+ * Written as APPLIED, never QUEUED, so no worker ever touches it -- not even a server still running
+ * older code that would choke on a kind it does not know. Insert-or-nothing tells a first send from
+ * a resend, the same once-only shape as loyalty and store credit.
+ */
+export async function acceptSkip(clientId: string, locationId: string, event: any): Promise<PosAcceptResult> {
+  const fault = faultInSkipShape(event);
+  if (fault) return { answer: 'BAD_PAYLOAD', detail: fault };
+  const { count } = await prisma.posInboundEvent.createMany({
+    data: [{
+      clientId, locationId, kind: SKIP_KIND, invoiceNo: String(event.document).trim(), payload: event,
+      status: 'APPLIED', answer: 'APPLIED', settledAt: new Date()
+    }],
+    skipDuplicates: true
+  });
+  return { answer: count ? 'APPLIED' : 'ALREADY_APPLIED' } as PosEventResult;
+}
+
 async function accept(
   clientId: string,
   locationId: string,
@@ -207,7 +241,8 @@ export async function saleStatus(clientId: string, invoiceNo: string) {
    * to?" should not also have to say which sort of thing it was asking about.
    */
   const row = await prisma.posInboundEvent.findFirst({
-    where: { clientId, invoiceNo },
+    // A left-out marker is not the bill: asking after a bill that never applied must not say APPLIED.
+    where: { clientId, invoiceNo, kind: { not: SKIP_KIND } },
     orderBy: { receivedAt: 'desc' },
     select: {
       id: true, status: true, answer: true, orderNumber: true, detail: true,

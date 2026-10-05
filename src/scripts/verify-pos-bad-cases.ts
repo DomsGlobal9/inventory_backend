@@ -11,8 +11,11 @@
  *   E. a customer returns more than they bought, across two part returns
  *   F. the same payment is sent twice with a different amount
  *   G. somebody without the permission tries to manage tills
+ *   H. the owner leaves a bill out of Inventory at the till (document.skipped)
+ *   I. a return or exchange arrives while its own sale is still being applied
  *
- * A to F run on a throwaway shop made here and removed at the end. G needs a person who can sign
+ * A to F, H and I run on a throwaway shop made here and removed at the end. H goes through the real
+ * route: a left-out bill is recorded in the route itself, no worker involved, so it tests this checkout. G needs a person who can sign
  * in, so it uses the shared test shop and removes the cashier it adds.
  *
  * HOW A AND C ARE RUN. On a development machine the POS queue worker is off, and a bill accepted by
@@ -47,7 +50,10 @@ const check = (name: string, ok: boolean, detail = '') => {
 };
 
 const api = (key: string) => axios.create({ baseURL: BASE, headers: { 'X-Storefront-Key': key }, validateStatus: () => true });
-const numberOf = (body: any) => String(body.kind === 'payment.updated' ? body.idempotencyKey : (body.creditNoteNo ?? body.invoiceNo));
+const numberOf = (body: any) => String(
+  body.kind === 'payment.updated' ? body.idempotencyKey
+    : body.kind === 'sale.exchanged' ? body.exchangeNo
+      : (body.creditNoteNo ?? body.invoiceNo));
 
 /** Wait for an accepted event to be applied or refused, asking with `askKey` (defaults to the sender's). */
 async function outcome(askKey: string, body: any, ms = 240_000) {
@@ -234,6 +240,67 @@ async function main() {
     try { await prisma.stockLocation.delete({ where: { id: store.id } }); } catch { cannotDelete = true; }
     check('a store with bills and stock history cannot be deleted from under its till', cannotDelete);
     await prisma.stockLocation.update({ where: { id: store.id }, data: { active: true } });
+
+    // ── I ────────────────────────────────────────────────────────────────────────────────────
+    console.log('\nI. A RETURN OR EXCHANGE ARRIVES WHILE ITS SALE IS STILL BEING APPLIED');
+    /*
+     * Made certain instead of hoped for: a sale row held RUNNING with a fresh heartbeat and no order
+     * yet. No worker claims a RUNNING row, and recovery leaves one alone for five minutes, so the
+     * window that only opens under load in verify-pos-endpoints L is simply open here. Its payload
+     * names an item that does not exist, so even if something did pick it up it would be refused.
+     */
+    const iItem = await mk(8, 'Swap saree', 5);
+    const iInv = `INV/BAD/${STAMP}-I1`;
+    const planted = await prisma.posInboundEvent.create({ data: {
+      clientId: CLIENT, locationId: store.id, kind: 'sale.completed', invoiceNo: iInv,
+      payload: sale(iInv, 'NO-SUCH-ITEM', 1), status: 'RUNNING', heartbeatAt: new Date(), attempts: 1
+    } });
+    const swap = (exchangeNo: string) => ({
+      kind: 'sale.exchanged', exchangeNo, againstInvoiceNo: iInv, occurredAt: new Date().toISOString(),
+      returned: [{ itemCode: iItem.variant.variantCode, qty: 1, lineTotalPaise: PRICE }],
+      sold: [{ itemCode: iItem.variant.variantCode, qty: 1, unitPricePaise: PRICE, lineTotalPaise: PRICE }],
+      payments: []
+    });
+    try {
+      const iRet = await api(t1.key).post('/events', ret(`CN/BAD/${STAMP}-I1`, iInv, iItem.variant.variantCode, 1));
+      check('a return against it: 409 "not applied yet", never UNKNOWN_ORDER', iRet.status === 409 && iRet.data?.data?.answer === 'SALE_NOT_YET_APPLIED', `${iRet.status} ${iRet.data?.data?.answer}`);
+      const iEx = await api(t1.key).post('/events', swap(`INV/BAD/${STAMP}-I2`));
+      check('an exchange against it: 409 "not applied yet", so the till sends it again', iEx.status === 409 && iEx.data?.data?.answer === 'SALE_NOT_YET_APPLIED' && /exchange again/.test(iEx.data?.data?.detail ?? ''), `${iEx.status} ${iEx.data?.data?.answer}`);
+      check('and that early exchange was not queued, so it cannot be rejected for good', await prisma.posInboundEvent.count({ where: { clientId: CLIENT, kind: 'sale.exchanged', invoiceNo: `INV/BAD/${STAMP}-I2` } }) === 0);
+    } finally {
+      await prisma.posInboundEvent.delete({ where: { id: planted.id } });
+    }
+    const iUnknown = await send(t1.key, swap(`INV/BAD/${STAMP}-I3`));
+    check('an exchange against a bill that never existed is still refused, as before', iUnknown.answer === 'UNKNOWN_ORDER', `${iUnknown.answer}: ${iUnknown.detail ?? ''}`.slice(0, 160));
+
+    // ── H ────────────────────────────────────────────────────────────────────────────────────
+    console.log('\nH. THE OWNER LEAVES A BILL OUT OF INVENTORY AT THE TILL');
+    const h = await mk(7, 'Left-out saree', 5);
+    const hInv = `INV/BAD/${STAMP}-H1`;
+    const skip = (over: any = {}) => ({
+      kind: 'document.skipped', document: hInv, eventType: 'sale.completed',
+      reason: 'The item was deleted in Inventory for good', skippedBy: 'Owner', skippedAt: new Date().toISOString(), ...over
+    });
+    const lastBefore = (await posConnectionService.list(CLIENT))[0]?.lastBillAt;
+    const hShort = await api(t1.key).post('/events', skip({ reason: 'gone' }));
+    check('a reason shorter than a sentence is refused', hShort.status === 422 && hShort.data?.data?.answer === 'BAD_PAYLOAD', `${hShort.status} ${hShort.data?.data?.detail}`);
+    const hKind = await api(t1.key).post('/events', skip({ eventType: 'sale.vanished' }));
+    check('a kind of bill the till never sends is refused', hKind.status === 422 && hKind.data?.data?.answer === 'BAD_PAYLOAD', `${hKind.status}`);
+    const h1 = await api(t1.key).post('/events', skip());
+    check('the left-out bill is noted at once: 200 APPLIED, not queued', h1.status === 200 && h1.data?.data?.answer === 'APPLIED', `${h1.status} ${h1.data?.data?.answer}`);
+    const h2 = await api(t1.key).post('/events', skip());
+    check('sent again: 200 ALREADY_APPLIED', h2.status === 200 && h2.data?.data?.answer === 'ALREADY_APPLIED', `${h2.status} ${h2.data?.data?.answer}`);
+    check('noted once, not twice', await prisma.posInboundEvent.count({ where: { clientId: CLIENT, kind: 'document.skipped', invoiceNo: hInv } }) === 1);
+    check('no stock moved: it was left out because it could not be applied', await shelf(h.variant.id) === 5, String(await shelf(h.variant.id)));
+    check('no order was made from it', await prisma.salesOrder.count({ where: { clientId: CLIENT, externalOrderId: hInv } }) === 0);
+    const hStatus = await api(t1.key).get(`/events/status?invoiceNo=${encodeURIComponent(hInv)}`);
+    check('asking where that bill got to says Inventory has no such bill (404), not APPLIED', hStatus.status === 404, `${hStatus.status} ${hStatus.data?.data?.answer}`);
+    check('a left-out bill is not "the last bill received"', String((await posConnectionService.list(CLIENT))[0]?.lastBillAt) === String(lastBefore), String(lastBefore));
+    const seen = await posConnectionService.leftOut(CLIENT);
+    check('the owner sees it, with the store and the reason', seen.length === 1 && seen[0].document === hInv && seen[0].locationName === 'Counter' && /deleted in Inventory/.test(seen[0].reason ?? ''), JSON.stringify(seen[0] ?? null).slice(0, 200));
+    await posConnectionService.disconnect(CLIENT, t1.id);
+    await posConnectionService.disconnect(CLIENT, t2.id);
+    check('and still sees it after every till is disconnected: the books are still short', (await posConnectionService.leftOut(CLIENT)).length === 1);
   } finally {
     await teardown();
   }
@@ -255,7 +322,8 @@ async function main() {
     const loc = await prisma.stockLocation.findFirst({ where: { clientId: t.clientId, active: true }, select: { id: true } });
     check('they cannot list the shop\'s tills', await as('/pos-connections') === 403);
     check('they cannot make a till key', await as('/pos-connections', 'POST', { locationId: loc!.id }) === 403);
-    check('they cannot replace or disconnect one', await as('/pos-connections/00000000-0000-0000-0000-000000000000/replace-key', 'POST') === 403 && await as('/pos-connections/00000000-0000-0000-0000-000000000000/disconnect', 'POST') === 403);
+    check('they cannot see the bills left out of Inventory', await as('/pos-connections/left-out') === 403);
+    check('they cannot replace or disconnect one',await as('/pos-connections/00000000-0000-0000-0000-000000000000/replace-key', 'POST') === 403 && await as('/pos-connections/00000000-0000-0000-0000-000000000000/disconnect', 'POST') === 403);
     check('they CAN ask which stores bill at a till (their screen needs it to hide New sale)', await as('/pos-connections/billing-locations') === 200);
     check('and no till was made by any of that', (await prisma.storefrontConnection.count({ where: { clientId: t.clientId, baseUrl: POS_BASE_URL, status: 'ACTIVE' } })) === 0);
   } finally {

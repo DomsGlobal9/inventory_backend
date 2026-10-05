@@ -18,8 +18,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateStorefront, onlyPos, storefrontContext } from '../middleware/storefront.middleware';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
-import { checkReturnAmounts, type PosEventResult } from '../services/pos/pos-events.service';
-import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptExchange, saleStatus } from '../services/pos/pos-queue.service';
+import { checkReturnAmounts, exchangeTooEarly, type PosEventResult } from '../services/pos/pos-events.service';
+import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptExchange, acceptSkip, saleStatus } from '../services/pos/pos-queue.service';
+import { SKIP_KIND } from '../utils/posConnection';
 
 const router = Router();
 
@@ -229,6 +230,12 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
         });
         return;
       }
+      // The sale it is against may still be on its way: "not now, try again", never a queue stop.
+      const early = await exchangeTooEarly(ctx.clientId, String(event.againstInvoiceNo ?? ''));
+      if (early) {
+        res.status(409).json({ success: false, data: early });
+        return;
+      }
       const swapped = await acceptExchange(ctx.clientId, locationId, event);
       if (swapped.answer === 'ACCEPTED') {
         res.status(202).json({ success: true, data: swapped });
@@ -236,6 +243,22 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
       }
       const ok = swapped.answer === 'APPLIED' || swapped.answer === 'ALREADY_APPLIED';
       res.status(ok ? 200 : 422).json({ success: ok, data: swapped });
+      return;
+    }
+
+    if (kind === SKIP_KIND) {
+      // Recorded on the spot, not queued: it moves nothing, so there is nothing to wait for.
+      const locationId = ctx.locationIds[0];
+      if (!locationId) {
+        res.status(422).json({
+          success: false,
+          data: { answer: 'BAD_PAYLOAD', detail: 'This connection has no location, so a left-out bill has nowhere to be noted.' } as PosEventResult
+        });
+        return;
+      }
+      const noted = await acceptSkip(ctx.clientId, locationId, event);
+      const ok = noted.answer === 'APPLIED' || noted.answer === 'ALREADY_APPLIED';
+      res.status(ok ? 200 : 422).json({ success: ok, data: noted });
       return;
     }
 

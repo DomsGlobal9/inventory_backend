@@ -19,3 +19,9 @@ export const isPosConnection = (c: { baseUrl?: string | null }) =>
 /** Prisma filters for "only tills" and "only websites". */
 export const POS_ONLY = { baseUrl: { startsWith: 'pos://' } } as const;
 export const WEBSITES_ONLY = { NOT: { baseUrl: { startsWith: 'pos://' } } } as const;
+
+/**
+ * The till's marker for a bill the owner left out of Inventory on purpose. Recorded, never
+ * applied, so it is not a bill: "last bill received" and "where did that bill get to?" skip it.
+ */
+export const SKIP_KIND = 'document.skipped';
