@@ -59,7 +59,8 @@ services:
         value: "false"
       - key: DATABASE_PROVIDER
         value: postgresql
-      # Internal URL of whatsapp-db, database `evolution`, with ?schema=evolution_api
+      # Inventory's Supabase, schema `evolution_api`, as the whatsapp_svc login, session pooler:
+      # ...pooler.supabase.com:5432/postgres?schema=evolution_api&connection_limit=3
       - key: DATABASE_CONNECTION_URI
         sync: false
       - key: DATABASE_CONNECTION_CLIENT_NAME
@@ -144,10 +145,12 @@ services:
       - fromGroup: whatsapp-shared
       - key: NODE_ENV
         value: production
+      # Inventory's Supabase, schema `whatsapp`, as the whatsapp_svc login (it can reach only the
+      # `whatsapp` and `evolution_api` schemas, never Inventory's tables). Session pooler, :5432:
+      # postgresql://whatsapp_svc.<project>:<password>@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres?schema=whatsapp&connection_limit=3
+      # Set in the dashboard; moved off Render's own Postgres on 5 Oct 2026 to cut cost.
       - key: DATABASE_URL
-        fromDatabase:
-          name: whatsapp-db
-          property: connectionString
+        sync: false
       - key: ENGINE_URL
         fromService:
           type: pserv
