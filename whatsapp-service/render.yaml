@@ -168,7 +168,7 @@ services:
       - key: MESSAGE_RETENTION_DAYS
         value: "30" # finished messages are deleted after this; STOPs are kept for good
       - key: CANARY_ENABLED
-        value: "false" # switch on once the ScaleEzy number is linked on Render
+        value: "true" # on since the ScaleEzy number was linked on Render (set in the dashboard after 18 Sep)
       - key: CANARY_HOUR_IST
         value: "9"
       # Folders pictures may be sent from, comma-separated, each ending in /. Set in the dashboard to
