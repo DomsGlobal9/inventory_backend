@@ -2,7 +2,8 @@
 # Inventory backend: create a Render Blueprint from this repo with Blueprint path
 # `whatsapp-service/render.yaml`. The Inventory backend's own Render service should ignore
 # `whatsapp-service/**` (its Build Filters > Ignored paths), so a WhatsApp change never redeploys it.
-# Render Blueprint for the ScaleEzy WhatsApp Service: four pieces. NOT deployed yet.
+# Render Blueprint for the ScaleEzy WhatsApp Service. Deployed 18 Sep 2026. Redis was removed on
+# 5 Oct 2026 to cut cost (see the engine's CACHE_* settings).
 #
 # REGION: every piece must be in the SAME region and workspace as the Inventory backend, so they
 # share Render's private network. `singapore` is a placeholder until that is confirmed in the
@@ -32,7 +33,9 @@ services:
     name: whatsapp-engine
     runtime: docker
     region: singapore # must equal the Inventory backend's region (to confirm)
-    plan: standard # 2 GB RAM
+    # Starter (512 MB): measured ~190 MB all day on Standard (2 GB), 5 Oct 2026. Revisit if many
+    # shops link their own numbers -- each live link adds memory.
+    plan: starter
     dockerContext: ./whatsapp-service/engine
     dockerfilePath: ./whatsapp-service/engine/Dockerfile
     # Only its own folder redeploys it: an Inventory push never rebuilds WhatsApp.
@@ -76,19 +79,13 @@ services:
         value: "false"
       - key: DATABASE_SAVE_DATA_HISTORIC
         value: "false"
+      # No Redis: one engine instance, so its own memory cache does the same job. Links are kept
+      # in Postgres (DATABASE_SAVE_DATA_INSTANCE), never in the cache, so a restart loses nothing.
+      # Redis only earns its cost with two or more engine instances sharing one cache.
       - key: CACHE_REDIS_ENABLED
-        value: "true"
-      - key: CACHE_REDIS_URI
-        fromService:
-          type: keyvalue
-          name: whatsapp-cache
-          property: connectionString
-      - key: CACHE_REDIS_PREFIX_KEY
-        value: evolution
-      - key: CACHE_REDIS_SAVE_INSTANCES
         value: "false"
       - key: CACHE_LOCAL_ENABLED
-        value: "false"
+        value: "true"
       - key: CONFIG_SESSION_PHONE_CLIENT
         value: ScaleEzy
       - key: CONFIG_SESSION_PHONE_NAME
@@ -179,14 +176,6 @@ services:
         sync: false
       - key: LOG_LEVEL
         value: info
-
-  # Redis for the engine's cache. Internal only.
-  - type: keyvalue
-    name: whatsapp-cache
-    region: singapore # must equal the Inventory backend's region (to confirm)
-    plan: starter
-    maxmemoryPolicy: noeviction
-    ipAllowList: [] # no access from outside Render
 
 databases:
   # One Postgres server, two databases: `whatsapp` (ours, created here) and `evolution` (the
