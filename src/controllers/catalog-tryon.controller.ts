@@ -84,6 +84,7 @@ export class CatalogTryOnController {
       // chunk is forwarded byte for byte first; the counting happens on a copy of the decoded
       // text and cannot alter, delay or break what the browser receives.
       let views = 0;
+      let upstreamEnded: 'cancelled' | 'failed' | null = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -96,15 +97,25 @@ export class CatalogTryOnController {
         // and it is not ours to depend on. Counting occurrences of an image URL appearing is a
         // weaker signal that survives the far end changing its field names, and if it ever
         // counts nothing the figure is zero rather than wrong.
-        const matches = chunk.match(/"(?:imageUrl|image_url|url)"\s*:/g);
+        // The catalog service sends each view as a VIEW_READY event carrying `image`, which the
+        // url-key count above never matched, so every generation was recorded with 0 views.
+        const matches = chunk.match(/"(?:imageUrl|image_url|url)"\s*:|"type"\s*:\s*"VIEW_READY"/g);
         if (matches) views += matches.length;
+        // A stream can end without finishing: replaced by a newer job, cancelled, or failed.
+        // The service says so with an ERROR event before it closes.
+        if (/"type"\s*:\s*"ERROR"/.test(chunk)) {
+          upstreamEnded = /"code"\s*:\s*"CANCELLED"/.test(chunk) ? 'cancelled' : 'failed';
+        }
       }
 
       // Reached the end of the stream. If the browser had gone, this is a cancellation, not a
       // completed generation -- and the difference is the one the merchant would argue about.
-      void tryOnUsageService.record(clientId, clientDisconnected
+      // Likewise a stream that ended on an ERROR event was not a completed generation.
+      void tryOnUsageService.record(clientId, clientDisconnected || upstreamEnded === 'cancelled'
         ? { cancelled: true }
-        : { completed: true, viewsGenerated: views });
+        : upstreamEnded === 'failed'
+          ? { failed: true }
+          : { completed: true, viewsGenerated: views });
 
       res.end();
     } catch (error: any) {
