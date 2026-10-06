@@ -7,7 +7,8 @@ const BUCKET = 'inventory-images';
 
 const SHOWN = {
   businessName: true, logoUrl: true,
-  businessAddress: true, businessPhone: true, businessEmail: true, gstNumber: true, receiptFooter: true
+  businessAddress: true, businessPhone: true, businessEmail: true, gstNumber: true, receiptFooter: true,
+  gstRegistration: true, gstStateCode: true
 } as const;
 
 /**
@@ -23,9 +24,15 @@ function shape(row: Partial<Record<keyof typeof SHOWN, string | null>> | null | 
     businessPhone: row?.businessPhone || null,
     businessEmail: row?.businessEmail || null,
     gstNumber: row?.gstNumber || null,
-    receiptFooter: row?.receiptFooter || null
+    receiptFooter: row?.receiptFooter || null,
+    // How the shop is registered decides whether its bills carry GST at all (pricing/tax.ts).
+    gstRegistration: row?.gstRegistration || 'UNREGISTERED',
+    gstStateCode: row?.gstStateCode || null
   };
 }
+
+/** The GST state codes a GSTIN can start with (01-38, plus 97 Other Territory and 99 Centre). */
+const STATE_CODE = /^(0[1-9]|1[0-9]|2[0-46-9]|3[0-8]|97|99)$/;
 
 const blankToNull = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? null : v);
 
@@ -42,8 +49,36 @@ const detailsSchema = z.object({
     z.string().regex(GSTIN, 'A GSTIN is 15 characters, like 27ABCDE1234F1Z5.').nullable()
   ).optional(),
   // The line at the bottom of a counter receipt. Short: an 80 mm roll fits about 42 characters a line.
-  receiptFooter: z.preprocess(blankToNull, z.string().trim().max(160, 'Keep the receipt footer under 160 characters.').nullable()).optional()
+  receiptFooter: z.preprocess(blankToNull, z.string().trim().max(160, 'Keep the receipt footer under 160 characters.').nullable()).optional(),
+  gstRegistration: z.enum(['REGULAR', 'COMPOSITION', 'UNREGISTERED'], { errorMap: () => ({ message: 'Say whether the shop is GST registered, on the composition scheme, or not registered.' }) }).optional(),
+  gstStateCode: z.preprocess(blankToNull, z.string().trim().regex(STATE_CODE, 'Choose the state from the list.').nullable()).optional()
 }).strict();
+
+/**
+ * The GST facts have to agree with each other, and the GSTIN is the authority.
+ *
+ * Its first two digits ARE the state, so a state chosen by hand that says otherwise is a slip
+ * (or a GSTIN typed from the wrong certificate), and the state is filled in from the GSTIN when
+ * none was chosen. A shop that says it is not registered cannot also hold a GSTIN. A registered
+ * shop with no GSTIN yet is allowed -- the screen says its tax invoices wait for it.
+ */
+function reconcileGst(current: { gstNumber: string | null; gstRegistration: string; gstStateCode: string | null }, data: Record<string, unknown>) {
+  const gstin = ('gstNumber' in data ? data.gstNumber : current.gstNumber) as string | null;
+  const registration = ('gstRegistration' in data ? data.gstRegistration : current.gstRegistration) as string;
+  let state = ('gstStateCode' in data ? data.gstStateCode : current.gstStateCode) as string | null;
+  if (registration === 'UNREGISTERED' && gstin) {
+    throw { statusCode: 400, message: 'A shop that is not registered has no GSTIN. Clear the GSTIN, or choose GST registered.' };
+  }
+  if (gstin) {
+    const fromGstin = gstin.slice(0, 2);
+    // A state named IN THIS REQUEST that disagrees is a slip; a state saved earlier simply follows the new GSTIN.
+    if ('gstStateCode' in data && state && state !== fromGstin) {
+      throw { statusCode: 400, message: `The GSTIN starts with ${fromGstin}, so the shop is in state ${fromGstin}. Choose that state, or check the GSTIN.` };
+    }
+    state = fromGstin;
+  }
+  return { ...data, gstStateCode: state };
+}
 
 /**
  * The shop's own identity: what it is called, and what it looks like.
@@ -76,7 +111,9 @@ export class BrandingService {
     if (!parsed.success) {
       throw { statusCode: 400, message: parsed.error.issues[0]?.message ?? 'Check the details and try again.' };
     }
-    const saved = await this.upsert(clientId, parsed.data);
+    const current = await prisma.clientSettings.findUnique({ where: { clientId }, select: { gstNumber: true, gstRegistration: true, gstStateCode: true } });
+    const data = reconcileGst(current ?? { gstNumber: null, gstRegistration: 'UNREGISTERED', gstStateCode: null }, parsed.data);
+    const saved = await this.upsert(clientId, data);
     return shape(saved);
   }
 

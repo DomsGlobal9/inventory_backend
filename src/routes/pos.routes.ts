@@ -17,6 +17,9 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateStorefront, onlyPos, storefrontContext } from '../middleware/storefront.middleware';
+import { quoteForTill } from '../services/pos/pos-quote.service';
+import { getShopSettings } from '../lib/clientSettings';
+import { prisma } from '../lib/prisma';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
 import { checkReturnAmounts, exchangeTooEarly, type PosEventResult } from '../services/pos/pos-events.service';
 import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptExchange, acceptSkip, saleStatus } from '../services/pos/pos-queue.service';
@@ -57,8 +60,45 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
       { cursor: req.query.cursor ? String(req.query.cursor) : undefined, limit, since }
     );
 
-    res.json({ success: true, data: page });
+    /*
+     * The shop's manual-discount limit rides with the catalogue, as an EXPLICIT shape: Inventory's
+     * null means no limit, and the till's 0 means nothing without a manager -- a bare null read
+     * into that column would turn the owner's choice into its opposite (contract, catalogue
+     * addition). Measured by the till on the manual part of a bill only, never on an offer.
+     */
+    const [{ manualDiscountMaxPercent: max }, gst] = await Promise.all([
+      getShopSettings(ctx.clientId),
+      prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true } })
+    ]);
+    res.json({ success: true, data: {
+      ...page,
+      manualDiscount: max == null ? { unlimited: true } : { maxPercent: max },
+      // REGULAR charges GST (a missing rate on an item is a gap to fill before it sells);
+      // COMPOSITION and UNREGISTERED charge none, so a missing rate changes nothing there.
+      gst: { registration: gst?.gstRegistration ?? 'UNREGISTERED', stateCode: gst?.gstStateCode ?? null }
+    } });
   } catch (error) { next(error); }
+});
+
+/**
+ * The price after offers, for the basket in front of the cashier (contract §9).
+ *
+ * Advisory: the till sells with or without it. So a basket that cannot be priced at all is a
+ * BAD_PAYLOAD it can act on, and anything else answers 200 with what could be priced.
+ */
+router.post('/quote', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    const answer = await quoteForTill(ctx.clientId, ctx.locationIds[0], req.body);
+    res.json({ success: true, data: answer });
+  } catch (error: any) {
+    if (error?.statusCode === 400 || error?.statusCode === 404) {
+      res.status(422).json({ success: false, data: { answer: 'BAD_PAYLOAD', detail: error.message } });
+      return;
+    }
+    next(error);
+  }
 });
 
 /**
