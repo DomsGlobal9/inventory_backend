@@ -196,7 +196,9 @@ app.use(requestLogger);
 
 // Health Check
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+  // Which build answers: Render sets RENDER_GIT_COMMIT. Until now a deploy could only be checked by
+  // behaviour, which cost an afternoon of "is it live yet" on 6 Oct 2026.
+  res.status(200).json({ status: 'ok', commit: process.env.RENDER_GIT_COMMIT ?? null });
 });
 
 // Readiness Check
