@@ -94,7 +94,7 @@ export class VariantService {
 
     throw new Error(
       'No stock location exists to apply this quantity to. ' +
-      'Create one under Settings -> Stock Locations, then import again.'
+      'Create one under Settings → Stock locations, then import again.'
     );
   }
 
@@ -119,7 +119,7 @@ export class VariantService {
       throw Object.assign(
         new Error(
           'No stock location exists to receive this opening stock. ' +
-          'Create one under Settings -> Stock Locations, then add the quantity.'
+          'Create one under Settings → Stock locations, then add the quantity.'
         ),
         { statusCode: 400 }
       );
