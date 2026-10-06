@@ -91,9 +91,11 @@ export const posConnectionService = {
     });
     const nameOf = new Map(stores.map(s => [s.id, s.name]));
     return rows.map(r => {
-      const p = (r.payload ?? {}) as { reason?: string; skippedBy?: string; skippedAt?: string };
+      const p = (r.payload ?? {}) as { reason?: string; skippedBy?: string; skippedAt?: string; shownAs?: string };
       return {
         document: r.invoiceNo,
+        // The number the owner read at the till, when it differs (an exchange's credit note).
+        shownAs: p.shownAs ?? null,
         locationName: nameOf.get(r.locationId) ?? null,
         reason: p.reason ?? null,
         skippedBy: p.skippedBy ?? null,
