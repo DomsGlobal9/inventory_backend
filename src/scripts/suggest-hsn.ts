@@ -75,7 +75,7 @@ async function main() {
        * tax-inclusive price cannot decide its own rate between Rs 2,625 and Rs 2,950. Fabric keeps
        * the shop's existing inclusive prices, so nothing about a saree's price changes.
        */
-      priceIsExclusive: s.taxSlabbed
+      priceIsExclusive: false // never before-GST: the 27 Sep run took sphl's lehenga off the POS till
     });
   }
 

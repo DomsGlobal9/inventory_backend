@@ -60,7 +60,7 @@ export class ProductService {
       hsnCode: data.hsnCode ? data.hsnCode : null,
       taxRateBps: data.taxRateBps ?? null,
       taxSlabbed: data.taxSlabbed ?? false,
-      priceIsExclusive: data.priceIsExclusive ?? false,
+      priceIsExclusive: false, // always tax-inclusive; see validations/product.schema.ts
       // Published straight from the wizard rather than saved as a draft first, which is the
       // common path. See updateProduct for why this column needs setting at all.
       publishedAt: data.status === 'ACTIVE' ? new Date() : null

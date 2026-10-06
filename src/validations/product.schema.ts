@@ -33,8 +33,8 @@ export const createProductSchema = z.object({
   taxRateBps: z.number().int().min(0, 'A tax rate cannot be negative.').max(10000, 'A tax rate cannot be more than 100%.').optional(),
   /** True for stitched apparel, where the rate depends on what one piece sells for. */
   taxSlabbed: z.boolean().optional(),
-  /** Stitched apparel must be priced without tax -- see PLAN-gst.md section 2. */
-  priceIsExclusive: z.boolean().optional(),
+  // priceIsExclusive is no longer accepted: prices are always tax-inclusive (the rate is used as
+  // typed, PLAN-gst.md), and a before-GST price makes the POS refuse the item. Dropped silently.
   // Non-negative here, with the "must be positive" rule applied below only to products
   // that are actually going live. A DRAFT is a save-point for something unfinished -- the
   // price is often the last thing decided -- and every comparable catalogue (Shopify, Zoho)
