@@ -36,6 +36,7 @@ import { productService } from '../services/product.service';
 import { AuthService } from '../services/auth.service';
 import { ensureTestTenant } from './support/testTenant';
 import { applySale } from '../services/pos/pos-events.service';
+import { offerService } from '../services/offers';
 
 const API = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
 const BASE = `${API}/pos/v1`;
@@ -89,6 +90,10 @@ async function teardown() {
     ['return items', () => prisma.salesReturnItem.deleteMany({ where: { salesReturn: w } })],
     ['returns', () => prisma.salesReturn.deleteMany({ where: w })],
     ['orders', () => prisma.salesOrder.deleteMany({ where: w })],
+    ['quotes', () => prisma.pricingQuote.deleteMany({ where: w })],
+    ['redemptions', () => prisma.offerRedemption.deleteMany({ where: w })],
+    ['offer versions', () => prisma.offerVersion.deleteMany({ where: { offer: w } })],
+    ['offers', () => prisma.offer.deleteMany({ where: w })],
     ['transactions', () => prisma.inventoryTransaction.deleteMany({ where: w })],
     ['customers', () => prisma.customer.deleteMany({ where: w })],
     ['stock', () => prisma.inventoryStock.deleteMany({ where: w })],
@@ -331,6 +336,142 @@ async function main() {
     check('the till\'s numbers disagree (Rs 100 off said, Rs 200 less charged): applied at what was charged, with a warning',
       j4?.answer === 'APPLIED' && l4?.total === PRICE * 3 - 20000 && (j4?.warnings ?? []).some((w: string) => /discount/i.test(w)), `${j4?.answer} ${JSON.stringify(j4?.warnings)} ${JSON.stringify(l4)}`);
     check('every one of those took its pieces off the shelf: 20 - 3 - 2 - 3 - 3 = 9', await shelf(j.variant.id) === 9, String(await shelf(j.variant.id)));
+    const kindJ = await prisma.salesOrder.findFirst({ where: { clientId: CLIENT, externalOrderId: `INV/BAD/${STAMP}-J1` }, select: { documentKind: true } });
+    check('a till bill in a GST-registered shop is recorded as a TAX_INVOICE, its kind fixed at sale time', kindJ?.documentKind === 'TAX_INVOICE', String(kindJ?.documentKind));
+
+    { // ── K ── (its own block: J above already named l1 and l3)
+    console.log('\nK. THE TILL ASKS FOR THE PRICE AFTER OFFERS (contract §9)');
+    const t3 = await till('Quote till');
+    const kA = await mk(10, 'Offer saree', 60);
+    const kB = await mk(11, 'Second saree', 60);
+    const A = kA.variant.variantCode, B = kB.variant.variantCode;
+    const live = { startsAt: new Date(Date.now() - 3600_000), endsAt: new Date(Date.now() + 30 * 86400_000) };
+    const offer = async (input: any) => {
+      const o: any = await offerService.create(CLIENT, { level: 'LINE', valueType: 'PERCENTAGE', scope: 'ALL', ...live, ...input } as any);
+      if (o.status !== 'ACTIVE') await offerService.setStatus(CLIENT, o.id, 'ACTIVE');
+      return o;
+    };
+    const usage = async (id: string) => (await prisma.offer.findUniqueOrThrow({ where: { id }, select: { usageCount: true } })).usageCount;
+    const auto = await offer({ name: 'Ten percent off', trigger: 'AUTOMATIC', value: 10 });
+    const quote = (lines: any[], extra: any = {}) => api(t3.key).post('/quote', { lines, ...extra });
+
+    const k1 = await quote([{ itemCode: A, qty: 2 }]);
+    const l1 = k1.data?.data?.lines?.[0];
+    check('2 x Rs 3000 with 10% off: list 3000, Rs 600 off, line Rs 5,400, the offer named', k1.status === 200 && l1?.listUnitPaise === PRICE && l1?.discountPaise === 60000 && l1?.lineTotalPaise === 540000 && l1?.offers?.[0]?.offerId === auto.id && l1?.offers?.[0]?.name === 'Ten percent off' && k1.data.data.totalPaise === 540000, `${k1.status} ${JSON.stringify(k1.data).slice(0, 300)}`);
+    const until = Date.parse(k1.data?.data?.validUntil ?? '') - Date.now();
+    check('  ...with a quoteId, good for about 15 minutes', typeof k1.data?.data?.quoteId === 'string' && until > 13 * 60_000 && until < 16 * 60_000, String(until));
+    const k2 = await quote([{ itemCode: A, qty: 2 }]);
+    check('the same basket again, unused: the SAME quoteId (no row per scan)', k2.data?.data?.quoteId === k1.data.data.quoteId, `${k2.data?.data?.quoteId} vs ${k1.data.data.quoteId}`);
+    const k3 = await quote([{ itemCode: `NOPE-${STAMP}`, qty: 1 }, { itemCode: A, qty: 5 }]);
+    const l3 = k3.data?.data?.lines ?? [];
+    check('an item Inventory does not know: that line is unpriced, the other keeps its offer, the quote stands', k3.status === 200 && l3[0]?.unpriced === true && l3[1]?.discountPaise === 150000 && typeof k3.data.data.quoteId === 'string' && k3.data.data.totalPaise === 1350000, `${k3.status} ${JSON.stringify(l3).slice(0, 200)}`);
+    const k4 = await quote([{ itemCode: A, qty: 1 }, { itemCode: A, qty: 1 }]);
+    check('the same item on two lines is refused in words (422 BAD_PAYLOAD)', k4.status === 422 && k4.data?.data?.answer === 'BAD_PAYLOAD' && /once/.test(k4.data?.data?.detail ?? ''), `${k4.status} ${JSON.stringify(k4.data).slice(0, 150)}`);
+    const k5 = await quote([]);
+    const k5b = await quote(Array.from({ length: 101 }, (_, i) => ({ itemCode: `X${i}`, qty: 1 })));
+    check('an empty basket, or more than 100 lines, is refused', k5.status === 422 && k5b.status === 422, `${k5.status} ${k5b.status}`);
+    const k6 = await quote([{ itemCode: A, qty: 1 }], { couponCode: 'NOSUCH' });
+    check('a code nobody made: the quote answers 200 and says the code is refused, in words', k6.status === 200 && k6.data?.data?.coupon?.accepted === false && /no offer with that code/i.test(k6.data?.data?.coupon?.reason ?? '') && k6.data.data.lines[0].discountPaise === 30000, JSON.stringify(k6.data?.data?.coupon));
+
+    await offerService.setStatus(CLIENT, auto.id, 'PAUSED');
+    const coded = await offer({ name: 'Flat two hundred off', trigger: 'CODE', couponCode: `TILL${STAMP}`, level: 'ORDER', valueType: 'FIXED_AMOUNT', value: 200 });
+    const k7 = await quote([{ itemCode: A, qty: 1 }], { couponCode: `till${STAMP}` });
+    const l7 = k7.data?.data?.lines?.[0];
+    check('a real code, typed in small letters: accepted, Rs 200 off the line, the code offer named', k7.status === 200 && k7.data?.data?.coupon?.accepted === true && l7?.discountPaise === 20000 && l7?.lineTotalPaise === 280000 && l7?.offers?.[0]?.offerId === coded.id, `${k7.status} ${JSON.stringify(k7.data?.data).slice(0, 300)}`);
+
+    const once = await offer({ name: 'Once each', trigger: 'AUTOMATIC', value: 5, usageLimitPerCustomer: 1 });
+    const phone = `+919${String(STAMP).slice(-9)}`;
+    await prisma.customer.create({ data: { clientId: CLIENT, customerCode: `QC-${STAMP}`, name: 'Quote Customer', phone, externalCustomerId: `POS:${phone}` } });
+    const k8 = await quote([{ itemCode: A, qty: 6 }]);
+    check('a walk-in (no customerRef): a once-per-customer offer is simply left out, never refused', k8.status === 200 && (k8.data?.data?.lines?.[0]?.offers ?? []).length === 0 && k8.data?.data?.lines?.[0]?.discountPaise === 0, JSON.stringify(k8.data?.data?.lines?.[0]));
+    const k9 = await quote([{ itemCode: A, qty: 6 }], { customerRef: phone });
+    check('the same basket with the customer named: the once-per-customer offer applies (Rs 900 off)', k9.status === 200 && k9.data?.data?.lines?.[0]?.offers?.[0]?.offerId === once.id && k9.data.data.lines[0].discountPaise === 90000, JSON.stringify(k9.data?.data?.lines?.[0]));
+    const k10 = await quote([{ itemCode: A, qty: 7 }], { customerRef: '+919000000001' });
+    check('a number Inventory has never seen: priced as a guest', (k10.data?.data?.lines?.[0]?.offers ?? []).length === 0, JSON.stringify(k10.data?.data?.lines?.[0]));
+    check('  ...and those three are three different quotes', new Set([k8.data.data.quoteId, k9.data.data.quoteId, k10.data.data.quoteId]).size === 3);
+    await offerService.setStatus(CLIENT, once.id, 'PAUSED');
+    await offerService.setStatus(CLIENT, auto.id, 'ACTIVE');
+
+    // ── L ────────────────────────────────────────────────
+    console.log('\nL. A TILL BILL NAMES ITS QUOTE: OFFERS COUNTED PER LINE, NEVER REFUSED (contract §4.1)');
+    const orderOf = async (inv: string) => prisma.salesOrder.findFirst({ where: { clientId: CLIENT, externalOrderId: inv }, select: { id: true, customerId: true } });
+    const counted = async (inv: string) => { const o = await orderOf(inv); return o ? prisma.offerRedemption.findMany({ where: { salesOrderId: o.id, status: 'COUNTED' }, select: { offerId: true, amount: true } }) : []; };
+    const discountRows = async (inv: string) => { const o = await orderOf(inv); return o ? prisma.salesOrderDiscount.findMany({ where: { salesOrderId: o.id }, select: { offerId: true, amount: true, source: true } }) : []; };
+    const bill = (inv: string, quoteId: string | null, lines: any[], extra: any = {}) => ({
+      kind: 'sale.completed', invoiceNo: `INV/BAD/${STAMP}-${inv}`, occurredAt: new Date().toISOString(), quoteId, lines, totals: {},
+      payments: [{ method: 'CASH', amountPaise: lines.reduce((a: number, l: any) => a + l.lineTotalPaise, 0) }], ...extra
+    });
+    const quotedLine = (q: any, code: string) => { const l = q.data.data.lines.find((x: any) => x.itemCode === code); return { itemCode: code, qty: l.qty, unitPricePaise: l.listUnitPaise, discountPaise: l.discountPaise, lineTotalPaise: l.lineTotalPaise, offers: l.offers.map((o: any) => ({ offerId: o.offerId, discountPaise: o.discountPaise })) }; };
+
+    const q1 = await quote([{ itemCode: A, qty: 2 }]);
+    const s1: any = await applySale(CLIENT, store.id, bill('L1', q1.data.data.quoteId, [quotedLine(q1, A)]) as any);
+    const c1 = await counted(`INV/BAD/${STAMP}-L1`);
+    const d1 = await discountRows(`INV/BAD/${STAMP}-L1`);
+    const o1 = await orderOf(`INV/BAD/${STAMP}-L1`);
+    const quoteRow1 = await prisma.pricingQuote.findUnique({ where: { id: q1.data.data.quoteId } });
+    check('a bill built from its quote: applied with no warnings, the offer COUNTED for Rs 600, a discount row written, the quote spent by this bill',
+      s1?.answer === 'APPLIED' && !(s1?.warnings?.length) && c1.length === 1 && c1[0].offerId === auto.id && Number(c1[0].amount) === 600 && d1.length === 1 && d1[0].source === 'OFFER' && Number(d1[0].amount) === 600 && quoteRow1?.consumedAt != null && quoteRow1?.salesOrderId === o1?.id && await usage(auto.id) === 1,
+      `${s1?.answer} ${JSON.stringify(s1?.warnings)} counted=${JSON.stringify(c1)} rows=${JSON.stringify(d1)} usage=${await usage(auto.id)}`);
+    const q2 = await quote([{ itemCode: A, qty: 2 }]);
+    check('the same basket for the NEXT customer gets a new quote, because the first is spent', q2.data?.data?.quoteId && q2.data.data.quoteId !== q1.data.data.quoteId, `${q2.data?.data?.quoteId} vs ${q1.data.data.quoteId}`);
+    const s2: any = await applySale(CLIENT, store.id, bill('L2', q2.data.data.quoteId, [quotedLine(q2, A)]) as any);
+    check('  ...and that bill is counted too (the second customer is not silently missed)', s2?.answer === 'APPLIED' && (await counted(`INV/BAD/${STAMP}-L2`)).length === 1 && await usage(auto.id) === 2, `${s2?.answer} usage=${await usage(auto.id)}`);
+    const s3: any = await applySale(CLIENT, store.id, bill('L3', q1.data.data.quoteId, [quotedLine(q1, A)]) as any);
+    check('a bill naming an already-spent quote: applied, nothing counted, a warning says why', s3?.answer === 'APPLIED' && (s3?.warnings ?? []).some((w: string) => /already used/.test(w)) && (await counted(`INV/BAD/${STAMP}-L3`)).length === 0 && await usage(auto.id) === 2, `${s3?.answer} ${JSON.stringify(s3?.warnings)}`);
+
+    const q4 = await quote([{ itemCode: A, qty: 1 }, { itemCode: B, qty: 1 }]);
+    const overridden = { itemCode: B, qty: 1, unitPricePaise: PRICE, discountPaise: 50000, lineTotalPaise: PRICE - 50000 };
+    const s4: any = await applySale(CLIENT, store.id, bill('L4', q4.data.data.quoteId, [quotedLine(q4, A), overridden]) as any);
+    const c4 = await counted(`INV/BAD/${STAMP}-L4`);
+    check('the cashier overrode one line (sent with no offers): that line is not counted and says nothing; the other line IS counted (Rs 300)', s4?.answer === 'APPLIED' && !(s4?.warnings?.length) && c4.length === 1 && Number(c4[0].amount) === 300 && await usage(auto.id) === 3, `${s4?.answer} ${JSON.stringify(s4?.warnings)} ${JSON.stringify(c4)}`);
+    const q4b = await quote([{ itemCode: A, qty: 1 }, { itemCode: B, qty: 1 }]);
+    const tampered = { ...quotedLine(q4b, A), offers: [{ offerId: auto.id, discountPaise: 99999 }] };
+    const s4b: any = await applySale(CLIENT, store.id, bill('L4B', q4b.data.data.quoteId, [tampered, quotedLine(q4b, B)]) as any);
+    const c4b = await counted(`INV/BAD/${STAMP}-L4B`);
+    check('a line whose offers differ from the quote: warned and not counted on that line; the other line still counts', s4b?.answer === 'APPLIED' && (s4b?.warnings ?? []).some((w: string) => /not the ones the quote gave/.test(w)) && c4b.length === 1 && Number(c4b[0].amount) === 300, `${s4b?.answer} ${JSON.stringify(s4b?.warnings)} ${JSON.stringify(c4b)}`);
+
+    const s5: any = await applySale(CLIENT, store.id, bill('L5', '00000000-0000-4000-8000-000000000000', [{ ...quotedLine(q1, A), offers: [{ offerId: auto.id, discountPaise: 60000 }] }]) as any);
+    check('a quote Inventory never gave: applied at what was charged, warned, nothing counted', s5?.answer === 'APPLIED' && (s5?.warnings ?? []).some((w: string) => /not one Inventory gave/.test(w)) && (await counted(`INV/BAD/${STAMP}-L5`)).length === 0, `${s5?.answer} ${JSON.stringify(s5?.warnings)}`);
+    const s5b: any = await applySale(CLIENT, store.id, bill('L5B', null, [{ ...quotedLine(q1, A), offers: [{ offerId: auto.id, discountPaise: 60000 }] }]) as any);
+    check('offers on the lines but no quote at all: applied, warned, nothing counted', s5b?.answer === 'APPLIED' && (s5b?.warnings ?? []).some((w: string) => /no quote/.test(w)) && (await counted(`INV/BAD/${STAMP}-L5B`)).length === 0, `${s5b?.answer} ${JSON.stringify(s5b?.warnings)}`);
+
+    const q6 = await quote([{ itemCode: A, qty: 3 }]);
+    await prisma.pricingQuote.update({ where: { id: q6.data.data.quoteId }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    const s6: any = await applySale(CLIENT, store.id, bill('L6', q6.data.data.quoteId, [quotedLine(q6, A)]) as any);
+    check('a quote that had expired when the bill was made: applied, warned, nothing counted', s6?.answer === 'APPLIED' && (s6?.warnings ?? []).some((w: string) => /expired/.test(w)) && (await counted(`INV/BAD/${STAMP}-L6`)).length === 0, `${s6?.answer} ${JSON.stringify(s6?.warnings)}`);
+    const q7 = await quote([{ itemCode: A, qty: 4 }]);
+    await prisma.pricingQuote.update({ where: { id: q7.data.data.quoteId }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    const before7 = await usage(auto.id);
+    const s7: any = await applySale(CLIENT, store.id, bill('L7', q7.data.data.quoteId, [quotedLine(q7, A)], { occurredAt: new Date(Date.now() - 10 * 60_000).toISOString() }) as any);
+    check('an offline till: the bill was MADE before the quote expired and arrives after -- still counted', s7?.answer === 'APPLIED' && !(s7?.warnings?.length) && (await counted(`INV/BAD/${STAMP}-L7`)).length === 1 && await usage(auto.id) === before7 + 1, `${s7?.answer} ${JSON.stringify(s7?.warnings)}`);
+
+    const only = await offer({ name: 'Only one', trigger: 'AUTOMATIC', value: 15, usageLimit: 1 });
+    const q8a = await quote([{ itemCode: A, qty: 8 }]);
+    const q8b = await quote([{ itemCode: B, qty: 2 }]);
+    check('a 15% offer with one use left beats the 10% one on both quotes', q8a.data?.data?.lines?.[0]?.offers?.[0]?.offerId === only.id && q8b.data?.data?.lines?.[0]?.offers?.[0]?.offerId === only.id, JSON.stringify([q8a.data?.data?.lines?.[0]?.offers, q8b.data?.data?.lines?.[0]?.offers]));
+    const s8a: any = await applySale(CLIENT, store.id, bill('L8A', q8a.data.data.quoteId, [quotedLine(q8a, A)]) as any);
+    const s8b: any = await applySale(CLIENT, store.id, bill('L8B', q8b.data.data.quoteId, [quotedLine(q8b, B)]) as any);
+    check('the first bill uses the last slot; the second, quoted before that, is applied at what was charged with a warning and not counted', s8a?.answer === 'APPLIED' && (await counted(`INV/BAD/${STAMP}-L8A`)).length === 1 && s8b?.answer === 'APPLIED' && (s8b?.warnings ?? []).some((w: string) => /as many times/.test(w)) && (await counted(`INV/BAD/${STAMP}-L8B`)).length === 0 && await usage(only.id) === 1, `${s8a?.answer} / ${s8b?.answer} ${JSON.stringify(s8b?.warnings)} usage=${await usage(only.id)}`);
+    await offerService.setStatus(CLIENT, only.id, 'PAUSED');
+
+    /*
+     * Through the door. The LOCAL worker is switched off (it must not race the live one on the
+     * shared database), so a queued event is applied by the live backend -- with whatever code is
+     * live. What can be proved here is that the door keeps the quote and the offers on the row the
+     * worker will read; applySale above proves what the worker then does with them.
+     */
+    const sent9 = await send(t3.key, bill('L9', '00000000-0000-4000-8000-000000000009', [{ ...quotedLine(q1, A), offers: [{ offerId: auto.id, discountPaise: 60000 }] }]));
+    const row9: any = await prisma.posInboundEvent.findFirst({ where: { clientId: CLIENT, invoiceNo: `INV/BAD/${STAMP}-L9` }, select: { payload: true } });
+    check('through the door: the row the worker reads keeps the quoteId and the offers on the lines', sent9.answer === 'APPLIED' && row9?.payload?.quoteId === '00000000-0000-4000-8000-000000000009' && row9?.payload?.lines?.[0]?.offers?.[0]?.offerId === auto.id, `${sent9.answer} ${JSON.stringify(row9?.payload?.lines?.[0]?.offers)}`);
+
+    const cat1 = await api(t3.key).get('/catalogue?limit=1');
+    check('the catalogue carries the discount limit as an explicit shape: no limit set -> { unlimited: true }', cat1.status === 200 && JSON.stringify(cat1.data?.data?.manualDiscount) === JSON.stringify({ unlimited: true }), JSON.stringify(cat1.data?.data?.manualDiscount));
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { manualDiscountMaxPercent: 15 } });
+    await new Promise(r => setTimeout(r, 61_000)); // the server caches shop settings for 60 s
+    const cat2 = await api(t3.key).get('/catalogue?limit=1');
+    check('  ...a limit of 15% -> { maxPercent: 15 } (a minute later: the server caches settings for 60 s)', JSON.stringify(cat2.data?.data?.manualDiscount) === JSON.stringify({ maxPercent: 15 }), JSON.stringify(cat2.data?.data?.manualDiscount));
+    await posConnectionService.disconnect(CLIENT, t3.id);
+    }
   } finally {
     await teardown();
   }

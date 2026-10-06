@@ -30,6 +30,8 @@ import { salesOrderService } from '../sales-order.service';
 import { dispatchService } from '../dispatch.service';
 import { planPayments } from '../payments/payment-rules';
 import { recordPayments } from '../payments';
+import { offerRedemptionService } from '../offers/redemption.service';
+import { settleSale } from '../loyalty';
 
 export const POS_SOURCE = 'SCALEEZY_POS';
 
@@ -89,6 +91,8 @@ export interface PosLine {
   taxRateBps?: number | null;
   /** The POS's own tax for the line, whole paise. */
   taxPaise?: number | null;
+  /** The offers the quote gave this line, copied back (§4.1). Absent on a line the cashier overrode. */
+  offers?: { offerId: string; discountPaise: number }[] | null;
 }
 
 /**
@@ -132,6 +136,11 @@ export interface PosSaleEvent {
   occurredAt: string;
   locationCode?: string | null;
   customer?: { name?: string | null; phone?: string | null } | null;
+  /** The customer's phone, E.164, or null for a walk-in -- the same "who" the quote was asked for. */
+  customerRef?: string | null;
+  /** The quote the bill was built from, and the code typed at the till, if any (§4.1). */
+  quoteId?: string | null;
+  couponCode?: string | null;
   lines: PosLine[];
   totals: { roundOffPaise?: number };
   /**
@@ -160,7 +169,7 @@ const bad = (detail: string): PosEventResult => ({ answer: 'BAD_PAYLOAD', detail
  * our uuids would couple the POS's database to our primary keys -- the same reason StorefrontEvent
  * carries productCode and sku.
  */
-async function resolveItems(clientId: string, codes: string[]) {
+export async function resolveItems(clientId: string, codes: string[]) {
   const wanted = [...new Set(codes)];
   const found = await prisma.productVariant.findMany({
     where: { clientId, OR: [{ variantCode: { in: wanted } }, { sku: { in: wanted } }] },
@@ -343,7 +352,96 @@ export async function writeSaleInTransaction(
       );
     }
 
+  /*
+   * LOYALTY: a till bill with a customer on it earns, under the shop's rules (off unless the shop
+   * switched points on and ticked "Counter sales"). Since Inventory's own New sale went (6 Oct
+   * 2026) the till is the counter, so this is where counter earning happens. A walk-in earns
+   * nothing: there is nobody to credit. Earned on what was charged, the bill as the till sent it.
+   *
+   * SPENDING points on the till is not here yet (contract §10, a synchronous reserve): a POINTS
+   * payment row is recorded as money the till says it took, but no points are debited and the
+   * bill earns nothing, and a warning says so -- never a refusal.
+   */
+  const warningsOut: string[] = [];
+  const pointsRows = (event.payments ?? []).filter(p => p.method === 'POINTS');
+  if (customerPhone && made.customerId) {
+    if (pointsRows.length) {
+      warningsOut.push('This bill was part-paid with points, which the till cannot settle with Inventory yet. The customer\'s points were not changed.');
+    } else {
+      const billMinor = event.lines.reduce((a, l) => a + Math.round(l.lineTotalPaise), 0);
+      await settleSale(tx, { clientId, customerId: made.customerId, orderId: made.id, billMinor, pointsPaidMinor: 0, userId: null });
+    }
+  }
+
+  // §4.1: the offers this bill says it used, counted against the quote it names. Never a refusal.
+  (made as any).offerWarnings = [...warningsOut, ...await countTillOffers(tx, clientId, locationId, made, event, byCode)];
+
   return made;
+}
+
+/**
+ * The offers a till bill says it used, COUNTED PER LINE against the quote it names (contract §4.1).
+ *
+ * The bill is already recorded exactly as charged -- this changes no money. It decides only what
+ * is COUNTED: usage limits ("first 50 customers"), single-use codes, per-customer counts, and the
+ * discount rows the offer's own report is built from. A line whose offers are exactly what the
+ * quote gave it counts; a line that differs (the cashier overrode a price, so the till sent no
+ * offers for it) simply counts nothing for itself and never voids the rest of the bill.
+ *
+ * Nothing here refuses. A quote Inventory never gave, one already used, one that had expired when
+ * the bill was made (judged at occurredAt, so an offline till's offers still count), or an offer
+ * that ran out in the meantime: the sale stands and a warning says why nothing was counted.
+ * ponytail: no SalesOrderItemDiscount allocations are written for till bills -- the line totals
+ * already carry the discount; add them if a report ever needs per-line offer shares.
+ */
+export async function countTillOffers(
+  tx: any, clientId: string, locationId: string,
+  order: { id: string; customerId: string | null }, event: PosSaleEvent, byCode: Map<string, string>
+): Promise<string[]> {
+  const warnings: string[] = [];
+  const claims = event.lines.filter(l => Array.isArray(l.offers) && l.offers.length > 0);
+  if (!event.quoteId) {
+    if (claims.length) warnings.push('The bill names offers but no quote, so they were not counted. The bill was recorded as charged.');
+    return warnings;
+  }
+  const notCounted = (why: string) => { warnings.push(`${why} The bill was recorded as charged and its offers were not counted.`); return warnings; };
+  const quote = typeof event.quoteId === 'string' ? await tx.pricingQuote.findFirst({ where: { id: event.quoteId, clientId } }) : null;
+  if (!quote) return notCounted(`Quote ${event.quoteId} is not one Inventory gave.`);
+  if (quote.locationId !== locationId) return notCounted(`Quote ${event.quoteId} was for another store.`);
+  if (quote.consumedAt) return notCounted(`Quote ${event.quoteId} was already used by another bill.`);
+  const madeAt = new Date(event.occurredAt);
+  if (!(quote.expiresAt > madeAt)) return notCounted(`Quote ${event.quoteId} had expired when the bill was made.`);
+  const claimed = await tx.pricingQuote.updateMany({ where: { id: quote.id, consumedAt: null }, data: { consumedAt: new Date(), salesOrderId: order.id } });
+  if (!claimed.count) return notCounted(`Quote ${event.quoteId} was already used by another bill.`);
+
+  const stored: any = quote.result ?? {};
+  const quotedByVariant = new Map<string, any>((stored.lines ?? []).map((l: any) => [l.variantId, l]));
+  const shares = new Map<string, { amountMinor: number; offerVersionId: string | null; title: string; code: string | null }>();
+  for (const line of event.lines) {
+    const sent = Array.isArray(line.offers) ? line.offers : [];
+    if (!sent.length) continue;
+    const ql = quotedByVariant.get(byCode.get(line.itemCode)!);
+    const given: any[] = (ql?.appliedOffers ?? []).map((a: any) => ({ ...a, amountMinor: toMinor(a.amount) }));
+    const same = !!ql && ql.quantity === line.qty && sent.length === given.length
+      && sent.every(s => given.some(g => g.offerId === s.offerId && g.amountMinor === s.discountPaise));
+    if (!same) { warnings.push(`${line.itemCode}: its offers are not the ones the quote gave it, so they were not counted on this line.`); continue; }
+    for (const g of given) {
+      const cur = shares.get(g.offerId) ?? { amountMinor: 0, offerVersionId: g.offerVersionId ?? null, title: g.title, code: g.code ?? null };
+      cur.amountMinor += g.amountMinor;
+      shares.set(g.offerId, cur);
+    }
+  }
+  // Each offer on its own, so one that has run out costs only itself.
+  for (const [offerId, s] of shares) {
+    try {
+      await offerRedemptionService.record(tx, { clientId, salesOrderId: order.id, customerId: order.customerId }, [{ offerId, offerVersionId: s.offerVersionId, amountMinor: s.amountMinor, code: s.code }]);
+      await tx.salesOrderDiscount.create({ data: { salesOrderId: order.id, offerId, offerVersionId: s.offerVersionId, source: 'OFFER', title: s.title, amount: fromMinor(s.amountMinor), code: s.code } });
+    } catch (e: any) {
+      if (e?.statusCode === 409) warnings.push(`${s.title}: ${e.message} It was not counted on this bill; the bill was recorded as charged.`);
+      else throw e;
+    }
+  }
+  return warnings;
 }
 
 /**
@@ -510,6 +608,7 @@ export async function applySale(
       );
     }
 
+    if (Array.isArray((order as any).offerWarnings)) warnings.push(...(order as any).offerWarnings);
     for (const line of event.lines) {
       const priced = tillLinePrice(line).warning;
       if (priced) warnings.push(priced);

@@ -31,6 +31,7 @@ import { whatsappClient, WhatsAppServiceError } from '../services/whatsapp/clien
 import * as wa from '../services/whatsapp/service';
 import * as R from '../services/loyalty/rules';
 import { settleSentOut } from '../services/loyalty';
+import { applySale } from '../services/pos/pos-events.service';
 import { runCampaignTick, prepareShopDay, sendAfterSaleNotice, campaigns, render } from '../services/campaigns';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
@@ -574,6 +575,35 @@ async function main() {
       const o7 = await order(null, 2);
       await send(o7);
       check('an order the staff typed in (not the online shop, not Shopify) earns nothing when sent out', await statusOf(o7.id) === 'DISPATCHED' && await earnedOn(o7.id) === 0);
+
+      // ── the POS till is the counter now (New sale left Inventory on 6 Oct 2026) ──
+      const tillPhone = `+919${String(STAMP).slice(-5)}6666`;
+      const tillBill = (inv: string, qty: number, over: any = {}) => ({
+        kind: 'sale.completed', invoiceNo: `INV/LOY/${STAMP}-${inv}`, occurredAt: new Date().toISOString(),
+        customer: { name: 'Till Customer', phone: tillPhone },
+        lines: [{ itemCode: saree.variantCode, qty, unitPricePaise: 100000, lineTotalPaise: 100000 * qty }],
+        totals: {}, payments: [{ method: 'CASH', amountPaise: 100000 * qty }], ...over
+      });
+      const tillOrder = async (inv: string) => prisma.salesOrder.findFirstOrThrow({ where: { clientId: SHOP, externalOrderId: `INV/LOY/${STAMP}-${inv}` } });
+      const t1: any = await applySale(SHOP, store.id, tillBill('T1', 5) as any);
+      const tillCustomer = await prisma.customer.findFirstOrThrow({ where: { clientId: SHOP, externalCustomerId: `POS:${tillPhone}` } });
+      const wantT1 = R.pointsEarned(500000, rules);
+      check(`a till bill with the customer's phone on it earns at the counter (${wantT1} points), with no warning`, t1?.answer === 'APPLIED' && !(t1?.warnings?.length) && wantT1 > 0 && await pointsOf(tillCustomer.id) === wantT1 && await earnedOn((await tillOrder('T1')).id) === wantT1, `${t1?.answer} ${JSON.stringify(t1?.warnings)} pts=${await pointsOf(tillCustomer.id)}`);
+      check('  ...and in a shop that is not GST registered the bill is a plain RECEIPT, its kind fixed at sale time', (await tillOrder('T1')).documentKind === 'RECEIPT', String((await tillOrder('T1')).documentKind));
+      const t2: any = await applySale(SHOP, store.id, tillBill('T2', 3, { customer: null }) as any);
+      check('a walk-in till bill (no phone) earns nothing: there is nobody to credit', t2?.answer === 'APPLIED' && await earnedOn((await tillOrder('T2')).id) === 0, `${t2?.answer}`);
+      const t3: any = await applySale(SHOP, store.id, tillBill('T3', 2, { payments: [{ method: 'POINTS', amountPaise: 50000 }, { method: 'CASH', amountPaise: 150000 }] }) as any);
+      check('a till bill part-paid with POINTS (not settled yet, §10): applied, a warning, no points moved either way', t3?.answer === 'APPLIED' && (t3?.warnings ?? []).some((w: string) => /points/i.test(w)) && await pointsOf(tillCustomer.id) === wantT1 && await earnedOn((await tillOrder('T3')).id) === 0, `${t3?.answer} ${JSON.stringify(t3?.warnings)} pts=${await pointsOf(tillCustomer.id)}`);
+      const t1Items = await prisma.dispatchItem.findMany({ where: { dispatch: { salesOrderId: (await tillOrder('T1')).id } } });
+      const tRet = await returnService.createReturn(SHOP, (await tillOrder('T1')).id, t1Items.map(d => ({ dispatchItemId: d.id, quantity: d.quantity })), 'Brought back', 'CUSTOMER_REJECTED');
+      await returnService.receiveReturn(SHOP, tRet.id);
+      await returnService.inspectReturn(SHOP, tRet.id, tRet.items.map((i: any) => ({ salesReturnItemId: i.id, disposition: 'RESTOCK' as const })));
+      await returnService.completeReturn(SHOP, tRet.id);
+      check('the whole till bill returned: every point it earned goes back', await pointsOf(tillCustomer.id) === 0, String(await pointsOf(tillCustomer.id)));
+      await own.put('/loyalty/settings', { earnAtCounter: false });
+      const t4: any = await applySale(SHOP, store.id, tillBill('T4', 1) as any);
+      check('Counter sales unticked: a till bill goes through and earns nothing', t4?.answer === 'APPLIED' && await earnedOn((await tillOrder('T4')).id) === 0, `${t4?.answer}`);
+      await own.put('/loyalty/settings', { earnAtCounter: true });
 
       await own.put('/loyalty/settings', { earnAtCounter: false });
       const counterBefore = await pointsOf(meena.id);

@@ -18,7 +18,7 @@ import { phoneForOutsideCustomer } from './customer.service';
 import { phoneSearchDigits } from '../lib/phone';
 import { paymentSummary } from './payments/payment-rules';
 import { freezeTaxForLine } from './pricing/freezeTax';
-import { mayChargeTax, type GstRegistration } from './pricing/tax';
+import { mayChargeTax, documentKindFor, type GstRegistration } from './pricing/tax';
 import { settleSentOut } from './loyalty';
 
 /** Kept here as well as in counter-sale, which imports this service: one string, no import cycle. */
@@ -728,6 +728,14 @@ export class SalesOrderService {
       const updatedOrder = await tx.salesOrder.update({
         where: { id: order.id },
         data: {
+          /*
+           * What kind of document this bill IS, fixed at the moment of sale: a tax invoice for a
+           * registered shop, a Bill of Supply under the composition scheme, a plain receipt
+           * otherwise. Stored, because a bill issued last month must keep its kind when the owner
+           * changes the shop's registration today -- until 6 Oct 2026 nothing wrote this column
+           * and every document was rendered as a receipt.
+           */
+          documentKind: documentKindFor((gstSettings?.gstRegistration ?? 'UNREGISTERED') as GstRegistration),
           subtotal: fromMinor(totals.subtotalMinor),
           // Re-stated from the lines rather than left as the caller sent it. For an order with
           // only an order-level discount the two are identical; for one carrying per-line

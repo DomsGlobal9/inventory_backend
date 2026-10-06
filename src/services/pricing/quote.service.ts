@@ -73,9 +73,16 @@ export class PricingQuoteService {
      * a row per tap for anybody who cared to tap, and none of them would ever become an order.
      * The saved quote is the one made at checkout, which is the one the order is written against.
      */
-    opts: { persist?: boolean } = {}
+    opts: { persist?: boolean; tolerant?: boolean } = {}
   ): Promise<any> {
     const persist = opts.persist !== false;
+    /*
+     * `tolerant`: a line Inventory cannot price -- an unknown variant, or one not for sale at this
+     * location -- comes back in `unpriced` instead of failing the whole quote. The POS till holds
+     * items Inventory has never seen, and losing the offer on every other line because of one of
+     * them would be a bad trade (contract §9.3). Everything else is refused exactly as before.
+     */
+    const unpriced: string[] = [];
     if (!req.locationId) throw badRequest('Say which location this is selling from.');
     if (!Array.isArray(req.lines) || req.lines.length === 0) {
       throw badRequest('There is nothing in this basket.');
@@ -109,7 +116,10 @@ export class PricingQuoteService {
     const basket: BasketLine[] = [];
     for (const line of req.lines) {
       const variant = byId.get(line.variantId);
-      if (!variant) throw notFound(`No item here matches ${line.variantId}.`);
+      if (!variant) {
+        if (opts.tolerant) { unpriced.push(line.variantId); continue; }
+        throw notFound(`No item here matches ${line.variantId}.`);
+      }
 
       const quantity = Number(line.quantity);
       if (!Number.isInteger(quantity) || quantity <= 0) {
@@ -122,6 +132,7 @@ export class PricingQuoteService {
         variant, req.locationId, Number(variant.product.basePrice)
       );
       if (!resolved.isAvailable) {
+        if (opts.tolerant) { unpriced.push(line.variantId); continue; }
         throw badRequest(`${variant.sku} is not for sale at this location.`);
       }
 
@@ -144,6 +155,9 @@ export class PricingQuoteService {
      */
     const coupons = [...new Set((Array.isArray(req.couponCodes) ? req.couponCodes : [])
       .filter(c => typeof c === 'string').map(canonicalCode).filter(c => c && c.length <= 64))].slice(0, 20);
+    // Nothing left to price (every line unknown here): say so without pricing an empty basket.
+    if (basket.length === 0) return { quoteId: null, expiresAt: null, lines: [], discounts: [], subtotal: 0, discountTotal: 0, total: 0, rejected: [], nearMisses: [], unpriced };
+
     const offers = await this.liveOffers(clientId, channel, req.locationId, req.customerId ?? null, coupons);
     const priced = priceBasket(basket, offers, coupons);
 
@@ -184,7 +198,8 @@ export class PricingQuoteService {
         locationId: req.locationId,
         channel: channel as any,
         customerId: req.customerId ?? null,
-        inputHash: fingerprint({ ...req, channel }),
+        // The hash is of what was priced: an unpriced line is not part of the promise.
+        inputHash: fingerprint({ ...req, channel, lines: req.lines.filter(l => !unpriced.includes(l.variantId)) }),
         result: this.asJson(priced, currency) as any,
         subtotal: fromMinor(priced.subtotalMinor),
         discount: fromMinor(priced.discountTotalMinor),
@@ -194,7 +209,7 @@ export class PricingQuoteService {
     }) : null;
 
     // No id means this price was not kept, so no order can be written against it.
-    return { quoteId: saved?.id ?? null, expiresAt: saved ? expiresAt : null, ...this.asJson(priced, currency) };
+    return { quoteId: saved?.id ?? null, expiresAt: saved ? expiresAt : null, ...this.asJson(priced, currency), unpriced };
   }
 
   /**

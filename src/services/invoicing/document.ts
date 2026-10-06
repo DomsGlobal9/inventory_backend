@@ -26,7 +26,7 @@
 
 import { hsnForInvoice } from '../pricing/hsn';
 import { formatInvoiceNumber } from './invoiceNumber';
-import type { DocumentKind } from '../pricing/tax';
+import { documentKindFor, type DocumentKind, type GstRegistration } from '../pricing/tax';
 
 export interface DocumentShop {
   businessName: string | null;
@@ -129,7 +129,9 @@ export function buildDocument(
   shop: DocumentShop,
   customer: DocumentCustomer | null
 ): TaxDocument {
-  const kind: DocumentKind = (order.documentKind as DocumentKind) ?? 'RECEIPT';
+  // The kind fixed at sale time. An order from before that was stored (6 Oct 2026) follows the
+  // shop's registration as it is now -- the only answer there is for it.
+  const kind: DocumentKind = (order.documentKind as DocumentKind) ?? documentKindFor(shop.gstRegistration as GstRegistration);
   const problems: string[] = [];
 
   /*
