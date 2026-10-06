@@ -19,6 +19,7 @@ import { phoneSearchDigits } from '../lib/phone';
 import { paymentSummary } from './payments/payment-rules';
 import { freezeTaxForLine } from './pricing/freezeTax';
 import { mayChargeTax, type GstRegistration } from './pricing/tax';
+import { settleSentOut } from './loyalty';
 
 /** Kept here as well as in counter-sale, which imports this service: one string, no import cycle. */
 const COUNTER_SOURCE = 'SCALEEZY_COUNTER';
@@ -1222,6 +1223,9 @@ export class SalesOrderService {
        */
       if (!closingShort) {
         await offerRedemptionService.release(tx, clientId, id, `Order ${order.orderNumber} cancelled`);
+      } else {
+        // Closed short: what went out is all that will, so it earns now (on what was sent).
+        await settleSentOut(tx, clientId, id);
       }
 
       return tx.salesOrder.findFirstOrThrow({ where: { id, clientId } });

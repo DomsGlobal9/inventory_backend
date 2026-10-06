@@ -18,7 +18,7 @@ import { LoyaltyEntryKind, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest, forbidden, notFound } from '../../utils/httpError';
 import { grants, holdsEverything } from '../../config/permissions';
-import { fromMinor, toMinor } from '../pricing';
+import { fromMinor, portionOf, toMinor } from '../pricing';
 import {
   checkRules, DEFAULT_RULES, LoyaltyRules, mostUsable, pointsEarned, pointsForPayment, rupeesOf, shareBetween, valueOf
 } from './rules';
@@ -39,6 +39,10 @@ export type LoyaltySettingsView = LoyaltyRules & {
   birthdayMediaId: string | null;
   anniversaryMediaId: string | null;
   expiryReminder: boolean;
+  /** Where customers earn. Spending is counter-only whatever these say. */
+  earnAtCounter: boolean;
+  earnOnlineShop: boolean;
+  earnShopify: boolean;
 };
 
 export const DEFAULT_BIRTHDAY_TEXT = 'Happy birthday, {name}! Wishing you a wonderful year from all of us at {shop}.';
@@ -61,7 +65,10 @@ export async function getSettings(clientId: string, db: Tx | typeof prisma = pri
     anniversaryText: row?.anniversaryText ?? null,
     birthdayMediaId: row?.birthdayMediaId ?? null,
     anniversaryMediaId: row?.anniversaryMediaId ?? null,
-    expiryReminder: row?.expiryReminder ?? false
+    expiryReminder: row?.expiryReminder ?? false,
+    earnAtCounter: row?.earnAtCounter ?? true,
+    earnOnlineShop: row?.earnOnlineShop ?? false,
+    earnShopify: row?.earnShopify ?? false
   };
 }
 
@@ -109,6 +116,9 @@ export async function saveSettings(actor: Actor, input: Record<string, unknown>)
     birthdayWish: flag(input.birthdayWish, 'birthday wishes'),
     anniversaryWish: flag(input.anniversaryWish, 'anniversary wishes'),
     expiryReminder: flag(input.expiryReminder, 'the reminder before points lapse'),
+    earnAtCounter: flag(input.earnAtCounter, 'earning at the counter'),
+    earnOnlineShop: flag(input.earnOnlineShop, 'earning on online shop orders'),
+    earnShopify: flag(input.earnShopify, 'earning on Shopify orders'),
     birthdayText: wishText(input.birthdayText, 'birthday'),
     anniversaryText: wishText(input.anniversaryText, 'anniversary'),
     birthdayMediaId: await wishMedia(actor.clientId, input.birthdayMediaId, 'birthday'),
@@ -261,7 +271,8 @@ export async function settleSale(tx: Tx, input: {
     });
   }
 
-  const earned = pointsEarned(input.billMinor - input.pointsPaidMinor, s);
+  // Unticking the counter stops earning there; points can still be spent.
+  const earned = s.earnAtCounter ? pointsEarned(input.billMinor - input.pointsPaidMinor, s) : 0;
   if (earned > 0) {
     balance = await post(tx, {
       clientId: input.clientId, customerId: input.customerId, kind: 'EARNED', points: earned,
@@ -269,6 +280,49 @@ export async function settleSale(tx: Tx, input: {
     });
   }
   return { earned, used, balance };
+}
+
+/** Orders that can earn when sent out, by where they came from. Same strings as checkout.ts SHOP_SOURCE and the Shopify ingest. */
+const SENT_OUT_SOURCES: Record<string, 'earnOnlineShop' | 'earnShopify'> = { SCALEEZY_SHOP: 'earnOnlineShop', SHOPIFY: 'earnShopify' };
+
+/**
+ * An online-shop or Shopify order has gone out in full (DISPATCHED, or closed short after part went):
+ * the customer earns on it, if the shop ticked that channel. Called inside the dispatch's / close's
+ * own transaction. Anything else -- a counter sale, a staff order, a shop with loyalty off -- is
+ * nothing.
+ *
+ * ON WHAT WENT OUT. All of it sent: the order total, as the counter earns on what was paid, so a
+ * later return takes back exactly its share (shareOfBill divides by the same total). Closed short:
+ * the value of the units actually sent.
+ * ponytail: a closed-short order earns on what went out but returns share by the full total, so a
+ * full return of such an order can leave a point or two; exact only if returns learn "sent value".
+ *
+ * ONCE: the same once-key as the counter (EARNED:<order>), so a second dispatch, a retried webhook
+ * or both paths together earn nothing more.
+ */
+export async function settleSentOut(tx: Tx, clientId: string, orderId: string) {
+  const order = await tx.salesOrder.findFirst({
+    where: { id: orderId, clientId },
+    select: { status: true, sourceSystem: true, customerId: true, total: true, orderNumber: true,
+      items: { select: { totalPrice: true, quantity: true, fulfilledQty: true } } }
+  });
+  const channel = order?.sourceSystem ? SENT_OUT_SOURCES[order.sourceSystem] : undefined;
+  if (!order || !channel || !order.customerId || order.status !== 'DISPATCHED') return null;
+  const s = await getSettings(clientId, tx);
+  if (!s.enabled || !s[channel]) return null;
+
+  const allSent = order.items.every(i => i.fulfilledQty >= i.quantity);
+  const sentMinor = allSent
+    ? toMinor(order.total as any)
+    : order.items.reduce((a, i) => a + portionOf(toMinor(i.totalPrice as any), i.quantity, 0, Math.min(i.fulfilledQty, i.quantity)), 0);
+  const earned = pointsEarned(sentMinor, s);
+  if (earned <= 0) return null;
+  const balance = await post(tx, {
+    clientId, customerId: order.customerId, kind: 'EARNED', points: earned,
+    onceKey: `EARNED:${orderId}`, salesOrderId: orderId, activity: true,
+    note: `${channel === 'earnShopify' ? 'Shopify' : 'Online shop'} order ${order.orderNumber}, sent out`
+  });
+  return balance === null ? null : { earned, balance };
 }
 
 // ── Returns ────────────────────────────────────────────────────────────────────────────────

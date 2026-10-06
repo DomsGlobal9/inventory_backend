@@ -30,6 +30,7 @@ import { returnService } from '../services/return.service';
 import { whatsappClient, WhatsAppServiceError } from '../services/whatsapp/client';
 import * as wa from '../services/whatsapp/service';
 import * as R from '../services/loyalty/rules';
+import { settleSentOut } from '../services/loyalty';
 import { runCampaignTick, prepareShopDay, sendAfterSaleNotice, campaigns, render } from '../services/campaigns';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
@@ -498,6 +499,92 @@ async function main() {
     await prisma.loyaltySettings.update({ where: { clientId: SHOP }, data: { autoPreparedFor: '2000-01-01' } });
     await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
     check('the job run again on the same calendar day never gives the birthday gift twice', await pointsOf(crowd[1]) === 100);
+    }
+
+    // ── K ──────────────────────────────────────────────────────────────────────────────────
+    console.log('\nK. ONLINE SHOP AND SHOPIFY ORDERS (earned when sent out, only where ticked)');
+    {
+      const ruleNow = async () => (await own.get('/loyalty/settings')).data.data;
+      const meena = await prisma.customer.create({ data: { clientId: SHOP, customerCode: `MEENA-${STAMP}`, name: 'Meena Online', phone: `+919${String(STAMP).slice(-5)}7777` } });
+      const order = async (source: string | null, qty: number, customerId = meena.id) => {
+        const r = await own.post('/sales-orders/full', {
+          customer: { id: customerId }, locationId: store.id, status: 'CONFIRMED',
+          ...(source ? { sourceSystem: source, externalOrderId: `${source}-${crypto.randomUUID()}` } : {}),
+          items: [{ variantId: saree.id, quantity: qty }]
+        });
+        if (r.status >= 300) throw new Error(`order failed: ${brief(r)}`);
+        return prisma.salesOrder.findUniqueOrThrow({ where: { id: (r.data?.data ?? r.data).id }, include: { items: true } });
+      };
+      const send = (o: any, qty?: number) => own.post('/dispatches', { salesOrderId: o.id, items: o.items.map((i: any) => ({ salesOrderItemId: i.id, quantity: qty ?? i.quantity })) });
+      const earnedOn = async (orderId: string) => (await prisma.loyaltyEntry.aggregate({ where: { salesOrderId: orderId, kind: 'EARNED' }, _sum: { points: true } }))._sum.points ?? 0;
+      const statusOf = async (orderId: string) => (await prisma.salesOrder.findUniqueOrThrow({ where: { id: orderId } })).status;
+
+      const fresh = await ruleNow();
+      check('a shop that never ticked anything: counter earns, online shop and Shopify do not',
+        fresh.earnAtCounter === true && fresh.earnOnlineShop === false && fresh.earnShopify === false, fresh);
+      const nonsense = await own.put('/loyalty/settings', { earnShopify: 'yes' });
+      check('  ..."yes" as text for a tick box is refused in words', nonsense.status === 400 && plain(nonsense.data?.message), brief(nonsense));
+      const salesTick = await sales.http.put('/loyalty/settings', { earnOnlineShop: true });
+      check('  ...a salesperson cannot tick where points are earned', salesTick.status === 403 && (await ruleNow()).earnOnlineShop === false, brief(salesTick));
+
+      const before = await pointsOf(meena.id);
+      const o1 = await order('SCALEEZY_SHOP', 2);
+      const s1 = await send(o1);
+      check('online order sent out while online shop is NOT ticked: sent, but no points', s1.status < 300 && await statusOf(o1.id) === 'DISPATCHED' && await earnedOn(o1.id) === 0 && await pointsOf(meena.id) === before, brief(s1));
+
+      const tick = await own.put('/loyalty/settings', { earnOnlineShop: true });
+      check('the owner ticks online shop orders, and only that changes', tick.status === 200 && tick.data.data.earnOnlineShop === true && tick.data.data.earnShopify === false && tick.data.data.earnAtCounter === true, brief(tick));
+      const rules = await ruleNow();
+
+      const o2 = await order('SCALEEZY_SHOP', 3);
+      const half = await own.post('/dispatches', { salesOrderId: o2.id, items: [{ salesOrderItemId: o2.items[0].id, quantity: 1 }] });
+      check('part of an online order sent out: no points yet', half.status < 300 && await statusOf(o2.id) === 'PARTIALLY_DISPATCHED' && await earnedOn(o2.id) === 0, brief(half));
+      const rest = await own.post('/dispatches', { salesOrderId: o2.id, items: [{ salesOrderItemId: o2.items[0].id, quantity: 2 }] });
+      const want2 = R.pointsEarned(Math.round(Number(o2.total) * 100), rules);
+      check(`the rest sent out: earns on the whole order (${want2} points), as the counter would`, rest.status < 300 && want2 > 0 && await earnedOn(o2.id) === want2 && await pointsOf(meena.id) === before + want2, { got: await earnedOn(o2.id), want2 });
+      await prisma.$transaction(tx => settleSentOut(tx, SHOP, o2.id));
+      check('  ...sent-out settled again (a retried webhook): nothing more', await earnedOn(o2.id) === want2 && await pointsOf(meena.id) === before + want2);
+
+      const items2 = await prisma.dispatchItem.findMany({ where: { dispatch: { salesOrderId: o2.id } } });
+      const ret = await returnService.createReturn(SHOP, o2.id, items2.map(d => ({ dispatchItemId: d.id, quantity: d.quantity })), 'Customer sent it back', 'CUSTOMER_REJECTED');
+      await returnService.receiveReturn(SHOP, ret.id);
+      await returnService.inspectReturn(SHOP, ret.id, ret.items.map((i: any) => ({ salesReturnItemId: i.id, disposition: 'RESTOCK' as const })));
+      await returnService.completeReturn(SHOP, ret.id);
+      check('the whole online order returned: every point it earned goes back', await pointsOf(meena.id) === before, { now: await pointsOf(meena.id), before });
+
+      const o3 = await order('SHOPIFY', 1);
+      await send(o3);
+      check('Shopify order sent out while Shopify is NOT ticked: no points', await statusOf(o3.id) === 'DISPATCHED' && await earnedOn(o3.id) === 0);
+      await own.put('/loyalty/settings', { earnShopify: true });
+      const o4 = await order('SHOPIFY', 2);
+      const s4 = await send(o4);
+      const want4 = R.pointsEarned(Math.round(Number(o4.total) * 100), rules);
+      check(`Shopify ticked: a Shopify order sent out earns ${want4} points`, s4.status < 300 && await earnedOn(o4.id) === want4 && want4 > 0, brief(s4));
+
+      const o5 = await order('SCALEEZY_SHOP', 2);
+      const c5 = await own.post(`/sales-orders/${o5.id}/cancel`);
+      check('an online order cancelled before it went out earns nothing', c5.status < 300 && await statusOf(o5.id) === 'CANCELLED' && await earnedOn(o5.id) === 0, brief(c5));
+
+      const o6 = await order('SCALEEZY_SHOP', 3);
+      await own.post('/dispatches', { salesOrderId: o6.id, items: [{ salesOrderItemId: o6.items[0].id, quantity: 1 }] });
+      const c6 = await own.post(`/sales-orders/${o6.id}/cancel`);
+      const want6 = R.pointsEarned(Math.round(Number(o6.items[0].totalPrice) * 100 / 3), rules);
+      check(`1 of 3 sent, the rest closed short: earns on the one that went (${want6} points)`, c6.status < 300 && await statusOf(o6.id) === 'DISPATCHED' && await earnedOn(o6.id) === want6, { got: await earnedOn(o6.id), want6, s: brief(c6) });
+
+      const o7 = await order(null, 2);
+      await send(o7);
+      check('an order the staff typed in (not the online shop, not Shopify) earns nothing when sent out', await statusOf(o7.id) === 'DISPATCHED' && await earnedOn(o7.id) === 0);
+
+      await own.put('/loyalty/settings', { earnAtCounter: false });
+      const counterBefore = await pointsOf(meena.id);
+      const sc = await sell(sales.http, 2, { id: meena.id }, [{ method: 'CASH', amount: 2000 }]);
+      check('counter unticked: a counter sale still goes through but earns nothing', sc.status < 300 && await pointsOf(meena.id) === counterBefore, brief(sc));
+
+      await own.put('/loyalty/settings', { enabled: false });
+      const o8 = await order('SHOPIFY', 1);
+      await send(o8);
+      check('loyalty switched off altogether: a ticked channel earns nothing', await earnedOn(o8.id) === 0);
+      await own.put('/loyalty/settings', { enabled: true, earnAtCounter: true });
     }
 
     // ── J ──────────────────────────────────────────────────────────────────────────────────

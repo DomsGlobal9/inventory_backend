@@ -3590,6 +3590,11 @@ model LoyaltySettings {
   clientId String @id @map("client_id")
 
   enabled          Boolean @default(false)
+  /// Where customers earn points. The counter as before; online-shop and Shopify orders only when
+  /// the shop ticks them, earned when the order is sent out (DISPATCHED). Spending stays counter-only.
+  earnAtCounter    Boolean @default(true) @map("earn_at_counter")
+  earnOnlineShop   Boolean @default(false) @map("earn_online_shop")
+  earnShopify      Boolean @default(false) @map("earn_shopify")
   /// Points earned for every full ₹100 paid (points spent on a bill earn nothing).
   pointsPer100     Int     @default(1) @map("points_per_100")
   /// What one point is worth, in paise (100 = ₹1).

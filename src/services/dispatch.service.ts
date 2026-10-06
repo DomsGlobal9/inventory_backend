@@ -7,6 +7,7 @@ import { reservationService } from './reservation.service';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { notFound, badRequest, conflict } from '../utils/httpError';
 import { toMinor, minorToNumber, portionOf } from './pricing';
+import { settleSentOut } from './loyalty';
 
 export class DispatchService {
   /**
@@ -189,6 +190,9 @@ export class DispatchService {
         where: { id: salesOrderId },
         data: { status: newStatus }
       });
+
+      // All of it gone: an online-shop or Shopify customer earns, if the shop ticked that channel.
+      if (newStatus === 'DISPATCHED') await settleSentOut(tx, clientId, salesOrderId);
 
       return dispatch;
     }
