@@ -29,6 +29,18 @@ router.get('/items', requirePermission('sales_order:counter_sale'), async (req: 
 });
 
 router.post('/', requirePermission('sales_order:counter_sale'), async (req: Request, res: Response) => {
+  /*
+   * NEW SALE HAS MOVED TO THE POS TILL (decided 6 Oct 2026): walk-in bills are made on the
+   * ScaleEzy POS only. Refused here as well as gone from the screens, so nothing can make a bill
+   * by calling the API. Old counter bills keep their receipts and returns. The code stays because
+   * the test suites build their bills through it: a local run sets ALLOW_COUNTER_SALE=true.
+   */
+  if (process.env.ALLOW_COUNTER_SALE !== 'true') {
+    return res.status(410).json({
+      success: false,
+      message: 'New sale has moved to the ScaleEzy POS till. Make walk-in bills on the till.'
+    });
+  }
   try {
     const user = (req as any).user;
     const unlimited = holdsEverything(user?.permissions, user?.roles);
