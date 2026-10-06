@@ -301,6 +301,36 @@ async function main() {
     await posConnectionService.disconnect(CLIENT, t1.id);
     await posConnectionService.disconnect(CLIENT, t2.id);
     check('and still sees it after every till is disconnected: the books are still short', (await posConnectionService.leftOut(CLIENT)).length === 1);
+
+    // ── J ────────────────────────────────────────────────
+    console.log('\nJ. DISCOUNTED LINES FROM THE TILL (what the till charged is the bill)');
+    const j = await mk(9, 'Discounted saree', 20);
+    const jSale = (n: string, line: any) => ({
+      kind: 'sale.completed', invoiceNo: `INV/BAD/${STAMP}-${n}`, occurredAt: new Date().toISOString(),
+      lines: [{ itemCode: j.variant.variantCode, ...line }], totals: {}, payments: [{ method: 'CASH', amountPaise: line.lineTotalPaise }]
+    });
+    const jLine = async (n: string) => {
+      const o = await prisma.salesOrder.findFirst({ where: { clientId: CLIENT, externalOrderId: `INV/BAD/${STAMP}-${n}` }, include: { items: true } });
+      const it = o?.items[0];
+      return it ? { total: Math.round(Number(it.totalPrice) * 100), discount: Math.round(Number(it.lineDiscount) * 100), list: Math.round(Number(it.listUnitPrice) * 100) } : null;
+    };
+    const j1: any = await applySale(CLIENT, store.id, jSale('J1', { qty: 3, unitPricePaise: PRICE, discountPaise: 10000, lineTotalPaise: PRICE * 3 - 10000 }) as any);
+    const l1 = await jLine('J1');
+    check('3 x Rs 3000 less Rs 100 (Rs 8,900 does not split evenly into 3): applied, charged exactly Rs 8,900, Rs 100 off',
+      j1?.answer === 'APPLIED' && l1?.total === PRICE * 3 - 10000 && l1?.discount === 10000 && l1?.list === PRICE, `${j1?.answer} ${j1?.detail ?? ''} ${JSON.stringify(l1)}`);
+    const j2: any = await applySale(CLIENT, store.id, jSale('J2', { qty: 2, discountPaise: 20000, lineTotalPaise: PRICE * 2 - 20000 }) as any);
+    const l2 = await jLine('J2');
+    check('a discount sent without the list price: applied, Rs 200 off once, not twice',
+      j2?.answer === 'APPLIED' && l2?.total === PRICE * 2 - 20000 && l2?.discount === 20000, `${j2?.answer} ${j2?.detail ?? ''} ${JSON.stringify(l2)}`);
+    const j3: any = await applySale(CLIENT, store.id, jSale('J3', { qty: 3, lineTotalPaise: 899900 }) as any);
+    const l3 = await jLine('J3');
+    check('3 pieces for Rs 8,999 with no discount declared: the line is exactly Rs 8,999, not a paisa more',
+      j3?.answer === 'APPLIED' && l3?.total === 899900, `${j3?.answer} ${j3?.detail ?? ''} ${JSON.stringify(l3)}`);
+    const j4: any = await applySale(CLIENT, store.id, jSale('J4', { qty: 3, unitPricePaise: PRICE, discountPaise: 10000, lineTotalPaise: PRICE * 3 - 20000 }) as any);
+    const l4 = await jLine('J4');
+    check('the till\'s numbers disagree (Rs 100 off said, Rs 200 less charged): applied at what was charged, with a warning',
+      j4?.answer === 'APPLIED' && l4?.total === PRICE * 3 - 20000 && (j4?.warnings ?? []).some((w: string) => /discount/i.test(w)), `${j4?.answer} ${JSON.stringify(j4?.warnings)} ${JSON.stringify(l4)}`);
+    check('every one of those took its pieces off the shelf: 20 - 3 - 2 - 3 - 3 = 9', await shelf(j.variant.id) === 9, String(await shelf(j.variant.id)));
   } finally {
     await teardown();
   }

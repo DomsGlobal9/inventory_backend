@@ -91,6 +91,35 @@ export interface PosLine {
   taxPaise?: number | null;
 }
 
+/**
+ * A till line as list price and discount, meeting the line total EXACTLY.
+ *
+ * The till's lineTotalPaise is what the customer was charged, so it is the bill. The old mapping
+ * also sent a net price per piece (round(total / qty)) beside the list and the discount, and the
+ * price check refused the line whenever the three did not meet -- which is every discounted line
+ * whose total does not divide by its quantity (3 x 1000 less 100 = 2900, 967 x 3 = 2901), and every
+ * discount sent without a list price (taken off twice). Those bills were REJECTED at the door.
+ *
+ * Now: list = unitPricePaise, or (total + discount) / qty rounded up; discount = whatever makes
+ * list x qty meet the total. The few paise that rounding up leaves (an uneven total with no
+ * discount at all) show as a discount of under one paisa per piece, rather than a line a paisa
+ * dearer than the bill. A declared discount that differs from what was really charged by more than
+ * that rounding is a warning, never a refusal: the till is the authority on what it charged.
+ */
+export function tillLinePrice(line: Pick<PosLine, 'itemCode' | 'qty' | 'lineTotalPaise' | 'unitPricePaise' | 'discountPaise'>) {
+  const total = line.lineTotalPaise;
+  const said = line.discountPaise ?? 0;
+  let list = line.unitPricePaise ?? Math.ceil((total + said) / line.qty);
+  // Charged above the list price: there is no discount, only the price the till charged.
+  if (list * line.qty < total) list = Math.ceil(total / line.qty);
+  const discountPaise = list * line.qty - total;
+  const warning = line.discountPaise != null && Math.abs(discountPaise - said) >= line.qty
+    ? `${line.itemCode}: the till's discount says ₹${said / 100}, but it charged ₹${discountPaise / 100} less than ` +
+      `${line.qty} x ₹${list / 100}. The line was recorded at what was charged.`
+    : null;
+  return { listUnitPaise: list, discountPaise, warning };
+}
+
 export interface PosPayment {
   /** CASH | UPI | CARD | POINTS | CREDIT -- the same words Inventory already uses. */
   method: string;
@@ -250,12 +279,9 @@ export async function writeSaleInTransaction(
         items: event.lines.map(l => ({
           variantId: byCode.get(l.itemCode)!,
           quantity: l.qty,
-          // Net per piece, worked from the line total so the two can never disagree.
-          unitPrice: fromMinor(Math.round(l.lineTotalPaise / l.qty)),
-          listUnitPrice: l.unitPricePaise != null
-            ? fromMinor(l.unitPricePaise)
-            : fromMinor(Math.round(l.lineTotalPaise / l.qty)),
-          lineDiscount: l.discountPaise != null ? fromMinor(l.discountPaise) : undefined,
+          // List and discount meeting the till's line total exactly (tillLinePrice says why).
+          listUnitPrice: fromMinor(tillLinePrice(l).listUnitPaise),
+          lineDiscount: fromMinor(tillLinePrice(l).discountPaise),
           /*
            * THE POS'S TAX, STORED AS SENT.
            *
@@ -485,6 +511,8 @@ export async function applySale(
     }
 
     for (const line of event.lines) {
+      const priced = tillLinePrice(line).warning;
+      if (priced) warnings.push(priced);
       if (line.taxRateBps == null) continue;
       const standing = taxByCode.get(line.itemCode);
       if (standing?.taxRateBps != null && standing.taxRateBps !== line.taxRateBps) {
