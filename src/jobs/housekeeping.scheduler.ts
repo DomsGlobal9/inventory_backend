@@ -1,3 +1,4 @@
+import * as posHolds from '../services/pos/pos-holds.service';
 import { prisma } from '../lib/prisma';
 import { shopifyInstallationService } from '../services/shopify-installation.service';
 import { shopifyPrivacyService } from '../services/shopify-privacy';
@@ -89,6 +90,9 @@ export class HousekeepingScheduler {
      * a checkout twenty times: every order holds real stock, and until this, nothing returned it.
      * An order whose number was proved has no expiry and is never touched.
      */
+    // Points or credit a till reserved and never confirmed (contract §10.4). Confirmed holds are never touched.
+    const tillHolds = await posHolds.sweep(now)
+      .catch(error => { console.error('[Housekeeping] till holds not swept:', (error as Error)?.message); return 0; });
     const staleHolds = await shopCheckout.releaseExpiredHolds(now)
       .catch(error => { console.error('[Housekeeping] stale online holds not released:', (error as Error)?.message); return 0; });
 
@@ -101,7 +105,7 @@ export class HousekeepingScheduler {
       unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried,
       whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded,
       shelfSaveKeys: shelfSaveKeys.count, shortLinkTaps: shortLinks.taps, testShortLinks: shortLinks.testLinks,
-      staleHolds, phoneCodes
+      staleHolds, phoneCodes, tillHolds
     };
   }
 

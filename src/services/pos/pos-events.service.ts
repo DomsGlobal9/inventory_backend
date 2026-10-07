@@ -32,6 +32,7 @@ import { planPayments } from '../payments/payment-rules';
 import { recordPayments } from '../payments';
 import { offerRedemptionService } from '../offers/redemption.service';
 import { settleSale } from '../loyalty';
+import { settleOnSale as settleHolds } from './pos-holds.service';
 
 export const POS_SOURCE = 'SCALEEZY_POS';
 
@@ -128,6 +129,8 @@ export interface PosPayment {
   /** CASH | UPI | CARD | POINTS | CREDIT -- the same words Inventory already uses. */
   method: string;
   amountPaise: number;
+  /** POINTS and CREDIT only: the hold reserved before Complete (contract §10). */
+  holdId?: string | null;
 }
 
 export interface PosSaleEvent {
@@ -353,24 +356,22 @@ export async function writeSaleInTransaction(
     }
 
   /*
-   * LOYALTY: a till bill with a customer on it earns, under the shop's rules (off unless the shop
-   * switched points on and ticked "Counter sales"). Since Inventory's own New sale went (6 Oct
-   * 2026) the till is the counter, so this is where counter earning happens. A walk-in earns
-   * nothing: there is nobody to credit. Earned on what was charged, the bill as the till sent it.
-   *
-   * SPENDING points on the till is not here yet (contract §10, a synchronous reserve): a POINTS
-   * payment row is recorded as money the till says it took, but no points are debited and the
-   * bill earns nothing, and a warning says so -- never a refusal.
+   * LOYALTY AND STORE CREDIT. Points or credit SPENT on this bill come through the holds the till
+   * reserved before Complete (contract §10): each is settled here, in this transaction, and a row
+   * with no usable hold moves nothing and warns. Then the bill EARNS, on money paid only, under
+   * the shop's rules (off unless points are on and "Counter sales" is ticked). Since Inventory's
+   * own New sale went (6 Oct 2026) the till is the counter. A walk-in earns nothing and can spend
+   * nothing: there is nobody to credit or debit.
    */
   const warningsOut: string[] = [];
-  const pointsRows = (event.payments ?? []).filter(p => p.method === 'POINTS');
+  const billMinor = event.lines.reduce((a, l) => a + Math.round(l.lineTotalPaise), 0);
+  const settled = await settleHolds(tx, clientId, { id: made.id, customerId: customerPhone ? made.customerId : null, externalOrderId: event.invoiceNo }, event.payments ?? []);
+  warningsOut.push(...settled.warnings);
   if (customerPhone && made.customerId) {
-    if (pointsRows.length) {
-      warningsOut.push('This bill was part-paid with points, which the till cannot settle with Inventory yet. The customer\'s points were not changed.');
-    } else {
-      const billMinor = event.lines.reduce((a, l) => a + Math.round(l.lineTotalPaise), 0);
-      await settleSale(tx, { clientId, customerId: made.customerId, orderId: made.id, billMinor, pointsPaidMinor: 0, userId: null });
-    }
+    // Money paid is what the till says it took in money: every POINTS / CREDIT row earns nothing,
+    // whether or not its hold could be settled (an unsettled row is already a warning above).
+    const notMoney = (event.payments ?? []).filter(p => p.method === 'POINTS' || p.method === 'CREDIT').reduce((a, p) => a + Math.round(p.amountPaise), 0);
+    await settleSale(tx, { clientId, customerId: made.customerId, orderId: made.id, billMinor, pointsPaidMinor: Math.min(billMinor, notMoney), userId: null, alreadyDebited: true });
   }
 
   // §4.1: the offers this bill says it used, counted against the quote it names. Never a refusal.

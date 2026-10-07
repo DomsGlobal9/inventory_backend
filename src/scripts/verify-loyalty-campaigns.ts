@@ -593,13 +593,14 @@ async function main() {
       const t2: any = await applySale(SHOP, store.id, tillBill('T2', 3, { customer: null }) as any);
       check('a walk-in till bill (no phone) earns nothing: there is nobody to credit', t2?.answer === 'APPLIED' && await earnedOn((await tillOrder('T2')).id) === 0, `${t2?.answer}`);
       const t3: any = await applySale(SHOP, store.id, tillBill('T3', 2, { payments: [{ method: 'POINTS', amountPaise: 50000 }, { method: 'CASH', amountPaise: 150000 }] }) as any);
-      check('a till bill part-paid with POINTS (not settled yet, §10): applied, a warning, no points moved either way', t3?.answer === 'APPLIED' && (t3?.warnings ?? []).some((w: string) => /points/i.test(w)) && await pointsOf(tillCustomer.id) === wantT1 && await earnedOn((await tillOrder('T3')).id) === 0, `${t3?.answer} ${JSON.stringify(t3?.warnings)} pts=${await pointsOf(tillCustomer.id)}`);
+      const wantT3 = R.pointsEarned(150000, rules);
+      check(`a till bill part-paid with POINTS that names no hold (§10): applied, a warning, no points taken, and it earns on the ₹1,500 paid in money only (${wantT3})`, t3?.answer === 'APPLIED' && (t3?.warnings ?? []).some((w: string) => /names no hold/.test(w)) && await pointsOf(tillCustomer.id) === wantT1 + wantT3 && await earnedOn((await tillOrder('T3')).id) === wantT3, `${t3?.answer} ${JSON.stringify(t3?.warnings)} pts=${await pointsOf(tillCustomer.id)}`);
       const t1Items = await prisma.dispatchItem.findMany({ where: { dispatch: { salesOrderId: (await tillOrder('T1')).id } } });
       const tRet = await returnService.createReturn(SHOP, (await tillOrder('T1')).id, t1Items.map(d => ({ dispatchItemId: d.id, quantity: d.quantity })), 'Brought back', 'CUSTOMER_REJECTED');
       await returnService.receiveReturn(SHOP, tRet.id);
       await returnService.inspectReturn(SHOP, tRet.id, tRet.items.map((i: any) => ({ salesReturnItemId: i.id, disposition: 'RESTOCK' as const })));
       await returnService.completeReturn(SHOP, tRet.id);
-      check('the whole till bill returned: every point it earned goes back', await pointsOf(tillCustomer.id) === 0, String(await pointsOf(tillCustomer.id)));
+      check('the whole till bill returned: every point it earned goes back (only T3\'s earning is left)', await pointsOf(tillCustomer.id) === wantT3, String(await pointsOf(tillCustomer.id)));
       await own.put('/loyalty/settings', { earnAtCounter: false });
       const t4: any = await applySale(SHOP, store.id, tillBill('T4', 1) as any);
       check('Counter sales unticked: a till bill goes through and earns nothing', t4?.answer === 'APPLIED' && await earnedOn((await tillOrder('T4')).id) === 0, `${t4?.answer}`);

@@ -250,16 +250,18 @@ export async function checkSale(clientId: string, customerId: string | null, bil
  */
 export async function settleSale(tx: Tx, input: {
   clientId: string; customerId: string; orderId: string; billMinor: number; pointsPaidMinor: number; userId: string | null;
+  /** The till's hold already wrote the USED entry (pos-holds.service); pointsPaidMinor is then only what earns nothing. */
+  alreadyDebited?: boolean;
 }, checked?: SaleCheck) {
   const s = checked?.settings ?? await getSettings(input.clientId, tx);
   if (!s.enabled) {
-    if (input.pointsPaidMinor > 0) throw badRequest('Loyalty points are switched off for this shop. Take the payment another way.');
+    if (input.pointsPaidMinor > 0 && !input.alreadyDebited) throw badRequest('Loyalty points are switched off for this shop. Take the payment another way.');
     return { earned: 0, used: 0, balance: null as number | null };
   }
 
   let used = 0;
   let balance: number | null = null;
-  if (input.pointsPaidMinor > 0) {
+  if (input.pointsPaidMinor > 0 && !input.alreadyDebited) {
     // The bill as written can differ from the screen's (a price changed): checked again against it.
     const held = checked?.held !== undefined ? checked.held
       : (await tx.customer.findFirst({ where: { id: input.customerId, clientId: input.clientId }, select: { loyaltyPoints: true } }))?.loyaltyPoints ?? 0;

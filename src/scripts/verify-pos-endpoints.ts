@@ -1047,6 +1047,7 @@ main()
     await prisma.product.deleteMany({ where: { clientId: CLIENT } });
     await prisma.storefrontConnection.deleteMany({ where: { clientId: CLIENT } });
     await prisma.stockLocation.deleteMany({ where: { clientId: CLIENT } });
+    await prisma.clientSettings.deleteMany({ where: { clientId: CLIENT } }).catch(() => {}); // the catalogue's gst block makes one
     console.log(`\nRESULT: ${passed} passed | ${failed} failed`);
     process.exit(failed === 0 ? 0 : 1);
   })
@@ -1060,6 +1061,7 @@ main()
     await prisma.product.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.storefrontConnection.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.stockLocation.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
+    await prisma.clientSettings.deleteMany({ where: { clientId: CLIENT } }).catch(() => {}); // the catalogue's gst block makes one
     process.exit(1);
   })
   .finally(() => prisma.$disconnect());

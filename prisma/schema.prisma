@@ -3790,6 +3790,43 @@ model StoreCreditEntry {
   @@map("store_credit_entries")
 }
 
+/// A customer's loyalty points or store credit RESERVED by a till for one bill (contract §10).
+/// Reserved under the customer's row lock so two tills cannot take the same points; CONFIRMED by
+/// the till the moment its sale commits (its own call, independent of the sale event, which may
+/// arrive hours later); RELEASED when the cashier removes it, cancels or parks the bill; SWEPT by
+/// Inventory only if it was never confirmed. Only RESERVED/CONFIRMED holds not yet tied to an order
+/// count against the balance. kind and status are TEXT, not enums: adding a value to a shared-DB
+/// enum is what took the alerts endpoint down on 23 September.
+model PosHold {
+  id           String @id @default(uuid())
+  clientId     String @map("client_id")
+  connectionId String @map("connection_id")
+  customerId   String @map("customer_id")
+  /// POINTS | CREDIT
+  kind         String
+  /// Points for POINTS, paise for CREDIT.
+  amount       Int
+  /// What it takes off the bill, in paise.
+  valuePaise   Int    @map("value_paise")
+  billPaise    Int    @map("bill_paise")
+  /// The till's key for this reserve: the same key again answers the same hold.
+  idempotencyKey String @map("idempotency_key")
+  /// RESERVED | CONFIRMED | RELEASED | SWEPT
+  status       String @default("RESERVED")
+  invoiceNo    String? @map("invoice_no")
+  salesOrderId String? @map("sales_order_id")
+  expiresAt    DateTime  @map("expires_at")
+  confirmedAt  DateTime? @map("confirmed_at")
+  releasedAt   DateTime? @map("released_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@unique([clientId, idempotencyKey])
+  @@index([clientId, customerId, status])
+  @@index([status, expiresAt])
+  @@map("pos_holds")
+}
+
 // ── Short links (go.scaleezy.com) ─────────────────────────────────────────────────────────
 // A module of its own (services/links): no other code reads or writes these tables. A link knows
 // whose it is and where it goes, never who it was sent to -- recipient_ref is an opaque random

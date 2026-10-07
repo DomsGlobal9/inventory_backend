@@ -18,6 +18,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateStorefront, onlyPos, storefrontContext } from '../middleware/storefront.middleware';
 import { quoteForTill } from '../services/pos/pos-quote.service';
+import * as holds from '../services/pos/pos-holds.service';
 import { getShopSettings } from '../lib/clientSettings';
 import { prisma } from '../lib/prisma';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
@@ -99,6 +100,45 @@ router.post('/quote', async (req: Request, res: Response, next: NextFunction) =>
     }
     next(error);
   }
+});
+
+/**
+ * Points and store credit at the till (contract §10): what may be spent on this bill, a reserve
+ * before Complete, its confirm the moment the sale commits, and its release. Points are money, so
+ * every refusal here is a plain line the cashier reads and the sale completes another way.
+ */
+const holdFailure = (res: Response, error: any) => {
+  if (error?.answer && error?.statusCode) { res.status(error.statusCode).json({ success: false, data: { answer: error.answer, detail: error.message } }); return true; }
+  if (error?.statusCode === 400) { res.status(422).json({ success: false, data: { answer: 'BAD_PAYLOAD', detail: error.message } }); return true; }
+  return false;
+};
+router.get('/wallet', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await holds.wallet(ctx.clientId, { customerRef: req.query.customerRef, billPaise: req.query.billPaise }) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
+});
+router.post('/holds', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await holds.reserve(ctx.clientId, ctx.connectionId, req.body) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
+});
+router.post('/holds/:holdId/confirm', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await holds.confirm(ctx.clientId, String(req.params.holdId), req.body) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
+});
+router.delete('/holds/:holdId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await holds.release(ctx.clientId, String(req.params.holdId)) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
 });
 
 /**
