@@ -237,6 +237,21 @@ export async function applyExchange(
   });
 
   const difference = soldMinor - made.backMinor;
+  /*
+   * What the till took for the new goods should be exactly the difference. Short, and the new bill
+   * shows money still due; over, and it shows money overpaid -- both silently, unless said here.
+   * Recorded as the till sent it either way: the customer has already left.
+   */
+  if (difference > 0) {
+    const took = (event.payments ?? []).reduce((a, p) => a + Math.round(Number(p.amountPaise ?? 0)), 0);
+    if (took !== difference) {
+      warnings.push(
+        `${exchangeNo}: the till took ${(took / 100).toFixed(2)} for the new goods, but after what came back ` +
+        `the customer owed ${(difference / 100).toFixed(2)}. ${made.orderNumber} now shows ` +
+        `${(Math.abs(difference - took) / 100).toFixed(2)} ${took < difference ? 'still due' : 'overpaid'} -- somebody should settle it.`
+      );
+    }
+  }
   return {
     answer: 'APPLIED',
     orderNumber: made.orderNumber,

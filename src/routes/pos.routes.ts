@@ -16,6 +16,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import sharp from 'sharp';
 import { authenticateStorefront, onlyPos, storefrontContext } from '../middleware/storefront.middleware';
 import { quoteForTill } from '../services/pos/pos-quote.service';
 import * as holds from '../services/pos/pos-holds.service';
@@ -36,6 +37,25 @@ router.use(authenticateStorefront, onlyPos);
  * `since` makes it incremental: a till that synced this morning asks for what changed, not for
  * four hundred sarees again.
  */
+/**
+ * The shop's logo as a PNG (transparency kept, at most 400 px wide), converted on request so every
+ * logo works, old or new, without a re-upload. Cached by the logo's own address: a new logo is a new
+ * entry, and the old one simply stops being asked for.
+ * ponytail: per-process cache, unbounded by count; fine at one small PNG per shop, an LRU if that grows.
+ */
+const printLogos = new Map<string, Promise<Buffer>>();
+function printLogo(url: string): Promise<Buffer> {
+  let made = printLogos.get(url);
+  if (!made) {
+    made = fetch(url)
+      .then(r => { if (!r.ok) throw new Error(`logo fetch ${r.status}`); return r.arrayBuffer(); })
+      .then(b => sharp(Buffer.from(b)).resize({ width: 400, withoutEnlargement: true }).png().toBuffer());
+    printLogos.set(url, made);
+    made.catch(() => printLogos.delete(url)); // a failure is not remembered: the next ask tries again
+  }
+  return made;
+}
+
 router.get('/catalogue', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ctx = storefrontContext(req, res);
@@ -71,6 +91,7 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
       getShopSettings(ctx.clientId),
       prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true } })
     ]);
+    if (gst?.logoUrl) printLogo(gst.logoUrl).catch(() => undefined);
     res.json({ success: true, data: {
       ...page,
       manualDiscount: max == null ? { unlimited: true } : { maxPercent: max },
@@ -85,8 +106,12 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
         registration: !gst || (gst.gstRegistration === 'UNREGISTERED' && gst.gstNumber) ? null : gst.gstRegistration,
         stateCode: gst?.gstStateCode ?? null
       },
-      // The till prints it when it has no logo of its own. Any image type the owner uploaded.
-      shop: { logoUrl: gst?.logoUrl ?? null }
+      // logoUrl for screens (any image type; uploads are stored as WebP). logoPrintUrl: the same logo
+      // as a PNG, for documents that cannot embed WebP (the till's WhatsApp PDF). Same till key.
+      shop: {
+        logoUrl: gst?.logoUrl ?? null,
+        logoPrintUrl: gst?.logoUrl ? `${req.protocol}://${req.get('host')}${req.baseUrl}/logo-print` : null
+      }
     } });
   } catch (error) { next(error); }
 });
@@ -367,6 +392,21 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
  * than the path because a real one is "INV/2026-27/0001" and those slashes are not path
  * separators.
  */
+router.get('/logo-print', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    const row = await prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { logoUrl: true } });
+    if (!row?.logoUrl) { res.status(404).json({ success: false, data: { answer: 'NO_LOGO', detail: 'This shop has no logo. Add one in Inventory: Settings, Name, logo and bill details.' } }); return; }
+    let png: Buffer;
+    try { png = await printLogo(row.logoUrl); } catch {
+      res.status(502).json({ success: false, data: { answer: 'LOGO_UNREACHABLE', detail: 'The logo could not be fetched just now. Try again shortly.' } });
+      return;
+    }
+    res.set('Cache-Control', 'private, max-age=3600').type('png').send(png);
+  } catch (error) { next(error); }
+});
+
 router.get('/events/status', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ctx = storefrontContext(req, res);

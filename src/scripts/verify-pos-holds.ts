@@ -269,12 +269,40 @@ async function main() {
       x1?.answer === 'APPLIED' && ['APPLIED'].includes(ex?.answer) && xEntries.some(e => e.kind === 'USED' && e.points === -200) && xh.salesOrderId === oX.id && oX.customerId === cust.id && !(ex?.warnings ?? []).some((w: string) => /hold|points/i.test(w)),
       `${x1?.answer}/${ex?.answer} ${JSON.stringify(ex?.warnings)} entries=${JSON.stringify(xEntries)} hold=${xh.status}/${xh.salesOrderId === oX.id}`);
 
+    // A points-paid bill exchanged: what settles is the money share only, and a short payment is said out loud.
+    const xpHold = await A.post('/holds', { idempotencyKey: `xp-${STAMP}`, customerRef: phone, kind: 'POINTS', amount: 100, billPaise: 300000 });
+    await applySale(CLIENT, store.id, bill('XP1', 1, [{ method: 'POINTS', amountPaise: 10000, holdId: xpHold.data?.data?.holdId }, { method: 'CASH', amountPaise: 290000 }]) as any);
+    const exShort: any = await applyExchange(CLIENT, store.id, {
+      kind: 'sale.exchanged', exchangeNo: `INV/HOLD/${STAMP}-XP2`, againstInvoiceNo: `INV/HOLD/${STAMP}-XP1`, occurredAt: new Date().toISOString(),
+      returned: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: PRICE }],
+      sold: [{ itemCode: variant.variantCode, qty: 2, unitPricePaise: PRICE, lineTotalPaise: PRICE * 2 }],
+      payments: [{ method: 'CASH', amountPaise: 300000 }],
+      customer: { name: 'Lakshmi Narayanan', phone }
+    } as any);
+    const xpSettle = await prisma.salesOrderPayment.findFirst({ where: { clientId: CLIENT, kind: 'PAYMENT', method: 'CREDIT', settlesReturnId: { not: null }, salesOrder: { externalOrderId: `INV/HOLD/${STAMP}-XP2` } }, select: { amount: true } });
+    check('exchanging a bill paid partly with points settles only the money share (₹3,000 - ₹100 of points = ₹2,900)', Number(xpSettle?.amount) === 2900, JSON.stringify(xpSettle));
+    check('  ...and the till taking ₹3,000 where ₹3,100 was owed is warned, naming the ₹100 still due', exShort?.answer === 'APPLIED' && (exShort?.warnings ?? []).some((w: string) => /owed 3100\.00/.test(w) && /100\.00 still due/.test(w)), JSON.stringify(exShort?.warnings));
+
     console.log('\nJ. WHAT THE CATALOGUE SAYS ABOUT THE SHOP, AND 0% BILLS');
     const shopOf = async () => (await A.get('/catalogue', { params: { limit: 1 } })).data?.data;
     await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { logoUrl: 'https://example.com/logo.png', gstRegistration: 'UNREGISTERED', gstNumber: null } });
     const j1 = await shopOf();
     check('the catalogue carries the shop logo for the till to print', j1?.shop?.logoUrl === 'https://example.com/logo.png', JSON.stringify(j1?.shop));
     check('  ...a shop that chose "not registered" says UNREGISTERED', j1?.gst?.registration === 'UNREGISTERED', JSON.stringify(j1?.gst));
+    // A real stored logo (uploads are kept as WebP): the till's PDF gets a PNG copy through the till door.
+    const realLogo = (await prisma.clientSettings.findUnique({ where: { clientId: 'sphl' }, select: { logoUrl: true } }))?.logoUrl;
+    if (realLogo) {
+      await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { logoUrl: realLogo } });
+      const jl = await shopOf();
+      const printed = jl?.shop?.logoPrintUrl ? await axios.get(jl.shop.logoPrintUrl, { headers: { 'X-Storefront-Key': t1.key }, responseType: 'arraybuffer', validateStatus: () => true }) : null;
+      const bytes = printed ? Buffer.from(printed.data) : Buffer.alloc(0);
+      check('the catalogue also gives a print copy of the logo, and it really is a PNG (fetched with the till key)',
+        printed?.status === 200 && bytes.subarray(0, 4).toString('hex') === '89504e47', `${printed?.status} ${jl?.shop?.logoPrintUrl} first bytes ${bytes.subarray(0, 12).toString('hex')}`);
+      const noKey = jl?.shop?.logoPrintUrl ? await axios.get(jl.shop.logoPrintUrl, { validateStatus: () => true }) : null;
+      check('  ...and only with a till key', noKey?.status === 401 || noKey?.status === 403, String(noKey?.status));
+    } else {
+      check('a real stored logo to convert exists (sphl)', false, 'sphl has no logo');
+    }
     await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstNumber: '29ABCDE1234F1Z5' } });
     const j2 = await shopOf();
     check('  ...UNREGISTERED beside a GSTIN means the owner never chose: registration null, so the till keeps its own', j2?.gst?.registration === null, JSON.stringify(j2?.gst));
