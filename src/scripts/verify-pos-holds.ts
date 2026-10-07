@@ -389,6 +389,14 @@ async function main() {
     const rN3: any = await counterSaleService.getSale(CLIENT, oN3.id);
     check('an ordinary bill with no GSTIN: applied, no buyer stored, no "Bill to" (GST is optional)', b2c?.answer === 'APPLIED' && oN3.buyerGstin === null && oN3.buyerName === null && rN3?.buyer === null, JSON.stringify({ oN3, buyer: rN3?.buyer }));
 
+    console.log('\nR. PAYMENT REFERENCES FROM THE TILL');
+    const rf1: any = await applySale(CLIENT, store.id, { ...bill('RF1', 1, [{ method: 'UPI', amountPaise: 200000, reference: '791382170059' }, { method: 'CARD', amountPaise: 100000, reference: '4321/C60780' }]), customer: null } as any);
+    const rfRows = await prisma.salesOrderPayment.findMany({ where: { clientId: CLIENT, kind: 'PAYMENT', salesOrder: { externalOrderId: `INV/HOLD/${STAMP}-RF1` } }, select: { method: true, reference: true } });
+    check('the UTR and the card approval code are stored on their payment rows', rf1?.answer === 'APPLIED' && rfRows.some(r => r.method === 'UPI' && r.reference === '791382170059') && rfRows.some(r => r.method === 'CARD' && r.reference === '4321/C60780'), `${rf1?.answer} ${JSON.stringify(rfRows)}`);
+    const rf2: any = await applySale(CLIENT, store.id, { ...bill('RF2', 1, [{ method: 'CARD', amountPaise: PRICE, reference: '4111 1111 1111 1111' }]), customer: null } as any);
+    const rf2Row = await prisma.salesOrderPayment.findFirst({ where: { clientId: CLIENT, kind: 'PAYMENT', salesOrder: { externalOrderId: `INV/HOLD/${STAMP}-RF2` } }, select: { reference: true } });
+    check('a "reference" that looks like a whole card number is never stored -- the bill still applies, with a warning', rf2?.answer === 'APPLIED' && rf2Row?.reference === null && (rf2?.warnings ?? []).some((w: string) => /reference was not kept/.test(w)), `${rf2?.answer} ${JSON.stringify(rf2?.warnings)} ${JSON.stringify(rf2Row)}`);
+
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;
     const sumC = (await prisma.storeCreditEntry.aggregate({ where: { customerId: cust.id }, _sum: { amountPaise: true } }))._sum.amountPaise ?? 0;

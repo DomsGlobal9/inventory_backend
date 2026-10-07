@@ -329,7 +329,7 @@ async function main() {
    */
   const noGateway = await own.patch('/online-shop', { payOnline: true });
   check('paying online cannot be switched on while nothing collects the money',
-    noGateway.status === 400 && /not ready yet/i.test(String(noGateway.data.message)), noGateway.data);
+    noGateway.status === 400 && /cannot be switched on yet.*Connect your Razorpay account/i.test(String(noGateway.data.message)), noGateway.data);
   check('...and it stays off', (await own.get('/online-shop')).data.data.payOnline === false);
   check('...so no shopper is ever offered it',
     !((await http('/shop/lakshmi-silks')).data.data.buying?.payWays ?? []).includes('ONLINE'));

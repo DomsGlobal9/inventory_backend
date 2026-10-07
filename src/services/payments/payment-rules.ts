@@ -47,6 +47,15 @@ const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: 'Cash', UPI: 'UPI', 
 const rupees = (minor: number) =>
   `₹${(minor / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+/**
+ * The same check, never throwing: for a payment that has ALREADY happened (a till bill), where a
+ * bad reference must not refuse the bill. The reference is kept when it passes, dropped otherwise.
+ */
+export function referenceIfClean(method: PaymentMethod, raw: unknown): { reference: string | null; problem: string | null } {
+  try { return { reference: cleanReference(method, raw), problem: null }; }
+  catch (e: any) { return { reference: null, problem: e?.message ?? 'That reference cannot be kept.' }; }
+}
+
 /** A reference, trimmed, or null -- refusing anything that could be a card number. */
 function cleanReference(method: PaymentMethod, raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;

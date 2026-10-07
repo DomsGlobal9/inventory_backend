@@ -60,6 +60,11 @@ async function main() {
     check('the catalogue says UPI QR is on', cat1.data?.data?.upiQr?.enabled === true, JSON.stringify(cat1.data?.data?.upiQr));
     const q1 = await A.post('/upi-qr', { idempotencyKey: `bill-${STAMP}`, amountPaise: 12345, invoiceRef: `TEST/${STAMP}` });
     const qr = q1.data?.data;
+    if (q1.status === 503 && q1.data?.data?.answer === 'UNAVAILABLE') {
+      check('Razorpay could not be reached: the till is told in plain words to use the bank QR', /bank QR/.test(q1.data?.data?.detail ?? ''), brief(q1));
+      console.log('  STOPPED: Razorpay was unreachable just now -- run again.');
+      return;
+    }
     if (q1.status === 422 && q1.data?.data?.answer === 'QR_NOT_ACTIVATED') {
       check('Razorpay refused: QR Codes is not switched on for this account -- the till gets QR_NOT_ACTIVATED in plain words', /QR Codes is not switched on/.test(q1.data?.data?.detail ?? ''), brief(q1));
       console.log('\n  STOPPED: switch on QR Codes for this Razorpay account (Dashboard, Test mode) to test the rest.');
@@ -105,11 +110,12 @@ async function main() {
     const unknown = await A.get('/upi-qr/qr_NOTOURSXXXXXXX');
     check('a QR Inventory never made: 404', unknown.status === 404 && unknown.data?.data?.answer === 'QR_UNKNOWN', brief(unknown));
   } finally {
-    await paymentAccounts.setUpiQr(SHOP, wasOn, 'http://localhost').catch(() => undefined);
+    // Always off afterwards: a test must never leave a shop taking QR payments it did not choose.
+    await paymentAccounts.setUpiQr(SHOP, false, 'http://localhost').catch(() => undefined);
     await posConnectionService.disconnect(SHOP, till.id).catch(() => undefined);
     if (otherTill) await posConnectionService.disconnect(NO_ACCOUNT, otherTill.id).catch(() => undefined);
     await prisma.posUpiQr.deleteMany({ where: { clientId: SHOP, idempotencyKey: { endsWith: `-${STAMP}` } } }).catch(() => undefined);
-    console.log(`\nswitch put back to ${wasOn ? 'on' : 'off'}; test till keys removed`);
+    console.log(`\nswitch left off (it was ${wasOn ? 'on' : 'off'}); test till keys removed`);
   }
   console.log(`\nRESULT: ${passed} passed | ${failed} failed`);
   await prisma.$disconnect();

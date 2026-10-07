@@ -28,7 +28,7 @@ import { runTransaction } from '../../lib/txRetry';
 import { portionOf, toMinor, fromMinor } from '../pricing/money';
 import { salesOrderService } from '../sales-order.service';
 import { dispatchService } from '../dispatch.service';
-import { planPayments } from '../payments/payment-rules';
+import { planPayments, referenceIfClean } from '../payments/payment-rules';
 import { recordPayments } from '../payments';
 import { offerRedemptionService } from '../offers/redemption.service';
 import { settleSale } from '../loyalty';
@@ -132,6 +132,8 @@ export interface PosPayment {
   amountPaise: number;
   /** POINTS and CREDIT only: the hold reserved before Complete (contract §10). */
   holdId?: string | null;
+  /** UPI: the UTR. CARD: last 4 / approval code. Kept when it passes the counter's checks, else dropped with a warning. */
+  reference?: string | null;
 }
 
 export interface PosSaleEvent {
@@ -244,6 +246,7 @@ export async function writeSaleInTransaction(
   const customerPhone = String(event.customer?.phone ?? '').trim();
   // The same person the wallet and the holds found for this phone (customerForTill says why).
   const known = customerPhone ? await customerForTill(tx, clientId, customerPhone) : null;
+  const referenceWarnings: string[] = [];
 
     /*
      * THE POS'S OWN FIGURES, recorded rather than recalculated.
@@ -351,7 +354,11 @@ export async function writeSaleInTransaction(
       const takenMinor = event.payments.reduce((a, p) => a + Math.round(p.amountPaise), 0);
       const planned = planPayments(
         takenMinor,
-        event.payments.map(p => ({ method: p.method as any, amount: p.amountPaise / 100 })),
+        event.payments.map(p => {
+          const ref = referenceIfClean(p.method as any, p.reference);
+          if (ref.problem) referenceWarnings.push(`${event.invoiceNo}: the ${p.method} reference was not kept (${ref.problem}) The payment was recorded without it.`);
+          return { method: p.method as any, amount: p.amountPaise / 100, reference: ref.reference };
+        }),
         'FULL'
       );
       await recordPayments(
@@ -387,7 +394,7 @@ export async function writeSaleInTransaction(
     }
   }
 
-  const warningsOut: string[] = [];
+  const warningsOut: string[] = [...referenceWarnings];
   const billMinor = event.lines.reduce((a, l) => a + Math.round(l.lineTotalPaise), 0);
   const settled = await settleHolds(tx, clientId, { id: made.id, customerId: customerPhone ? made.customerId : null, externalOrderId: event.invoiceNo }, event.payments ?? []);
   warningsOut.push(...settled.warnings);
