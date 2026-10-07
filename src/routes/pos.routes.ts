@@ -69,14 +69,24 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
      */
     const [{ manualDiscountMaxPercent: max }, gst] = await Promise.all([
       getShopSettings(ctx.clientId),
-      prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true } })
+      prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true } })
     ]);
     res.json({ success: true, data: {
       ...page,
       manualDiscount: max == null ? { unlimited: true } : { maxPercent: max },
       // REGULAR charges GST (a missing rate on an item is a gap to fill before it sells);
       // COMPOSITION and UNREGISTERED charge none, so a missing rate changes nothing there.
-      gst: { registration: gst?.gstRegistration ?? 'UNREGISTERED', stateCode: gst?.gstStateCode ?? null }
+      //
+      // null = the owner never said. The column defaults to UNREGISTERED, so a shop that never opened
+      // the GST card reads exactly like one that chose "not registered" -- except that a GSTIN on
+      // file cannot belong to an unregistered shop (the card refuses that pair). No settings row at
+      // all, or UNREGISTERED beside a GSTIN: not chosen, and the till keeps its own.
+      gst: {
+        registration: !gst || (gst.gstRegistration === 'UNREGISTERED' && gst.gstNumber) ? null : gst.gstRegistration,
+        stateCode: gst?.gstStateCode ?? null
+      },
+      // The till prints it when it has no logo of its own. Any image type the owner uploaded.
+      shop: { logoUrl: gst?.logoUrl ?? null }
     } });
   } catch (error) { next(error); }
 });

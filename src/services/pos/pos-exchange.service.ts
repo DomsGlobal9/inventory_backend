@@ -40,8 +40,8 @@ export type PosExchangeEvent = {
   againstInvoiceNo?: string;
   returned?: PosLine[];
   sold?: PosLine[];
-  /** New money the customer handed over, when the new goods cost more. */
-  payments?: { method?: string; amountPaise?: number }[];
+  /** New money the customer handed over, when the new goods cost more. POINTS / CREDIT rows carry their hold (contract §10). */
+  payments?: { method?: string; amountPaise?: number; holdId?: string | null }[];
   /** How the leftover went back, when the new goods cost less. */
   refund?: { method?: string; reference?: string } | null;
   refunds?: { method?: string; amountPaise?: number; reference?: string }[] | null;
@@ -132,7 +132,9 @@ export async function applyExchange(
     // Only the genuine difference. The settled part is written separately, as a settlement.
     payments: (event.payments ?? []).map(p => ({
       method: String(p.method ?? 'CASH').toUpperCase(),
-      amountPaise: Number(p.amountPaise ?? 0)
+      amountPaise: Number(p.amountPaise ?? 0),
+      // Points or credit on the new bill settle exactly as on a sale: through the hold.
+      holdId: p.holdId ?? null
     })) as any,
     customer: event.customer ?? undefined
   } as any;

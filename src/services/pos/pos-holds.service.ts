@@ -15,6 +15,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest, notFound } from '../../utils/httpError';
+import { normalisePhone } from '../../lib/phone';
 import { getSettings, mostUsable, pointsForPayment, valueOf, rupeesOf } from '../loyalty';
 import { post as postPoints } from '../loyalty/loyalty.service';
 import { spendOnSale as spendCredit } from '../store-credit/store-credit.service';
@@ -27,14 +28,28 @@ export type HoldKind = typeof KINDS[number];
 /** A refusal the till shows as one plain line; `answer` is its code on the wire. */
 const refusal = (statusCode: number, answer: string, message: string) => ({ statusCode, answer, message });
 
-/** The customer as the SALE names them: `POS:<ref exactly as sent>` (pos-events.service.ts). */
+/**
+ * The customer a till's phone names -- the ONE rule the sale, the wallet and the holds all use.
+ *
+ * Whoever holds that number in this shop comes first: the cashier is face to face with them, as
+ * Inventory's own counter always was, and the wallet shows the name in full for checking. Only
+ * then the till's own `POS:<ref>` row. Matching on the tag alone made a phone-less second copy of
+ * any customer who first bought online, and hid their points and credit from the till.
+ */
+export async function customerForTill(db: Tx | typeof prisma, clientId: string, ref: string) {
+  const select = { id: true, name: true, loyaltyPoints: true, storeCreditPaise: true } as const;
+  const n = normalisePhone(ref);
+  if (n.ok) {
+    const holder = await db.customer.findFirst({ where: { clientId, phone: n.value, deletedAt: null }, select, orderBy: { createdAt: 'asc' } });
+    if (holder) return holder;
+  }
+  return db.customer.findFirst({ where: { clientId, externalCustomerId: `POS:${ref}`, deletedAt: null }, select });
+}
+
 async function tillCustomer(db: Tx | typeof prisma, clientId: string, customerRef: unknown) {
   const ref = typeof customerRef === 'string' ? customerRef.trim() : '';
   if (!ref) throw badRequest('Say whose points: send customerRef.');
-  return db.customer.findFirst({
-    where: { clientId, externalCustomerId: `POS:${ref}`, deletedAt: null },
-    select: { id: true, name: true, loyaltyPoints: true, storeCreditPaise: true }
-  });
+  return customerForTill(db, clientId, ref);
 }
 
 /** "+91 98765 •••10": enough to recognise, not enough to copy. */

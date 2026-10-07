@@ -21,7 +21,7 @@
  */
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
-import { applySale, POS_SOURCE, type PosEventResult } from './pos-events.service';
+import { applySale, POS_SOURCE, WALK_IN_KEY, type PosEventResult } from './pos-events.service';
 import { applyReturn } from './pos-returns.service';
 import { applyPaymentUpdate, faultInPaymentShape } from './pos-payments.service';
 import { applyExchange, faultInExchangeShape } from './pos-exchange.service';
@@ -251,6 +251,8 @@ export async function saleStatus(clientId: string, invoiceNo: string) {
   });
   if (!row) return null;
   return {
+    // For the till's receipt ("You earned 29 points · balance 579"): only once the bill is in.
+    points: row.answer === 'APPLIED' ? await pointsOnBill(clientId, invoiceNo) : null,
     reference: row.id,
     status: row.status,
     answer: row.answer ?? undefined,
@@ -261,6 +263,29 @@ export async function saleStatus(clientId: string, invoiceNo: string) {
     receivedAt: row.receivedAt,
     settledAt: row.settledAt ?? undefined
   };
+}
+
+/**
+ * What one applied bill did to its customer's points: earned, used, and the balance right after.
+ * Null for a walk-in, a bill with no customer, or a shop with loyalty off. Returns are not counted:
+ * this is the bill as the customer left with it.
+ */
+async function pointsOnBill(clientId: string, invoiceNo: string) {
+  const order = await prisma.salesOrder.findFirst({
+    where: { clientId, externalOrderId: invoiceNo, sourceSystem: POS_SOURCE },
+    select: { id: true, customer: { select: { externalCustomerId: true } } }
+  });
+  if (!order?.customer || order.customer.externalCustomerId === WALK_IN_KEY) return null;
+  const on = await prisma.loyaltySettings.findUnique({ where: { clientId }, select: { enabled: true } });
+  if (!on?.enabled) return null;
+  const entries = await prisma.loyaltyEntry.findMany({
+    where: { clientId, salesOrderId: order.id, salesReturnId: null, kind: { in: ['EARNED', 'USED'] } },
+    orderBy: { createdAt: 'asc' }, select: { kind: true, points: true, balance: true }
+  });
+  const earned = entries.filter(e => e.kind === 'EARNED').reduce((a, e) => a + e.points, 0);
+  const used = -entries.filter(e => e.kind === 'USED').reduce((a, e) => a + e.points, 0);
+  const balanceAfter = entries.length ? entries[entries.length - 1].balance : null;
+  return { earned, used, balanceAfter };
 }
 
 /**

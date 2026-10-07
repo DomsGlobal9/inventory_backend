@@ -22,6 +22,7 @@ import { pricingQuoteService, fingerprint } from '../pricing/quote.service';
 import { toMinor } from '../pricing/money';
 import { canonicalCode } from '../offers/codes';
 import { resolveItems } from './pos-events.service';
+import { customerForTill } from './pos-holds.service';
 
 const MAX_LINES = 100;
 
@@ -30,14 +31,14 @@ export interface TillQuoteLine { itemCode: string; qty: number }
 /**
  * The customer as the SALE will name them, or nobody.
  *
- * A till bill finds or makes its customer by `POS:<phone exactly as sent>` (writeSaleInTransaction).
- * The quote uses the very same key, so quote and sale always agree on who the customer is: a
- * number the sale would not match to an existing customer prices as a guest here too (§9.4).
+ * The quote, the sale, the wallet and the holds all use customerForTill, so they always agree on
+ * who the customer is: the shop's customer with that phone, else the till's own POS:<phone> row.
+ * A number nobody has prices as a guest (§9.4).
  */
 async function tillCustomer(clientId: string, customerRef: unknown) {
   const ref = typeof customerRef === 'string' ? customerRef.trim() : '';
   if (!ref) return null;
-  return prisma.customer.findFirst({ where: { clientId, externalCustomerId: `POS:${ref}` }, select: { id: true } });
+  return customerForTill(prisma, clientId, ref);
 }
 
 export async function quoteForTill(clientId: string, locationId: string, body: any) {

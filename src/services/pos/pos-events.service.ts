@@ -32,7 +32,7 @@ import { planPayments } from '../payments/payment-rules';
 import { recordPayments } from '../payments';
 import { offerRedemptionService } from '../offers/redemption.service';
 import { settleSale } from '../loyalty';
-import { settleOnSale as settleHolds } from './pos-holds.service';
+import { settleOnSale as settleHolds, customerForTill } from './pos-holds.service';
 
 export const POS_SOURCE = 'SCALEEZY_POS';
 
@@ -240,6 +240,8 @@ export async function writeSaleInTransaction(
    * for a real person, and never carrying a phone.
    */
   const customerPhone = String(event.customer?.phone ?? '').trim();
+  // The same person the wallet and the holds found for this phone (customerForTill says why).
+  const known = customerPhone ? await customerForTill(tx, clientId, customerPhone) : null;
 
     /*
      * THE POS'S OWN FIGURES, recorded rather than recalculated.
@@ -261,7 +263,9 @@ export async function writeSaleInTransaction(
          * be refused because two people share a number -- that would stop the queue over
          * somebody else's data.
          */
-        customer: customerPhone
+        customer: known
+          ? { id: known.id, name: event.customer?.name ?? known.name, phone: customerPhone }
+          : customerPhone
           ? {
               externalId: `POS:${customerPhone}`,
               name: event.customer?.name ?? 'Counter customer',
@@ -610,10 +614,13 @@ export async function applySale(
     }
 
     if (Array.isArray((order as any).offerWarnings)) warnings.push(...(order as any).offerWarnings);
+    // A shop that charges no GST (composition, or not registered) bills at 0% on purpose: no warning for that.
+    const chargesTax = (await prisma.clientSettings.findUnique({ where: { clientId }, select: { gstRegistration: true } }))?.gstRegistration === 'REGULAR';
     for (const line of event.lines) {
       const priced = tillLinePrice(line).warning;
       if (priced) warnings.push(priced);
       if (line.taxRateBps == null) continue;
+      if (line.taxRateBps === 0 && !chargesTax) continue;
       const standing = taxByCode.get(line.itemCode);
       if (standing?.taxRateBps != null && standing.taxRateBps !== line.taxRateBps) {
         warnings.push(

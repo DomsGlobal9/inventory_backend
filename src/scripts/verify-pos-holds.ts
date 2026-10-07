@@ -14,6 +14,11 @@
  *   F  the sweep: a never-confirmed hold past its time is swept and the balance is usable again;
  *      a confirmed one is left alone however old
  *   G  store credit, the same way, and both on one bill
+ *   H  a customer Inventory already knows (bought online, no till tag) is the same person at the
+ *      till: the wallet finds their points and the bill lands on them, no second copy
+ *   I  points on an exchange's new bill settle through the hold, like a sale
+ *   K  /events/status carries what an applied bill did to the customer's points (for the receipt)
+ *   J  the catalogue's shop logo and GST registration (null when never chosen); 0% bills warn only a registered shop
  *
  *   npx tsx src/scripts/verify-pos-holds.ts     (needs the local backend on :4006)
  */
@@ -23,6 +28,7 @@ import { POS_BASE_URL } from '../utils/posConnection';
 import { inventoryMutationService } from '../services/inventory-mutation.service';
 import { posConnectionService } from '../services/pos/pos-connection.service';
 import { applySale } from '../services/pos/pos-events.service';
+import { applyExchange } from '../services/pos/pos-exchange.service';
 import { sweep } from '../services/pos/pos-holds.service';
 import { post as postPoints } from '../services/loyalty/loyalty.service';
 import { post as postCredit } from '../services/store-credit/store-credit.service';
@@ -217,6 +223,76 @@ async function main() {
     const o4 = await orderOf('G4');
     const ce = await prisma.storeCreditEntry.findMany({ where: { salesOrderId: o4.id }, select: { kind: true, amountPaise: true } });
     check('credit and points on one bill: both settled, credit balance Rs 100, earned on the Rs 2,700 paid in money (27)', g4?.answer === 'APPLIED' && !(g4?.warnings?.length) && ce.some(e => e.kind === 'USED' && e.amountPaise === -20000) && await creditOf() === 10000 && (await entries(o4.id)).some(e => e.kind === 'EARNED' && e.points === 27) && await pointsOf() === pts, `${g4?.answer} ${JSON.stringify(g4?.warnings)} credit=${await creditOf()} entries=${JSON.stringify(await entries(o4.id))}`);
+
+    console.log('\nH. A CUSTOMER INVENTORY ALREADY KNOWS');
+    const onlinePhone = `+918${String(STAMP).slice(-9)}`;
+    const buyer = await prisma.customer.create({ data: { clientId: CLIENT, customerCode: `HB-${STAMP}`, name: 'Online Buyer', phone: onlinePhone } });
+    await prisma.$transaction(tx => postPoints(tx, { clientId: CLIENT, customerId: buyer.id, kind: 'ADJUSTED', points: 300, onceKey: `SEEDB:${STAMP}`, note: 'seed' }));
+    const hb1 = await A.get('/wallet', { params: { customerRef: onlinePhone, billPaise: 300000 } });
+    check('the till asks with their phone: the wallet finds THEM, by name, with their 300 points', hb1.status === 200 && hb1.data.data.customerName === 'Online Buyer' && hb1.data.data.points?.balance === 300, brief(hb1));
+    const hHold = await A.post('/holds', { idempotencyKey: `hb-${STAMP}`, customerRef: onlinePhone, kind: 'POINTS', amount: 100, billPaise: 300000 });
+    const customersBefore = await prisma.customer.count({ where: { clientId: CLIENT } });
+    const hb2: any = await applySale(CLIENT, store.id, { ...bill('H2', 1, [{ method: 'POINTS', amountPaise: 10000, holdId: hHold.data?.data?.holdId }, { method: 'CASH', amountPaise: 290000 }]), customer: { name: 'Buyer at the till', phone: onlinePhone } } as any);
+    const oH = await orderOf('H2');
+    const buyerAfter = await prisma.customer.findUniqueOrThrow({ where: { id: buyer.id } });
+    check('their till bill lands on the same customer, no second copy is made, and the points settle: 300 - 100 + 29 = 229',
+      hb2?.answer === 'APPLIED' && !(hb2?.warnings?.length) && oH.customerId === buyer.id && await prisma.customer.count({ where: { clientId: CLIENT } }) === customersBefore && buyerAfter.loyaltyPoints === 229,
+      `${hb2?.answer} ${JSON.stringify(hb2?.warnings)} order.customer=${oH.customerId === buyer.id ? 'same' : 'OTHER'} customers ${customersBefore}->${await prisma.customer.count({ where: { clientId: CLIENT } })} pts=${buyerAfter.loyaltyPoints}`);
+
+    const hq = await A.post('/quote', { lines: [{ itemCode: variant.variantCode, qty: 1 }], customerRef: onlinePhone });
+    const hqRow = hq.data?.data?.quoteId ? await prisma.pricingQuote.findUnique({ where: { id: hq.data.data.quoteId }, select: { customerId: true } }) : null;
+    check('  ...and the offer quote prices for the same customer (so a group offer reaches them at the till)', hq.status === 200 && hqRow?.customerId === buyer.id, `${brief(hq)} quote.customer=${hqRow?.customerId === buyer.id ? 'same' : hqRow?.customerId}`);
+
+    console.log('\nI. POINTS ON AN EXCHANGE');
+    const x1: any = await applySale(CLIENT, store.id, bill('X1', 1, [{ method: 'CASH', amountPaise: 300000 }]) as any);
+    pts += 30;
+    const xHold = await A.post('/holds', { idempotencyKey: `xh-${STAMP}`, customerRef: phone, kind: 'POINTS', amount: 200, billPaise: 300000 });
+    const ex: any = await applyExchange(CLIENT, store.id, {
+      kind: 'sale.exchanged', exchangeNo: `INV/HOLD/${STAMP}-X2`, againstInvoiceNo: `INV/HOLD/${STAMP}-X1`, occurredAt: new Date().toISOString(),
+      returned: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: PRICE }],
+      sold: [{ itemCode: variant.variantCode, qty: 2, unitPricePaise: PRICE, lineTotalPaise: PRICE * 2 }],
+      payments: [{ method: 'POINTS', amountPaise: 20000, holdId: xHold.data?.data?.holdId }, { method: 'CASH', amountPaise: 280000 }],
+      customer: { name: 'Lakshmi Narayanan', phone }
+    } as any);
+    const oX = await orderOf('X2');
+    const xEntries = await entries(oX.id);
+    const xh = await holdRow(xHold.data?.data?.holdId);
+    check('the new bill of an exchange takes its points through the hold: USED -200 on the new bill, the hold tied to it, on the same customer',
+      x1?.answer === 'APPLIED' && ['APPLIED'].includes(ex?.answer) && xEntries.some(e => e.kind === 'USED' && e.points === -200) && xh.salesOrderId === oX.id && oX.customerId === cust.id && !(ex?.warnings ?? []).some((w: string) => /hold|points/i.test(w)),
+      `${x1?.answer}/${ex?.answer} ${JSON.stringify(ex?.warnings)} entries=${JSON.stringify(xEntries)} hold=${xh.status}/${xh.salesOrderId === oX.id}`);
+
+    console.log('\nJ. WHAT THE CATALOGUE SAYS ABOUT THE SHOP, AND 0% BILLS');
+    const shopOf = async () => (await A.get('/catalogue', { params: { limit: 1 } })).data?.data;
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { logoUrl: 'https://example.com/logo.png', gstRegistration: 'UNREGISTERED', gstNumber: null } });
+    const j1 = await shopOf();
+    check('the catalogue carries the shop logo for the till to print', j1?.shop?.logoUrl === 'https://example.com/logo.png', JSON.stringify(j1?.shop));
+    check('  ...a shop that chose "not registered" says UNREGISTERED', j1?.gst?.registration === 'UNREGISTERED', JSON.stringify(j1?.gst));
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstNumber: '29ABCDE1234F1Z5' } });
+    const j2 = await shopOf();
+    check('  ...UNREGISTERED beside a GSTIN means the owner never chose: registration null, so the till keeps its own', j2?.gst?.registration === null, JSON.stringify(j2?.gst));
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstRegistration: 'REGULAR' } });
+    const j3 = await shopOf();
+    check('  ...a registered shop says REGULAR', j3?.gst?.registration === 'REGULAR', JSON.stringify(j3?.gst));
+    const zero = (inv: string) => ({ ...bill(inv, 1, [{ method: 'CASH', amountPaise: PRICE }]), customer: null, lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: PRICE, lineTotalPaise: PRICE, taxRateBps: 0, taxPaise: 0 }] });
+    const j4: any = await applySale(CLIENT, store.id, zero('J4') as any);
+    check('a registered shop billed at 0% on a 5% product: warned (tax owed and not collected)', j4?.answer === 'APPLIED' && (j4?.warnings ?? []).some((w: string) => /0% GST/.test(w)), JSON.stringify(j4?.warnings));
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstRegistration: 'COMPOSITION', gstNumber: '29ABCDE1234F1Z5' } });
+    const j5: any = await applySale(CLIENT, store.id, zero('J5') as any);
+    check('a composition shop billed at 0% (a Bill of Supply): no GST warning', j5?.answer === 'APPLIED' && !(j5?.warnings ?? []).some((w: string) => /GST/.test(w)), JSON.stringify(j5?.warnings));
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstRegistration: 'UNREGISTERED', gstNumber: null } });
+    const j6: any = await applySale(CLIENT, store.id, zero('J6') as any);
+    check('an unregistered shop billed at 0% (a plain receipt): no GST warning', j6?.answer === 'APPLIED' && !(j6?.warnings ?? []).some((w: string) => /GST/.test(w)), JSON.stringify(j6?.warnings));
+
+    console.log('\nK. POINTS ON THE RECEIPT (/events/status)');
+    const statusOf = async (inv: string) => {
+      await prisma.posInboundEvent.create({ data: { clientId: CLIENT, locationId: store.id, kind: 'sale.completed', invoiceNo: `INV/HOLD/${STAMP}-${inv}`, payload: {}, status: 'APPLIED', answer: 'APPLIED', settledAt: new Date() } });
+      return (await A.get('/events/status', { params: { invoiceNo: `INV/HOLD/${STAMP}-${inv}` } })).data?.data;
+    };
+    const k1 = await statusOf('E1');
+    const e1Balance = (await prisma.loyaltyEntry.findFirst({ where: { salesOrderId: o1.id, kind: 'EARNED' }, select: { balance: true } }))?.balance;
+    check('an applied bill with a customer: earned 55, used 500, and the balance right after the bill', JSON.stringify(k1?.points) === JSON.stringify({ earned: 55, used: 500, balanceAfter: e1Balance }), JSON.stringify(k1?.points) + ` want balance ${e1Balance}`);
+    const k2 = await statusOf('E6');
+    check('  ...a walk-in bill: points null', k2 && k2.points === null, JSON.stringify(k2?.points));
 
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;
