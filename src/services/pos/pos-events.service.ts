@@ -377,19 +377,20 @@ export async function writeSaleInTransaction(
    * nothing: there is nobody to credit or debit.
    */
   /*
-   * A B2B tax invoice: the buyer as the till issued it, frozen on the order (Rule 46). GST is optional
-   * for every shop, so this happens only when the bill carried a GSTIN. The customer's own record
-   * takes the GSTIN and address only where it has none -- an owner's later edit is never overwritten.
+   * The buyer as the till issued the bill, frozen on the order (Rule 46): a B2B tax invoice (a GSTIN),
+   * or a large bill to a customer without one (name and address, no GSTIN). GST is optional for every
+   * shop, so this happens only when the bill carried either. The customer's own record takes the GSTIN
+   * and address only where it has none -- an owner's later edit is never overwritten.
    */
-  const buyerGstin = String(event.customer?.gstin ?? '').trim().toUpperCase();
-  if (buyerGstin) {
-    const buyerAddress = String(event.customer?.address ?? '').trim() || null;
+  const buyerGstin = String(event.customer?.gstin ?? '').trim().toUpperCase() || null;
+  const buyerAddress = String(event.customer?.address ?? '').trim() || null;
+  if (buyerGstin || buyerAddress) {
     await tx.salesOrder.update({
       where: { id: made.id },
       data: { buyerName: String(event.customer?.name ?? '').trim() || null, buyerGstin, buyerAddress }
     });
     if (customerPhone && made.customerId) {
-      await tx.customer.updateMany({ where: { id: made.customerId, clientId, gstNumber: null }, data: { gstNumber: buyerGstin } });
+      if (buyerGstin) await tx.customer.updateMany({ where: { id: made.customerId, clientId, gstNumber: null }, data: { gstNumber: buyerGstin } });
       if (buyerAddress) await tx.customer.updateMany({ where: { id: made.customerId, clientId, billingAddress: null }, data: { billingAddress: buyerAddress } });
     }
   }

@@ -303,7 +303,7 @@ export class CounterSaleService {
       })),
       payment: paymentSummary(toMinor(order.total), payments),
       // "Bill to" on a B2B tax invoice, as issued. Null on every other bill.
-      buyer: order.buyerGstin ? { name: order.buyerName, gstin: order.buyerGstin, address: order.buyerAddress } : null,
+      buyer: order.buyerGstin || order.buyerAddress ? { name: order.buyerName, gstin: order.buyerGstin, address: order.buyerAddress } : null,
       shop: {
         name: shop?.businessName ?? null,
         logoUrl: shop?.logoUrl ?? null,

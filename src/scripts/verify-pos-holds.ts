@@ -389,6 +389,13 @@ async function main() {
     const rN3: any = await counterSaleService.getSale(CLIENT, oN3.id);
     check('an ordinary bill with no GSTIN: applied, no buyer stored, no "Bill to" (GST is optional)', b2c?.answer === 'APPLIED' && oN3.buyerGstin === null && oN3.buyerName === null && rN3?.buyer === null, JSON.stringify({ oN3, buyer: rN3?.buyer }));
 
+    const big: any = await applySale(CLIENT, store.id, { ...bill('N4', 1, [{ method: 'CASH', amountPaise: PRICE }]), customer: { name: 'Kavya R', phone: '+916300000044', address: '9 Lake View\nChennai 600001' } } as any);
+    const oN4 = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-N4` }, select: { id: true, buyerName: true, buyerGstin: true, buyerAddress: true } });
+    const rN4: any = await counterSaleService.getSale(CLIENT, oN4.id);
+    check('a large bill to a customer with no GSTIN, address given: name and address frozen, no GSTIN, and "Bill to" on the receipt',
+      big?.answer === 'APPLIED' && oN4.buyerName === 'Kavya R' && oN4.buyerGstin === null && oN4.buyerAddress === '9 Lake View\nChennai 600001' && rN4?.buyer?.gstin === null && rN4?.buyer?.address === '9 Lake View\nChennai 600001',
+      `${big?.answer} ${JSON.stringify(oN4)} ${JSON.stringify(rN4?.buyer)}`);
+
     console.log('\nR. PAYMENT REFERENCES FROM THE TILL');
     const rf1: any = await applySale(CLIENT, store.id, { ...bill('RF1', 1, [{ method: 'UPI', amountPaise: 200000, reference: '791382170059' }, { method: 'CARD', amountPaise: 100000, reference: '4321/C60780' }]), customer: null } as any);
     const rfRows = await prisma.salesOrderPayment.findMany({ where: { clientId: CLIENT, kind: 'PAYMENT', salesOrder: { externalOrderId: `INV/HOLD/${STAMP}-RF1` } }, select: { method: true, reference: true } });
