@@ -17,6 +17,8 @@
  *   H  a customer Inventory already knows (bought online, no till tag) is the same person at the
  *      till: the wallet finds their points and the bill lands on them, no second copy
  *   I  points on an exchange's new bill settle through the hold, like a sale
+ *   M  a ₹0 bill with no payments is applied
+ *   L  a split refund off by exactly the bill's round-off is the till's figure, with no warning
  *   K  /events/status carries what an applied bill did to the customer's points (for the receipt)
  *   J  the catalogue's shop logo and GST registration (null when never chosen); 0% bills warn only a registered shop
  *
@@ -29,6 +31,7 @@ import { inventoryMutationService } from '../services/inventory-mutation.service
 import { posConnectionService } from '../services/pos/pos-connection.service';
 import { applySale } from '../services/pos/pos-events.service';
 import { applyExchange } from '../services/pos/pos-exchange.service';
+import { applyReturn } from '../services/pos/pos-returns.service';
 import { sweep } from '../services/pos/pos-holds.service';
 import { post as postPoints } from '../services/loyalty/loyalty.service';
 import { post as postCredit } from '../services/store-credit/store-credit.service';
@@ -51,7 +54,12 @@ async function teardown() {
     ['pos events', () => prisma.posInboundEvent.deleteMany({ where: w })],
     ['holds', () => prisma.posHold.deleteMany({ where: w })],
     ['payments', () => prisma.salesOrderPayment.deleteMany({ where: w })],
+    ['loyalty', () => prisma.loyaltyEntry.deleteMany({ where: w })],
+    ['credit', () => prisma.storeCreditEntry.deleteMany({ where: w })],
+    ['return items', () => prisma.salesReturnItem.deleteMany({ where: { salesReturn: w } })],
+    ['returns', () => prisma.salesReturn.deleteMany({ where: w })],
     ['orders', () => prisma.salesOrder.deleteMany({ where: w })],
+    ['quotes', () => prisma.pricingQuote.deleteMany({ where: w })],
     ['transactions', () => prisma.inventoryTransaction.deleteMany({ where: w })],
     ['loyalty', () => prisma.loyaltyEntry.deleteMany({ where: w })],
     ['credit', () => prisma.storeCreditEntry.deleteMany({ where: w })],
@@ -293,6 +301,31 @@ async function main() {
     check('an applied bill with a customer: earned 55, used 500, and the balance right after the bill', JSON.stringify(k1?.points) === JSON.stringify({ earned: 55, used: 500, balanceAfter: e1Balance }), JSON.stringify(k1?.points) + ` want balance ${e1Balance}`);
     const k2 = await statusOf('E6');
     check('  ...a walk-in bill: points null', k2 && k2.points === null, JSON.stringify(k2?.points));
+
+    console.log('\nL. A RETURN OFF BY THE BILL\'S ROUND-OFF');
+    // A ₹3,000.10 line rounded down to ₹3,000 on the bill: the 10 paise never changed hands.
+    const roundBill = (inv: string) => ({ ...bill(inv, 1, [{ method: 'CASH', amountPaise: 300000 }]), customer: null, lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: 300010, lineTotalPaise: 300010 }], totals: { roundOffPaise: -10 } });
+    for (const inv of ['L1', 'L2']) {
+      const made: any = await applySale(CLIENT, store.id, roundBill(inv) as any);
+      await prisma.posInboundEvent.create({ data: { clientId: CLIENT, locationId: store.id, kind: 'sale.completed', invoiceNo: `INV/HOLD/${STAMP}-${inv}`, payload: roundBill(inv) as any, status: 'APPLIED', answer: 'APPLIED', settledAt: new Date() } });
+      if (made?.answer !== 'APPLIED') console.log('  (setup bill', inv, made?.answer, ')');
+    }
+    const giveBack = (cn: string, inv: string, paise: number) => ({ kind: 'sale.returned', creditNoteNo: `CN/HOLD/${STAMP}-${cn}`, againstInvoiceNo: `INV/HOLD/${STAMP}-${inv}`, lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300010 }], totals: { roundOffPaise: 10 }, refunds: [{ method: 'CASH', amountPaise: paise }] });
+    const l1: any = await applyReturn(CLIENT, store.id, giveBack('L1', 'L1', 300000) as any);
+    const l1rows = await prisma.salesOrderPayment.findMany({ where: { clientId: CLIENT, kind: 'REFUND', salesOrder: { externalOrderId: `INV/HOLD/${STAMP}-L1` } }, select: { method: true, amount: true } });
+    check('a full return that gives back ₹3,000 for a ₹3,000.10 line rounded to ₹3,000: no warning, recorded as the till gave it (₹3,000.00)',
+      l1?.answer === 'APPLIED' && !(l1?.warnings?.length) && l1rows.length === 1 && Number(l1rows[0].amount) === 3000,
+      `${l1?.answer} ${JSON.stringify(l1?.warnings)} rows=${JSON.stringify(l1rows)}`);
+    const l2: any = await applyReturn(CLIENT, store.id, giveBack('L2', 'L2', 299950) as any);
+    check('  ...but a till that gives back 50 paise less than that still gets the warning', l2?.answer === 'APPLIED' && (l2?.warnings ?? []).some((w: string) => /gave back/.test(w)), `${l2?.answer} ${JSON.stringify(l2?.warnings)}`);
+
+    console.log('\nM. A ₹0 BILL (A GIFT OR A REPLACEMENT)');
+    const pointsBeforeGift = await pointsOf();
+    const m1: any = await applySale(CLIENT, store.id, { ...bill('M1', 1, []), lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: PRICE, lineTotalPaise: 0 }], payments: [] } as any);
+    const oM = await orderOf('M1').catch(() => null);
+    check('a fully discounted bill with no payments is applied, never refused (a refusal would stop the shop\'s queue)',
+      m1?.answer === 'APPLIED' && oM != null && Number(oM.total) === 0, `${m1?.answer} ${m1?.detail ?? ''} total=${oM?.total}`);
+    check('  ...earns nothing and takes nothing', await pointsOf() === pointsBeforeGift, `${pointsBeforeGift} -> ${await pointsOf()}`);
 
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;

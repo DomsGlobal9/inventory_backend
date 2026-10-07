@@ -43,6 +43,8 @@ export type PosReturnEvent = {
   refund?: { method?: string; reference?: string } | null;
   /** Every part of a split refund. A till can give half back on UPI and half in cash. */
   refunds?: { method?: string; amountPaise?: number; reference?: string }[] | null;
+  /** The till's round-off on this credit note, as on sale.completed. */
+  totals?: { roundOffPaise?: number } | null;
   note?: string;
 };
 
@@ -55,7 +57,7 @@ export type PosReturnEvent = {
  * the two lied. When it does not add up we fall back to one row and say so, which is wrong in a
  * way somebody can see rather than wrong in a way they cannot.
  */
-function splitOf(event: PosReturnEvent, moneyMinor: number) {
+function splitOf(event: PosReturnEvent, moneyMinor: number, roundOffs: number[] = []) {
   const raw = Array.isArray(event.refunds) ? event.refunds : [];
   if (!raw.length) return null;
 
@@ -72,7 +74,13 @@ function splitOf(event: PosReturnEvent, moneyMinor: number) {
   }
 
   const total = [...byMethod.values()].reduce((a, x) => a + x.amount, 0);
-  if (total !== moneyMinor) return { mismatch: total, parts: [] as const };
+  /*
+   * Off by exactly the bill's round-off: expected, and the till is right. Inventory's figure comes
+   * from the line totals, which round-off never touched; the paise rounded away never changed hands,
+   * so the money that really went back is the till's. Recorded as the till sent it, no warning.
+   */
+  const roundedAway = roundOffs.some(r => r !== 0 && Math.abs(total - moneyMinor) === Math.abs(r));
+  if (total !== moneyMinor && !roundedAway) return { mismatch: total, parts: [] as const };
 
   return {
     mismatch: null,
@@ -219,7 +227,14 @@ export async function writeReturnInTransaction(tx: any, p: {
 
   const moneyMinor = toMinor(done.refundTotal as any);
   if (moneyMinor > 0) {
-    const split = splitOf(event, moneyMinor);
+    // The round-offs this money may differ by: the credit note's own, and the bill it reverses.
+    const sold = await tx.posInboundEvent.findFirst({
+      where: { clientId, invoiceNo: event.againstInvoiceNo ?? '', kind: 'sale.completed' },
+      select: { payload: true }
+    });
+    const roundOffs = [Number(event.totals?.roundOffPaise ?? 0), Number((sold?.payload as any)?.totals?.roundOffPaise ?? 0)]
+      .filter(n => Number.isInteger(n));
+    const split = splitOf(event, moneyMinor, roundOffs);
 
     if (split?.mismatch != null) {
       warnings.push(
