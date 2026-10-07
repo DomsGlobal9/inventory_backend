@@ -1261,6 +1261,11 @@ model SalesOrder {
   customerPhone   String? @map("customer_phone")
   shippingAddress String? @map("shipping_address") @db.Text
   billingAddress  String? @map("billing_address") @db.Text
+  /// The buyer as issued on a B2B tax invoice from the till (Rule 46), frozen at sale. Only when the
+  /// bill had one: GST is optional for every shop, and a B2C bill leaves all three empty.
+  buyerName    String? @map("buyer_name")
+  buyerGstin   String? @map("buyer_gstin")
+  buyerAddress String? @map("buyer_address") @db.Text
 
   channel    SalesChannel  @default(POS)
   locationId String        @map("location_id")

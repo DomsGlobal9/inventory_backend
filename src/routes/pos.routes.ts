@@ -87,9 +87,10 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
      * into that column would turn the owner's choice into its opposite (contract, catalogue
      * addition). Measured by the till on the manual part of a bill only, never on an offer.
      */
-    const [{ manualDiscountMaxPercent: max }, gst] = await Promise.all([
+    const [{ manualDiscountMaxPercent: max }, gst, store] = await Promise.all([
       getShopSettings(ctx.clientId),
-      prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true } })
+      prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true, businessName: true, businessAddress: true, businessPhone: true, receiptFooter: true } }),
+      prisma.stockLocation.findFirst({ where: { clientId: ctx.clientId, id: { in: ctx.locationIds } }, select: { address: true, phone: true } })
     ]);
     if (gst?.logoUrl) printLogo(gst.logoUrl).catch(() => undefined);
     res.json({ success: true, data: {
@@ -110,7 +111,14 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
       // as a PNG, for documents that cannot embed WebP (the till's WhatsApp PDF). Same till key.
       shop: {
         logoUrl: gst?.logoUrl ?? null,
-        logoPrintUrl: gst?.logoUrl ? `${req.protocol}://${req.get('host')}${req.baseUrl}/logo-print` : null
+        logoPrintUrl: gst?.logoUrl ? `${req.protocol}://${req.get('host')}${req.baseUrl}/logo-print` : null,
+        // What the bill prints, from Settings -> Name, logo and bill details. The till's own store's
+        // address and phone first, as Inventory's receipts do; the shop's when the store has none.
+        name: gst?.businessName || null,
+        address: store?.address || gst?.businessAddress || null,
+        phone: store?.phone || gst?.businessPhone || null,
+        gstin: gst?.gstNumber || null,
+        receiptFooter: gst?.receiptFooter || null
       }
     } });
   } catch (error) { next(error); }

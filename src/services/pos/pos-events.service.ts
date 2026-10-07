@@ -33,6 +33,7 @@ import { recordPayments } from '../payments';
 import { offerRedemptionService } from '../offers/redemption.service';
 import { settleSale } from '../loyalty';
 import { settleOnSale as settleHolds, customerForTill } from './pos-holds.service';
+import { registrationInForce } from '../pricing/tax';
 
 export const POS_SOURCE = 'SCALEEZY_POS';
 
@@ -138,7 +139,8 @@ export interface PosSaleEvent {
   invoiceNo: string;
   occurredAt: string;
   locationCode?: string | null;
-  customer?: { name?: string | null; phone?: string | null } | null;
+  /** gstin and address only on a B2B tax invoice: the buyer as issued, frozen on the bill. */
+  customer?: { name?: string | null; phone?: string | null; gstin?: string | null; address?: string | null } | null;
   /** The customer's phone, E.164, or null for a walk-in -- the same "who" the quote was asked for. */
   customerRef?: string | null;
   /** The quote the bill was built from, and the code typed at the till, if any (§4.1). */
@@ -367,6 +369,24 @@ export async function writeSaleInTransaction(
    * own New sale went (6 Oct 2026) the till is the counter. A walk-in earns nothing and can spend
    * nothing: there is nobody to credit or debit.
    */
+  /*
+   * A B2B tax invoice: the buyer as the till issued it, frozen on the order (Rule 46). GST is optional
+   * for every shop, so this happens only when the bill carried a GSTIN. The customer's own record
+   * takes the GSTIN and address only where it has none -- an owner's later edit is never overwritten.
+   */
+  const buyerGstin = String(event.customer?.gstin ?? '').trim().toUpperCase();
+  if (buyerGstin) {
+    const buyerAddress = String(event.customer?.address ?? '').trim() || null;
+    await tx.salesOrder.update({
+      where: { id: made.id },
+      data: { buyerName: String(event.customer?.name ?? '').trim() || null, buyerGstin, buyerAddress }
+    });
+    if (customerPhone && made.customerId) {
+      await tx.customer.updateMany({ where: { id: made.customerId, clientId, gstNumber: null }, data: { gstNumber: buyerGstin } });
+      if (buyerAddress) await tx.customer.updateMany({ where: { id: made.customerId, clientId, billingAddress: null }, data: { billingAddress: buyerAddress } });
+    }
+  }
+
   const warningsOut: string[] = [];
   const billMinor = event.lines.reduce((a, l) => a + Math.round(l.lineTotalPaise), 0);
   const settled = await settleHolds(tx, clientId, { id: made.id, customerId: customerPhone ? made.customerId : null, externalOrderId: event.invoiceNo }, event.payments ?? []);
@@ -615,7 +635,8 @@ export async function applySale(
 
     if (Array.isArray((order as any).offerWarnings)) warnings.push(...(order as any).offerWarnings);
     // A shop that charges no GST (composition, or not registered) bills at 0% on purpose: no warning for that.
-    const chargesTax = (await prisma.clientSettings.findUnique({ where: { clientId }, select: { gstRegistration: true } }))?.gstRegistration === 'REGULAR';
+    const gstNow = await prisma.clientSettings.findUnique({ where: { clientId }, select: { gstRegistration: true, gstNumber: true } });
+    const chargesTax = registrationInForce(gstNow?.gstRegistration, gstNow?.gstNumber) === 'REGULAR';
     for (const line of event.lines) {
       const priced = tillLinePrice(line).warning;
       if (priced) warnings.push(priced);

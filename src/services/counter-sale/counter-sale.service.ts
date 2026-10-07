@@ -218,7 +218,7 @@ export class CounterSaleService {
         select: {
           id: true, orderNumber: true, status: true, channel: true, handover: true, sourceSystem: true,
           createdAt: true, subtotal: true, discountAmount: true, taxAmount: true, shippingAmount: true, total: true,
-          customerName: true, customerPhone: true,
+          customerName: true, customerPhone: true, buyerName: true, buyerGstin: true, buyerAddress: true,
           customer: { select: { id: true, name: true, customerCode: true, phone: true } },
           location: { select: { id: true, name: true, address: true, phone: true } },
           createdBy: { select: { id: true, name: true } }
@@ -302,6 +302,8 @@ export class CounterSaleService {
         reference: p.reference, receivedAt: p.receivedAt, receivedBy: p.receivedBy?.name ?? null
       })),
       payment: paymentSummary(toMinor(order.total), payments),
+      // "Bill to" on a B2B tax invoice, as issued. Null on every other bill.
+      buyer: order.buyerGstin ? { name: order.buyerName, gstin: order.buyerGstin, address: order.buyerAddress } : null,
       shop: {
         name: shop?.businessName ?? null,
         logoUrl: shop?.logoUrl ?? null,

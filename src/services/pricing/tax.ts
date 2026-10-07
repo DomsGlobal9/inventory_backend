@@ -230,6 +230,16 @@ export function mayChargeTax(registration: GstRegistration): boolean {
   return registration === 'REGULAR';
 }
 
+/**
+ * The registration that actually applies. GST is optional for every shop (owner's rule): a shop with
+ * no GSTIN charges no GST and issues a plain receipt, whatever registration it picked or defaulted
+ * to -- a tax invoice without a GSTIN is not a tax invoice. The till follows the same rule.
+ */
+export function registrationInForce(registration: string | null | undefined, gstin: string | null | undefined): GstRegistration {
+  if (!gstin || !String(gstin).trim()) return 'UNREGISTERED';
+  return (registration === 'REGULAR' || registration === 'COMPOSITION') ? registration : 'UNREGISTERED';
+}
+
 export function documentKindFor(registration: GstRegistration): DocumentKind {
   if (registration === 'REGULAR') return 'TAX_INVOICE';
   if (registration === 'COMPOSITION') return 'BILL_OF_SUPPLY';

@@ -32,6 +32,7 @@ import { posConnectionService } from '../services/pos/pos-connection.service';
 import { applySale } from '../services/pos/pos-events.service';
 import { applyExchange } from '../services/pos/pos-exchange.service';
 import { applyReturn } from '../services/pos/pos-returns.service';
+import { counterSaleService } from '../services/counter-sale/counter-sale.service';
 import { sweep } from '../services/pos/pos-holds.service';
 import { post as postPoints } from '../services/loyalty/loyalty.service';
 import { post as postCredit } from '../services/store-credit/store-credit.service';
@@ -318,6 +319,12 @@ async function main() {
     await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstRegistration: 'UNREGISTERED', gstNumber: null } });
     const j6: any = await applySale(CLIENT, store.id, zero('J6') as any);
     check('an unregistered shop billed at 0% (a plain receipt): no GST warning', j6?.answer === 'APPLIED' && !(j6?.warnings ?? []).some((w: string) => /GST/.test(w)), JSON.stringify(j6?.warnings));
+    // GST is optional (owner's rule): "registered" with no GSTIN on file charges nothing and issues a plain receipt.
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstRegistration: 'REGULAR', gstNumber: null } });
+    const j7: any = await applySale(CLIENT, store.id, zero('J7') as any);
+    const o7 = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-J7` }, select: { documentKind: true } });
+    check('a shop marked registered but with no GSTIN: a plain RECEIPT, and no GST warning on a 0% bill', j7?.answer === 'APPLIED' && o7.documentKind === 'RECEIPT' && !(j7?.warnings ?? []).some((w: string) => /GST/.test(w)), `${o7.documentKind} ${JSON.stringify(j7?.warnings)}`);
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstRegistration: 'UNREGISTERED' } });
 
     console.log('\nK. POINTS ON THE RECEIPT (/events/status)');
     const statusOf = async (inv: string) => {
@@ -354,6 +361,33 @@ async function main() {
     check('a fully discounted bill with no payments is applied, never refused (a refusal would stop the shop\'s queue)',
       m1?.answer === 'APPLIED' && oM != null && Number(oM.total) === 0, `${m1?.answer} ${m1?.detail ?? ''} total=${oM?.total}`);
     check('  ...earns nothing and takes nothing', await pointsOf() === pointsBeforeGift, `${pointsBeforeGift} -> ${await pointsOf()}`);
+
+    console.log('\nN. THE BILL\'S SHOP DETAILS FOLLOW INVENTORY; A B2B BUYER IS KEPT (GST STAYS OPTIONAL)');
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { businessName: 'Holds Silks', businessAddress: '1 Shop Road', businessPhone: '+919000000010', gstNumber: null, receiptFooter: 'Thank you' } });
+    const n1 = (await A.get('/catalogue', { params: { limit: 1 } })).data?.data?.shop;
+    check('no store address: the shop\'s name, address, phone and footer; GSTIN null (none set, and that is fine)',
+      n1?.name === 'Holds Silks' && n1?.address === '1 Shop Road' && n1?.phone === '+919000000010' && n1?.receiptFooter === 'Thank you' && n1?.gstin === null, JSON.stringify(n1));
+    await prisma.stockLocation.update({ where: { id: store.id }, data: { address: '22 Store Street', phone: '+919000000022' } });
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstNumber: '36AAAAA0000A1Z5' } });
+    const n2 = (await A.get('/catalogue', { params: { limit: 1 } })).data?.data?.shop;
+    check('  ...the till\'s own store\'s address and phone come first; the GSTIN once the owner sets it',
+      n2?.address === '22 Store Street' && n2?.phone === '+919000000022' && n2?.gstin === '36AAAAA0000A1Z5', JSON.stringify(n2));
+
+    const b2b: any = await applySale(CLIENT, store.id, { ...bill('N1', 1, [{ method: 'CASH', amountPaise: PRICE }]), customer: { name: 'Lakshmi Traders', phone, gstin: '36aabcl1234q1z5', address: '5 Market Lane, Hyderabad' } } as any);
+    const oN = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-N1` }, select: { id: true, buyerName: true, buyerGstin: true, buyerAddress: true } });
+    const custN = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id }, select: { gstNumber: true, billingAddress: true } });
+    check('a B2B bill: the buyer as issued is frozen on the order (GSTIN in capitals), and the customer\'s empty GSTIN and address are filled',
+      b2b?.answer === 'APPLIED' && oN.buyerName === 'Lakshmi Traders' && oN.buyerGstin === '36AABCL1234Q1Z5' && oN.buyerAddress === '5 Market Lane, Hyderabad' && custN.gstNumber === '36AABCL1234Q1Z5' && custN.billingAddress === '5 Market Lane, Hyderabad',
+      `${b2b?.answer} ${JSON.stringify(oN)} ${JSON.stringify(custN)}`);
+    const rN: any = await counterSaleService.getSale(CLIENT, oN.id);
+    check('  ...and Inventory\'s receipt for it carries "Bill to"', rN?.buyer?.gstin === '36AABCL1234Q1Z5' && rN?.buyer?.name === 'Lakshmi Traders', JSON.stringify(rN?.buyer));
+    await prisma.customer.update({ where: { id: cust.id }, data: { gstNumber: '36ZZZZZ9999Z1Z5' } });
+    await applySale(CLIENT, store.id, { ...bill('N2', 1, [{ method: 'CASH', amountPaise: PRICE }]), customer: { name: 'Lakshmi Traders', phone, gstin: '36AABCL1234Q1Z5', address: 'x' } } as any);
+    check('  ...a customer GSTIN the owner already has is never overwritten by a bill', (await prisma.customer.findUniqueOrThrow({ where: { id: cust.id } })).gstNumber === '36ZZZZZ9999Z1Z5');
+    const b2c: any = await applySale(CLIENT, store.id, bill('N3', 1, [{ method: 'CASH', amountPaise: PRICE }]) as any);
+    const oN3 = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-N3` }, select: { id: true, buyerGstin: true, buyerName: true } });
+    const rN3: any = await counterSaleService.getSale(CLIENT, oN3.id);
+    check('an ordinary bill with no GSTIN: applied, no buyer stored, no "Bill to" (GST is optional)', b2c?.answer === 'APPLIED' && oN3.buyerGstin === null && oN3.buyerName === null && rN3?.buyer === null, JSON.stringify({ oN3, buyer: rN3?.buyer }));
 
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;

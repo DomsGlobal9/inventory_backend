@@ -18,7 +18,7 @@ import { phoneForOutsideCustomer } from './customer.service';
 import { phoneSearchDigits } from '../lib/phone';
 import { paymentSummary } from './payments/payment-rules';
 import { freezeTaxForLine } from './pricing/freezeTax';
-import { mayChargeTax, documentKindFor, type GstRegistration } from './pricing/tax';
+import { mayChargeTax, documentKindFor, registrationInForce } from './pricing/tax';
 import { settleSentOut } from './loyalty';
 
 /** Kept here as well as in counter-sale, which imports this service: one string, no import cycle. */
@@ -508,9 +508,10 @@ export class SalesOrderService {
        */
       const gstSettings = await tx.clientSettings.findUnique({
         where: { clientId },
-        select: { gstRegistration: true, gstStateCode: true }
+        select: { gstRegistration: true, gstStateCode: true, gstNumber: true }
       });
-      const shopChargesTax = mayChargeTax((gstSettings?.gstRegistration ?? 'UNREGISTERED') as GstRegistration);
+      const inForce = registrationInForce(gstSettings?.gstRegistration, gstSettings?.gstNumber);
+      const shopChargesTax = mayChargeTax(inForce);
       /*
        * A sales order has no place of supply of its own yet, so this is the shop's own state --
        * true for every counter sale, because the customer is standing in the shop. When the online
@@ -735,7 +736,7 @@ export class SalesOrderService {
            * changes the shop's registration today -- until 6 Oct 2026 nothing wrote this column
            * and every document was rendered as a receipt.
            */
-          documentKind: documentKindFor((gstSettings?.gstRegistration ?? 'UNREGISTERED') as GstRegistration),
+          documentKind: documentKindFor(inForce),
           subtotal: fromMinor(totals.subtotalMinor),
           // Re-stated from the lines rather than left as the caller sent it. For an order with
           // only an order-level discount the two are identical; for one carrying per-line
