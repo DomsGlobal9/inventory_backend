@@ -2,7 +2,7 @@ import axios, { AxiosError, AxiosInstance } from 'axios';
 import crypto from 'crypto';
 import {
   CreatedOrder, GatewayCheck, GatewayError, GatewayMode, GatewayPayment, GatewayPaymentDetail,
-  GatewayRefund, PaymentGateway, RefundResult, WebhookEvent
+  GatewayRefund, PaymentGateway, RefundResult, WebhookEvent, CreatedUpiQr, UpiQrPayment
 } from './types';
 
 /**
@@ -136,7 +136,8 @@ export class RazorpayGateway implements PaymentGateway {
       paymentId: str(payment?.id) ?? str(refund?.payment_id),
       refundId: str(refund?.id),
       amountPaise: paise(payment?.amount) ?? paise(order?.amount_paid) ?? paise(refund?.amount),
-      failReason: null
+      failReason: null,
+      qrCodeId: str(body?.payload?.qr_code?.entity?.id)
     };
 
     switch (event) {
@@ -147,10 +148,52 @@ export class RazorpayGateway implements PaymentGateway {
         return { ...base, kind: 'FAILED', failReason: str(payment?.error_description) ?? 'The payment did not go through.' };
       case 'refund.processed':
         return { ...base, kind: 'REFUNDED', amountPaise: paise(refund?.amount) ?? base.amountPaise };
+      case 'qr_code.credited':
+        return { ...base, kind: 'QR_CREDITED' };
       case 'refund.failed':
         return { ...base, kind: 'REFUND_FAILED', amountPaise: paise(refund?.amount) ?? base.amountPaise, failReason: 'Razorpay could not complete the refund.' };
       default:
         return base;
+    }
+  }
+
+  async createUpiQr(amountPaise: number, opts: { name: string; closeBy: Date; description?: string; notes?: Record<string, string> }): Promise<CreatedUpiQr> {
+    if (!Number.isInteger(amountPaise) || amountPaise < MIN_PAISE) {
+      throw new GatewayError(`A UPI QR has to be for a whole number of paise and at least ₹1 (got ${amountPaise}).`, 'BAD_REQUEST');
+    }
+    try {
+      const { data } = await this.http.post('/payments/qr_codes', {
+        type: 'upi_qr', usage: 'single_use', fixed_amount: true, payment_amount: amountPaise,
+        name: opts.name.slice(0, 40), description: opts.description?.slice(0, 100),
+        close_by: Math.floor(opts.closeBy.getTime() / 1000), notes: opts.notes ?? {}
+      });
+      const qrId = str(data?.id);
+      const imageUrl = str(data?.image_url);
+      if (!qrId || !imageUrl) throw new GatewayError('Razorpay made the QR but did not say where it is.', 'UNAVAILABLE');
+      return { qrId, imageUrl };
+    } catch (e) { this.fail(e); }
+  }
+
+  async upiQrPayments(qrId: string): Promise<UpiQrPayment[]> {
+    try {
+      const { data } = await this.http.get(`/payments/qr_codes/${encodeURIComponent(qrId)}/payments`);
+      return (data?.items ?? []).map((p: any) => ({
+        paymentId: String(p.id),
+        amountPaise: Number(p.amount),
+        status: p.status === 'captured' ? 'CAPTURED' : p.status === 'authorized' ? 'AUTHORIZED' : p.status === 'failed' ? 'FAILED' : 'OTHER',
+        utr: str(p.acquirer_data?.rrn) ?? str(p.acquirer_data?.upi_transaction_id),
+        paidAt: Number.isFinite(Number(p.created_at)) ? new Date(Number(p.created_at) * 1000) : null
+      }));
+    } catch (e) { this.fail(e); }
+  }
+
+  async closeUpiQr(qrId: string): Promise<void> {
+    try {
+      await this.http.post(`/payments/qr_codes/${encodeURIComponent(qrId)}/close`);
+    } catch (e) {
+      // Already closed (by its close_by, or an earlier call): the outcome wanted is the outcome there is.
+      if ((e as AxiosError)?.response?.status === 400) return;
+      this.fail(e);
     }
   }
 

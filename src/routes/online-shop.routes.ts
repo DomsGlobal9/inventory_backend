@@ -104,6 +104,7 @@ router.put('/payments', ownerOnly, paying(req => paymentAccounts.save(clientId(r
 router.post('/payments/check', paying(req => paymentAccounts.check(clientId(req), apiBase(req))));
 router.post('/payments/webhook-secret', ownerOnly, handle(req => paymentAccounts.newWebhookSecret(clientId(req), apiBase(req))));
 router.delete('/payments', ownerOnly, handle(req => paymentAccounts.remove(clientId(req), apiBase(req))));
+router.put('/payments/upi-qr', ownerOnly, handle(req => paymentAccounts.setUpiQr(clientId(req), req.body?.enabled, apiBase(req))));
 
 /** What has been paid online lately, and what has gone back. */
 router.get('/payments/activity', handle(req => onlinePayments.activity(clientId(req), Number(req.query.limit) || 30)));

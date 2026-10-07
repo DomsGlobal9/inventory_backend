@@ -38,7 +38,7 @@ export interface CreatedOrder {
   checkoutPayload: Record<string, unknown>;
 }
 
-export type WebhookKind = 'PAID' | 'FAILED' | 'REFUNDED' | 'REFUND_FAILED' | 'IGNORED';
+export type WebhookKind = 'PAID' | 'FAILED' | 'REFUNDED' | 'REFUND_FAILED' | 'QR_CREDITED' | 'IGNORED';
 
 export interface WebhookEvent {
   kind: WebhookKind;
@@ -52,6 +52,21 @@ export interface WebhookEvent {
   amountPaise: number | null;
   /** The gateway's words for a failure, for the owner. */
   failReason: string | null;
+  /** QR_CREDITED: the QR code that was paid. */
+  qrCodeId?: string | null;
+}
+
+/** A UPI QR for one bill at the till: single use, for exactly this amount, closing by itself. */
+export interface CreatedUpiQr { qrId: string; imageUrl: string }
+
+/** A payment made to a QR code, as the gateway reports it. */
+export interface UpiQrPayment {
+  paymentId: string;
+  amountPaise: number;
+  status: 'CAPTURED' | 'AUTHORIZED' | 'FAILED' | 'OTHER';
+  /** The bank reference (UTR / RRN) the customer's app shows, when the gateway gives it. */
+  utr: string | null;
+  paidAt: Date | null;
 }
 
 export interface RefundResult {
@@ -126,4 +141,9 @@ export interface PaymentGateway {
 
   /** "Check it works" on the keys screen. */
   check(): Promise<GatewayCheck>;
+
+  createUpiQr(amountPaise: number, opts: { name: string; closeBy: Date; description?: string; notes?: Record<string, string> }): Promise<CreatedUpiQr>;
+  upiQrPayments(qrId: string): Promise<UpiQrPayment[]>;
+  /** Stops a QR taking money. Closing one already closed is not an error. */
+  closeUpiQr(qrId: string): Promise<void>;
 }

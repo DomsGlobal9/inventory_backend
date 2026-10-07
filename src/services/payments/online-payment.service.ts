@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
+import * as posUpiQr from '../pos/pos-upi-qr.service';
 import { prisma } from '../../lib/prisma';
 import { afterCommit } from '../../lib/afterCommit';
 import { OnlineShopRuleError } from '../online-shop/rules';
@@ -962,6 +963,9 @@ export async function refundOfReturn(clientId: string, returnId: string) {
  * account for other things -- is ignored.
  */
 export async function applyWebhook(clientId: string, gateway: PaymentGateway, ev: WebhookEvent): Promise<'APPLIED' | 'IGNORED'> {
+  // A UPI QR at the POS till was paid (pos-upi-qr.service). Its payment.captured carries no order, so
+  // it is ignored below; this event is the one that counts.
+  if (ev.kind === 'QR_CREDITED') return posUpiQr.onQrCredited(clientId, ev.qrCodeId);
   if (ev.kind === 'PAID' || ev.kind === 'FAILED') {
     if (!ev.gatewayOrderId || !ev.paymentId) return 'IGNORED';
     const row = await prisma.onlinePayment.findFirst({ where: { clientId, gatewayOrderId: ev.gatewayOrderId } });

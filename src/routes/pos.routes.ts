@@ -20,6 +20,8 @@ import sharp from 'sharp';
 import { authenticateStorefront, onlyPos, storefrontContext } from '../middleware/storefront.middleware';
 import { quoteForTill } from '../services/pos/pos-quote.service';
 import * as holds from '../services/pos/pos-holds.service';
+import * as upiQr from '../services/pos/pos-upi-qr.service';
+import { paymentAccounts } from '../services/payments/account.service';
 import { getShopSettings } from '../lib/clientSettings';
 import { prisma } from '../lib/prisma';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
@@ -87,10 +89,12 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
      * into that column would turn the owner's choice into its opposite (contract, catalogue
      * addition). Measured by the till on the manual part of a bill only, never on an offer.
      */
-    const [{ manualDiscountMaxPercent: max }, gst, store] = await Promise.all([
+    const [{ manualDiscountMaxPercent: max }, gst, store, payAccount, payReady] = await Promise.all([
       getShopSettings(ctx.clientId),
       prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true, businessName: true, businessAddress: true, businessPhone: true, receiptFooter: true } }),
-      prisma.stockLocation.findFirst({ where: { clientId: ctx.clientId, id: { in: ctx.locationIds } }, select: { address: true, phone: true } })
+      prisma.stockLocation.findFirst({ where: { clientId: ctx.clientId, id: { in: ctx.locationIds } }, select: { address: true, phone: true } }),
+      prisma.shopPaymentAccount.findUnique({ where: { clientId: ctx.clientId }, select: { upiQrEnabled: true } }),
+      paymentAccounts.readiness(ctx.clientId)
     ]);
     if (gst?.logoUrl) printLogo(gst.logoUrl).catch(() => undefined);
     res.json({ success: true, data: {
@@ -109,6 +113,8 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
       },
       // logoUrl for screens (any image type; uploads are stored as WebP). logoPrintUrl: the same logo
       // as a PNG, for documents that cannot embed WebP (the till's WhatsApp PDF). Same till key.
+      // On only when the owner switched it on AND the Razorpay account can take money now.
+      upiQr: { enabled: !!payAccount?.upiQrEnabled && payReady.ready },
       shop: {
         logoUrl: gst?.logoUrl ?? null,
         logoPrintUrl: gst?.logoUrl ? `${req.protocol}://${req.get('host')}${req.baseUrl}/logo-print` : null,
@@ -155,6 +161,32 @@ const holdFailure = (res: Response, error: any) => {
   if (error?.statusCode === 400) { res.status(422).json({ success: false, data: { answer: 'BAD_PAYLOAD', detail: error.message } }); return true; }
   return false;
 };
+/**
+ * UPI QR at the till (pos-upi-qr.service): a QR for one bill that confirms itself, through the shop's
+ * own Razorpay account. Every refusal is one plain line; the till then uses the shop's bank QR.
+ */
+router.post('/upi-qr', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await upiQr.createQr(ctx.clientId, ctx.connectionId, req.body) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
+});
+router.get('/upi-qr/:qrId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await upiQr.status(ctx.clientId, String(req.params.qrId)) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
+});
+router.post('/upi-qr/:qrId/close', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await upiQr.close(ctx.clientId, String(req.params.qrId)) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
+});
+
 router.get('/wallet', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ctx = storefrontContext(req, res);

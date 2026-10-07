@@ -3832,6 +3832,29 @@ model PosHold {
   @@map("pos_holds")
 }
 
+model PosUpiQr {
+  id             String    @id @default(uuid())
+  clientId       String    @map("client_id")
+  connectionId   String    @map("connection_id")
+  idempotencyKey String    @map("idempotency_key")
+  qrId           String    @unique @map("qr_id")       // Razorpay's qr_... id
+  amountPaise    Int       @map("amount_paise")
+  invoiceRef     String?   @map("invoice_ref")
+  imageUrl       String    @map("image_url")
+  status         String    @default("WAITING")        // WAITING | PAID | PAID_WRONG_AMOUNT | CLOSED
+  paymentId      String?   @map("payment_id")
+  utr            String?
+  paidPaise      Int?      @map("paid_paise")
+  paidAt         DateTime? @map("paid_at")
+  closeBy        DateTime  @map("close_by")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([clientId, idempotencyKey])
+  @@index([status, closeBy])
+  @@map("pos_upi_qrs")
+}
+
 // ── Short links (go.scaleezy.com) ─────────────────────────────────────────────────────────
 // A module of its own (services/links): no other code reads or writes these tables. A link knows
 // whose it is and where it goes, never who it was sent to -- recipient_ref is an opaque random
@@ -4171,6 +4194,8 @@ model ShopPaymentAccount {
   mode String
 
   /// UNCHECKED until "Check it works" has run; CONNECTED or FAILED after.
+  /// UPI QR at the POS till: off until the owner turns it on (Razorpay charges the shop per payment).
+  upiQrEnabled Boolean @default(false) @map("upi_qr_enabled")
   status       String    @default("UNCHECKED")
   checkedAt    DateTime? @map("checked_at")
   /// The last check's sentence, in the gateway's own words when it failed.

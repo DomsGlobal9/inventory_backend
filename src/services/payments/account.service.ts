@@ -25,7 +25,7 @@ export const RAZORPAY_KEYS_HELP_URL = 'https://razorpay.com/docs/payments/dashbo
 export const RAZORPAY_WEBHOOKS_HELP_URL = 'https://razorpay.com/docs/webhooks/';
 
 /** The events the webhook in Razorpay's dashboard must be ticked for. */
-export const WEBHOOK_EVENTS = ['payment.captured', 'payment.failed', 'order.paid', 'refund.processed', 'refund.failed'];
+export const WEBHOOK_EVENTS = ['payment.captured', 'payment.failed', 'order.paid', 'refund.processed', 'refund.failed', 'qr_code.credited'];
 
 /** Where Razorpay sends webhooks for one shop. The token finds the shop before the signature is checked. */
 export const webhookPath = (token: string) => `/api/v1/payments/webhooks/razorpay/${token}`;
@@ -89,6 +89,8 @@ export interface PaymentAccountView {
   webhookEvents: string[];
   /** True only when the keys work AND they are live keys: the one state customers could pay in. */
   readyForCustomers: boolean;
+  /** UPI QR at the POS till: the owner's opt-in (Razorpay charges per payment). */
+  upiQrEnabled: boolean;
   help: { pricing: string; apiKeys: string; webhooks: string };
 }
 
@@ -99,7 +101,7 @@ function view(row: Row | null, apiBase: string): PaymentAccountView {
   if (!row) {
     return {
       connected: false, gateway: null, keyIdMasked: null, mode: null, status: null, checkedAt: null,
-      checkMessage: null, webhookUrl: null, webhookEvents: WEBHOOK_EVENTS, readyForCustomers: false, help
+      checkMessage: null, webhookUrl: null, webhookEvents: WEBHOOK_EVENTS, readyForCustomers: false, upiQrEnabled: false, help
     };
   }
   return {
@@ -113,6 +115,7 @@ function view(row: Row | null, apiBase: string): PaymentAccountView {
     webhookUrl: `${apiBase}${webhookPath(row.webhookToken)}`,
     webhookEvents: WEBHOOK_EVENTS,
     readyForCustomers: isReady(row),
+    upiQrEnabled: row.upiQrEnabled,
     help
   };
 }
@@ -240,6 +243,14 @@ export class PaymentAccountService {
    * no keys that still offered "Pay online" would take a customer as far as the Pay button and then
    * refuse them, which is worse than never offering it.
    */
+  /** The owner's switch for UPI QR at the POS till. Only with an account connected. */
+  async setUpiQr(clientId: string, enabled: unknown, apiBase: string): Promise<PaymentAccountView> {
+    if (typeof enabled !== 'boolean') throw new OnlineShopRuleError('Say on or off.');
+    const done = await prisma.shopPaymentAccount.updateMany({ where: { clientId }, data: { upiQrEnabled: enabled } });
+    if (!done.count) throw new OnlineShopRuleError('Connect your Razorpay account first.');
+    return this.describe(clientId, apiBase);
+  }
+
   async remove(clientId: string, apiBase: string): Promise<PaymentAccountView> {
     refuseWhileMoneyMoves(await moneyInFlight(clientId), 'disconnected');
     await prisma.$transaction([
