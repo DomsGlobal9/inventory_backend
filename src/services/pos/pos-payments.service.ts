@@ -12,11 +12,14 @@
  * recording the wrong reading of it either doubles the money or loses it. A delta says which,
  * in both directions -- a bounced cheque is simply a negative one.
  */
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { runTransaction } from '../../lib/txRetry';
 import { fromMinor, toMinor } from '../pricing';
 import { earnOnCollection } from '../loyalty/loyalty.service';
 import { POS_SOURCE, type PosEventResult } from './pos-events.service';
+
+type Db = Prisma.TransactionClient | typeof prisma;
 
 const METHODS = ['CASH', 'UPI', 'CARD', 'POINTS', 'CREDIT'] as const;
 type Method = typeof METHODS[number];
@@ -70,7 +73,7 @@ export async function applyPaymentUpdate(
 
   const order = await prisma.salesOrder.findFirst({
     where: { clientId, externalOrderId: invoiceNo, sourceSystem: POS_SOURCE, deletedAt: null },
-    select: { id: true, orderNumber: true, total: true, locationId: true }
+    select: { id: true, orderNumber: true, total: true, locationId: true, writtenOff: true }
   });
   if (!order) {
     return { answer: 'UNKNOWN_ORDER', detail: `No sale here for invoice ${invoiceNo}.` };
@@ -89,7 +92,7 @@ export async function applyPaymentUpdate(
     select: { id: true }
   });
   if (seen) {
-    const bal = await outstanding(order.id, order.total);
+    const bal = await outstanding(prisma, order.id);
     return {
       answer: 'ALREADY_APPLIED',
       orderNumber: order.orderNumber,
@@ -124,6 +127,11 @@ export async function applyPaymentUpdate(
         });
       }
       if (parts.some(p => p.paise > 0)) await earnOnCollection(tx, clientId, order.id, key);
+      // Written off, then paid after all: the money takes back that much of the write-off, so the
+      // bill never reads as overpaid.
+      const wo = toMinor(order.writtenOff as any);
+      const over = wo > 0 ? -(await outstanding(tx, order.id)) : 0;
+      if (over > 0) await tx.salesOrder.update({ where: { id: order.id }, data: { writtenOff: fromMinor(wo - Math.min(wo, over)) } });
       return parts[0].onceKey;
     }, {
       label: `pos payment ${key}`,
@@ -136,7 +144,7 @@ export async function applyPaymentUpdate(
   } catch (e: any) {
     // Two copies of the same event racing: the other one won, which is the answer we wanted.
     if (String(e?.code) === 'P2002') {
-      const bal = await outstanding(order.id, order.total);
+      const bal = await outstanding(prisma, order.id);
       return {
         answer: 'ALREADY_APPLIED',
         orderNumber: order.orderNumber,
@@ -146,7 +154,7 @@ export async function applyPaymentUpdate(
     throw e;
   }
 
-  const bal = await outstanding(order.id, order.total);
+  const bal = await outstanding(prisma, order.id);
   const took = parts.reduce((a, p) => a + p.paise, 0);
   return {
     answer: 'APPLIED',
@@ -158,16 +166,17 @@ export async function applyPaymentUpdate(
 }
 
 /** What the bill still owes, in paise. Negative means the shop owes the customer. */
-async function outstanding(salesOrderId: string, total: any): Promise<number> {
-  const rows = await prisma.salesOrderPayment.findMany({
-    where: { salesOrderId },
-    select: { kind: true, amount: true }
-  });
+export async function outstanding(db: Db, salesOrderId: string): Promise<number> {
+  const [order, rows] = await Promise.all([
+    db.salesOrder.findUniqueOrThrow({ where: { id: salesOrderId }, select: { total: true, roundOff: true, writtenOff: true } }),
+    db.salesOrderPayment.findMany({ where: { salesOrderId }, select: { kind: true, amount: true } })
+  ]);
   const paid = rows.reduce(
     (a, r) => a + (r.kind === 'REFUND' ? -toMinor(r.amount as any) : toMinor(r.amount as any)),
     0
   );
-  return toMinor(total) - paid;
+  // What the customer pays is the total plus the till's round-off; a write-off closes its share.
+  return toMinor(order.total as any) + toMinor(order.roundOff as any) - toMinor(order.writtenOff as any) - paid;
 }
 
 const owing = (paise: number) =>

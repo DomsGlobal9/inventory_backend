@@ -824,7 +824,7 @@ export class SalesOrderService {
       ...order,
       atCounter: order.sourceSystem === COUNTER_SOURCE,
       // The amount payable is the total plus the bill's round-off (a till bill can carry one).
-      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), payments)
+      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), payments, toMinor(order.writtenOff ?? 0))
     }));
   }
 
@@ -885,7 +885,7 @@ export class SalesOrderService {
       ...order,
       items,
       atCounter: order.sourceSystem === COUNTER_SOURCE,
-      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), order.payments)
+      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), order.payments, toMinor(order.writtenOff ?? 0))
     };
   }
 

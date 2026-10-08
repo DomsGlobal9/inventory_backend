@@ -157,7 +157,7 @@ export function planPayments(totalMinor: number, rows: PaymentInput[] | null | u
 }
 
 /** Paid, refunded and still due, worked out from the rows -- never stored twice. */
-export function paymentSummary(totalMinor: number, rows: { kind: string; amount: unknown }[]) {
+export function paymentSummary(totalMinor: number, rows: { kind: string; amount: unknown }[], writtenOffMinor = 0) {
   let paidMinor = 0;
   let refundedMinor = 0;
   for (const row of rows) {
@@ -165,10 +165,12 @@ export function paymentSummary(totalMinor: number, rows: { kind: string; amount:
     if (row.kind === 'REFUND') refundedMinor += minor;
     else paidMinor += minor;
   }
-  const dueMinor = Math.max(0, totalMinor - paidMinor);
+  // Udhaar written off at the till closes that much of the due; it is not money, so not "paid".
+  const dueMinor = Math.max(0, totalMinor - paidMinor - writtenOffMinor);
   const status = refundedMinor > 0 && refundedMinor >= paidMinor ? 'REFUNDED'
+    : writtenOffMinor > 0 && dueMinor === 0 ? 'WRITTEN_OFF'
     : paidMinor === 0 ? (totalMinor === 0 ? 'PAID' : 'UNPAID')
     : dueMinor > 0 ? 'PART_PAID'
     : 'PAID';
-  return { paid: paidMinor / 100, refunded: refundedMinor / 100, due: dueMinor / 100, status };
+  return { paid: paidMinor / 100, refunded: refundedMinor / 100, due: dueMinor / 100, writtenOff: writtenOffMinor / 100, status };
 }

@@ -24,6 +24,7 @@ import { env } from '../../config/env';
 import { applySale, POS_SOURCE, WALK_IN_KEY, type PosEventResult } from './pos-events.service';
 import { applyReturn } from './pos-returns.service';
 import { applyPaymentUpdate, faultInPaymentShape } from './pos-payments.service';
+import { applyWriteOff, faultInWriteOffShape } from './pos-writeoff.service';
 import { applyExchange, faultInExchangeShape } from './pos-exchange.service';
 import { SKIP_KIND } from '../../utils/posConnection';
 
@@ -111,6 +112,13 @@ export async function acceptPaymentUpdate(
   const fault = faultInPaymentShape(event);
   if (fault) return { answer: 'BAD_PAYLOAD', detail: fault };
   return accept(clientId, locationId, 'payment.updated', String(event.idempotencyKey), event);
+}
+
+/** A write-off of unpaid udhaar, filed under its idempotencyKey like a payment. */
+export async function acceptWriteOff(clientId: string, locationId: string, event: any): Promise<PosAcceptResult> {
+  const fault = faultInWriteOffShape(event);
+  if (fault) return { answer: 'BAD_PAYLOAD', detail: fault };
+  return accept(clientId, locationId, 'order.written_off', String(event.idempotencyKey).trim(), event);
 }
 
 /**
@@ -314,6 +322,7 @@ async function runOne(id: string): Promise<boolean> {
       row.kind === 'sale.returned' ? await applyReturn(row.clientId, row.locationId, row.payload as any)
       : row.kind === 'sale.exchanged' ? await applyExchange(row.clientId, row.locationId, row.payload as any)
       : row.kind === 'payment.updated' ? await applyPaymentUpdate(row.clientId, row.locationId, row.payload as any)
+      : row.kind === 'order.written_off' ? await applyWriteOff(row.clientId, row.locationId, row.payload as any)
       : await applySale(row.clientId, row.locationId, row.payload as any);
 
     /*
@@ -325,7 +334,8 @@ async function runOne(id: string): Promise<boolean> {
      * a till no way to tell a sale that went through from one that needs a person: both said
      * APPLIED and only the answer field differed.
      */
-    const wentThrough = out.answer === 'APPLIED' || out.answer === 'ALREADY_APPLIED';
+    // NOTHING_DUE: a write-off of a bill already paid up is done, not a fault to stop the queue for.
+    const wentThrough = out.answer === 'APPLIED' || out.answer === 'ALREADY_APPLIED' || out.answer === 'NOTHING_DUE';
     await prisma.posInboundEvent.update({
       where: { id },
       data: {

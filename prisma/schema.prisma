@@ -1289,6 +1289,15 @@ model SalesOrder {
   /// never achieved by bending a tax figure, because the tax figures are what get reported.
   roundOff Decimal @default(0) @map("round_off") @db.Decimal(10, 2)
 
+  /// Udhaar the shop gave up on (the till's write-off). Closes that much of the due with no money
+  /// row, so no takings or Day Book figure moves; money collected later shrinks it again.
+  writtenOff       Decimal   @default(0) @map("written_off") @db.Decimal(10, 2)
+  writtenOffReason String?   @map("written_off_reason") @db.Text
+  writtenOffBy     String?   @map("written_off_by")
+  writtenOffAt     DateTime? @map("written_off_at")
+  /// The till's idempotencyKey of the last write-off applied, so a retry changes nothing.
+  writtenOffKey    String?   @map("written_off_key")
+
   /// TAX_INVOICE | BILL_OF_SUPPLY | RECEIPT, decided by the shop's registration. TEXT, not an
   /// enum, for the same reason as gstRegistration above.
   documentKind String? @map("document_kind")

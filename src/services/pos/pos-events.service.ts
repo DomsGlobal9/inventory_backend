@@ -63,7 +63,9 @@ export type PosAnswer =
   | 'QTY_EXCEEDS_SOLD'
   | 'AMOUNT_MISMATCH'
   /** Retryable. The sale this return is against has been taken in but not applied yet. */
-  | 'SALE_NOT_YET_APPLIED';
+  | 'SALE_NOT_YET_APPLIED'
+  /** A write-off against a bill Inventory already shows as fully paid. Done; nothing written. */
+  | 'NOTHING_DUE';
 
 export interface PosEventResult {
   answer: PosAnswer;

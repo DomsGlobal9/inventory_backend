@@ -218,6 +218,7 @@ export class CounterSaleService {
         select: {
           id: true, orderNumber: true, status: true, channel: true, handover: true, sourceSystem: true,
           createdAt: true, subtotal: true, discountAmount: true, taxAmount: true, shippingAmount: true, total: true, roundOff: true,
+          writtenOff: true, writtenOffReason: true, writtenOffBy: true, writtenOffAt: true,
           customerName: true, customerPhone: true, buyerName: true, buyerGstin: true, buyerAddress: true,
           customer: { select: { id: true, name: true, customerCode: true, phone: true } },
           location: { select: { id: true, name: true, address: true, phone: true } },
@@ -306,7 +307,8 @@ export class CounterSaleService {
         cashReceived: n(p.cashReceived), changeGiven: n(p.changeGiven),
         reference: p.reference, receivedAt: p.receivedAt, receivedBy: p.receivedBy?.name ?? null
       })),
-      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff), payments),
+      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff), payments, toMinor(order.writtenOff)),
+      writtenOff: Number(order.writtenOff) > 0 ? { amount: Number(order.writtenOff), reason: order.writtenOffReason, by: order.writtenOffBy, at: order.writtenOffAt } : null,
       // Rule 46: the taxable value and each tax's rate, summed per rate from the lines AS CHARGED --
       // never recomputed. Empty when no GST was charged (GST is optional).
       gst: gstSummary(items),

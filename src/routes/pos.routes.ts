@@ -26,7 +26,7 @@ import { getShopSettings } from '../lib/clientSettings';
 import { prisma } from '../lib/prisma';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
 import { checkReturnAmounts, exchangeTooEarly, type PosEventResult } from '../services/pos/pos-events.service';
-import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptExchange, acceptSkip, saleStatus } from '../services/pos/pos-queue.service';
+import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptWriteOff, acceptExchange, acceptSkip, saleStatus } from '../services/pos/pos-queue.service';
 import { SKIP_KIND } from '../utils/posConnection';
 
 const router = Router();
@@ -349,7 +349,7 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
       return;
     }
 
-    if (kind === 'payment.updated') {
+    if (kind === 'payment.updated' || kind === 'order.written_off') {
       /*
        * Money that arrived after the bill: a kept order's balance, a cheque that cleared, or a
        * reversal when one bounced. Nothing about it needs the customer present either.
@@ -362,12 +362,14 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
         });
         return;
       }
-      const took = await acceptPaymentUpdate(ctx.clientId, locationId, event);
+      const took = kind === 'order.written_off'
+        ? await acceptWriteOff(ctx.clientId, locationId, event)
+        : await acceptPaymentUpdate(ctx.clientId, locationId, event);
       if (took.answer === 'ACCEPTED') {
         res.status(202).json({ success: true, data: took });
         return;
       }
-      const ok = took.answer === 'APPLIED' || took.answer === 'ALREADY_APPLIED';
+      const ok = took.answer === 'APPLIED' || took.answer === 'ALREADY_APPLIED' || took.answer === 'NOTHING_DUE';
       res.status(ok ? 200 : 422).json({ success: ok, data: took });
       return;
     }

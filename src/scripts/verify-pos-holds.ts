@@ -21,6 +21,7 @@
  *   L  a split refund off by exactly the bill's round-off is the till's figure, with no warning
  *   K  /events/status carries what an applied bill did to the customer's points (for the receipt)
  *   U  udhaar: a credit bill earns on what was paid; each collection adds the rest, once
+ *   W  write-off: closes the due without money, once; paid after all shrinks it; the door takes it in
  *   J  the catalogue's shop logo and GST registration (null when never chosen); 0% bills warn only a registered shop
  *
  *   npx tsx src/scripts/verify-pos-holds.ts     (needs the local backend on :4006)
@@ -34,6 +35,9 @@ import { applySale } from '../services/pos/pos-events.service';
 import { applyExchange } from '../services/pos/pos-exchange.service';
 import { applyReturn } from '../services/pos/pos-returns.service';
 import { applyPaymentUpdate } from '../services/pos/pos-payments.service';
+import { applyWriteOff } from '../services/pos/pos-writeoff.service';
+import { tick } from '../services/pos/pos-queue.service';
+import { salesOrderService } from '../services/sales-order.service';
 import { counterSaleService } from '../services/counter-sale/counter-sale.service';
 import { sweep } from '../services/pos/pos-holds.service';
 import { post as postPoints } from '../services/loyalty/loyalty.service';
@@ -444,6 +448,54 @@ async function main() {
     const u2: any = await applySale(CLIENT, store.id, { ...bill('U2', 1, [{ method: 'CASH', amountPaise: 70000 }]), customer: null } as any);
     const p3: any = await applyPaymentUpdate(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-U2`, idempotencyKey: `u2-${STAMP}`, payments: [{ method: 'CASH', amountPaise: 230000 }] });
     check('  ...a walk-in credit bill earns nothing, at sale or at collection', u2?.answer === 'APPLIED' && p3?.answer === 'APPLIED' && (await entries((await orderOf('U2')).id)).length === 0, `${u2?.answer} ${p3?.answer} ${JSON.stringify(await entries((await orderOf('U2')).id))}`);
+
+    console.log('\nW. WRITE-OFF OF UDHAAR (order.written_off)');
+    const wo = (inv: string, key: string, amountPaise: number, extra: any = {}) => applyWriteOff(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-${inv}`, idempotencyKey: `${key}-${STAMP}`, occurredAt: new Date().toISOString(), amountPaise, reason: 'Moved away, not reachable', by: 'balu', ...extra });
+    const payOf = async (id: string) => (await counterSaleService.getSale(CLIENT, id) as any).payment;
+    const w0: any = await applySale(CLIENT, store.id, bill('W1', 1, []) as any);
+    const oW = await orderOf('W1');
+    check('a ₹3,000 credit bill with nothing paid: applied, earns nothing yet', w0?.answer === 'APPLIED' && await earnedOn(oW.id) === 0, `${w0?.answer} ${JSON.stringify(await entries(oW.id))}`);
+    const w1: any = await wo('W1', 'w1', 300000);
+    const oW1 = await prisma.salesOrder.findUniqueOrThrow({ where: { id: oW.id }, select: { writtenOff: true, writtenOffReason: true, writtenOffBy: true, writtenOffAt: true, payments: { select: { id: true } } } });
+    const pW1 = await payOf(oW.id);
+    check('written off in full: due ₹0, status WRITTEN_OFF, ₹3,000 written off with reason and who, and NO payment row (not money)',
+      w1?.answer === 'APPLIED' && pW1.due === 0 && pW1.status === 'WRITTEN_OFF' && pW1.writtenOff === 3000 && pW1.paid === 0
+        && oW1.writtenOffReason === 'Moved away, not reachable' && oW1.writtenOffBy === 'balu' && oW1.writtenOffAt != null && oW1.payments.length === 0,
+      `${w1?.answer} ${w1?.detail} ${JSON.stringify(pW1)} ${JSON.stringify(oW1)}`);
+    const oDetail: any = await salesOrderService.getOrderById(CLIENT, oW.id);
+    check('  ...the order page reads the same (WRITTEN_OFF, ₹0 due)', oDetail?.payment?.status === 'WRITTEN_OFF' && oDetail?.payment?.due === 0 && oDetail?.payment?.writtenOff === 3000, JSON.stringify(oDetail?.payment));
+    const w1again: any = await wo('W1', 'w1', 300000);
+    check('  ...the same write-off again: ALREADY_APPLIED, nothing changes', w1again?.answer === 'ALREADY_APPLIED' && (await payOf(oW.id)).writtenOff === 3000, `${w1again?.answer} ${JSON.stringify(await payOf(oW.id))}`);
+    const w1other: any = await wo('W1', 'w1x', 100000);
+    check('  ...a second write-off when nothing is due: NOTHING_DUE, nothing written', w1other?.answer === 'NOTHING_DUE' && (await payOf(oW.id)).writtenOff === 3000, `${w1other?.answer} ${JSON.stringify(await payOf(oW.id))}`);
+    const back1: any = await applyPaymentUpdate(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-W1`, idempotencyKey: `wpay1-${STAMP}`, payments: [{ method: 'CASH', amountPaise: 100000 }] });
+    const pB1 = await payOf(oW.id);
+    check('paid ₹1,000 after all: recorded as money, the write-off drops to ₹2,000, still nothing due (never "overpaid"), 10 points earned',
+      back1?.answer === 'APPLIED' && pB1.paid === 1000 && pB1.writtenOff === 2000 && pB1.due === 0 && pB1.status === 'WRITTEN_OFF' && await earnedOn(oW.id) === 10 && /Paid in full/.test(back1?.detail ?? ''),
+      `${back1?.answer} ${back1?.detail} ${JSON.stringify(pB1)} earned=${await earnedOn(oW.id)}`);
+    await applyPaymentUpdate(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-W1`, idempotencyKey: `wpay2-${STAMP}`, payments: [{ method: 'UPI', amountPaise: 200000, reference: '791453570041' }] });
+    const pB2 = await payOf(oW.id);
+    check('  ...and the rest: nothing written off any more, PAID, 30 points in all', pB2.writtenOff === 0 && pB2.paid === 3000 && pB2.status === 'PAID' && await earnedOn(oW.id) === 30, `${JSON.stringify(pB2)} earned=${await earnedOn(oW.id)}`);
+    await applySale(CLIENT, store.id, bill('W2', 1, [{ method: 'CASH', amountPaise: 70000 }]) as any);
+    const w2: any = await wo('W2', 'w2', 300000);
+    const pW2 = await payOf((await orderOf('W2')).id);
+    check('a write-off larger than the due (₹3,000 against ₹2,300): applied up to the due, with a warning naming both', w2?.answer === 'APPLIED' && pW2.writtenOff === 2300 && pW2.due === 0 && (w2?.warnings ?? []).some((x: string) => /₹2,300\.00 due/.test(x)), `${w2?.answer} ${JSON.stringify(w2?.warnings)} ${JSON.stringify(pW2)}`);
+    const wUnknown: any = await wo('NOPE', 'w3', 1000);
+    check('  ...a write-off for a bill Inventory never had: UNKNOWN_ORDER', wUnknown?.answer === 'UNKNOWN_ORDER', JSON.stringify(wUnknown));
+    const dBad = await A.post('/events', { kind: 'order.written_off', invoiceNo: `INV/HOLD/${STAMP}-W2`, idempotencyKey: `w4-${STAMP}`, amountPaise: 1000 });
+    check('at the door: a write-off with no reason is refused in words (422 BAD_PAYLOAD)', dBad.status === 422 && dBad.data?.data?.answer === 'BAD_PAYLOAD' && /reason/.test(dBad.data?.data?.detail ?? ''), brief(dBad));
+    const dOk = await A.post('/events', { kind: 'order.written_off', invoiceNo: `INV/HOLD/${STAMP}-W2`, idempotencyKey: `w5-${STAMP}`, occurredAt: new Date().toISOString(), amountPaise: 1000, reason: 'Door test' });
+    const dSt = await A.get('/events/status', { params: { invoiceNo: `w5-${STAMP}` } });
+    check('  ...a good one is taken in (202) and its status is found by its idempotencyKey', dOk.status === 202 && dOk.data?.data?.answer === 'ACCEPTED' && dSt.status === 200 && dSt.data?.data?.reference === dOk.data?.data?.reference, `${brief(dOk)} | ${brief(dSt)}`);
+    // Through the real worker, scoped to this throwaway shop only.
+    await applySale(CLIENT, store.id, bill('W3', 1, []) as any);
+    await A.post('/events', { kind: 'order.written_off', invoiceNo: `INV/HOLD/${STAMP}-W3`, idempotencyKey: `w6-${STAMP}`, occurredAt: new Date().toISOString(), amountPaise: 300000, reason: 'Queue test', by: 'balu' });
+    for (let i = 0; i < 5; i++) await tick([CLIENT]);
+    const q5 = (await A.get('/events/status', { params: { invoiceNo: `w5-${STAMP}` } })).data?.data;
+    const q6 = (await A.get('/events/status', { params: { invoiceNo: `w6-${STAMP}` } })).data?.data;
+    const pW3 = await payOf((await orderOf('W3')).id);
+    check('  ...the worker applies it: APPLIED, the bill reads WRITTEN_OFF with ₹0 due', q6?.status === 'APPLIED' && q6?.answer === 'APPLIED' && pW3.status === 'WRITTEN_OFF' && pW3.due === 0, `${JSON.stringify(q6)} ${JSON.stringify(pW3)}`);
+    check('  ...and NOTHING_DUE settles as done (status APPLIED), so it never stops the shop\'s queue', q5?.status === 'APPLIED' && q5?.answer === 'NOTHING_DUE', JSON.stringify(q5));
 
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;
