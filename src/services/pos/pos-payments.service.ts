@@ -15,6 +15,7 @@
 import { prisma } from '../../lib/prisma';
 import { runTransaction } from '../../lib/txRetry';
 import { fromMinor, toMinor } from '../pricing';
+import { earnOnCollection } from '../loyalty/loyalty.service';
 import { POS_SOURCE, type PosEventResult } from './pos-events.service';
 
 const METHODS = ['CASH', 'UPI', 'CARD', 'POINTS', 'CREDIT'] as const;
@@ -122,6 +123,7 @@ export async function applyPaymentUpdate(
           }
         });
       }
+      if (parts.some(p => p.paise > 0)) await earnOnCollection(tx, clientId, order.id, key);
       return parts[0].onceKey;
     }, {
       label: `pos payment ${key}`,

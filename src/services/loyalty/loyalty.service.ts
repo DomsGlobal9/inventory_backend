@@ -252,6 +252,8 @@ export async function settleSale(tx: Tx, input: {
   clientId: string; customerId: string; orderId: string; billMinor: number; pointsPaidMinor: number; userId: string | null;
   /** The till's hold already wrote the USED entry (pos-holds.service); pointsPaidMinor is then only what earns nothing. */
   alreadyDebited?: boolean;
+  /** Udhaar: what is still owed on the bill. It earns nothing until collected (earnOnCollection). */
+  owedMinor?: number;
 }, checked?: SaleCheck) {
   const s = checked?.settings ?? await getSettings(input.clientId, tx);
   if (!s.enabled) {
@@ -274,7 +276,7 @@ export async function settleSale(tx: Tx, input: {
   }
 
   // Unticking the counter stops earning there; points can still be spent.
-  const earned = s.earnAtCounter ? pointsEarned(input.billMinor - input.pointsPaidMinor, s) : 0;
+  const earned = s.earnAtCounter ? pointsEarned(input.billMinor - input.pointsPaidMinor - Math.max(0, input.owedMinor ?? 0), s) : 0;
   if (earned > 0) {
     balance = await post(tx, {
       clientId: input.clientId, customerId: input.customerId, kind: 'EARNED', points: earned,
@@ -282,6 +284,40 @@ export async function settleSale(tx: Tx, input: {
     });
   }
   return { earned, used, balance };
+}
+
+/**
+ * Udhaar collected: a till bill earned at sale only on the money paid then. When more money comes
+ * in, add what is still missing, up to what the whole bill earns. Worked out from ALL the money on
+ * the bill rather than this instalment, so ₹50 + ₹50 earns the same as ₹100 in one go.
+ * ONCE per collection (its own once-key), so a retried payment adds nothing.
+ * ponytail: money going back (a bounced cheque) takes no points back; add that if tills send it.
+ */
+export async function earnOnCollection(tx: Tx, clientId: string, orderId: string, collectionKey: string) {
+  const s = await getSettings(clientId, tx);
+  if (!s.enabled || !s.earnAtCounter) return null;
+  const order = await tx.salesOrder.findFirst({
+    where: { id: orderId, clientId },
+    select: { total: true, customerId: true, customer: { select: { phone: true } },
+      payments: { select: { kind: true, method: true, amount: true, salesReturnId: true, settlesReturnId: true } } }
+  });
+  // A walk-in (no phone) earned nothing at sale and earns nothing now.
+  if (!order?.customerId || !order.customer?.phone) return null;
+  let money = 0, notMoney = 0;
+  for (const p of order.payments) {
+    const minor = toMinor(p.amount as any);
+    const isMoney = p.method !== 'POINTS' && p.method !== 'CREDIT' && !p.settlesReturnId;
+    if (p.kind === 'PAYMENT') { if (isMoney) money += minor; else notMoney += minor; }
+    else if (isMoney && !p.salesReturnId) money -= minor; // a bounced cheque; a return's refund is the return's business
+  }
+  const target = pointsEarned(Math.min(money, toMinor(order.total as any) - notMoney), s);
+  const already = (await tx.loyaltyEntry.aggregate({ where: { clientId, salesOrderId: orderId, kind: 'EARNED' }, _sum: { points: true } }))._sum.points ?? 0;
+  if (target <= already) return null;
+  const balance = await post(tx, {
+    clientId, customerId: order.customerId, kind: 'EARNED', points: target - already,
+    onceKey: `EARNED:${orderId}:${collectionKey}`, salesOrderId: orderId, activity: true, note: 'Balance paid'
+  });
+  return balance === null ? null : { earned: target - already, balance };
 }
 
 /** Orders that can earn when sent out, by where they came from. Same strings as checkout.ts SHOP_SOURCE and the Shopify ingest. */

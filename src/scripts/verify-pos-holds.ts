@@ -20,6 +20,7 @@
  *   M  a ₹0 bill with no payments is applied
  *   L  a split refund off by exactly the bill's round-off is the till's figure, with no warning
  *   K  /events/status carries what an applied bill did to the customer's points (for the receipt)
+ *   U  udhaar: a credit bill earns on what was paid; each collection adds the rest, once
  *   J  the catalogue's shop logo and GST registration (null when never chosen); 0% bills warn only a registered shop
  *
  *   npx tsx src/scripts/verify-pos-holds.ts     (needs the local backend on :4006)
@@ -32,6 +33,7 @@ import { posConnectionService } from '../services/pos/pos-connection.service';
 import { applySale } from '../services/pos/pos-events.service';
 import { applyExchange } from '../services/pos/pos-exchange.service';
 import { applyReturn } from '../services/pos/pos-returns.service';
+import { applyPaymentUpdate } from '../services/pos/pos-payments.service';
 import { counterSaleService } from '../services/counter-sale/counter-sale.service';
 import { sweep } from '../services/pos/pos-holds.service';
 import { post as postPoints } from '../services/loyalty/loyalty.service';
@@ -419,6 +421,29 @@ async function main() {
     const rf2: any = await applySale(CLIENT, store.id, { ...bill('RF2', 1, [{ method: 'CARD', amountPaise: PRICE, reference: '4111 1111 1111 1111' }]), customer: null } as any);
     const rf2Row = await prisma.salesOrderPayment.findFirst({ where: { clientId: CLIENT, kind: 'PAYMENT', salesOrder: { externalOrderId: `INV/HOLD/${STAMP}-RF2` } }, select: { reference: true } });
     check('a "reference" that looks like a whole card number is never stored -- the bill still applies, with a warning', rf2?.answer === 'APPLIED' && rf2Row?.reference === null && (rf2?.warnings ?? []).some((w: string) => /reference was not kept/.test(w)), `${rf2?.answer} ${JSON.stringify(rf2?.warnings)} ${JSON.stringify(rf2Row)}`);
+
+    console.log('\nU. UDHAAR: POINTS AS THE MONEY COMES IN');
+    const earnedOn = async (id: string) => (await entries(id)).filter(e => e.kind === 'EARNED').reduce((a, e) => a + e.points, 0);
+    const u1: any = await applySale(CLIENT, store.id, bill('U1', 1, [{ method: 'CASH', amountPaise: 70000 }]) as any);
+    const oU = await orderOf('U1');
+    check('a ₹3,000 credit bill with ₹700 paid earns on the ₹700 only (7), not on the ₹2,300 still owed', u1?.answer === 'APPLIED' && await earnedOn(oU.id) === 7, `${u1?.answer} ${JSON.stringify(await entries(oU.id))}`);
+    const sU0 = await statusOf('U1');
+    check('  ...the bill status says earned 7 at sale (the till stores this on the bill)', sU0?.points?.earned === 7, JSON.stringify(sU0?.points));
+    const billPoints = async () => (await A.get('/events/status', { params: { invoiceNo: `INV/HOLD/${STAMP}-U1` } })).data?.data?.points;
+    const collect = (key: string, paise: number) => applyPaymentUpdate(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-U1`, idempotencyKey: `${key}-${STAMP}`, payments: [{ method: 'UPI', amountPaise: paise, reference: '791453570041' }] });
+    const p1: any = await collect('u1a', 115000);
+    check('  ...₹1,150 collected: now ₹1,850 paid in all, 18 earned (11 added)', p1?.answer === 'APPLIED' && await earnedOn(oU.id) === 18, `${p1?.answer} ${p1?.detail ?? ''} ${JSON.stringify(await entries(oU.id))}`);
+    const p1again: any = await collect('u1a', 115000);
+    check('  ...the same collection sent again adds no money and no points', p1again?.answer === 'ALREADY_APPLIED' && await earnedOn(oU.id) === 18, `${p1again?.answer} ${JSON.stringify(await entries(oU.id))}`);
+    const p2: any = await collect('u1b', 115000);
+    const rU: any = await counterSaleService.getSale(CLIENT, oU.id);
+    check('  ...the rest collected: paid in full, 30 earned in all -- the same as paying ₹3,000 at once', p2?.answer === 'APPLIED' && rU?.payment?.due === 0 && await earnedOn(oU.id) === 30, `${p2?.answer} due=${rU?.payment?.due} ${JSON.stringify(await entries(oU.id))}`);
+    const latest = await prisma.loyaltyEntry.findFirst({ where: { salesOrderId: oU.id }, orderBy: { createdAt: 'desc' }, select: { balance: true } });
+    const sU2 = await billPoints();
+    check('  ...and the bill status now says earned 30, balance after = the latest entry (what the till re-reads after a collection)', sU2?.earned === 30 && sU2?.used === 0 && sU2?.balanceAfter === latest?.balance && latest?.balance === await pointsOf(), `${JSON.stringify(sU2)} latest=${latest?.balance} held=${await pointsOf()}`);
+    const u2: any = await applySale(CLIENT, store.id, { ...bill('U2', 1, [{ method: 'CASH', amountPaise: 70000 }]), customer: null } as any);
+    const p3: any = await applyPaymentUpdate(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-U2`, idempotencyKey: `u2-${STAMP}`, payments: [{ method: 'CASH', amountPaise: 230000 }] });
+    check('  ...a walk-in credit bill earns nothing, at sale or at collection', u2?.answer === 'APPLIED' && p3?.answer === 'APPLIED' && (await entries((await orderOf('U2')).id)).length === 0, `${u2?.answer} ${p3?.answer} ${JSON.stringify(await entries((await orderOf('U2')).id))}`);
 
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;

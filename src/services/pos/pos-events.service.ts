@@ -410,7 +410,10 @@ export async function writeSaleInTransaction(
     // Money paid is what the till says it took in money: every POINTS / CREDIT row earns nothing,
     // whether or not its hold could be settled (an unsettled row is already a warning above).
     const notMoney = (event.payments ?? []).filter(p => p.method === 'POINTS' || p.method === 'CREDIT').reduce((a, p) => a + Math.round(p.amountPaise), 0);
-    await settleSale(tx, { clientId, customerId: made.customerId, orderId: made.id, billMinor, pointsPaidMinor: Math.min(billMinor, notMoney), userId: null, alreadyDebited: true });
+    // Udhaar: what was not paid yet earns when it is collected (pos-payments → earnOnCollection).
+    const paidAll = (event.payments ?? []).reduce((a, p) => a + Math.round(p.amountPaise), 0);
+    const owedMinor = billMinor + (Number.isFinite(roundOffPaise) ? roundOffPaise : 0) - paidAll;
+    await settleSale(tx, { clientId, customerId: made.customerId, orderId: made.id, billMinor, pointsPaidMinor: Math.min(billMinor, notMoney), userId: null, alreadyDebited: true, owedMinor });
   }
 
   // §4.1: the offers this bill says it used, counted against the quote it names. Never a refusal.
