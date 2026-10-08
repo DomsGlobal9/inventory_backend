@@ -395,6 +395,13 @@ export async function writeSaleInTransaction(
     }
   }
 
+  // The till's round-off, kept on the order: what the customer paid is the lines plus this. Without
+  // it a bill rounded down (₹11,699.10 billed as ₹11,699) showed ₹0.10 still due.
+  const roundOffPaise = Math.round(Number(event.totals?.roundOffPaise ?? 0));
+  if (Number.isFinite(roundOffPaise) && roundOffPaise !== 0) {
+    await tx.salesOrder.update({ where: { id: made.id }, data: { roundOff: fromMinor(roundOffPaise) } });
+  }
+
   const warningsOut: string[] = [...referenceWarnings];
   const billMinor = event.lines.reduce((a, l) => a + Math.round(l.lineTotalPaise), 0);
   const settled = await settleHolds(tx, clientId, { id: made.id, customerId: customerPhone ? made.customerId : null, externalOrderId: event.invoiceNo }, event.payments ?? []);

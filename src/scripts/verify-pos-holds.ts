@@ -310,6 +310,17 @@ async function main() {
     await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstRegistration: 'REGULAR' } });
     const j3 = await shopOf();
     check('  ...a registered shop says REGULAR', j3?.gst?.registration === 'REGULAR', JSON.stringify(j3?.gst));
+    // Rule 46 on Inventory's receipt: each line's rate, the taxable value and CGST/SGST per rate, as stored.
+    const gb: any = await applySale(CLIENT, store.id, { ...bill('J3B', 1, [{ method: 'CASH', amountPaise: PRICE }]), customer: null, lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: PRICE, lineTotalPaise: PRICE, taxRateBps: 500, taxPaise: 14286 }] } as any);
+    const oGB = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-J3B` }, select: { id: true, items: { select: { taxableValue: true, cgst: true, sgst: true } } } });
+    const rGB: any = await counterSaleService.getSale(CLIENT, oGB.id);
+    const stored = oGB.items[0];
+    check('a GST bill\'s receipt carries the line rate (5%) and, per rate, the taxable value, CGST and SGST exactly as stored',
+      gb?.answer === 'APPLIED' && rGB?.items?.[0]?.taxRateBps === 500 && rGB?.gst?.length === 1 && rGB.gst[0].rateBps === 500
+        && Math.abs(rGB.gst[0].taxable - Number(stored.taxableValue)) < 0.001 && Math.abs(rGB.gst[0].cgst - Number(stored.cgst)) < 0.001 && Math.abs(rGB.gst[0].sgst - Number(stored.sgst)) < 0.001,
+      `${gb?.answer} ${JSON.stringify(rGB?.gst)} stored=${JSON.stringify(stored)}`);
+    const plain: any = await counterSaleService.getSale(CLIENT, (await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-E6` }, select: { id: true } })).id);
+    check('  ...a bill that charged no GST has no GST lines on its receipt (GST is optional)', Array.isArray(plain?.gst) && plain.gst.length === 0, JSON.stringify(plain?.gst));
     const zero = (inv: string) => ({ ...bill(inv, 1, [{ method: 'CASH', amountPaise: PRICE }]), customer: null, lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: PRICE, lineTotalPaise: PRICE, taxRateBps: 0, taxPaise: 0 }] });
     const j4: any = await applySale(CLIENT, store.id, zero('J4') as any);
     check('a registered shop billed at 0% on a 5% product: warned (tax owed and not collected)', j4?.answer === 'APPLIED' && (j4?.warnings ?? []).some((w: string) => /0% GST/.test(w)), JSON.stringify(j4?.warnings));
@@ -345,6 +356,11 @@ async function main() {
       await prisma.posInboundEvent.create({ data: { clientId: CLIENT, locationId: store.id, kind: 'sale.completed', invoiceNo: `INV/HOLD/${STAMP}-${inv}`, payload: roundBill(inv) as any, status: 'APPLIED', answer: 'APPLIED', settledAt: new Date() } });
       if (made?.answer !== 'APPLIED') console.log('  (setup bill', inv, made?.answer, ')');
     }
+    const oL1 = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-L1` }, select: { id: true, total: true, roundOff: true } });
+    const rL1: any = await counterSaleService.getSale(CLIENT, oL1.id);
+    check('a bill rounded down by 10 paise keeps its round-off, reads PAID with nothing due, and its receipt totals what was paid (₹3,000)',
+      Number(oL1.roundOff) === -0.1 && rL1?.payment?.status === 'PAID' && rL1?.payment?.due === 0 && rL1?.roundOff === -0.1 && Math.abs(rL1?.total - 3000) < 0.001,
+      `roundOff=${oL1.roundOff} total=${oL1.total} receipt=${JSON.stringify({ t: rL1?.total, r: rL1?.roundOff, p: rL1?.payment })}`);
     const giveBack = (cn: string, inv: string, paise: number) => ({ kind: 'sale.returned', creditNoteNo: `CN/HOLD/${STAMP}-${cn}`, againstInvoiceNo: `INV/HOLD/${STAMP}-${inv}`, lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: 300010 }], totals: { roundOffPaise: 10 }, refunds: [{ method: 'CASH', amountPaise: paise }] });
     const l1: any = await applyReturn(CLIENT, store.id, giveBack('L1', 'L1', 300000) as any);
     const l1rows = await prisma.salesOrderPayment.findMany({ where: { clientId: CLIENT, kind: 'REFUND', salesOrder: { externalOrderId: `INV/HOLD/${STAMP}-L1` } }, select: { method: true, amount: true } });

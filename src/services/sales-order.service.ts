@@ -823,7 +823,8 @@ export class SalesOrderService {
     return orders.map(({ payments, ...order }) => ({
       ...order,
       atCounter: order.sourceSystem === COUNTER_SOURCE,
-      payment: paymentSummary(toMinor(order.total), payments)
+      // The amount payable is the total plus the bill's round-off (a till bill can carry one).
+      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), payments)
     }));
   }
 
@@ -884,7 +885,7 @@ export class SalesOrderService {
       ...order,
       items,
       atCounter: order.sourceSystem === COUNTER_SOURCE,
-      payment: paymentSummary(toMinor(order.total), order.payments)
+      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), order.payments)
     };
   }
 

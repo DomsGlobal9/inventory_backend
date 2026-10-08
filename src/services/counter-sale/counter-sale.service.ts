@@ -217,7 +217,7 @@ export class CounterSaleService {
         where: { id: orderId, clientId, deletedAt: null },
         select: {
           id: true, orderNumber: true, status: true, channel: true, handover: true, sourceSystem: true,
-          createdAt: true, subtotal: true, discountAmount: true, taxAmount: true, shippingAmount: true, total: true,
+          createdAt: true, subtotal: true, discountAmount: true, taxAmount: true, shippingAmount: true, total: true, roundOff: true,
           customerName: true, customerPhone: true, buyerName: true, buyerGstin: true, buyerAddress: true,
           customer: { select: { id: true, name: true, customerCode: true, phone: true } },
           location: { select: { id: true, name: true, address: true, phone: true } },
@@ -230,6 +230,7 @@ export class CounterSaleService {
         select: {
           id: true, variantId: true, quantity: true, fulfilledQty: true,
           listUnitPrice: true, lineDiscount: true, allocatedDiscount: true, unitPrice: true, totalPrice: true, priceSource: true,
+          hsnCode: true, taxRateBps: true, taxableValue: true, cgst: true, sgst: true, igst: true,
           variant: { select: { sku: true, colorName: true, size: true, product: { select: { title: true } } } },
           discountAllocations: { select: { amount: true, salesOrderDiscount: { select: { title: true, source: true } } } }
         }
@@ -286,6 +287,8 @@ export class CounterSaleService {
         unitPrice: n(item.unitPrice),
         totalPrice: n(item.totalPrice),
         priceSource: item.priceSource,
+        hsnCode: item.hsnCode ?? null,
+        taxRateBps: item.taxRateBps ?? null,
         discounts: item.discountAllocations.map(a => ({
           title: a.salesOrderDiscount.title, source: a.salesOrderDiscount.source, amount: n(a.amount)
         }))
@@ -295,13 +298,18 @@ export class CounterSaleService {
       discountAmount: n(order.discountAmount),
       taxAmount: n(order.taxAmount),
       shippingAmount: n(order.shippingAmount),
-      total: n(order.total),
+      // What the customer paid: the lines plus the till's round-off, shown on its own line.
+      roundOff: Number(order.roundOff ?? 0),
+      total: Number(order.total) + Number(order.roundOff ?? 0),
       payments: payments.map(p => ({
         id: p.id, kind: p.kind, method: p.method, amount: n(p.amount),
         cashReceived: n(p.cashReceived), changeGiven: n(p.changeGiven),
         reference: p.reference, receivedAt: p.receivedAt, receivedBy: p.receivedBy?.name ?? null
       })),
-      payment: paymentSummary(toMinor(order.total), payments),
+      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff), payments),
+      // Rule 46: the taxable value and each tax's rate, summed per rate from the lines AS CHARGED --
+      // never recomputed. Empty when no GST was charged (GST is optional).
+      gst: gstSummary(items),
       // "Bill to" on a B2B tax invoice, as issued. Null on every other bill.
       buyer: order.buyerGstin || order.buyerAddress ? { name: order.buyerName, gstin: order.buyerGstin, address: order.buyerAddress } : null,
       shop: {
@@ -316,6 +324,21 @@ export class CounterSaleService {
       }
     };
   }
+}
+
+/** Per GST rate: taxable value, CGST, SGST and IGST, added up from what each line was charged. */
+function gstSummary(items: { taxRateBps: number | null; taxableValue: unknown; cgst: unknown; sgst: unknown; igst: unknown }[]) {
+  const byRate = new Map<number, { rateBps: number; taxable: number; cgst: number; sgst: number; igst: number }>();
+  for (const it of items) {
+    const cgst = toMinor((it.cgst ?? 0) as any), sgst = toMinor((it.sgst ?? 0) as any), igst = toMinor((it.igst ?? 0) as any);
+    if (!cgst && !sgst && !igst) continue;
+    const rate = it.taxRateBps ?? 0;
+    const row = byRate.get(rate) ?? { rateBps: rate, taxable: 0, cgst: 0, sgst: 0, igst: 0 };
+    row.taxable += toMinor((it.taxableValue ?? 0) as any); row.cgst += cgst; row.sgst += sgst; row.igst += igst;
+    byRate.set(rate, row);
+  }
+  return [...byRate.values()].sort((a, b) => a.rateBps - b.rateBps)
+    .map(r => ({ rateBps: r.rateBps, taxable: r.taxable / 100, cgst: r.cgst / 100, sgst: r.sgst / 100, igst: r.igst / 100 }));
 }
 
 export const counterSaleService = new CounterSaleService();
