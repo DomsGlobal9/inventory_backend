@@ -23,7 +23,7 @@
  *   U  udhaar: a credit bill earns on what was paid; each collection adds the rest, once
  *   T  a bill, return or exchange is dated by the till's occurredAt (clamped like the POS), not by arrival
  *   W  write-off: closes the due without money, once; paid after all shrinks it; the door takes it in
- *   J  the catalogue's shop logo and GST registration (null when never chosen); 0% bills warn only a registered shop
+ *   J  the catalogue's shop logo, GST registration (null when never chosen) and return rules; 0% bills warn only a registered shop
  *
  *   npx tsx src/scripts/verify-pos-holds.ts     (needs the local backend on :4006)
  */
@@ -297,6 +297,13 @@ async function main() {
     const j1 = await shopOf();
     check('the catalogue carries the shop logo for the till to print', j1?.shop?.logoUrl === 'https://example.com/logo.png', JSON.stringify(j1?.shop));
     check('  ...a shop that chose "not registered" says UNREGISTERED', j1?.gst?.registration === 'UNREGISTERED', JSON.stringify(j1?.gst));
+    check('  ...return rules never set: no window and no staff limit (null, null)', j1?.returns?.windowDays === null && j1?.returns?.staffMaxPaise === null, JSON.stringify(j1?.returns));
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { returnWindowDays: 15, counterReturnMax: 2500.5 } });
+    const jr = await shopOf();
+    check('  ...Settings -> Returns and exchanges reaches the till: 15 days, ₹2,500.50 as 250050 paise', jr?.returns?.windowDays === 15 && jr?.returns?.staffMaxPaise === 250050, JSON.stringify(jr?.returns));
+    await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { returnWindowDays: 0, counterReturnMax: 0 } });
+    const j0 = await shopOf();
+    check('  ...0 days and ₹0 stay 0 (every return needs a manager), never read as "no limit"', j0?.returns?.windowDays === 0 && j0?.returns?.staffMaxPaise === 0, JSON.stringify(j0?.returns));
     // A real stored logo (uploads are kept as WebP): the till's PDF gets a PNG copy through the till door.
     const realLogo = (await prisma.clientSettings.findUnique({ where: { clientId: 'sphl' }, select: { logoUrl: true } }))?.logoUrl;
     if (realLogo) {

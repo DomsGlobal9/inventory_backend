@@ -91,7 +91,7 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
      */
     const [{ manualDiscountMaxPercent: max }, gst, store, payAccount, payReady] = await Promise.all([
       getShopSettings(ctx.clientId),
-      prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true, businessName: true, businessAddress: true, businessPhone: true, receiptFooter: true } }),
+      prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true, businessName: true, businessAddress: true, businessPhone: true, receiptFooter: true, returnWindowDays: true, counterReturnMax: true } }),
       prisma.stockLocation.findFirst({ where: { clientId: ctx.clientId, id: { in: ctx.locationIds } }, select: { address: true, phone: true } }),
       prisma.shopPaymentAccount.findUnique({ where: { clientId: ctx.clientId }, select: { upiQrEnabled: true } }),
       paymentAccounts.readiness(ctx.clientId)
@@ -115,6 +115,12 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
       // as a PNG, for documents that cannot embed WebP (the till's WhatsApp PDF). Same till key.
       // On only when the owner switched it on AND the Razorpay account can take money now.
       upiQr: { enabled: !!payAccount?.upiQrEnabled && payReady.ready },
+      // Settings -> Returns and exchanges, one rule for both counters. null = no limit (every shop starts
+      // there). Past the window, or above staffMax, the till asks for a manager -- never a refusal.
+      returns: {
+        windowDays: gst?.returnWindowDays ?? null,
+        staffMaxPaise: gst?.counterReturnMax == null ? null : Math.round(Number(gst.counterReturnMax) * 100)
+      },
       shop: {
         logoUrl: gst?.logoUrl ?? null,
         logoPrintUrl: gst?.logoUrl ? `${req.protocol}://${req.get('host')}${req.baseUrl}/logo-print` : null,
