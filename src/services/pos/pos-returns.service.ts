@@ -22,7 +22,7 @@ import { runTransaction } from '../../lib/txRetry';
 import { toMinor } from '../pricing';
 import { returnService } from '../return.service';
 import { writeRefund, creditShare, type RefundMethod } from '../counter-return/counter-return.service';
-import { POS_SOURCE, type PosEventResult, type PosLine } from './pos-events.service';
+import { POS_SOURCE, dateFromTill, type PosEventResult, type PosLine } from './pos-events.service';
 
 const METHODS: RefundMethod[] = ['CASH', 'UPI', 'CARD', 'CREDIT'];
 
@@ -46,6 +46,8 @@ export type PosReturnEvent = {
   /** The till's round-off on this credit note, as on sale.completed. */
   totals?: { roundOffPaise?: number } | null;
   note?: string;
+  /** When the till took it back: dates the return and its refund (dateFromTill). */
+  occurredAt?: string;
 };
 
 /**
@@ -284,6 +286,7 @@ export async function writeReturnInTransaction(tx: any, p: {
     }
   }
 
+  await dateFromTill(tx, event.occurredAt, { returnId: created.id });
   return created.id;
 }
 

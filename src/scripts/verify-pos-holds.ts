@@ -21,6 +21,7 @@
  *   L  a split refund off by exactly the bill's round-off is the till's figure, with no warning
  *   K  /events/status carries what an applied bill did to the customer's points (for the receipt)
  *   U  udhaar: a credit bill earns on what was paid; each collection adds the rest, once
+ *   T  a bill, return or exchange is dated by the till's occurredAt (clamped like the POS), not by arrival
  *   W  write-off: closes the due without money, once; paid after all shrinks it; the door takes it in
  *   J  the catalogue's shop logo and GST registration (null when never chosen); 0% bills warn only a registered shop
  *
@@ -496,6 +497,33 @@ async function main() {
     const pW3 = await payOf((await orderOf('W3')).id);
     check('  ...the worker applies it: APPLIED, the bill reads WRITTEN_OFF with ₹0 due', q6?.status === 'APPLIED' && q6?.answer === 'APPLIED' && pW3.status === 'WRITTEN_OFF' && pW3.due === 0, `${JSON.stringify(q6)} ${JSON.stringify(pW3)}`);
     check('  ...and NOTHING_DUE settles as done (status APPLIED), so it never stops the shop\'s queue', q5?.status === 'APPLIED' && q5?.answer === 'NOTHING_DUE', JSON.stringify(q5));
+
+    console.log('\nT. DATED BY THE TILL, NOT BY ARRIVAL');
+    const near = (d: Date | null | undefined, t: number, ms = 1000) => !!d && Math.abs(d.getTime() - t) <= ms;
+    const lateAt = Date.now() - 20 * 3_600_000; // e.g. 11:55 pm yesterday, sent this morning
+    const walkIn = (inv: string, at: number) => ({ ...bill(inv, 1, [{ method: 'CASH', amountPaise: PRICE }]), customer: null, occurredAt: new Date(at).toISOString() });
+    await applySale(CLIENT, store.id, walkIn('T1', lateAt) as any);
+    const oT1 = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-T1` }, select: { id: true, createdAt: true, dispatches: { select: { dispatchedAt: true } }, payments: { select: { receivedAt: true } } } });
+    const mvT1 = await prisma.inventoryTransaction.findFirst({ where: { clientId: CLIENT, variantId: variant.id }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    check('a bill sent 20 hours late: the order, its dispatch (sales) and its cash (drawer) all carry the till\'s time',
+      near(oT1.createdAt, lateAt) && oT1.dispatches.every(d => near(d.dispatchedAt, lateAt)) && oT1.payments.length === 1 && near(oT1.payments[0].receivedAt, lateAt),
+      JSON.stringify(oT1));
+    check('  ...but the stock ledger keeps the order it was written in (not re-dated)', !!mvT1 && Date.now() - mvT1.createdAt.getTime() < 10 * 60_000, JSON.stringify(mvT1));
+    await applySale(CLIENT, store.id, walkIn('T2', Date.now() + 2 * 3_600_000) as any);
+    await applySale(CLIENT, store.id, walkIn('T3', Date.now() - 10 * 86_400_000) as any);
+    const oT2 = await orderOf('T2'), oT3 = await orderOf('T3');
+    check('  ...a till clock in the future, or a time more than 7 days back, is replaced by now (the POS\'s own rule)', near(oT2.createdAt, Date.now(), 5 * 60_000) && near(oT3.createdAt, Date.now(), 5 * 60_000), `${oT2.createdAt.toISOString()} ${oT3.createdAt.toISOString()}`);
+    const retAt = Date.now() - 19 * 3_600_000;
+    const tr: any = await applyReturn(CLIENT, store.id, { kind: 'sale.returned', creditNoteNo: `CN/HOLD/${STAMP}-T1`, againstInvoiceNo: `INV/HOLD/${STAMP}-T1`, occurredAt: new Date(retAt).toISOString(), lines: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: PRICE }], totals: {}, refund: { method: 'CASH' } } as any);
+    const rT1 = await prisma.salesReturn.findFirst({ where: { clientId: CLIENT, salesOrderId: oT1.id }, select: { id: true, completedAt: true, refundedAt: true, refunds: { select: { receivedAt: true } } } }) as any;
+    check('a return sent late: completed, refunded and its cash paid back at the till\'s time', tr?.answer === 'APPLIED' && near(rT1?.completedAt, retAt) && near(rT1?.refundedAt, retAt) && rT1?.refunds?.length >= 1 && rT1.refunds.every((p: any) => near(p.receivedAt, retAt)), `${tr?.answer} ${tr?.detail ?? ''} ${JSON.stringify(rT1)}`);
+    const exAt = Date.now() - 3_600_000;
+    const tx3: any = await applyExchange(CLIENT, store.id, { kind: 'sale.exchanged', exchangeNo: `INV/HOLD/${STAMP}-T4`, againstInvoiceNo: `INV/HOLD/${STAMP}-T2`, occurredAt: new Date(exAt).toISOString(), returned: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: PRICE }], sold: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: PRICE, lineTotalPaise: PRICE }], payments: [] } as any);
+    const oT4 = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-T4` }, select: { createdAt: true, dispatches: { select: { dispatchedAt: true } }, payments: { select: { receivedAt: true } } } });
+    const rT4 = await prisma.salesReturn.findFirst({ where: { clientId: CLIENT, salesOrderId: oT2.id }, select: { completedAt: true } });
+    check('an exchange sent late: the new bill, its dispatch, its settlement row and the return all at the till\'s time',
+      tx3?.answer === 'APPLIED' && near(oT4.createdAt, exAt) && oT4.dispatches.every(d => near(d.dispatchedAt, exAt)) && oT4.payments.every(p => near(p.receivedAt, exAt)) && near(rT4?.completedAt, exAt),
+      `${tx3?.answer} ${tx3?.detail ?? ''} ${JSON.stringify(oT4)} ${JSON.stringify(rT4)}`);
 
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;

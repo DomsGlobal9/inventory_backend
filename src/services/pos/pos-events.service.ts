@@ -172,6 +172,30 @@ export interface PosReturnEvent {
 const bad = (detail: string): PosEventResult => ({ answer: 'BAD_PAYLOAD', detail });
 
 /**
+ * Dates what a till event wrote by when the till says it happened, not when it reached us: a bill
+ * made at 11:55 pm, or by a till that was offline, belongs to its own day in the Day Book (sales
+ * by dispatchedAt, money by receivedAt, returns by completedAt). The POS's own rule, so the two
+ * Day Books always agree on the day: never in the future, never more than 7 days back, otherwise
+ * now. Stock movements keep the order they were written in: their ledger is not re-dated.
+ */
+export async function dateFromTill(tx: any, occurredAt: unknown, w: { orderId?: string; returnId?: string }) {
+  const t = new Date(String(occurredAt ?? ''));
+  if (Number.isNaN(t.getTime())) return;
+  const now = Date.now();
+  const at = t.getTime() > now || t.getTime() < now - 7 * 86_400_000 ? new Date(now) : t;
+  if (w.orderId) {
+    await tx.salesOrder.update({ where: { id: w.orderId }, data: { createdAt: at } });
+    await tx.dispatch.updateMany({ where: { salesOrderId: w.orderId }, data: { dispatchedAt: at } });
+    await tx.salesOrderPayment.updateMany({ where: { salesOrderId: w.orderId, salesReturnId: null }, data: { receivedAt: at } });
+  }
+  if (w.returnId) {
+    await tx.salesReturn.update({ where: { id: w.returnId }, data: { createdAt: at, completedAt: at } });
+    await tx.salesReturn.updateMany({ where: { id: w.returnId, refundedAt: { not: null } }, data: { refundedAt: at } });
+    await tx.salesOrderPayment.updateMany({ where: { salesReturnId: w.returnId }, data: { receivedAt: at } });
+  }
+}
+
+/**
  * Resolve the codes the POS sent to variants here.
  *
  * By variantCode first and SKU second, because those are the identities the POS was given. Sending
@@ -403,6 +427,8 @@ export async function writeSaleInTransaction(
   if (Number.isFinite(roundOffPaise) && roundOffPaise !== 0) {
     await tx.salesOrder.update({ where: { id: made.id }, data: { roundOff: fromMinor(roundOffPaise) } });
   }
+
+  await dateFromTill(tx, event.occurredAt, { orderId: made.id });
 
   const warningsOut: string[] = [...referenceWarnings];
   const billMinor = event.lines.reduce((a, l) => a + Math.round(l.lineTotalPaise), 0);

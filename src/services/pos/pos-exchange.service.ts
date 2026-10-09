@@ -28,7 +28,7 @@ import { fromMinor, toMinor } from '../pricing';
 import { returnService } from '../return.service';
 import { writeRefund, creditShare, type RefundMethod } from '../counter-return/counter-return.service';
 import {
-  POS_SOURCE, writeSaleInTransaction, type PosEventResult, type PosLine, type PosSaleEvent
+  POS_SOURCE, writeSaleInTransaction, dateFromTill, type PosEventResult, type PosLine, type PosSaleEvent
 } from './pos-events.service';
 import { planReturnLines } from './pos-returns.service';
 
@@ -219,6 +219,8 @@ export async function applyExchange(
       });
     }
 
+    // The swap happened when the till says, for both halves (the new bill's own rows included).
+    await dateFromTill(tx, event.occurredAt, { orderId: newOrder.id, returnId: created.id });
     return { orderNumber: newOrder.orderNumber, returnNumber: done.returnNumber, settledMinor, leftoverMinor, backMinor };
   }, {
     label: `pos exchange ${exchangeNo}`,
