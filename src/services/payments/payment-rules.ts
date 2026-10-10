@@ -22,7 +22,7 @@
 import { badRequest } from '../../utils/httpError';
 import { toMinor } from '../pricing';
 
-export type PaymentMethod = 'CASH' | 'UPI' | 'CARD' | 'POINTS' | 'CREDIT';
+export type PaymentMethod = 'CASH' | 'UPI' | 'CARD' | 'POINTS' | 'CREDIT' | 'BANK_TRANSFER' | 'CHEQUE';
 
 export interface PaymentInput {
   method: PaymentMethod;
@@ -42,7 +42,7 @@ export interface PlannedPayment {
 export const MAX_PAYMENT_ROWS = 6;
 const REFERENCE_MAX = 40;
 
-const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Points', CREDIT: 'Store credit' };
+const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Points', CREDIT: 'Store credit', BANK_TRANSFER: 'Bank transfer', CHEQUE: 'Cheque' };
 
 const rupees = (minor: number) =>
   `₹${(minor / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

@@ -62,6 +62,12 @@ enum PaymentMethod {
   /// not UPI or CARD: it settles to the bank through the gateway days later, and has to be
   /// reconciled against the gateway's settlements, not against the till.
   ONLINE
+  /// NEFT / IMPS / RTGS into the shop's bank (reference: the bank's UTR). Recorded only once the
+  /// owner has seen it arrive -- the till keeps it as "to check" until then.
+  BANK_TRANSFER
+  /// Recorded only once it has cleared (reference: "cheque number / bank"). A bounced cheque was
+  /// never recorded, so nothing has to be undone.
+  CHEQUE
 }
 
 enum TransferStatus {

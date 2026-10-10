@@ -20,6 +20,7 @@
  *   M  a ₹0 bill with no payments is applied
  *   L  a split refund off by exactly the bill's round-off is the till's figure, with no warning
  *   K  /events/status carries what an applied bill did to the customer's points (for the receipt)
+ *   P  bank transfer and cheque: collected later or paid at the counter, by name and reference
  *   S  a service (no stock): offered with stock null, sold and returned without any stock row or movement
  *   U  udhaar: a credit bill earns on what was paid; each collection adds the rest, once
  *   T  a bill, return or exchange is dated by the till's occurredAt (clamped like the POS), not by arrival
@@ -566,6 +567,25 @@ async function main() {
     const turned = await productService.updateProduct(product.id, CLIENT, { isService: true }).then(() => 'saved', (e: any) => String(e?.message ?? e));
     check('a product that still has stock cannot be ticked as a service (its count would vanish): refused in words, not saved',
       /still has .* in stock/.test(turned) && !(await prisma.product.findUniqueOrThrow({ where: { id: product.id } })).isService, turned);
+
+    console.log('\nP. BANK TRANSFER AND CHEQUE, ONCE ARRIVED / CLEARED');
+    await applySale(CLIENT, store.id, { ...bill('P1', 1, [{ method: 'CASH', amountPaise: 50000 }]), customer: null } as any);
+    const oP = await orderOf('P1');
+    const pBank: any = await applyPaymentUpdate(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-P1`, idempotencyKey: `pbank-${STAMP}`, payments: [{ method: 'BANK_TRANSFER', amountPaise: 150000, reference: 'HDFCN52026101012345' }] });
+    const pChq: any = await applyPaymentUpdate(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-P1`, idempotencyKey: `pchq-${STAMP}`, payments: [{ method: 'CHEQUE', amountPaise: 100000, reference: '004512 / HDFC' }] });
+    const pRows = await prisma.salesOrderPayment.findMany({ where: { salesOrderId: oP.id }, select: { method: true, amount: true, reference: true } });
+    const rP: any = await counterSaleService.getSale(CLIENT, oP.id);
+    check('a transfer (with its UTR) and a cleared cheque (number / bank) collected on a bill: recorded by name, the bill is paid in full',
+      pBank?.answer === 'APPLIED' && pChq?.answer === 'APPLIED'
+        && pRows.some(r => r.method === 'BANK_TRANSFER' && Number(r.amount) === 1500 && r.reference === 'HDFCN52026101012345')
+        && pRows.some(r => r.method === 'CHEQUE' && Number(r.amount) === 1000 && r.reference === '004512 / HDFC')
+        && rP?.payment?.due === 0 && rP?.payment?.status === 'PAID',
+      `${pBank?.answer} ${pChq?.answer} ${JSON.stringify(pRows)} ${JSON.stringify(rP?.payment)}`);
+    const pSale: any = await applySale(CLIENT, store.id, { ...bill('P2', 1, [{ method: 'CHEQUE', amountPaise: PRICE, reference: '004513 / SBI' }]), customer: null } as any);
+    const p2Rows = await prisma.salesOrderPayment.findMany({ where: { salesOrder: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-P2` } }, select: { method: true, reference: true } });
+    check('  ...a bill paid by a cheque already cleared at the counter is taken too, with its reference', pSale?.answer === 'APPLIED' && p2Rows.length === 1 && p2Rows[0].method === 'CHEQUE' && p2Rows[0].reference === '004513 / SBI', `${pSale?.answer} ${pSale?.detail ?? ''} ${JSON.stringify(p2Rows)}`);
+    const pBad: any = await applyPaymentUpdate(CLIENT, store.id, { invoiceNo: `INV/HOLD/${STAMP}-P1`, idempotencyKey: `pbad-${STAMP}`, payments: [{ method: 'NEFT', amountPaise: 100 }] });
+    check('  ...a method Inventory does not know is refused in words, naming the ones it does', pBad?.answer === 'BAD_PAYLOAD' && /BANK_TRANSFER/.test(pBad?.detail ?? '') && /CHEQUE/.test(pBad?.detail ?? ''), JSON.stringify(pBad));
 
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;

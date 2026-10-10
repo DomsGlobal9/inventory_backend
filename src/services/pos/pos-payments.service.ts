@@ -21,7 +21,7 @@ import { POS_SOURCE, type PosEventResult } from './pos-events.service';
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
-const METHODS = ['CASH', 'UPI', 'CARD', 'POINTS', 'CREDIT'] as const;
+const METHODS = ['CASH', 'UPI', 'CARD', 'POINTS', 'CREDIT', 'BANK_TRANSFER', 'CHEQUE'] as const;
 type Method = typeof METHODS[number];
 
 export type PosPaymentEvent = {

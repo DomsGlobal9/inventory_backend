@@ -30,7 +30,7 @@ const money = (v: unknown) => `Rs. ${Number(v || 0).toLocaleString('en-IN', { ma
  * missing from it is not printed at all. Money paid through the online shop would have vanished from
  * the Day Book PDF, with the totals still counting it -- a report that does not add up to itself.
  */
-const METHOD_NAMES: Record<string, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Loyalty points', CREDIT: 'Store credit', ONLINE: 'Online (Razorpay)' };
+const METHOD_NAMES: Record<string, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Loyalty points', CREDIT: 'Store credit', ONLINE: 'Online (Razorpay)', BANK_TRANSFER: 'Bank transfer', CHEQUE: 'Cheque' };
 function moneyRows(d: any): string[][] {
   const taken = d.money?.taken ?? {}, back = d.money?.paidBack ?? {};
   return Object.keys(METHOD_NAMES).filter(m => taken[m] || back[m]).map(m => [
