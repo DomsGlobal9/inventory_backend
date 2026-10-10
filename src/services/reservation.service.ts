@@ -57,11 +57,23 @@ export class ReservationService {
   async reserveStock(clientId: string, locationId: string, items: { variantId: string; salesOrderItemId: string; quantity: number }[], txClient?: any, opts: { allowOversell?: boolean } = {}) {
     const execute = async (tx: any) => {
       const reservations = [];
+      // Services keep no stock: their lines get a reservation (dispatch and order status need one)
+      // but never lock, create or count a stock row, and are never short.
+      const services = new Set((await tx.productVariant.findMany({
+        where: { id: { in: items.map(i => i.variantId) }, product: { isService: true } }, select: { id: true }
+      })).map((v: { id: string }) => v.id));
 
       // Locked in one fixed order. Two tills holding the same two items, scanned in opposite
       // orders, each locked one row and waited for the other -- a deadlock the database resolves
       // by failing one of the sales.
       for (const item of [...items].sort((a, b) => a.variantId.localeCompare(b.variantId))) {
+        if (services.has(item.variantId)) {
+          reservations.push(await tx.inventoryReservation.create({
+            data: { clientId, locationId, variantId: item.variantId, salesOrderItemId: item.salesOrderItemId, reservedQty: item.quantity, status: 'ACTIVE' }
+          }));
+          continue;
+        }
+
         // Find variant and lock it for update to prevent concurrent race conditions
         const stocks = await tx.$queryRaw<any[]>`
           SELECT id, quantity, reserved_qty as "reservedQty"
@@ -175,9 +187,9 @@ export class ReservationService {
           data: { status: 'CANCELLED' }
         });
 
-        // Release reserved stock from location stock
-        await tx.inventoryStock.update({
-          where: { variantId_locationId: { variantId: reservation.variantId, locationId: reservation.locationId as string } },
+        // Release reserved stock from location stock. updateMany: a service line has no stock row.
+        await tx.inventoryStock.updateMany({
+          where: { variantId: reservation.variantId, locationId: reservation.locationId as string },
           data: {
             reservedQty: { decrement: reservation.reservedQty - reservation.dispatchedQty }
           }
@@ -233,9 +245,9 @@ export class ReservationService {
         }
       });
 
-      // Update stock: remove from reserved (physical removed via dispatch)
-      await tx.inventoryStock.update({
-        where: { variantId_locationId: { variantId: reservation.variantId, locationId: reservation.locationId } },
+      // Update stock: remove from reserved (physical removed via dispatch). updateMany: a service has no row.
+      await tx.inventoryStock.updateMany({
+        where: { variantId: reservation.variantId, locationId: reservation.locationId },
         data: {
           reservedQty: { decrement: dispatchQuantity }
           // physical quantity is updated via inventoryMutationService later during dispatch

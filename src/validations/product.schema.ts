@@ -33,6 +33,7 @@ export const createProductSchema = z.object({
   taxRateBps: z.number().int().min(0, 'A tax rate cannot be negative.').max(10000, 'A tax rate cannot be more than 100%.').optional(),
   /** True for stitched apparel, where the rate depends on what one piece sells for. */
   taxSlabbed: z.boolean().optional(),
+  isService: z.boolean().optional(),
   // priceIsExclusive is no longer accepted: prices are always tax-inclusive (the rate is used as
   // typed, PLAN-gst.md), and a before-GST price makes the POS refuse the item. Dropped silently.
   // Non-negative here, with the "must be positive" rule applied below only to products

@@ -65,7 +65,8 @@ export class InventoryService {
     const { search, status, lowStock, outOfStock, sortBy, order = 'asc', page = 1, limit = 50 } = filters;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.ProductVariantWhereInput = { clientId };
+    // Services (fall & pico, stitching) keep no stock, so they are never on the stock list.
+    const where: Prisma.ProductVariantWhereInput = { clientId, AND: [{ product: { isService: false } }] };
 
     // Search by SKU, variantCode, barcode, or product title
     if (search) {

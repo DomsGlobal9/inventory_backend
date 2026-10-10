@@ -151,6 +151,7 @@ export class InventoryRepository {
       LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id) s ON s.variant_id = v.id
       WHERE v.client_id = ${clientId}
         AND p.status IN ('ACTIVE', 'ARCHIVED')
+        AND p.is_service = false
         AND COALESCE(s.qty, 0) <= v.reorder_level
       ORDER BY (COALESCE(s.qty, 0)::float / GREATEST(v.reorder_level, 1)) ASC
     `;

@@ -276,7 +276,7 @@ export const shelfStockService = {
 
     return {
       kind,
-      legs: result.shelves?.legs ?? [],
+      legs: result?.shelves?.legs ?? [],
       warning: input.toSpotId ? await capacityWarning(input.toSpotId) : null,
       item: await shelfStockService.whereIs(clientId, input.variantId, input.locationId)
     };

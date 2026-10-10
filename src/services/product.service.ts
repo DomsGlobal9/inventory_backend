@@ -60,6 +60,7 @@ export class ProductService {
       hsnCode: data.hsnCode ? data.hsnCode : null,
       taxRateBps: data.taxRateBps ?? null,
       taxSlabbed: data.taxSlabbed ?? false,
+      isService: data.isService ?? false,
       priceIsExclusive: false, // always tax-inclusive; see validations/product.schema.ts
       // Published straight from the wizard rather than saved as a draft first, which is the
       // common path. See updateProduct for why this column needs setting at all.
@@ -121,6 +122,15 @@ export class ProductService {
     // Clearing the HSN box means "not set", which is null. An empty string would look like a code
     // to every query that asks whether one exists.
     if ('hsnCode' in updateData && !updateData.hsnCode) updateData.hsnCode = null as any;
+
+    // A service keeps no stock, so a product still holding pieces cannot become one: its count would
+    // vanish from the stock list while the pieces sat on the shelf.
+    if (data.isService === true) {
+      const held = await prisma.inventoryStock.aggregate({ where: { clientId, variant: { productId: id } }, _sum: { quantity: true } });
+      if ((held._sum.quantity ?? 0) !== 0) {
+        throw conflict(`This product still has ${held._sum.quantity} in stock. A service keeps no stock: sell, return or correct those pieces to 0 first, then tick it as a service.`);
+      }
+    }
 
     if (data.title) {
       const existing = await this.getProductById(id, clientId);

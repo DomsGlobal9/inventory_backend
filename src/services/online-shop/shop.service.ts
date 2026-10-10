@@ -607,8 +607,9 @@ function forShopper(
       // rather than whatever a browser makes of the word "maroon".
       colourHex: v.colourHex,
       price: v.price, compareAtPrice: v.compareAtPrice, currency: v.currency,
-      sellable: v.stock.sellable,
-      fewLeft: showFewLeft && v.stock.sellable && v.stock.available > 0 && v.stock.available <= FEW_LEFT
+      // shortcut: a service (no stock count) is not sold in the online shop -- checkout reserves stock; sell it at the till.
+      sellable: v.stock.sellable && v.stock.available !== null,
+      fewLeft: showFewLeft && v.stock.sellable && v.stock.available !== null && v.stock.available > 0 && v.stock.available <= FEW_LEFT
         ? v.stock.available
         : null
     }))

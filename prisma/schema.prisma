@@ -587,6 +587,9 @@ model Product {
 
   /// True for stitched apparel, where the rate depends on what ONE piece sells for.
   taxSlabbed Boolean @default(false) @map("tax_slabbed")
+  /// A service, e.g. fall & pico or stitching: sold by price like any item, but no stock is ever kept --
+  /// applyMovement skips it, reservations touch no stock row, and the catalogues send stock as null.
+  isService Boolean @default(false) @map("is_service")
 
   /// Stitched apparel near the Rs 2,500 threshold must be priced EXCLUSIVE of tax: a tax-inclusive
   /// price between Rs 2,625 and Rs 2,950 has no self-consistent rate. See PLAN-gst.md section 2.

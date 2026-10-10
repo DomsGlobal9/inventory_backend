@@ -44,10 +44,11 @@ export interface StorefrontVariant {
   price: number;
   compareAtPrice: number | null;
   currency: string;
+  /** null counts for a service (fall & pico, stitching): no stock is kept for it. */
   stock: {
-    quantity: number;
-    reserved: number;
-    available: number;
+    quantity: number | null;
+    reserved: number | null;
+    available: number | null;
     sellable: boolean;
   };
 }
@@ -151,8 +152,12 @@ function resolvePrice(
 function resolveStock(
   stocks: { locationId: string; quantity: number; reservedQty: number }[],
   profiles: { locationId: string; isAvailable: boolean }[],
-  scopedLocationIds: Set<string>
+  scopedLocationIds: Set<string>,
+  service = false
 ) {
+  const blockedAt = new Set(profiles.filter(p => !p.isAvailable).map(p => p.locationId));
+  // A service keeps no count: null, not 0 (a till reads 0 as "none left"). Sellable wherever it is not switched off.
+  if (service) return { quantity: null, reserved: null, available: null, sellable: [...scopedLocationIds].some(id => !blockedAt.has(id)) };
   let quantity = 0;
   let reserved = 0;
   for (const s of stocks) {
@@ -202,7 +207,8 @@ function toStorefrontVariant(
   variant: any,
   basePrice: Prisma.Decimal,
   scopedLocationIds: Set<string>,
-  currency: string
+  currency: string,
+  service = false
 ): StorefrontVariant {
   return {
     sku: variant.sku,
@@ -215,7 +221,7 @@ function toStorefrontVariant(
       variant.locationProfiles, scopedLocationIds),
     compareAtPrice: variant.compareAtPrice === null ? null : Number(variant.compareAtPrice),
     currency,
-    stock: resolveStock(variant.stocks, variant.locationProfiles, scopedLocationIds)
+    stock: resolveStock(variant.stocks, variant.locationProfiles, scopedLocationIds, service)
   };
 }
 
@@ -229,7 +235,7 @@ function toStorefrontVariant(
 const PRODUCT_SELECT = {
   id: true, productCode: true, title: true, description: true,
   category: true, productType: true, dressType: true, fabric: true, craft: true, brand: true,
-  basePrice: true, publishedAt: true, createdAt: true, updatedAt: true,
+  basePrice: true, isService: true, publishedAt: true, createdAt: true, updatedAt: true,
   images: {
     // variantId: a photograph may belong to one colour rather than to the product as a whole,
     // which is how a shop shows the green saree when green is chosen.
@@ -360,7 +366,7 @@ function toStorefrontProduct(
       /** COVER, GALLERY, or the RAW_UPLOAD a generated set was made from. */
       kind: String(i.imageType)
     })),
-    variants: p.variants.map(v => toStorefrontVariant(v, p.basePrice, scoped, currency))
+    variants: p.variants.map(v => toStorefrontVariant(v, p.basePrice, scoped, currency, p.isService))
   };
 }
 
@@ -552,7 +558,7 @@ export class StorefrontCatalogueService {
       where: { id: variantId, clientId: scope.clientId },
       select: {
         sku: true,
-        product: { select: { productCode: true, status: true, trashedAt: true } },
+        product: { select: { productCode: true, status: true, trashedAt: true, isService: true } },
         stocks: { select: { locationId: true, quantity: true, reservedQty: true } },
         locationProfiles: { select: { locationId: true, isAvailable: true, priceOverride: true } }
       }
@@ -571,7 +577,7 @@ export class StorefrontCatalogueService {
        * dropped. Expressed against the same fields so the two are checkable side by side.
        */
       eligible: isEligible(variant.product),
-      stock: resolveStock(variant.stocks, variant.locationProfiles, scoped)
+      stock: resolveStock(variant.stocks, variant.locationProfiles, scoped, variant.product.isService)
     };
   }
 }

@@ -109,7 +109,8 @@ export class ReportService {
         JOIN "inventory_products" p ON p.id = v.product_id
         LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
         WHERE v.client_id = ${clientId}
-        AND p.status IN ('ACTIVE', 'DRAFT');
+        AND p.status IN ('ACTIVE', 'DRAFT')
+        AND p.is_service = false;
       `,
       // Same valuation basis as the headline figure above -- two different answers to "what is
       // this stock worth" on the same screen is worse than either answer alone.

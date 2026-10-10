@@ -82,7 +82,7 @@ export class InventoryMutationService {
         where: { id: variantId },
         // product.title is copied onto the transaction below so the day book can name the
         // item without a second lookup per row.
-        include: { stocks: true, product: { select: { title: true } } }
+        include: { stocks: true, product: { select: { title: true, isService: true } } }
       });
 
       // These three are USER errors, not server faults. Thrown bare they inherited
@@ -102,6 +102,9 @@ export class InventoryMutationService {
       if (!location || location.clientId !== clientId) {
         throw Object.assign(new Error(`Location ${locationId} not found for this tenant.`), { statusCode: 404 });
       }
+
+      // A service (fall & pico, stitching) keeps no stock: selling, returning or "adding" one moves nothing.
+      if (variant.product.isService && !shelfMove) return null;
 
       // Calculate global current quantity
       const globalQty = variant.stocks.reduce((acc, stock) => acc + stock.quantity, 0);

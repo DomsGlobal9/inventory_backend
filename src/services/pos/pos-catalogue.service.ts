@@ -127,6 +127,7 @@ export async function stockForPos(scope: CatalogueScope, variantCodes: string[])
     select: {
       variantCode: true,
       sku: true,
+      product: { select: { isService: true } },
       stocks: {
         where: locationIds.length ? { locationId: { in: locationIds } } : undefined,
         select: { quantity: true, reservedQty: true, locationId: true }
@@ -135,6 +136,8 @@ export async function stockForPos(scope: CatalogueScope, variantCodes: string[])
   });
 
   return variants.map(v => {
+    // A service keeps no count: null, as in the catalogue, never 0 ("none left").
+    if (v.product.isService) return { variantCode: v.variantCode, sku: v.sku, quantity: null, reserved: null, available: null };
     const quantity = v.stocks.reduce((s, r) => s + r.quantity, 0);
     const reserved = v.stocks.reduce((s, r) => s + r.reservedQty, 0);
     return {

@@ -20,6 +20,7 @@
  *   M  a ₹0 bill with no payments is applied
  *   L  a split refund off by exactly the bill's round-off is the till's figure, with no warning
  *   K  /events/status carries what an applied bill did to the customer's points (for the receipt)
+ *   S  a service (no stock): offered with stock null, sold and returned without any stock row or movement
  *   U  udhaar: a credit bill earns on what was paid; each collection adds the rest, once
  *   T  a bill, return or exchange is dated by the till's occurredAt (clamped like the POS), not by arrival
  *   W  write-off: closes the due without money, once; paid after all shrinks it; the door takes it in
@@ -39,6 +40,8 @@ import { applyPaymentUpdate } from '../services/pos/pos-payments.service';
 import { applyWriteOff } from '../services/pos/pos-writeoff.service';
 import { tick } from '../services/pos/pos-queue.service';
 import { salesOrderService } from '../services/sales-order.service';
+import { inventoryService } from '../services/inventory.service';
+import { productService } from '../services/product.service';
 import { counterSaleService } from '../services/counter-sale/counter-sale.service';
 import { sweep } from '../services/pos/pos-holds.service';
 import { post as postPoints } from '../services/loyalty/loyalty.service';
@@ -531,6 +534,38 @@ async function main() {
     check('an exchange sent late: the new bill, its dispatch, its settlement row and the return all at the till\'s time',
       tx3?.answer === 'APPLIED' && near(oT4.createdAt, exAt) && oT4.dispatches.every(d => near(d.dispatchedAt, exAt)) && oT4.payments.every(p => near(p.receivedAt, exAt)) && near(rT4?.completedAt, exAt),
       `${tx3?.answer} ${tx3?.detail ?? ''} ${JSON.stringify(oT4)} ${JSON.stringify(rT4)}`);
+
+    console.log('\nS. A SERVICE (FALL & PICO): SOLD BY PRICE, NO STOCK EVER');
+    const svcProduct = await prisma.product.create({ data: { clientId: CLIENT, productCode: `SVC-${STAMP}`, slug: `svc-${STAMP}`, title: 'Fall & pico', category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, dressType: 'Service', basePrice: 150, status: 'ACTIVE' as any, publishedAt: new Date(), hsnCode: '998821', taxRateBps: 1800, isService: true } });
+    const svc = await prisma.productVariant.create({ data: { productId: svcProduct.id, clientId: CLIENT, colorName: '-', size: '-', variantCode: `SV-${STAMP}`, sku: `SVS-${STAMP}`, sellingPrice: 150 } });
+    const cat = (await A.get('/catalogue', { params: { limit: 100 } })).data?.data;
+    const svcItem = cat?.products?.flatMap((p: any) => p.variants ?? []).find((v: any) => v.variantCode === svc.variantCode);
+    check('the till catalogue offers it with its price and SAC, stock null (not 0, which a till reads as "none left")',
+      !!svcItem && svcItem.eligible === true && svcItem.stock?.available === null && svcItem.stock?.quantity === null && svcItem.price === 150,
+      JSON.stringify(svcItem));
+    const svcStock = (await A.get('/stock', { params: { codes: svc.variantCode } })).data?.data;
+    check('  ...the till\'s live stock lookup also says null for it', Array.isArray(svcStock) && svcStock[0]?.available === null && svcStock[0]?.quantity === null, JSON.stringify(svcStock));
+    const sS = await applySale(CLIENT, store.id, { ...bill('S1', 1, [{ method: 'CASH', amountPaise: PRICE + 15000 }]), customer: null, lines: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: PRICE, lineTotalPaise: PRICE }, { itemCode: svc.variantCode, qty: 1, unitPricePaise: 15000, lineTotalPaise: 15000, taxRateBps: 1800, taxPaise: 2288 }] } as any) as any;
+    const oS = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-S1` }, select: { id: true, status: true, total: true, items: { select: { variantId: true, fulfilledQty: true } } } });
+    const svcRows = async () => ({ stocks: await prisma.inventoryStock.count({ where: { variantId: svc.id } }), moves: await prisma.inventoryTransaction.count({ where: { variantId: svc.id } }) });
+    const afterSale = await svcRows();
+    check('a bill with a saree and fall & pico: applied and dispatched in full, ₹3,150, and the service has NO stock row and NO stock movement',
+      sS?.answer === 'APPLIED' && oS.status === 'DISPATCHED' && Number(oS.total) === 3150 && oS.items.every(i => i.fulfilledQty === 1) && afterSale.stocks === 0 && afterSale.moves === 0,
+      `${sS?.answer} ${sS?.detail ?? ''} ${JSON.stringify(oS)} ${JSON.stringify(afterSale)}`);
+    const rS: any = await applyReturn(CLIENT, store.id, { kind: 'sale.returned', creditNoteNo: `CN/HOLD/${STAMP}-S1`, againstInvoiceNo: `INV/HOLD/${STAMP}-S1`, lines: [{ itemCode: svc.variantCode, qty: 1, lineTotalPaise: 15000 }], totals: {}, refund: { method: 'CASH' } } as any);
+    const rSrow = await prisma.salesReturn.findFirst({ where: { clientId: CLIENT, salesOrderId: oS.id }, select: { status: true, refunds: { select: { amount: true } } } });
+    const afterReturn = await svcRows();
+    check('  ...returning the service: money only (₹150 back), still no stock row or movement', rS?.answer === 'APPLIED' && rSrow?.refunds.reduce((a, r) => a + Number(r.amount), 0) === 150 && afterReturn.stocks === 0 && afterReturn.moves === 0,
+      `${rS?.answer} ${rS?.detail ?? ''} ${JSON.stringify(rSrow)} ${JSON.stringify(afterReturn)}`);
+    const stockList: any = await inventoryService.getVariants(CLIENT, { search: 'pico', limit: 50 });
+    const onList = (stockList?.items ?? stockList?.data ?? []).filter((i: any) => JSON.stringify(i).includes(svc.variantCode)).length;
+    const sareeList: any = await inventoryService.getVariants(CLIENT, { search: 'Hold saree', limit: 50 });
+    check('  ...and the Inventory stock list leaves it out (no "Out of stock" for a service), while the saree is still listed',
+      onList === 0 && (sareeList?.items ?? sareeList?.data ?? []).length > 0, `service rows=${onList} saree rows=${(sareeList?.items ?? sareeList?.data ?? []).length}`);
+
+    const turned = await productService.updateProduct(product.id, CLIENT, { isService: true }).then(() => 'saved', (e: any) => String(e?.message ?? e));
+    check('a product that still has stock cannot be ticked as a service (its count would vanish): refused in words, not saved',
+      /still has .* in stock/.test(turned) && !(await prisma.product.findUniqueOrThrow({ where: { id: product.id } })).isService, turned);
 
     console.log('\nTHE BOOKS BALANCE');
     const sumP = (await prisma.loyaltyEntry.aggregate({ where: { customerId: cust.id }, _sum: { points: true } }))._sum.points ?? 0;
