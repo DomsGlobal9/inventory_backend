@@ -199,7 +199,7 @@ async function main() {
   // ── E ─────────────────────────────────────────────────────────────────────────────────────
   console.log('\nE. THE LETTERHEAD');
   savedLetterhead = await prisma.clientSettings.findUnique({ where: { clientId: CLIENT } });
-  const details = { businessAddress: '12-4-56, Main Bazaar, Vijayawada 520001', businessPhone: '+91 98765 43210', businessEmail: 'orders@example.com', gstNumber: '37abcde1234f1z5' };
+  const details = { businessAddress: '12-4-56, Main Bazaar, Vijayawada 520001', businessPhone: '+91 98765 43210', businessEmail: 'orders@example.com', gstNumber: '37abcde1234f1z5', gstRegistration: 'REGULAR' }; // a GSTIN belongs to a registered shop (6 Oct rule)
   const notOwner = await admin.api.put('/branding/details', details);
   check('only the owner can set the letterhead', notOwner.status === 403, brief(notOwner));
   const set = await owner.api.put('/branding/details', details);
