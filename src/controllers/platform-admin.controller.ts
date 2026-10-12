@@ -1,3 +1,4 @@
+import { normalisePhone } from '../lib/phone';
 import { Request, Response } from 'express';
 import { lockedFor, recordFailure, clearFailures, loginKey, tooManyMessage } from '../lib/loginThrottle';
 import { offersHealthService } from '../services/platform-health';
@@ -98,14 +99,54 @@ export const listAllUsers = async (_req: Request, res: Response) => {
   }
 };
 
+const GSTIN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+const STATE_CODE = /^(0[1-9]|1[0-9]|2[0-46-9]|3[0-8]|97|99)$/;
+const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+/**
+ * The onboarding form, checked here so a new shop starts with real details, not blanks: the owner's
+ * mobile (their WhatsApp: login details, the nightly Day Book), and the shop's phone, address,
+ * first store and -- only if registered -- GSTIN. GST stays optional: no GSTIN, no GST.
+ */
+export function readOnboardingForm(b: any) {
+  const companyName = text(b.companyName, 120), adminName = text(b.adminName, 120), adminEmail = text(b.adminEmail, 160).toLowerCase();
+  if (!companyName) return { problem: 'Type the shop\'s name.' };
+  if (!adminName) return { problem: 'Type the owner\'s name.' };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) return { problem: 'Type the owner\'s email address, like owner@shop.in.' };
+  const mobile = normalisePhone(b.ownerPhone);
+  if (!mobile.ok) return { problem: `Owner's mobile: ${mobile.reason.replace("the customer's", 'the owner\'s')}` };
+  const shopPhone = text(b.shopPhone, 30);
+  if (shopPhone && !/^[0-9+()\-\s]{6,30}$/.test(shopPhone)) return { problem: 'Use digits, spaces, + and - only for the shop phone.' };
+  const pin = text(b.pin, 6);
+  if (pin && !/^[1-9][0-9]{5}$/.test(pin)) return { problem: 'A PIN code is 6 digits.' };
+  let stateCode = text(b.stateCode, 2);
+  if (stateCode && !STATE_CODE.test(stateCode)) return { problem: 'Choose the state from the list.' };
+  const gstin = text(b.gstin, 15).toUpperCase().replace(/\s/g, '');
+  if (gstin) {
+    if (!GSTIN.test(gstin)) return { problem: 'A GSTIN is 15 characters, like 37ABCDE1234F1Z5. Leave it blank if the shop is not registered.' };
+    if (stateCode && stateCode !== gstin.slice(0, 2)) return { problem: `The GSTIN starts with ${gstin.slice(0, 2)}, so the shop is in state ${gstin.slice(0, 2)}. Choose that state, or check the GSTIN.` };
+    stateCode = gstin.slice(0, 2);
+  }
+  return {
+    companyName, adminName, adminEmail,
+    ownerPhone: mobile.value,
+    shopPhone: shopPhone || null,
+    address: text(b.address, 200) || null,
+    city: text(b.city, 60) || null,
+    stateCode: stateCode || null,
+    pin: pin || null,
+    storeName: text(b.storeName, 60) || null,
+    gstin: gstin || null
+  };
+}
+
 export const onboardClient = async (req: Request, res: Response) => {
   try {
-    const { companyName, adminName, adminEmail } = req.body;
-    if (!companyName || !adminName || !adminEmail) {
-      return res.status(400).json({ success: false, message: 'companyName, adminName, and adminEmail are required' });
-    }
+    const form = readOnboardingForm(req.body ?? {});
+    if ('problem' in form) return res.status(400).json({ success: false, message: form.problem });
+    const { companyName, adminName, adminEmail, ...more } = form;
 
-    const result = await platformAdminService.onboardClient(companyName, adminName, adminEmail);
+    const result = await platformAdminService.onboardClient(companyName, adminName, adminEmail, null, more);
 
     // The workspace did not exist when the request arrived, so the audit middleware has no id
     // to take from the URL. Hand it the one we just created, or the trail records that a

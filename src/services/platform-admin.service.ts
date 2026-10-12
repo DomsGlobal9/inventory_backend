@@ -55,6 +55,16 @@ async function shelvesProgressFor(clientId: string) {
   };
 }
 
+/** GST state codes to names (GSTN's list; same as frontend utils/gstStates.js), for the address a bill prints. */
+const GST_STATE_NAMES: Record<string, string> = {
+  '01': 'Jammu and Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh', '05': 'Uttarakhand', '06': 'Haryana',
+  '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh', '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh', '13': 'Nagaland',
+  '14': 'Manipur', '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya', '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand',
+  '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat', '26': 'Dadra and Nagar Haveli and Daman and Diu',
+  '27': 'Maharashtra', '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry',
+  '35': 'Andaman and Nicobar Islands', '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh', '97': 'Other Territory', '99': 'Centre Jurisdiction'
+};
+
 export class PlatformAdminService {
   // There is no local `Client` registry (see SUPER_ADMIN_PLAN.md) -- every clientId this
   // console can ever show is derived from the `User` table, so a client with zero users
@@ -319,7 +329,13 @@ export class PlatformAdminService {
    * console can create a workspace with nothing but a name -- but where there IS a number it should
    * arrive with the shop rather than be typed a second time.
    */
-  async onboardClient(companyName: string, adminName: string, adminEmail: string, businessPhone?: string | null) {
+  async onboardClient(companyName: string, adminName: string, adminEmail: string, businessPhone?: string | null, more: {
+    ownerPhone?: string | null; shopPhone?: string | null; address?: string | null; city?: string | null;
+    stateCode?: string | null; pin?: string | null; storeName?: string | null; gstin?: string | null;
+  } = {}) {
+    // One line, as a bill prints it: "12-4-56, Main Bazaar, Vijayawada, Andhra Pradesh 520001".
+    const stateName = more.stateCode ? GST_STATE_NAMES[more.stateCode] ?? null : null;
+    const fullAddress = [more.address, more.city, [stateName, more.pin].filter(Boolean).join(' ')].filter(Boolean).join(', ') || null;
     const clientId = await this.generateClientId(companyName);
 
     const tempPassword = crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe
@@ -341,7 +357,11 @@ export class PlatformAdminService {
     // Created here so a new workspace is usable the moment the client logs in; they can
     // rename it or add more under Settings -> Stock Locations.
     await prisma.stockLocation.create({
-      data: { clientId, code: 'MAIN-STORE', name: 'Main Store', type: 'STORE', active: true }
+      data: {
+        clientId, code: 'MAIN-STORE', name: more.storeName || 'Main Store', type: 'STORE', active: true,
+        // The till prints the store's own address and phone first.
+        address: fullAddress, phone: (businessPhone ?? more.shopPhone ?? more.ownerPhone ?? '').trim() || null
+      }
     });
 
     // The shop's name, kept rather than discarded.
@@ -369,12 +389,19 @@ export class PlatformAdminService {
      * Seeded, not bound: it goes in as the starting value and Settings can change it, because the
      * person who filled the form is not always the shop's front desk.
      */
-    const shopPhone = (businessPhone ?? '').trim() || null;
+    // The shop's phone; the owner's mobile when the form left it blank.
+    const shopPhone = (businessPhone ?? more.shopPhone ?? more.ownerPhone ?? '').trim() || null;
+    // GST is optional: only a GSTIN makes the shop registered. The state is kept either way.
+    const gst = more.gstin
+      ? { gstNumber: more.gstin, gstRegistration: 'REGULAR', gstStateCode: more.gstin.slice(0, 2) }
+      : more.stateCode ? { gstStateCode: more.stateCode } : {};
     await prisma.clientSettings.upsert({
       where: { clientId },
-      create: { clientId, businessName: companyName.trim() || null, businessPhone: shopPhone },
+      create: { clientId, businessName: companyName.trim() || null, businessPhone: shopPhone, businessAddress: fullAddress, ...gst },
       update: {
         businessName: companyName.trim() || null,
+        ...(fullAddress ? { businessAddress: fullAddress } : {}),
+        ...gst,
         // Never overwrites a number a shop has already set for itself.
         ...(shopPhone ? { businessPhone: shopPhone } : {})
       }
@@ -385,8 +412,10 @@ export class PlatformAdminService {
      * first thing they meet in Settings is a form asking for a number we were already told.
      * Switched OFF regardless: seeding a destination is not consent to be messaged nightly.
      */
-    if (shopPhone) {
-      const digits = shopPhone.replace(/\D/g, '');
+    // The owner's own mobile first: the Day Book goes to a person, not a shop landline.
+    const dayBookPhone = more.ownerPhone ?? shopPhone;
+    if (dayBookPhone) {
+      const digits = dayBookPhone.replace(/\D/g, '');
       if (digits.length >= 10) {
         await prisma.whatsAppSettings.upsert({
           where: { clientId },
@@ -397,7 +426,7 @@ export class PlatformAdminService {
     }
 
     const user = await prisma.user.create({
-      data: { clientId, name: adminName, email: adminEmail, password: hashed, passwordEncrypted, status: 'ACTIVE' }
+      data: { clientId, name: adminName, email: adminEmail, phone: more.ownerPhone ?? null, password: hashed, passwordEncrypted, status: 'ACTIVE' }
     });
 
     await prisma.userRole.create({
