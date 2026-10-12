@@ -50,6 +50,8 @@ export type PosExchangeEvent = {
   note?: string;
   /** The till's quote for the NEW goods (contract §9), so they get the offers a fresh sale would. */
   quoteId?: string | null;
+  /** The till's round-off on what the customer paid for the new goods, as on sale.completed. */
+  totals?: { roundOffPaise?: number } | null;
 };
 
 /** Faults in the message itself, decided without touching the database. */
@@ -130,7 +132,8 @@ export async function applyExchange(
     invoiceNo: exchangeNo,
     occurredAt: event.occurredAt ?? new Date().toISOString(),
     lines: event.sold!,
-    totals: {},
+    // Kept on the new bill (as a sale keeps it), so a rounded difference never reads as 10 paise due.
+    totals: { roundOffPaise: Number(event.totals?.roundOffPaise ?? 0) || 0 },
     // Only the genuine difference. The settled part is written separately, as a settlement.
     payments: (event.payments ?? []).map(p => ({
       method: String(p.method ?? 'CASH').toUpperCase(),
@@ -253,11 +256,13 @@ export async function applyExchange(
    */
   if (difference > 0) {
     const took = (event.payments ?? []).reduce((a, p) => a + Math.round(Number(p.amountPaise ?? 0)), 0);
-    if (took !== difference) {
+    // What the customer owed is the difference after the till's round-off (e.g. 8,999.10 rounded to 8,999).
+    const owed = difference + Math.round(Number(event.totals?.roundOffPaise ?? 0) || 0);
+    if (took !== owed) {
       warnings.push(
         `${exchangeNo}: the till took ${(took / 100).toFixed(2)} for the new goods, but after what came back ` +
-        `the customer owed ${(difference / 100).toFixed(2)}. ${made.orderNumber} now shows ` +
-        `${(Math.abs(difference - took) / 100).toFixed(2)} ${took < difference ? 'still due' : 'overpaid'} -- somebody should settle it.`
+        `the customer owed ${(owed / 100).toFixed(2)}. ${made.orderNumber} now shows ` +
+        `${(Math.abs(owed - took) / 100).toFixed(2)} ${took < owed ? 'still due' : 'overpaid'} -- somebody should settle it.`
       );
     }
   }

@@ -562,6 +562,13 @@ async function main() {
     const oXQ = await prisma.salesOrder.findFirst({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-XQ` }, select: { id: true } });
     check('an exchange naming a fresh quote claims it for its new bill (so the new goods get a fresh sale\'s offers)',
       !!xqId && xS?.answer === 'APPLIED' && !!xqRow?.consumedAt && xqRow?.salesOrderId === oXQ?.id, `${brief(xq)} | ${xS?.answer} ${xS?.detail ?? ''} ${JSON.stringify(xS?.warnings)} | ${JSON.stringify(xqRow)}`);
+    // Like live INV/0038: the new goods come to ₹6,000.10 against ₹3,000 back, the till rounds the ₹3,000.10 to ₹3,000.
+    await applySale(CLIENT, store.id, { ...bill('RX', 1, [{ method: 'CASH', amountPaise: PRICE }]), customer: null } as any);
+    const xr: any = await applyExchange(CLIENT, store.id, { kind: 'sale.exchanged', exchangeNo: `INV/HOLD/${STAMP}-RX2`, againstInvoiceNo: `INV/HOLD/${STAMP}-RX`, occurredAt: new Date().toISOString(), returned: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: PRICE }], sold: [{ itemCode: variant.variantCode, qty: 2, unitPricePaise: PRICE, lineTotalPaise: 2 * PRICE + 10 }], payments: [{ method: 'CASH', amountPaise: PRICE }], totals: { roundOffPaise: -10 } } as any);
+    const oRX = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-RX2` }, select: { id: true, roundOff: true } });
+    const pRX = (await counterSaleService.getSale(CLIENT, oRX.id) as any).payment;
+    check('an exchange whose difference the till rounded (₹3,000.10 → ₹3,000) keeps the round-off: no warning, nothing due',
+      xr?.answer === 'APPLIED' && !(xr?.warnings ?? []).length && Number(oRX.roundOff) === -0.1 && pRX?.due === 0 && pRX?.status === 'PAID', `${xr?.answer} ${JSON.stringify(xr?.warnings)} roundOff=${oRX.roundOff} ${JSON.stringify(pRX)}`);
     const rS: any = await applyReturn(CLIENT, store.id, { kind: 'sale.returned', creditNoteNo: `CN/HOLD/${STAMP}-S1`, againstInvoiceNo: `INV/HOLD/${STAMP}-S1`, lines: [{ itemCode: svc.variantCode, qty: 1, lineTotalPaise: 15000 }], totals: {}, refund: { method: 'CASH' } } as any);
     const rSrow = await prisma.salesReturn.findFirst({ where: { counterKey: `POS:${CLIENT}:CN/HOLD/${STAMP}-S1` }, select: { status: true, refunds: { select: { amount: true } } } });
     const afterReturn = await svcRows();
