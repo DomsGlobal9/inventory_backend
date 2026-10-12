@@ -122,6 +122,8 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
         staffMaxPaise: gst?.counterReturnMax == null ? null : Math.round(Number(gst.counterReturnMax) * 100)
       },
       shop: {
+        // ScaleEzy's platform id for this shop, the one the WhatsApp service knows its linked number by.
+        clientId: ctx.clientId,
         logoUrl: gst?.logoUrl ?? null,
         logoPrintUrl: gst?.logoUrl ? `${req.protocol}://${req.get('host')}${req.baseUrl}/logo-print` : null,
         // What the bill prints, from Settings -> Name, logo and bill details. The till's own store's

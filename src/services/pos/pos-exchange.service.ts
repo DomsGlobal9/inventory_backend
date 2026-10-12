@@ -48,6 +48,8 @@ export type PosExchangeEvent = {
   customer?: { phone?: string; name?: string } | null;
   occurredAt?: string;
   note?: string;
+  /** The till's quote for the NEW goods (contract §9), so they get the offers a fresh sale would. */
+  quoteId?: string | null;
 };
 
 /** Faults in the message itself, decided without touching the database. */
@@ -136,8 +138,12 @@ export async function applyExchange(
       // Points or credit on the new bill settle exactly as on a sale: through the hold.
       holdId: p.holdId ?? null
     })) as any,
-    customer: event.customer ?? undefined
+    customer: event.customer ?? undefined,
+    // The new goods are priced and counted like a sale: the quote's offers are claimed and counted.
+    quoteId: event.quoteId ?? null
   } as any;
+  // The new bill's own notes (an offer that could not be counted, a short shelf). Set, not pushed: a retried transaction must not double them.
+  let saleWarnings: string[] = [];
 
   const made = await runTransaction(async tx => {
     // ── what came back ──────────────────────────────────────────────────────────────────
@@ -205,6 +211,7 @@ export async function applyExchange(
 
     // ── what went out ───────────────────────────────────────────────────────────────────
     const newOrder: any = await writeSaleInTransaction(tx, clientId, where, saleEvent, byCode);
+    saleWarnings = Array.isArray(newOrder.offerWarnings) ? newOrder.offerWarnings : [];
 
     if (settledMinor > 0) {
       // On the NEW bill: paid for with the returned goods. Makes the bill paid without
@@ -254,6 +261,7 @@ export async function applyExchange(
       );
     }
   }
+  warnings.push(...saleWarnings);
   return {
     answer: 'APPLIED',
     orderNumber: made.orderNumber,

@@ -623,7 +623,7 @@ export async function applySale(
      * below zero after this sale is the fact, whoever got there first -- so that is what is asked.
      * The read is for all the lines now; this runs in the queue worker, behind no waiting customer.
      */
-    const [rows, store] = await Promise.all([
+    const [rows, store, serviceRows] = await Promise.all([
       prisma.inventoryStock.findMany({
         where: {
           clientId, locationId,
@@ -631,11 +631,15 @@ export async function applySale(
         },
         select: { variantId: true, quantity: true }
       }),
-      prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { name: true, active: true } })
+      prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { name: true, active: true } }),
+      // A service (fall & pico) keeps no stock, so it is never "sold more than Inventory had".
+      prisma.productVariant.findMany({ where: { clientId, id: { in: [...new Set(event.lines.map(l => byCode.get(l.itemCode)!))] }, product: { isService: true } }, select: { id: true } })
     ]);
+    const services = new Set(serviceRows.map(v => v.id));
     const afterByVariant = new Map<string, number>(rows.map(r => [r.variantId, r.quantity]));
 
     for (const line of event.lines) {
+      if (services.has(byCode.get(line.itemCode)!)) continue;
       const had = stockBefore.get(line.itemCode) ?? 0;
       const after = afterByVariant.get(byCode.get(line.itemCode)!) ?? 0;
       // Short by what this bill outran the count it saw, or by how far below zero the shelf now

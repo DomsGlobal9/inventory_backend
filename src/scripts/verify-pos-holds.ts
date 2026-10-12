@@ -299,6 +299,7 @@ async function main() {
     const shopOf = async () => (await A.get('/catalogue', { params: { limit: 1 } })).data?.data;
     await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { logoUrl: 'https://example.com/logo.png', gstRegistration: 'UNREGISTERED', gstNumber: null } });
     const j1 = await shopOf();
+    check('the catalogue carries the shop\'s own platform id (for WhatsApp from: { clientId })', j1?.shop?.clientId === CLIENT, JSON.stringify(j1?.shop?.clientId));
     check('the catalogue carries the shop logo for the till to print', j1?.shop?.logoUrl === 'https://example.com/logo.png', JSON.stringify(j1?.shop));
     check('  ...a shop that chose "not registered" says UNREGISTERED', j1?.gst?.registration === 'UNREGISTERED', JSON.stringify(j1?.gst));
     check('  ...return rules never set: no window and no staff limit (null, null)', j1?.returns?.windowDays === null && j1?.returns?.staffMaxPaise === null, JSON.stringify(j1?.returns));
@@ -553,8 +554,16 @@ async function main() {
     check('a bill with a saree and fall & pico: applied and dispatched in full, ₹3,150, and the service has NO stock row and NO stock movement',
       sS?.answer === 'APPLIED' && oS.status === 'DISPATCHED' && Number(oS.total) === 3150 && oS.items.every(i => i.fulfilledQty === 1) && afterSale.stocks === 0 && afterSale.moves === 0,
       `${sS?.answer} ${sS?.detail ?? ''} ${JSON.stringify(oS)} ${JSON.stringify(afterSale)}`);
+    check('  ...and no "sold more than Inventory had" note for the service (it keeps no stock)', !(sS?.warnings ?? []).some((w: string) => w.includes(svc.variantCode)), JSON.stringify(sS?.warnings));
+    const xq = await A.post('/quote', { lines: [{ itemCode: variant.variantCode, qty: 1 }] });
+    const xqId = xq.data?.data?.quoteId;
+    const xS: any = await applyExchange(CLIENT, store.id, { kind: 'sale.exchanged', exchangeNo: `INV/HOLD/${STAMP}-XQ`, againstInvoiceNo: `INV/HOLD/${STAMP}-S1`, occurredAt: new Date().toISOString(), returned: [{ itemCode: variant.variantCode, qty: 1, lineTotalPaise: PRICE }], sold: [{ itemCode: variant.variantCode, qty: 1, unitPricePaise: PRICE, lineTotalPaise: PRICE }], payments: [], quoteId: xqId } as any);
+    const xqRow = xqId ? await prisma.pricingQuote.findUnique({ where: { id: xqId }, select: { consumedAt: true, salesOrderId: true } }) : null;
+    const oXQ = await prisma.salesOrder.findFirst({ where: { clientId: CLIENT, externalOrderId: `INV/HOLD/${STAMP}-XQ` }, select: { id: true } });
+    check('an exchange naming a fresh quote claims it for its new bill (so the new goods get a fresh sale\'s offers)',
+      !!xqId && xS?.answer === 'APPLIED' && !!xqRow?.consumedAt && xqRow?.salesOrderId === oXQ?.id, `${brief(xq)} | ${xS?.answer} ${xS?.detail ?? ''} ${JSON.stringify(xS?.warnings)} | ${JSON.stringify(xqRow)}`);
     const rS: any = await applyReturn(CLIENT, store.id, { kind: 'sale.returned', creditNoteNo: `CN/HOLD/${STAMP}-S1`, againstInvoiceNo: `INV/HOLD/${STAMP}-S1`, lines: [{ itemCode: svc.variantCode, qty: 1, lineTotalPaise: 15000 }], totals: {}, refund: { method: 'CASH' } } as any);
-    const rSrow = await prisma.salesReturn.findFirst({ where: { clientId: CLIENT, salesOrderId: oS.id }, select: { status: true, refunds: { select: { amount: true } } } });
+    const rSrow = await prisma.salesReturn.findFirst({ where: { counterKey: `POS:${CLIENT}:CN/HOLD/${STAMP}-S1` }, select: { status: true, refunds: { select: { amount: true } } } });
     const afterReturn = await svcRows();
     check('  ...returning the service: money only (₹150 back), still no stock row or movement', rS?.answer === 'APPLIED' && rSrow?.refunds.reduce((a, r) => a + Number(r.amount), 0) === 150 && afterReturn.stocks === 0 && afterReturn.moves === 0,
       `${rS?.answer} ${rS?.detail ?? ''} ${JSON.stringify(rSrow)} ${JSON.stringify(afterReturn)}`);
