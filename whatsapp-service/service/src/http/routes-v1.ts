@@ -2,7 +2,7 @@ import { Router, json } from 'express';
 import type { Ctx } from '../context';
 import { requireModule } from '../auth/middleware';
 import { mayModuleUseClient } from '../auth/allow';
-import { disconnectClient, linkClient, publicAccountView } from '../accounts/service';
+import { disconnectClient, linkClient, linkScaleezy, listAccounts, publicAccountView, reconnectAccount } from '../accounts/service';
 import { createMessage, publicMessageView, resolveSender, waitingFor } from '../messages/service';
 import { isOnWhatsApp } from '../numbers/service';
 import { Errors } from '../lib/errors';
@@ -23,6 +23,40 @@ export function v1Routes(ctx: Ctx): Router {
     if (!(await mayModuleUseClient(ctx, req.module!, clientId))) throw Errors.forbidden('This module may not manage this shop’s WhatsApp.');
     return clientId;
   };
+
+  // The platform console's corner: every number's status, and linking / reconnecting ScaleEzy's own
+  // number, for a module granted canManageScaleEzy (create-module --can-manage-scaleezy). Not the
+  // ADMIN_KEY: no message lists, no canary, no sending.
+  const mayManage = (req: Parameters<Parameters<typeof route>[0]>[0]) => {
+    if (!req.module!.canManageScaleEzy) throw Errors.forbidden('This module may not manage ScaleEzy’s WhatsApp number.');
+  };
+  r.get(
+    '/platform/accounts',
+    route(async (req, res) => {
+      mayManage(req);
+      res.json(await listAccounts(ctx));
+    }),
+  );
+  r.post(
+    '/platform/scaleezy/link',
+    route(async (req, res) => {
+      mayManage(req);
+      const body = linkBody.parse(req.body ?? {});
+      let phone: string | null = null;
+      if (body.method === 'code') {
+        phone = normalisePhone(body.phone);
+        if (!phone) throw Errors.badRequest('To link with a code, give the WhatsApp number of the phone you are linking.');
+      }
+      res.json(await linkScaleezy(ctx, body.method, phone));
+    }),
+  );
+  r.post(
+    '/platform/accounts/:id/reconnect',
+    route(async (req, res) => {
+      mayManage(req);
+      res.json(await reconnectAccount(ctx, String(req.params.id)));
+    }),
+  );
 
   // What this service can send. A module checks it before offering a feature, so the module can be
   // deployed before or after the service without breaking anything.

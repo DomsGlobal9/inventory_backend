@@ -23,6 +23,27 @@ export async function ensureScaleezyAccount(ctx: Ctx): Promise<Account> {
   });
 }
 
+/** Every number with its status and how many messages wait for it. Masked phones only; no message text. */
+export async function listAccounts(ctx: Ctx) {
+  const accounts = await ctx.db.account.findMany({ orderBy: { createdAt: 'asc' } });
+  const queued = await ctx.db.message.groupBy({ by: ['accountId'], where: { status: 'QUEUED' }, _count: { _all: true } });
+  const q = new Map(queued.map((g) => [g.accountId, g._count._all]));
+  return accounts.map((a) => ({
+    id: a.id,
+    kind: a.kind,
+    clientId: a.clientId,
+    instanceName: a.instanceName,
+    displayName: a.displayName,
+    phone: maskPhone(a.phone),
+    status: a.status,
+    linkedAt: a.linkedAt,
+    lastSeenAt: a.lastSeenAt,
+    statusChangedAt: a.statusChangedAt,
+    dailyCap: a.dailyCap,
+    queued: q.get(a.id) ?? 0,
+  }));
+}
+
 export async function getScaleezyAccount(ctx: Ctx): Promise<Account | null> {
   return ctx.db.account.findFirst({ where: { kind: 'SCALEEZY' } });
 }

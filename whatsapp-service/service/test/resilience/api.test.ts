@@ -324,6 +324,36 @@ describe.skipIf(!hasTestDb)('API', () => {
     expect(await env.db.account.count({ where: { kind: 'SCALEEZY' } })).toBe(1);
   });
 
+  it('a module granted canManageScaleEzy (the platform console) sees every number and links ScaleEzy\'s; others are refused', async () => {
+    const asInventory = (path: string, body?: unknown) => body === undefined
+      ? get(path, { 'x-module-key': inventory.key })
+      : post(path, body, inventory.key);
+    // Not granted: refused in words, even though it may send as ScaleEzy.
+    const refused = await asInventory('/v1/platform/accounts');
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as any).error.message).toMatch(/may not manage ScaleEzy/);
+    expect((await asInventory('/v1/platform/scaleezy/link', { method: 'qr' })).status).toBe(403);
+
+    await env.db.moduleClient.update({ where: { id: inventory.mod.id }, data: { canManageScaleEzy: true } });
+    const list = (await (await asInventory('/v1/platform/accounts')).json()) as any[];
+    const sc = list.find((a) => a.kind === 'SCALEEZY');
+    expect(sc.status).toBe('CONNECTED');
+    expect(sc.phone).toMatch(/^\*+\d{4}$/); // masked, never the full number
+    expect(list.some((a) => a.kind === 'CLIENT' && a.clientId === 'shop1')).toBe(true);
+    // Connected already: left alone, exactly like the admin route.
+    expect(await (await asInventory('/v1/platform/scaleezy/link', { method: 'qr' })).json()).toEqual({ status: 'CONNECTED' });
+    // Dropped: a fresh QR.
+    await env.db.account.deleteMany({ where: { kind: 'SCALEEZY' } });
+    env.engine.states.delete(env.ctx.config.SCALEEZY_INSTANCE);
+    const qr = (await (await asInventory('/v1/platform/scaleezy/link', { method: 'qr' })).json()) as any;
+    expect(qr.status).toBe('LINKING');
+    expect(qr.qr).toMatch(/^data:image\/png;base64,/);
+    const row = await env.db.account.findFirstOrThrow({ where: { kind: 'SCALEEZY' } });
+    expect((await asInventory(`/v1/platform/accounts/${row.id}/reconnect`, {})).status).toBe(200);
+    // Still no admin powers: the admin routes want the ADMIN_KEY.
+    expect((await get('/admin/messages', { 'x-admin-key': inventory.key })).status).toBe(401);
+  });
+
   it('numbers/check answers from the engine and caches', async () => {
     env.engine.notOnWhatsApp.add('919876500001');
     const a = await (await post('/v1/numbers/check', { from: { clientId: 'shop1' }, to: '9876500001' }, inventory.key)).json() as any;

@@ -2,7 +2,7 @@ import { Router, json } from 'express';
 import type { Prisma } from '@prisma/client';
 import type { Ctx } from '../context';
 import { requireAdmin } from '../auth/middleware';
-import { linkScaleezy, reconnectAccount } from '../accounts/service';
+import { linkScaleezy, listAccounts, reconnectAccount } from '../accounts/service';
 import { startCanary } from '../health/canary';
 import { runHealthWatch } from '../health/watch';
 import { EngineError } from '../engine/client';
@@ -20,25 +20,7 @@ export function adminRoutes(ctx: Ctx): Router {
   r.get(
     '/accounts',
     route(async (_req, res) => {
-      const accounts = await ctx.db.account.findMany({ orderBy: { createdAt: 'asc' } });
-      const queued = await ctx.db.message.groupBy({ by: ['accountId'], where: { status: 'QUEUED' }, _count: { _all: true } });
-      const q = new Map(queued.map((g) => [g.accountId, g._count._all]));
-      res.json(
-        accounts.map((a) => ({
-          id: a.id,
-          kind: a.kind,
-          clientId: a.clientId,
-          instanceName: a.instanceName,
-          displayName: a.displayName,
-          phone: maskPhone(a.phone),
-          status: a.status,
-          linkedAt: a.linkedAt,
-          lastSeenAt: a.lastSeenAt,
-          statusChangedAt: a.statusChangedAt,
-          dailyCap: a.dailyCap,
-          queued: q.get(a.id) ?? 0,
-        })),
-      );
+      res.json(await listAccounts(ctx));
     }),
   );
 
