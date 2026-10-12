@@ -6,6 +6,7 @@ import { handleEngineEvent, type EnginePayload } from '../events/engine-events';
 import { adminRoutes } from './routes-admin';
 import { errorHandler, route } from './errors';
 import { v1Routes } from './routes-v1';
+import { rateLimit } from './rate-limit';
 
 export function createApp(ctx: Ctx): Express {
   const app = express();
@@ -36,6 +37,8 @@ export function createApp(ctx: Ctx): Express {
     }),
   );
 
+  // The engine's webhook above is not limited: it arrives in bursts and carries its own secret.
+  app.use(['/v1', '/admin'], rateLimit(ctx.config.API_RATE_PER_MINUTE));
   app.use('/v1', v1Routes(ctx));
   app.use('/admin', adminRoutes(ctx));
 

@@ -30,6 +30,9 @@ export function testConfig(databaseUrl: string, overrides: Record<string, string
     ENCRYPTION_KEY: randomBytes(32).toString('base64'),
     SCALEEZY_INSTANCE,
     SCALEEZY_DAILY_CAP: '100',
+    // Generous here so older tests sending to one number are unaffected; the limit's own tests set it low.
+    PER_PERSON_DAILY_CAP: '1000',
+    API_RATE_PER_MINUTE: '100000',
     SEND_GAP_MIN_MS: '0',
     SEND_GAP_MAX_MS: '20',
     WORKER_TICK_MS: '50',

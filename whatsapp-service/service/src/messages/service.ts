@@ -1,7 +1,7 @@
 import { Prisma, type Account, type Message, type MessageKind, type ModuleClient } from '@prisma/client';
 import type { Ctx } from '../context';
 import { contentHash, isWithinDuplicateWindow, DUPLICATE_WINDOW_MS, dailyCapFor, isOverCap, istDayStart, MAX_CAPTION } from '../domain/rules';
-import { Errors } from '../lib/errors';
+import { AppError, Errors } from '../lib/errors';
 import { decodePdf } from '../lib/pdf';
 import { checkMediaUrl } from '../lib/media';
 import { normalisePhone } from '../lib/phone';
@@ -93,6 +93,16 @@ export async function createMessage(ctx: Ctx, mod: ModuleClient, input: NewMessa
     orderBy: { queuedAt: 'desc' },
   });
   if (dup && isWithinDuplicateWindow(dup.queuedAt, now)) return { message: dup, existing: true };
+
+  // 3. One person, one number, one Indian day: at most PER_PERSON_DAILY_CAP messages, whatever the
+  //    content or the module -- nobody gets ten bills or ten codes in a day by pressing Send ten times.
+  const toPersonToday = await ctx.db.message.count({
+    where: { accountId: account.id, toDigits: to, queuedAt: { gte: istDayStart(now) }, status: { notIn: ['FAILED', 'EXPIRED'] } },
+  });
+  if (toPersonToday >= ctx.config.PER_PERSON_DAILY_CAP) {
+    throw new AppError(429, 'person_daily_limit',
+      `This person has already been sent ${ctx.config.PER_PERSON_DAILY_CAP} WhatsApp messages from this number today. Please try again tomorrow.`);
+  }
 
   try {
     const message = await ctx.db.message.create({

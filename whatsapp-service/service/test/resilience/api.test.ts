@@ -324,6 +324,25 @@ describe.skipIf(!hasTestDb)('API', () => {
     expect(await env.db.account.count({ where: { kind: 'SCALEEZY' } })).toBe(1);
   });
 
+  it('one person gets at most PER_PERSON_DAILY_CAP messages a day from a number, whatever the content', async () => {
+    const cap = env.ctx.config.PER_PERSON_DAILY_CAP;
+    (env.ctx.config as any).PER_PERSON_DAILY_CAP = 2;
+    try {
+      const send = (n: number, to = '9876500001') => post('/v1/messages', { from: { clientId: 'shop1' }, to, text: `Bill ${n}`, kind: 'C2', idempotencyKey: `pp-${n}-${to}` }, inventory.key);
+      expect((await send(1)).status).toBe(202);
+      expect((await send(2)).status).toBe(202);
+      const third = await send(3);
+      expect(third.status).toBe(429);
+      expect(((await third.json()) as any).error.message).toMatch(/already been sent 2 WhatsApp messages from this number today/);
+      // The same request again (a retry) still answers with the message it made, not a refusal.
+      expect((await send(1)).status).toBeLessThan(300);
+      // Another person is not affected.
+      expect((await send(4, '9876500002')).status).toBe(202);
+    } finally {
+      (env.ctx.config as any).PER_PERSON_DAILY_CAP = cap;
+    }
+  });
+
   it('a module granted canManageScaleEzy (the platform console) sees every number and links ScaleEzy\'s; others are refused', async () => {
     const asInventory = (path: string, body?: unknown) => body === undefined
       ? get(path, { 'x-module-key': inventory.key })

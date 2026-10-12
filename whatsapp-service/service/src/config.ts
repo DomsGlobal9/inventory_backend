@@ -54,6 +54,10 @@ const schema = z.object({
 
   SCALEEZY_INSTANCE: z.string({ required_error: 'is required' }).regex(/^[A-Za-z0-9_-]{1,64}$/, 'letters, digits, - and _ only'),
   SCALEEZY_DAILY_CAP: int(150, 1, 10000),
+  // At most this many messages a day from one number to the same person (any module, any content).
+  PER_PERSON_DAILY_CAP: int(5, 1, 1000),
+  // Requests a minute per module key (or per address without one), on /v1 and /admin.
+  API_RATE_PER_MINUTE: int(300, 10, 100000),
   // Finished messages are deleted after this many days (see worker/retention). STOPs are kept for good.
   MESSAGE_RETENTION_DAYS: int(30, 7, 3650),
 
