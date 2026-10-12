@@ -43,7 +43,10 @@ const ROUTES: { method: string; pattern: RegExp; action: string; targetType: str
   { method: 'POST',   pattern: /^\/leads\/([^/]+)\/convert$/,        action: 'CONVERT_LEAD',                  targetType: 'LEAD' },
   // A short link switched off (a reported scam) or on again. The target is the link's code.
   { method: 'POST',   pattern: /^\/links\/([A-Za-z0-9]{7})\/disable$/, action: 'DISABLE_SHORT_LINK',          targetType: 'SHORT_LINK' },
-  { method: 'POST',   pattern: /^\/links\/([A-Za-z0-9]{7})\/enable$/,  action: 'ENABLE_SHORT_LINK',           targetType: 'SHORT_LINK' }
+  { method: 'POST',   pattern: /^\/links\/([A-Za-z0-9]{7})\/enable$/,  action: 'ENABLE_SHORT_LINK',           targetType: 'SHORT_LINK' },
+  // ScaleEzy's own WhatsApp number linked again, or woken up.
+  { method: 'POST',   pattern: /^\/whatsapp\/scaleezy\/link$/,        action: 'LINK_SCALEEZY_WHATSAPP',      targetType: 'WHATSAPP' },
+  { method: 'POST',   pattern: /^\/whatsapp\/scaleezy\/reconnect$/,   action: 'RECONNECT_SCALEEZY_WHATSAPP', targetType: 'WHATSAPP' }
 ];
 
 const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);

@@ -30,7 +30,7 @@ process.env.WHATSAPP_WEBHOOK_SECRET = 'verify-stub-secret-0123456789';
 
 type StubReq = { method: string; path: string; body: any; key: string | undefined };
 const seen: StubReq[] = [];
-let mode: 'ok' | 'down' | 'unreachable' | 'notLinked' | 'optedOut' = 'ok';
+let mode: 'ok' | 'down' | 'unreachable' | 'notLinked' | 'optedOut' | 'notGranted' = 'ok';
 const ids = new Map<string, string>();
 
 const stub = http.createServer((req, res) => {
@@ -50,6 +50,16 @@ const stub = http.createServer((req, res) => {
       const id = existing ?? crypto.randomUUID();
       ids.set(body.idempotencyKey, id);
       return send(202, { id, status: 'QUEUED', ...(existing ? { duplicate: true } : {}) });
+    }
+    // The console's corner of the service (a module granted --can-manage-scaleezy).
+    if (req.url!.startsWith('/v1/platform/')) {
+      if (mode === 'notGranted') return send(403, { error: { code: 'forbidden', message: 'This module may not manage ScaleEzy’s WhatsApp number.' } });
+      if (req.url === '/v1/platform/accounts') return send(200, [
+        { id: 'sc-1', kind: 'SCALEEZY', clientId: null, phone: '********4642', status: 'DISCONNECTED', linkedAt: '2026-09-18T10:00:00Z', lastSeenAt: null, queued: 2 },
+        { id: 'c-1', kind: 'CLIENT', clientId: SHOP, phone: '********2338', status: 'CONNECTED', linkedAt: null, lastSeenAt: null, queued: 0 },
+        { id: 'c-2', kind: 'CLIENT', clientId: OTHER, phone: '********1111', status: 'DISCONNECTED', linkedAt: null, lastSeenAt: null, queued: 3 }
+      ]);
+      if (/\/reconnect$/.test(req.url!)) return send(200, { status: 'CONNECTED', engineState: 'open' });
     }
     if (/\/link$/.test(req.url!)) return send(200, body?.method === 'code' ? { status: 'LINKING', pairingCode: 'ABCD-EFGH' } : { status: 'LINKING', qr: 'data:image/png;base64,iVBORw0KGgo=' });
     if (/\/disconnect$/.test(req.url!)) return send(200, { status: 'LOGGED_OUT', phone: null, linkedAt: null, lastSeenAt: null });
@@ -498,6 +508,26 @@ async function main() {
       wa.platformAlertMail.to = realTo;
     }
 
+    console.log('\nP. THE PLATFORM CONSOLE: SCALEEZY\'S NUMBER AND EVERY SHOP\'S'); {
+    const pw = require('../services/whatsapp/platform');
+    const ov = await pw.overview();
+    check('the console sees ScaleEzy\'s number (masked) with its status and what is waiting', ov.problem === null && ov.scaleezy?.status === 'DISCONNECTED' && ov.scaleezy?.phone === '********4642' && ov.scaleezy?.queued === 2, ov);
+    check('  ...and every shop\'s number, by shop name, dropped ones first', ov.shops.length === 2 && ov.shops[0].clientId === OTHER && ov.shops[0].status === 'DISCONNECTED' && ov.shops[1].businessName === 'Lakshmi Silks', ov.shops);
+    const lq = await pw.link('qr');
+    check('Link again by QR asks the service for ScaleEzy\'s own link, through Inventory\'s module key', lq.status === 'LINKING' && /^data:image\/png/.test(lq.qr ?? '') && seen.some(r => r.path === '/v1/platform/scaleezy/link' && r.body?.method === 'qr' && r.key === 'verify-stub-key-0123456789'), lq);
+    const lc = await pw.link('code', '+91 81424 24642');
+    check('  ...by pairing code, with the number as digits', lc.pairingCode === 'ABCD-EFGH' && seen.some(r => r.path === '/v1/platform/scaleezy/link' && r.body?.phone === '918142424642'), seen.slice(-1));
+    const noPhone = await said(pw.link('code', '12'));
+    check('  ...a pairing code with no proper number is refused in words before asking the service', !noPhone.ok && noPhone.status === 400 && /number/.test(noPhone.message), noPhone);
+    const pwRc = await pw.reconnect();
+    check('Reconnect wakes ScaleEzy\'s own account (found by kind, not guessed)', pwRc.status === 'CONNECTED' && seen.some(r => r.path === '/v1/platform/accounts/sc-1/reconnect'), pwRc);
+    mode = 'notGranted';
+    const ng = await pw.overview();
+    const ngLink = await said(pw.link('qr'));
+    mode = 'ok';
+    check('not granted yet: the screen says exactly what to run, and Link is refused with the same words', /can-manage-scaleezy/.test(ng.problem ?? '') && ng.scaleezy === null && !ngLink.ok && /can-manage-scaleezy/.test(ngLink.message), { ng, ngLink });
+
+    }
     console.log('\nH. HANDLED EVENTS ARE NOT KEPT FOR EVER');
     const { HousekeepingScheduler } = require('../jobs/housekeeping.scheduler');
     const oldId = `verify-old-${STAMP}`, newId = `verify-new-${STAMP}`;

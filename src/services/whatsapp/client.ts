@@ -91,6 +91,13 @@ export const whatsappClient = {
    * or after the service. An older service has no such address: that answers "text and PDFs only".
    * Remembered for five minutes.
    */
+  /** The console's view of every number (needs --can-manage-scaleezy on the service). */
+  platformAccounts: () => call<import('./platform').PlatformAccount[]>('GET', '/v1/platform/accounts'),
+  /** Can take half a minute: the service waits for WhatsApp to hand over a QR or code. */
+  platformLinkScaleezy: (method: 'qr' | 'code', phone?: string) =>
+    call<LinkResult>('POST', '/v1/platform/scaleezy/link', { method, ...(phone ? { phone } : {}) }, 60_000),
+  platformReconnect: (accountId: string) =>
+    call<{ status: AccountStatus; engineState: string | null }>('POST', `/v1/platform/accounts/${encodeURIComponent(accountId)}/reconnect`, {}, 30_000),
   capabilities: async (): Promise<Capabilities> => {
     if (capsCache && capsCache.until > Date.now()) return capsCache.value;
     let value: Capabilities;

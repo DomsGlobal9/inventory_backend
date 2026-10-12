@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { verifyPlatformAdmin } from '../middleware/platform-admin.middleware';
 import { links, LinkRuleError } from '../services/links';
+import * as platformWhatsApp from '../services/whatsapp/platform';
+import { WhatsAppServiceError } from '../services/whatsapp/client';
 import {
   login,
   logout,
@@ -107,5 +109,19 @@ consoleRouter.get('/links/:code', linkAction(async req => {
 }));
 consoleRouter.post('/links/:code/disable', linkAction(req => links.platformDisable(String(req.params.code), req.platformAdmin.id, String(req.body?.note ?? ''))));
 consoleRouter.post('/links/:code/enable', linkAction(req => links.platformEnable(String(req.params.code))));
+
+// ScaleEzy's own WhatsApp number, and every shop's (read-only). See services/whatsapp/platform.ts.
+const waAction = (fn: (req: any) => Promise<unknown>) => async (req: any, res: any, next: any) => {
+  try {
+    res.locals.auditTargetLabel = 'ScaleEzy WhatsApp number';
+    res.json({ success: true, data: await fn(req) });
+  } catch (e) {
+    if (e instanceof WhatsAppServiceError) return res.status(e.statusCode).json({ success: false, message: e.message });
+    next(e);
+  }
+};
+consoleRouter.get('/whatsapp', waAction(() => platformWhatsApp.overview()));
+consoleRouter.post('/whatsapp/scaleezy/link', waAction(req => platformWhatsApp.link(req.body?.method, req.body?.phone)));
+consoleRouter.post('/whatsapp/scaleezy/reconnect', waAction(() => platformWhatsApp.reconnect()));
 
 export { authRouter as platformAdminAuthRoutes, consoleRouter as platformAdminConsoleRoutes };
