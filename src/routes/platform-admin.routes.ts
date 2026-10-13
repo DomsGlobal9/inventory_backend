@@ -33,7 +33,8 @@ import {
   revokeClientServiceKey,
   getClientTryOnUsage,
   setClientTryOnLimit,
-  getOffersHealth
+  getOffersHealth,
+  getTillHealth
 } from '../controllers/platform-admin.controller';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 import { platformAuditLogger } from '../middleware/platform-audit.middleware';
@@ -75,6 +76,7 @@ consoleRouter.get('/audit-log', listAuditLog);
 consoleRouter.get('/client-errors', listClientErrors);
 // Offers and Shopify across every shop: copies failing, orders waiting, codes run out. Read only.
 consoleRouter.get('/offers-health', getOffersHealth);
+consoleRouter.get('/till-health', getTillHealth);
 consoleRouter.get('/support-tickets', listSupportTickets);
 consoleRouter.get('/support-tickets/:id', getSupportTicket);
 consoleRouter.post('/support-tickets/:id/messages', replyToSupportTicket);

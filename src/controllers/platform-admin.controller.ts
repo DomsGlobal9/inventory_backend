@@ -1,7 +1,7 @@
 import { normalisePhone } from '../lib/phone';
 import { Request, Response } from 'express';
 import { lockedFor, recordFailure, clearFailures, loginKey, tooManyMessage } from '../lib/loginThrottle';
-import { offersHealthService } from '../services/platform-health';
+import { offersHealthService, tillHealthService } from '../services/platform-health';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { platformAdminService } from '../services/platform-admin.service';
@@ -245,6 +245,14 @@ export const getOffersHealth = async (_req: Request, res: Response) => {
     res.json({ success: true, data });
   } catch (error: any) {
     return respondWithError(res, error, { status: 500, message: 'Failed to load offers and Shopify health' });
+  }
+};
+
+export const getTillHealth = async (_req: Request, res: Response) => {
+  try {
+    res.json({ success: true, data: await tillHealthService.overview() });
+  } catch (error: any) {
+    return respondWithError(res, error, { status: 500, message: 'Failed to load till link health' });
   }
 };
 

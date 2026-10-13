@@ -6,3 +6,5 @@
  */
 export { offersHealthService } from './offers-health.service';
 export type { OffersHealthRow } from './offers-health.service';
+export { tillHealthService } from './till-health.service';
+export type { TillHealthRow } from './till-health.service';
