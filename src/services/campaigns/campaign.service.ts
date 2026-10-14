@@ -388,7 +388,12 @@ export async function start(actor: Actor, id: string, input: { expected?: unknow
 
   const where = await whereFor(actor.clientId, c.audience as Audience);
   const customers = await prisma.customer.findMany({ where, select: { id: true }, take: MAX_RECIPIENTS + 1 });
-  if (customers.length === 0) throw badRequest('Nobody matches these choices yet. Only customers who agreed to offers on WhatsApp can be sent a campaign.');
+  if (customers.length === 0) {
+    const quiet = (await previewAudience(actor.clientId, c.audience as Audience)).breakdown.inQuietGroup;
+    throw badRequest(quiet > 0
+      ? `All ${quiet} customer${quiet === 1 ? '' : 's'} these choices describe ${quiet === 1 ? 'is' : 'are'} in a group set to No offer messages (Settings → Customer groups).`
+      : 'Nobody matches these choices yet. Only customers who agreed to offers on WhatsApp can be sent a campaign.');
+  }
   if (customers.length > MAX_RECIPIENTS) throw badRequest(`A campaign can reach at most ${MAX_RECIPIENTS.toLocaleString('en-IN')} customers. Narrow the choices.`);
   if (typeof input.expected === 'number' && Math.abs(input.expected - customers.length) > Math.max(5, input.expected * 0.1)) {
     throw Object.assign(conflict(`This now reaches ${customers.length} customers, not ${input.expected}. Check the list and press Start again.`), {

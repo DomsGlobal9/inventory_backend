@@ -17,6 +17,9 @@ import { MAX_CUSTOMER_TAGS, MAX_TAG_LENGTH } from '../offers/rules';
 export type GroupPurpose = 'offers' | 'wishes';
 
 const MAX_IDS = 500;
+/** The shared rows bills with no customer details go on (pos-events WALK_IN_KEY, Shopify ingest). Their
+ *  "spend" is every anonymous sale, so a spending rule would make them VIPs within the hour. */
+const SHARED_CUSTOMERS = ['POS:WALK-IN', 'shopify:guest'];
 const liveOrder = { status: { not: 'CANCELLED' as const }, deletedAt: null };
 
 export const keyOf = (name: string) => String(name ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -137,7 +140,10 @@ export const customerGroups = {
     const name = cleanName(rawName);
     const key = keyOf(name);
     if (await displayName(clientId, key)) throw conflict(`There is already a group called ${name}.`);
-    return prisma.customerGroup.create({ data: { clientId, name, key } });
+    return prisma.customerGroup.create({ data: { clientId, name, key } }).catch((e: any) => {
+      if (e?.code === 'P2002') throw conflict(`There is already a group called ${name}.`);
+      throw e;
+    });
   },
 
   /**
@@ -149,12 +155,19 @@ export const customerGroups = {
     const asked = cleanName(rawName);
     const key = keyOf(asked);
     const name = (await displayName(clientId, key)) ?? asked;
+    const [{ found, already, full }] = await prisma.$queryRaw<{ found: number; already: number; full: number }[]>`
+      SELECT COUNT(*)::int AS found,
+             COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM UNNEST(tags) t WHERE lower(t) = ${key}))::int AS already,
+             COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM UNNEST(tags) t WHERE lower(t) = ${key})
+                                AND cardinality(tags) >= ${MAX_CUSTOMER_TAGS})::int AS full
+        FROM customers WHERE client_id = ${clientId} AND deleted_at IS NULL AND id IN (${Prisma.join(ids)})`;
     const added = await prisma.$executeRaw`
       UPDATE customers SET tags = array_append(tags, ${name}), updated_at = NOW()
        WHERE client_id = ${clientId} AND deleted_at IS NULL AND id IN (${Prisma.join(ids)})
          AND NOT EXISTS (SELECT 1 FROM UNNEST(tags) t WHERE lower(t) = ${key})
          AND cardinality(tags) < ${MAX_CUSTOMER_TAGS}`;
-    return { key, name, added };
+    // `already` and `full` are as they stood just before: someone adding at the same moment can move one between them.
+    return { key, name, added, alreadyIn: already, full, notFound: ids.length - found };
   },
 
   async removeMember(clientId: string, key: string, customerId: string) {
@@ -203,10 +216,9 @@ export const customerGroups = {
            WHERE client_id = ${clientId} AND EXISTS (SELECT 1 FROM UNNEST(customer_tags) t WHERE lower(t) = ${key})`;
         await tx.customerGroup.updateMany({ where: { clientId, key }, data: { name: finalName } });
       } else if (target) {
-        // Merged: the group merged INTO keeps its own rules.
-        const into = await tx.customerGroup.findUnique({ where: { clientId_key: { clientId, key: toKey } } });
-        if (into) await tx.customerGroup.deleteMany({ where: { clientId, key } });
-        else await tx.customerGroup.updateMany({ where: { clientId, key }, data: { key: toKey, name: finalName } });
+        // Merged: the group merged INTO keeps its own rules -- none, if it had none. The merged
+        // group's rules go with it rather than quietly changing who the target reaches.
+        await tx.customerGroup.deleteMany({ where: { clientId, key } });
       } else {
         await tx.customerGroup.updateMany({ where: { clientId, key }, data: { key: toKey, name: finalName } });
       }
@@ -246,11 +258,13 @@ export const customerGroups = {
         data.autoDays = days;
       }
     }
-    const row = await prisma.customerGroup.upsert({
+    const upsert = () => prisma.customerGroup.upsert({
       where: { clientId_key: { clientId, key } },
       create: { clientId, key, name, ...(data as any) },
       update: data
     });
+    // Two first saves at once both try to create; the loser finds the row on a second go.
+    const row = await upsert().catch((e: any) => { if (e?.code === 'P2002') return upsert(); throw e; });
     const joined = row.autoDays && row.autoMinSpend ? await autoJoinGroup(clientId, row) : 0;
     return { ...row, autoMinSpend: row.autoMinSpend === null ? null : Number(row.autoMinSpend), joined };
   }
@@ -268,7 +282,10 @@ async function autoJoinGroup(clientId: string, g: { name: string; autoMinSpend: 
   const since = new Date(now.getTime() - g.autoDays * 86_400_000);
   const spenders = await prisma.salesOrder.groupBy({
     by: ['customerId'],
-    where: { clientId, ...liveOrder, createdAt: { gte: since }, customer: { deletedAt: null, status: 'ACTIVE' } },
+    where: {
+      clientId, ...liveOrder, createdAt: { gte: since },
+      customer: { deletedAt: null, status: 'ACTIVE', OR: [{ externalCustomerId: null }, { externalCustomerId: { notIn: SHARED_CUSTOMERS } }] }
+    },
     _sum: { total: true },
     having: { total: { _sum: { gte: g.autoMinSpend } } }
   });
