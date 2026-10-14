@@ -13,7 +13,9 @@ router.use(tenantMiddleware);
 // "Forbidden" toast on EVERY page load and the Transfers page rendered empty location
 // dropdowns they could never submit. `dashboard:view` is held by all five seeded roles.
 // Creating/renaming/deleting locations stays admin-only below.
-router.get('/', requirePermission('dashboard:view'), getLocations);
+// Any signed-in member, whatever their role: a shop can make a role without dashboard:view (a
+// counter-only role), and every store picker in the app would come up empty for it.
+router.get('/', getLocations);
 router.post('/', requirePermission('admin:locations'), createLocation);
 router.put('/:id', requirePermission('admin:locations'), updateLocation);
 router.delete('/:id', requirePermission('admin:locations'), deleteLocation);

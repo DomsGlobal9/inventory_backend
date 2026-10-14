@@ -311,7 +311,7 @@ export class ReportService {
   async getDeadStock(clientId: string, thresholdDays: number = 90, locationId?: string) {
     const stockJoinFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
     const rawRows = await prisma.$queryRaw<any[]>`
-      SELECT v.id, v.sku, COALESCE(s.qty, 0) as quantity, COALESCE(s.qty, 0) * v.average_cost as inventory_value, v.last_movement_at, p.title as "productTitle", p.category
+      SELECT v.id, v.sku, p.id as "productId", COALESCE(s.qty, 0) as quantity, COALESCE(s.qty, 0) * v.average_cost as inventory_value, v.last_movement_at, p.title as "productTitle", p.category
       FROM "inventory_product_variants" v
       LEFT JOIN "inventory_products" p ON v.product_id = p.id
       LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id

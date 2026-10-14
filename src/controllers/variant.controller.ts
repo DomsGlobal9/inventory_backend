@@ -114,6 +114,15 @@ export class VariantController {
     try {
       const clientId = (req as any).clientId as string;
       const validatedData = parseBody(updateVariantSchema, req.body);
+      // The same rule as the bulk update above: what stock cost is cost:manage's, not product:update's.
+      // Without it one row at a time was the way round the permission the bulk path enforces.
+      if ((validatedData as any).costPrice !== undefined && !grants((req as any).user?.permissions || [], 'cost:manage')) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to set and restate what stock cost. Ask whoever manages your team.',
+          requiredPermission: 'cost:manage'
+        });
+      }
       const variant = await variantService.updateVariant(req.params.id as string, clientId, validatedData);
       res.status(200).json({ success: true, data: variant });
     } catch (error) {

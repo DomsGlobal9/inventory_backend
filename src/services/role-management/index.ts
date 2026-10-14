@@ -21,6 +21,7 @@
  * has been mis-configured.
  */
 import { prisma } from '../../lib/prisma';
+import { forgetClientIdentities } from '../../lib/identityCache';
 import {
   ALL_PERMISSION_KEYS, expandPermissions, getPermission, catalogueByGroup,
   WILDCARD_PERMISSION, holdsEverything, LEGACY_OWNER_ROLE_NAMES
@@ -214,6 +215,9 @@ export async function updateRole(
       }
     }
   });
+  // Everyone holding this role is served from the identity cache for up to 30s; drop the shop's
+  // entries so a permission taken away stops working now, and one given starts now.
+  forgetClientIdentities(actor.clientId);
 
   return { id: roleId };
 }
@@ -262,6 +266,7 @@ export async function deleteRole(actor: Actor, roleId: string) {
   }
 
   await prisma.role.delete({ where: { id: roleId } });
+  forgetClientIdentities(actor.clientId);
   return { id: roleId };
 }
 
