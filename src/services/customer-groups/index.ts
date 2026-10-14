@@ -161,6 +161,10 @@ export const customerGroups = {
              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM UNNEST(tags) t WHERE lower(t) = ${key})
                                 AND cardinality(tags) >= ${MAX_CUSTOMER_TAGS})::int AS full
         FROM customers WHERE client_id = ${clientId} AND deleted_at IS NULL AND id IN (${Prisma.join(ids)})`;
+    // Put in by hand: no longer "taken out by hand" for this group's spending rule.
+    await prisma.$executeRaw`
+      UPDATE customer_groups SET auto_excluded = ARRAY(SELECT x FROM UNNEST(auto_excluded) x WHERE x <> ALL(${ids}::text[]))
+       WHERE client_id = ${clientId} AND key = ${key} AND auto_excluded && ${ids}::text[]`;
     const added = await prisma.$executeRaw`
       UPDATE customers SET tags = array_append(tags, ${name}), updated_at = NOW()
        WHERE client_id = ${clientId} AND deleted_at IS NULL AND id IN (${Prisma.join(ids)})
@@ -177,6 +181,10 @@ export const customerGroups = {
        WHERE client_id = ${clientId} AND id = ${customerId}
          AND EXISTS (SELECT 1 FROM UNNEST(tags) t WHERE lower(t) = ${key})`;
     if (removed === 0) throw notFound('That customer is not in this group.');
+    // Remembered on the group (when it has a row), so its spending rule never puts them back.
+    await prisma.$executeRaw`
+      UPDATE customer_groups SET auto_excluded = array_append(auto_excluded, ${customerId})
+       WHERE client_id = ${clientId} AND key = ${key} AND NOT (${customerId} = ANY(auto_excluded))`;
     return { removed };
   },
 
@@ -276,8 +284,8 @@ function checkIds(raw: unknown): string[] {
   return [...new Set(raw as string[])];
 }
 
-/** Adds everyone who now meets one group's spending rule. Never takes anybody out. */
-async function autoJoinGroup(clientId: string, g: { name: string; autoMinSpend: Prisma.Decimal | null; autoDays: number | null }, now = new Date()) {
+/** Adds everyone who now meets one group's spending rule -- except anyone taken out by hand. Never takes anybody out. */
+async function autoJoinGroup(clientId: string, g: { name: string; autoMinSpend: Prisma.Decimal | null; autoDays: number | null; autoExcluded?: string[] }, now = new Date()) {
   if (!g.autoMinSpend || !g.autoDays) return 0;
   const since = new Date(now.getTime() - g.autoDays * 86_400_000);
   const spenders = await prisma.salesOrder.groupBy({
@@ -289,7 +297,8 @@ async function autoJoinGroup(clientId: string, g: { name: string; autoMinSpend: 
     _sum: { total: true },
     having: { total: { _sum: { gte: g.autoMinSpend } } }
   });
-  const ids = spenders.map(s => s.customerId).filter((id): id is string => !!id);
+  const skip = new Set(g.autoExcluded ?? []);
+  const ids = spenders.map(s => s.customerId).filter((id): id is string => !!id && !skip.has(id));
   let added = 0;
   for (let i = 0; i < ids.length; i += MAX_IDS) {
     added += (await customerGroups.addMembers(clientId, g.name, ids.slice(i, i + MAX_IDS))).added;

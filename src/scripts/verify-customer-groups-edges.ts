@@ -239,8 +239,12 @@ async function main() {
   check('exactly the amount counts; cancelled, deleted, older, inactive, deleted-customer, walk-in, guest and full do not', JSON.stringify(inVip) === '["Exactly 50k"]' && res.joined === 1, { inVip, joined: res.joined });
   check('the shared walk-in row is never made a VIP, whatever it "spent"', !(await tagsOf(walkIn.id)).length && !(await tagsOf(guest.id)).length);
   check('the full customer was skipped without an error, still at 20', (await tagsOf(full.id)).length === 20);
-  await prisma.customer.update({ where: { id: exact.id }, data: { tags: [] } });
-  check('taken out by hand, the hourly run puts them back while they still qualify (the rule is the rule)', (await runGroupAutoJoin(new Date(), { onlyClients: [T] })) === 1);
+  await customerGroups.removeMember(T, 'vip', exact.id);
+  check('taken out by hand: the hourly run does NOT put them back, though they still qualify', (await runGroupAutoJoin(new Date(), { onlyClients: [T] })) === 0 && !(await tagsOf(exact.id)).includes('VIP'));
+  check('...and saving the rule again does not either', (await customerGroups.setRules(T, 'vip', { autoMinSpend: 50000, autoDays: 30 })).joined === 0);
+  await customerGroups.addMembers(T, 'VIP', [exact.id]);
+  await prisma.customer.update({ where: { id: exact.id }, data: { tags: [] } });   // gone some other way (e.g. the customer page)
+  check('put back by hand, they count as normal again: the rule re-adds them if they drop out another way', (await runGroupAutoJoin(new Date(), { onlyClients: [T] })) === 1);
 
   console.log('\nH. WHATSAPP RULES (throwaway shop)');
   const today = localDayKey(new Date(), 'Asia/Kolkata').slice(5);

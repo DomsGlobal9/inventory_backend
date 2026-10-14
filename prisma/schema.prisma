@@ -1167,6 +1167,9 @@ model CustomerGroup {
   /// once a day. Both set or both null. Only ever adds: nobody is taken out of a group by a rule.
   autoMinSpend Decimal? @map("auto_min_spend") @db.Decimal(12, 2)
   autoDays     Int?     @map("auto_days")
+  /// Customers somebody took out of this group by hand. The spending rule never puts them back;
+  /// adding them by hand again takes them off this list.
+  autoExcluded String[] @default([]) @map("auto_excluded")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
