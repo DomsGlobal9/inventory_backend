@@ -17,7 +17,8 @@ import { localDayKey } from '../../utils/businessDay';
 import {
   birthdayKeysFor, DEFAULT_ANNIVERSARY_TEXT, DEFAULT_BIRTHDAY_TEXT, getSettings, giveBirthdayPoints, lapseQuietPoints
 } from '../loyalty';
-import { reachable } from './audience';
+import { reachable, offerReachable } from './audience';
+import { quietFilter } from '../customer-groups';
 import { localHour, SEND_FROM_HOUR } from './sender';
 
 const DAY = 86_400_000;
@@ -76,8 +77,10 @@ export async function prepareShopDay(clientId: string, now = new Date(), opts: {
     for (const c of born) if ((await giveBirthdayPoints(clientId, c.id, year).catch(() => null)) !== null) out.birthdayPoints += 1;
   }
 
+  const wishable = await quietFilter(clientId, 'wishes').then(q => q ? { AND: [reachable(clientId), q] } : reachable(clientId));
+
   if (s.birthdayWish) {
-    const ids = (await prisma.customer.findMany({ where: { ...reachable(clientId), birthday: { in: todays } }, select: { id: true } })).map(c => c.id);
+    const ids = (await prisma.customer.findMany({ where: { AND: [wishable, { birthday: { in: todays } }] }, select: { id: true } })).map(c => c.id);
     const gift = s.enabled && s.birthdayPoints > 0
       ? `\n\nWe have added ${s.birthdayPoints.toLocaleString('en-IN')} points to your account as a gift. You now have {points} points.`
       : '';
@@ -85,7 +88,7 @@ export async function prepareShopDay(clientId: string, now = new Date(), opts: {
   }
 
   if (s.anniversaryWish) {
-    const ids = (await prisma.customer.findMany({ where: { ...reachable(clientId), anniversary: { in: todays } }, select: { id: true } })).map(c => c.id);
+    const ids = (await prisma.customer.findMany({ where: { AND: [wishable, { anniversary: { in: todays } }] }, select: { id: true } })).map(c => c.id);
     if (await makeCampaign(clientId, 'ANNIVERSARY', `Anniversary wishes, ${shortDate(day)}`, s.anniversaryText || DEFAULT_ANNIVERSARY_TEXT, ids, s.anniversaryMediaId ?? null)) out.anniversaries = ids.length;
   }
 
@@ -96,7 +99,7 @@ export async function prepareShopDay(clientId: string, now = new Date(), opts: {
     from.setMonth(from.getMonth() - s.expiryMonths);
     const to = new Date(from.getTime() + DAY);
     const ids = (await prisma.customer.findMany({
-      where: { ...reachable(clientId), loyaltyPoints: { gt: 0 }, loyaltyActiveAt: { gte: from, lt: to } }, select: { id: true }
+      where: { AND: [await offerReachable(clientId), { loyaltyPoints: { gt: 0 }, loyaltyActiveAt: { gte: from, lt: to } }] }, select: { id: true }
     })).map(c => c.id);
     const lapseDay = shortDate(localDayKey(new Date(now.getTime() + 7 * DAY), timezone));
     const text = `Hello {name}, your {points} points at {shop} (worth {points_value}) lapse on ${lapseDay}. Visit us before then to use them on your next purchase.`;

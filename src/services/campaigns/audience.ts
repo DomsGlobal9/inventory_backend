@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest } from '../../utils/httpError';
 import { normaliseTags } from '../offers/rules';
+import { quietFilter } from '../customer-groups';
 
 export interface Audience {
   /** In any of these customer groups (VIP, WHOLESALE...). */
@@ -101,8 +102,14 @@ export async function recentlyOffered(clientId: string, now = new Date(), opts: 
 }
 
 /** The customer filter for an audience, at this moment. `base` is who it may reach at all. */
-export async function whereFor(clientId: string, a: Audience, now = new Date(), base: Prisma.CustomerWhereInput = reachable(clientId)): Promise<Prisma.CustomerWhereInput> {
-  const and: Prisma.CustomerWhereInput[] = [base];
+/** Everyone a campaign may reach: reachable, and not in a group that gets no offer messages. */
+export async function offerReachable(clientId: string): Promise<Prisma.CustomerWhereInput> {
+  const quiet = await quietFilter(clientId, 'offers');
+  return quiet ? { AND: [reachable(clientId), quiet] } : reachable(clientId);
+}
+
+export async function whereFor(clientId: string, a: Audience, now = new Date(), base?: Prisma.CustomerWhereInput): Promise<Prisma.CustomerWhereInput> {
+  const and: Prisma.CustomerWhereInput[] = [base ?? await offerReachable(clientId)];
   if (a.customerIds) and.push({ id: { in: a.customerIds } });
   if (a.tags?.length) {
     // Groups keep the spelling they were first given ("vip" and "VIP" are one group), so match every
@@ -142,7 +149,8 @@ export async function whereFor(clientId: string, a: Audience, now = new Date(), 
 export async function preview(clientId: string, a: Audience, now = new Date()) {
   const where = await whereFor(clientId, a, now);
   const chosen = await whereFor(clientId, a, now, everyone(clientId));
-  const [count, sample, withPhone, agreed, matched, noPhone, stopped, notAgreed, reachIds] = await Promise.all([
+  const quiet = await quietFilter(clientId, 'offers');
+  const [count, sample, withPhone, agreed, matched, noPhone, stopped, notAgreed, reachIds, inQuietGroup] = await Promise.all([
     prisma.customer.count({ where }),
     prisma.customer.findMany({ where, take: 5, orderBy: { name: 'asc' }, select: { id: true, name: true, loyaltyPoints: true } }),
     prisma.customer.count({ where: { clientId, deletedAt: null, phone: { not: null } } }),
@@ -151,7 +159,9 @@ export async function preview(clientId: string, a: Audience, now = new Date()) {
     prisma.customer.count({ where: { AND: [chosen, { phone: null }] } }),
     prisma.customer.count({ where: { AND: [chosen, { phone: { not: null } }, { whatsappStoppedAt: { not: null } }] } }),
     prisma.customer.count({ where: { AND: [chosen, { phone: { not: null } }, { whatsappStoppedAt: null }, { whatsappOffers: false }] } }),
-    prisma.customer.findMany({ where, select: { id: true }, take: 20_000 })
+    prisma.customer.findMany({ where, select: { id: true }, take: 20_000 }),
+    // Agreed and reachable, but in a group the shop said gets no offer messages.
+    quiet ? prisma.customer.count({ where: { AND: [chosen, reachable(clientId), { NOT: quiet }] } }) : Promise.resolve(0)
   ]);
   const recent = await recentlyOffered(clientId, now, { customerIds: reachIds.map(r => r.id) });
   return {
@@ -161,6 +171,7 @@ export async function preview(clientId: string, a: Audience, now = new Date()) {
       noPhone,
       stopped,
       notAgreed,
+      inQuietGroup,
       reachable: count,
       /** Had an offer in the last 72 hours: skipped if it is still within 72 hours when their turn comes. */
       recentOffer: recent.size,

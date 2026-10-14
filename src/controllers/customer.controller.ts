@@ -58,7 +58,8 @@ export const getCustomers = async (req: Request, res: Response) => {
     const clientId = (req as any).clientId as string;
     const filters = {
       search: req.query.search,
-      status: req.query.status
+      status: req.query.status,
+      group: typeof req.query.group === 'string' ? req.query.group : undefined
     };
     const customers = await customerService.getCustomers(clientId, filters);
     res.json(customers);

@@ -32,6 +32,7 @@ import { getSettings as loyaltySettings, rupeesOf, valueOf } from '../loyalty';
 import { render } from './message';
 import { markStopped } from './consent';
 import { recentlyOffered } from './audience';
+import { quietGroupOf } from '../customer-groups';
 import { links } from '../links';
 import type { Snapshot } from './campaign.service';
 
@@ -127,6 +128,7 @@ async function runShop(clientId: string, campaignIds: string[], now: Date, ignor
     const imageUrl = snap?.media?.url ?? null;
     const hasLink = !!snap?.link;
     const offer = campaign.source === 'MANUAL';
+    const wishes = campaign.source === 'BIRTHDAY' || campaign.source === 'ANNIVERSARY';
     const next = await prisma.campaignRecipient.findMany({
       // A few spare, so customers skipped on the way do not leave the room unused.
       where: { campaignId, state: 'WAITING' }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: room + 20, select: { id: true, customerId: true, linkCode: true }
@@ -141,14 +143,16 @@ async function runShop(clientId: string, campaignIds: string[], now: Date, ignor
       // Checked again now, not when the campaign started: they may have said STOP since.
       const c = await prisma.customer.findFirst({
         where: { id: r.customerId, clientId },
-        select: { name: true, phone: true, deletedAt: true, status: true, whatsappOffers: true, whatsappStoppedAt: true, loyaltyPoints: true }
+        select: { name: true, phone: true, deletedAt: true, status: true, whatsappOffers: true, whatsappStoppedAt: true, loyaltyPoints: true, tags: true }
       });
+      const quietIn = c && !c.deletedAt ? await quietGroupOf(clientId, c.tags, wishes ? 'wishes' : 'offers') : null;
       const skip: [string, string] | null = !c || c.deletedAt ? ['DELETED', 'The customer was deleted.']
         : c.whatsappStoppedAt ? ['OPTED_OUT', 'The customer replied STOP.']
         : !c.whatsappOffers ? ['NO_CONSENT', 'The customer no longer agrees to offers.']
         : !c.phone ? ['NO_PHONE', 'The customer has no phone number.']
         : c.status !== 'ACTIVE' ? ['INACTIVE', 'The customer is not active.']
         : offeredRecently.has(r.customerId) ? ['RECENT_OFFER', 'Had an offer from the shop in the last 3 days.']
+        : quietIn ? ['QUIET_GROUP', `In the ${quietIn} group, which gets no ${wishes ? 'wishes' : 'offer messages'}.`]
         : null;
       if (skip) {
         await prisma.campaignRecipient.update({ where: { id: r.id }, data: { state: 'SKIPPED', skipCode: skip[0], skipReason: skip[1], handedAt: null } });

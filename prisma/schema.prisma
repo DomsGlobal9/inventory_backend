@@ -1147,6 +1147,34 @@ model DailyInventorySnapshot {
 
 // --- SALES ENGINE (PHASE 2) ---
 
+/// A customer group's own settings. Membership is NOT here: it stays in customers.tags, which offers,
+/// campaigns and the till already read. A group in use needs no row; a row exists once the shop gives
+/// it a rule (or makes it before anyone is in it). Matched case-insensitively by `key`.
+model CustomerGroup {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+  /// As the shop spells it, and the spelling written onto customers.tags.
+  name String
+  /// name in lower case: "vip" and "VIP" are one group.
+  key  String
+
+  /// Campaigns and the points-expiry reminder skip members. Bills and the after-sale points note still go.
+  noOfferMessages Boolean @default(false) @map("no_offer_messages")
+  /// Birthday and anniversary wishes skip members.
+  noWishes        Boolean @default(false) @map("no_wishes")
+
+  /// Auto-join: a customer who spent at least autoMinSpend rupees in the last autoDays days is added,
+  /// once a day. Both set or both null. Only ever adds: nobody is taken out of a group by a rule.
+  autoMinSpend Decimal? @map("auto_min_spend") @db.Decimal(12, 2)
+  autoDays     Int?     @map("auto_days")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, key])
+  @@map("customer_groups")
+}
+
 enum CustomerStatus {
   ACTIVE
   INACTIVE

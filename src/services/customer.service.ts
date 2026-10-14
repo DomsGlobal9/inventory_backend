@@ -6,6 +6,7 @@ import { generateSequentialCode, generateFreeSequentialCode } from '../utils/cod
 import { notFound, badRequest } from '../utils/httpError';
 import { normalisePhone, phoneSearchDigits } from '../lib/phone';
 import { CustomerStatus, Prisma } from '@prisma/client';
+import { spellingsOf, keyOf } from './customer-groups';
 
 type Tx = Prisma.TransactionClient;
 
@@ -238,6 +239,11 @@ export class CustomerService {
 
     if (filters.status) {
       where.status = filters.status;
+    }
+
+    // A group, any spelling of it ("vip" and "VIP" are one group).
+    if (filters.group) {
+      where.tags = { hasSome: await spellingsOf(clientId, [keyOf(String(filters.group))]) };
     }
 
     return prisma.customer.findMany({
