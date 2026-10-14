@@ -5,6 +5,9 @@ import { forgetIdentity } from '../lib/identityCache';
 import { encryptCredential, decryptCredential } from '../lib/credentialEncryption';
 import { buildUnifiedAuditFeed } from './audit-feed.service';
 import { mailService } from './mail.service';
+import { normalisePhone } from '../lib/phone';
+import { getShopSettings } from '../lib/clientSettings';
+import { env } from '../config/env';
 import { expandPermissions, getPermission, WILDCARD_PERMISSION } from '../config/permissions';
 
 /**
@@ -48,7 +51,7 @@ export class TeamService {
     return prisma.user.findMany({
       where: { clientId },
       select: {
-        id: true, name: true, email: true, status: true, lastActiveAt: true, lastLoginAt: true, createdAt: true,
+        id: true, name: true, email: true, phone: true, status: true, lastActiveAt: true, lastLoginAt: true, createdAt: true,
         roles: { select: { role: { select: { id: true, name: true } } } }
       },
       orderBy: { createdAt: 'asc' }
@@ -99,8 +102,9 @@ export class TeamService {
   }
 
   async inviteMember(params: {
-    clientId: string; name: string; email: string; roleId: string; customPassword?: string; requesterIsSuperAdmin: boolean; requesterPermissions?: string[];
+    clientId: string; name: string; email: string; roleId: string; customPassword?: string; phone?: unknown; requesterIsSuperAdmin: boolean; requesterPermissions?: string[];
   }) {
+    const phone = memberPhone(params.phone);
     const role = await prisma.role.findUnique({ where: { id: params.roleId } });
     if (!role || role.clientId !== params.clientId) {
       throw Object.assign(new Error('Role not found'), { statusCode: 404 });
@@ -130,7 +134,7 @@ export class TeamService {
     ]);
 
     const user = await prisma.user.create({
-      data: { clientId: params.clientId, name: params.name, email: params.email, password: hashed, passwordEncrypted, status: 'ACTIVE' }
+      data: { clientId: params.clientId, name: params.name, email: params.email, password: hashed, passwordEncrypted, status: 'ACTIVE', ...(phone ? { phone } : {}) }
     });
     await prisma.userRole.create({ data: { userId: user.id, roleId: role.id } });
 
@@ -145,7 +149,7 @@ export class TeamService {
     });
 
     return {
-      id: user.id, name: user.name, email: user.email, role: role.name, password: finalPassword,
+      id: user.id, name: user.name, email: user.email, phone: user.phone, role: role.name, password: finalPassword,
       emailed: delivery.sent, emailReason: delivery.reason
     };
   }
@@ -290,6 +294,59 @@ export class TeamService {
     return { id: target.id, email: target.email, sent: true };
   }
 
+  /**
+   * Sends a team member their login on WhatsApp, FROM THE SHOP'S OWN NUMBER, to their mobile.
+   *
+   * The same disclosure as emailing it (resendCredentials), so the same guard: an Admin cannot do
+   * this to a Super Admin's account. A number typed here is saved on the person for next time.
+   * `nonce` is one press of the button: pressing twice by accident sends once.
+   */
+  async sendCredentialsWhatsApp(params: { clientId: string; userId: string; phone?: unknown; nonce?: unknown; sentBy: string; requesterIsSuperAdmin: boolean; requesterPermissions?: string[] }) {
+    await this.assertCanManageTarget(params.clientId, params.userId, params.requesterIsSuperAdmin, params.requesterPermissions);
+    const target = await prisma.user.findFirst({
+      where: { id: params.userId, clientId: params.clientId },
+      include: { roles: { include: { role: true } } }
+    });
+    if (!target) throw Object.assign(new Error('Team member not found'), { statusCode: 404 });
+    if (!target.passwordEncrypted) {
+      throw Object.assign(new Error('No password on file to send for this account -- set a new one instead'), { statusCode: 404 });
+    }
+    const typed = params.phone === undefined || params.phone === null || params.phone === '' ? null : memberPhone(params.phone);
+    const phone = typed ?? target.phone;
+    if (!phone) throw Object.assign(new Error(`Add ${target.name}'s mobile number to send their login on WhatsApp.`), { statusCode: 400 });
+    if (typed && typed !== target.phone) {
+      await prisma.user.update({ where: { id: target.id }, data: { phone: typed } });
+      forgetIdentity(target.id);
+    }
+
+    // Imported here: the WhatsApp module reaches back into customers and campaigns.
+    const { sendShopText, shopNumber } = await import('./whatsapp/service');
+    const account = await shopNumber(params.clientId).catch(() => null);
+    if (!account || account.status !== 'CONNECTED') {
+      throw Object.assign(new Error("Your shop's WhatsApp is not connected, so nothing was sent. Connect it in Settings → WhatsApp, or use Copy."), { statusCode: 409 });
+    }
+    const { businessName } = await getShopSettings(params.clientId);
+    const role = target.roles[0]?.role.name;
+    const text = [
+      `Hello ${target.name},`,
+      '',
+      `You have been added to ${businessName || 'our shop'} on ScaleEzy Inventory${role ? ` as ${role}` : ''}.`,
+      '',
+      `Email: ${target.email}`,
+      `Password: ${decryptCredential(target.passwordEncrypted)}`,
+      '',
+      `Sign in: ${env.FRONTEND_URL.replace(/\/$/, '')}/login`,
+      '',
+      'Please keep this password to yourself.'
+    ].join('\n');
+    const nonce = typeof params.nonce === 'string' && params.nonce ? params.nonce.slice(0, 64) : String(Date.now());
+    await sendShopText({
+      clientId: params.clientId, to: phone, text, kind: 'TEAM_LOGIN', referenceId: target.id,
+      idempotencyKey: `TEAM_LOGIN:${target.id}:${nonce}`, sentBy: params.sentBy
+    });
+    return { id: target.id, sent: true, to: phone };
+  }
+
   // Sets a permanent password (auto-generated or admin-chosen) -- replaces the old
   // "temporary password that forces a reset" model entirely, per product decision: staff
   // never change their own password, so there's nothing to invalidate it early.
@@ -325,3 +382,11 @@ export class TeamService {
 }
 
 export const teamService = new TeamService();
+
+/** A team member's mobile, stored the one way the app stores numbers; refused in words. */
+function memberPhone(raw: unknown): string | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const r = normalisePhone(raw);
+  if (!r.ok) throw Object.assign(new Error(r.reason.replace("the customer's", 'their')), { statusCode: 400 });
+  return r.value;
+}

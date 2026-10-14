@@ -5,8 +5,9 @@ import { customerGroups } from '../services/customer-groups';
 import { respondWithError } from '../utils/respondWithError';
 
 /**
- * Settings → Customer groups. Looking needs customer:view; anything that changes a group, or who
- * gets WhatsApp messages, needs customer:update -- the same as the Groups card on a customer.
+ * Settings → Customer groups. Looking needs customer:view. Putting customers in or out of a group
+ * needs customer:update -- the same as the Groups card on a customer. What a group means (its
+ * WhatsApp rules, joining by spending, its name, merging, deleting) needs customer:manage_groups.
  */
 const router = Router();
 router.use(tenantMiddleware);
@@ -22,14 +23,14 @@ const cid = (req: Request) => (req as any).clientId as string;
 const key = (req: Request) => String(req.params.key ?? '').trim().toLowerCase();
 
 router.get('/', requirePermission('customer:view'), act(req => customerGroups.list(cid(req))));
-router.post('/', requirePermission('customer:update'), act(req => customerGroups.create(cid(req), req.body?.name)));
+router.post('/', requirePermission('customer:manage_groups'), act(req => customerGroups.create(cid(req), req.body?.name)));
 // By name, so the customers list can add to a brand-new group in one step.
 router.post('/members', requirePermission('customer:update'), act(req => customerGroups.addMembers(cid(req), req.body?.group, req.body?.customerIds)));
 router.get('/:key/members', requirePermission('customer:view'), act(req => customerGroups.members(cid(req), key(req))));
 router.delete('/:key/members/:customerId', requirePermission('customer:update'), act(req => customerGroups.removeMember(cid(req), key(req), String(req.params.customerId))));
-router.post('/:key/rename', requirePermission('customer:update'), act(req => customerGroups.rename(cid(req), key(req), req.body?.name)));
-router.post('/:key/merge', requirePermission('customer:update'), act(req => customerGroups.rename(cid(req), key(req), req.body?.into, { merge: true })));
-router.patch('/:key/rules', requirePermission('customer:update'), act(req => customerGroups.setRules(cid(req), key(req), req.body)));
-router.delete('/:key', requirePermission('customer:update'), act(req => customerGroups.remove(cid(req), key(req))));
+router.post('/:key/rename', requirePermission('customer:manage_groups'), act(req => customerGroups.rename(cid(req), key(req), req.body?.name)));
+router.post('/:key/merge', requirePermission('customer:manage_groups'), act(req => customerGroups.rename(cid(req), key(req), req.body?.into, { merge: true })));
+router.patch('/:key/rules', requirePermission('customer:manage_groups'), act(req => customerGroups.setRules(cid(req), key(req), req.body)));
+router.delete('/:key', requirePermission('customer:manage_groups'), act(req => customerGroups.remove(cid(req), key(req))));
 
 export default router;

@@ -3,7 +3,8 @@ import { requirePermission } from '../middleware/permission.middleware';
 import {
   listMembers, listRoles, listActivity, listSecurityEvents, inviteMember, updateMemberRole, setMemberStatus,
   viewMemberPassword,
-  resendMemberCredentials, setMemberPassword
+  resendMemberCredentials,
+  sendMemberCredentialsWhatsApp, setMemberPassword
 } from '../controllers/team.controller';
 
 const router = Router();
@@ -29,6 +30,7 @@ router.post('/members/:id/password/view', requirePermission('team:view_password'
 // Sends the EXISTING login again -- the alternative when a message goes missing is changing
 // the password, which breaks it for anyone already using it to solve a delivery problem.
 router.post('/members/:id/credentials/resend', resendMemberCredentials);
+router.post('/members/:id/credentials/whatsapp', sendMemberCredentialsWhatsApp);
 router.post('/members/:id/password', setMemberPassword);
 
 export default router;

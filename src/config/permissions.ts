@@ -167,6 +167,9 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'customer:view',   group: 'Selling', label: 'See customers' },
   { key: 'customer:create', group: 'Selling', label: 'Add a customer',    implies: ['customer:view'] },
   { key: 'customer:update', group: 'Selling', label: 'Change a customer', implies: ['customer:view'] },
+  // Putting a customer in a group stays customer:update (the customer page always allowed it). What a
+  // group MEANS -- who it keeps out of WhatsApp offers, who joins it by spending, its name -- is this.
+  { key: 'customer:manage_groups', group: 'Selling', label: 'Manage customer groups: their WhatsApp rules, renaming, merging and deleting', implies: ['customer:update'] },
 
   // Loyalty and campaigns. Earning and spending points at the counter needs nothing extra: whoever
   // may take the sale may take points as payment. Setting the rules changes what every sale gives

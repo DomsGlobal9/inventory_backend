@@ -22,7 +22,7 @@ export const RBAC_DATA = {
         'dispatch:create',
         'return:create', 'return:receive', 'return:inspect', 'return:complete',
         'inventory:receive', 'inventory:adjust', 'inventory:transfer',
-        'customer:create', 'customer:update',
+        'customer:create', 'customer:update', 'customer:manage_groups',
         'product:create', 'product:update', 'product:delete',
         'supplier:create', 'supplier:update', 'supplier:delete',
         'purchase_order:create', 'purchase_order:update', 'purchase_order:receive',

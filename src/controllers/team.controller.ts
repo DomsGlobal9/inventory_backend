@@ -67,13 +67,13 @@ export const listSecurityEvents = async (req: Request, res: Response) => {
 export const inviteMember = async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
-    const { name, email, roleId, customPassword } = req.body;
+    const { name, email, roleId, customPassword, phone } = req.body;
     if (!name || !email || !roleId) {
       return res.status(400).json({ success: false, message: 'name, email, and roleId are required' });
     }
 
     const result = await teamService.inviteMember({
-      clientId: user.clientId, name, email, roleId, customPassword, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
+      clientId: user.clientId, name, email, roleId, customPassword, phone, requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
     });
     // The new person's id, so the Security log can say who was added. The path carries none.
     res.locals.auditEntityId = result.id;
@@ -189,6 +189,20 @@ export const setMemberPassword = async (req: Request, res: Response) => {
  * and causes a side effect, so it belongs in the audit log rather than in a link someone can
  * prefetch.
  */
+export const sendMemberCredentialsWhatsApp = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const result = await teamService.sendCredentialsWhatsApp({
+      clientId: user.clientId, userId: req.params.id as string, phone: req.body?.phone, nonce: req.body?.nonce, sentBy: user.id,
+      requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: user?.permissions ?? []
+    });
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    // Refusals here carry a statusCode and words for a person (not connected, no number, a bad number).
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'The login could not be sent on WhatsApp.' });
+  }
+};
+
 export const resendMemberCredentials = async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;

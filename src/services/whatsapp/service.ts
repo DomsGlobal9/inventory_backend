@@ -42,12 +42,15 @@ export type SendKind = 'PURCHASE_ORDER' | 'GOODS_RECEIPT' | 'BILL' | 'RETURN_NOT
 export const SEND_KINDS: readonly SendKind[] = ['PURCHASE_ORDER', 'GOODS_RECEIPT', 'BILL', 'RETURN_NOTE'];
 
 /** The service's own message kinds (PLAN-whatsapp.md section 4). */
-const SERVICE_KIND: Record<SendKind | 'DAY_BOOK' | 'TEST' | 'DISCONNECTED' | 'CAMPAIGN' | 'LOYALTY' | 'ORDER_UPDATE', string> = {
+const SERVICE_KIND: Record<SendKind | 'DAY_BOOK' | 'TEST' | 'DISCONNECTED' | 'CAMPAIGN' | 'LOYALTY' | 'ORDER_UPDATE' | 'TEAM_LOGIN', string> = {
   PURCHASE_ORDER: 'C1', BILL: 'C2', GOODS_RECEIPT: 'C3', RETURN_NOTE: 'C5', DAY_BOOK: 'S6', DISCONNECTED: 'S4', TEST: 'TEST',
   CAMPAIGN: 'C8', LOYALTY: 'C9',
   // C4 in PLAN-whatsapp.md: "send order update -- confirmed / sent". Already accepted by the
   // WhatsApp Service, so an online shop's order confirmation needed no new code and no new deploy.
-  ORDER_UPDATE: 'C4'
+  ORDER_UPDATE: 'C4',
+  // S2 in PLAN-whatsapp.md, team member login details. Sent from the shop's own number; the
+  // WhatsApp Service already accepts S2, so it needs no service deploy.
+  TEAM_LOGIN: 'S2'
 };
 
 /** What allowed the same document on paper allows it on WhatsApp. */
@@ -317,7 +320,7 @@ export async function sendDocument(actor: Actor, input: { kind: unknown; id: unk
  * times this is retried.
  */
 export async function sendShopText(input: {
-  clientId: string; to: string; text: string; kind: 'CAMPAIGN' | 'LOYALTY' | 'ORDER_UPDATE'; referenceId: string | null;
+  clientId: string; to: string; text: string; kind: 'CAMPAIGN' | 'LOYALTY' | 'ORDER_UPDATE' | 'TEAM_LOGIN'; referenceId: string | null;
   idempotencyKey: string; sentBy: string | null;
   /** A picture above the words (its address in ScaleEzy's picture storage). */
   imageUrl?: string | null;
