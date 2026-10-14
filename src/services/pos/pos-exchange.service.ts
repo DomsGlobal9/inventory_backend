@@ -267,6 +267,8 @@ export async function applyExchange(
     }
   }
   warnings.push(...saleWarnings);
+  // Said after the till's round-off, the amount the customer actually handed over or got back.
+  const net = difference + Math.round(Number(event.totals?.roundOffPaise ?? 0) || 0);
   return {
     answer: 'APPLIED',
     orderNumber: made.orderNumber,
@@ -274,8 +276,8 @@ export async function applyExchange(
     detail:
       `${exchangeNo}: ${made.returnNumber} back against ${order.orderNumber}, ` +
       `${made.orderNumber} out. ` +
-      (difference > 0 ? `${(difference / 100).toFixed(2)} paid by the customer.`
-        : difference < 0 ? `${(Math.abs(difference) / 100).toFixed(2)} given back.`
+      (net > 0 ? `${(net / 100).toFixed(2)} paid by the customer.`
+        : net < 0 ? `${(Math.abs(net) / 100).toFixed(2)} given back.`
           : 'An even swap: no money moved.')
   };
 }
