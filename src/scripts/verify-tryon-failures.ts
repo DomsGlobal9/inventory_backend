@@ -84,6 +84,22 @@ async function main() {
   const top = list.lastDay.topReasons[0];
   check('the same reason with different request numbers groups as one top reason', !!top && /429/.test(top.reason) && top.count >= 5, list.lastDay.topReasons);
 
+  console.log('\nD2. COLOUR PHOTOS ARE NAMED AS SUCH, AND THE MENU CAN ASK FOR ONE ROW');
+  // A real job row so the list can look its kind up. FAILED, so no worker anywhere will claim it.
+  // productId must be a real product; the demo help-shop lends one. The job stays under the
+  // throwaway shop id, so no shop's screen lists it, and it is deleted at the end.
+  const lent = await prisma.product.findFirst({ where: { clientId: 'lakshmi-silks-demo-helpshop-1791264977589' }, select: { id: true } });
+  const colourJob = await prisma.photoJob.create({ data: { ...job, productId: lent!.id, id: undefined, kind: 'COLOUR', status: 'FAILED', jobKey: 'colour-Red', createdAt: undefined, updatedAt: undefined } as any });
+  recordTryOnFailure({ clientId: T, service: 'CATALOG_TRYON', place: 'PHOTO_JOB', code: 'STUDIO_ERROR', error: 'colour run failed', jobId: colourJob.id });
+  await settle();
+  const withKind = await listTryOnFailures({ clientId: T, days: 1 });
+  check('a failed colour job comes back as jobKind COLOUR', withKind.rows.find(r => r.jobId === colourJob.id)?.jobKind === 'COLOUR', withKind.rows.find(r => r.jobId === colourJob.id));
+  check('...and a failure whose job was never saved has jobKind null, not an error', withKind.rows.filter(r => r.jobId && r.jobId !== colourJob.id).every(r => r.jobKind === null));
+  const one = await listTryOnFailures({ clientId: T, days: 1, limit: 1 });
+  check('limit 1 returns one row, and the outage still counts every failure', one.rows.length === 1 && (one.outage?.failures ?? 0) >= 5, { rows: one.rows.length, outage: one.outage });
+  const bad = await listTryOnFailures({ clientId: T, days: 1, limit: -5 });
+  check('a negative limit is treated as at least one row, newest first', bad.rows.length >= 1 && bad.rows[0].createdAt >= bad.rows[bad.rows.length - 1].createdAt, bad.rows.length);
+
   console.log('\nE. RECORDING NEVER THROWS');
   const circular: any = {}; circular.self = circular;
   let threw = false;
@@ -97,6 +113,7 @@ async function main() {
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {
   await prisma.tryOnFailure.deleteMany({ where: { clientId: T } });
+  await prisma.photoJob.deleteMany({ where: { clientId: T } }).catch(() => {});
   await prisma.clientServiceCredential.deleteMany({ where: { clientId: T } });
   await prisma.clientServiceLimit.deleteMany({ where: { clientId: T } });
   await prisma.tryOnUsage.deleteMany({ where: { clientId: T } }).catch(() => {});

@@ -79,7 +79,7 @@ consoleRouter.get('/client-errors', listClientErrors);
 consoleRouter.get('/tryon-failures', async (req, res, next) => {
   try {
     const q = req.query as Record<string, string | undefined>;
-    res.json({ success: true, data: await listTryOnFailures({ service: q.service || undefined, clientId: q.clientId || undefined, days: Number(q.days) || 7 }) });
+    res.json({ success: true, data: await listTryOnFailures({ service: q.service || undefined, clientId: q.clientId || undefined, days: Number(q.days) || 7, limit: Number(q.limit) || undefined }) });
   } catch (e) { next(e); }
 });
 // Offers and Shopify across every shop: copies failing, orders waiting, codes run out. Read only.

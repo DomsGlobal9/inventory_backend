@@ -73,7 +73,7 @@ export async function listTryOnFailures(opts: { service?: string; clientId?: str
   };
   const hourAgo = new Date(now.getTime() - 3_600_000), dayAgo = new Date(now.getTime() - 86_400_000);
   const [rows, lastDay, lastHour] = await Promise.all([
-    prisma.tryOnFailure.findMany({ where, orderBy: { createdAt: 'desc' }, take: Math.min(Number(opts.limit) || 200, 500) }),
+    prisma.tryOnFailure.findMany({ where, orderBy: { createdAt: 'desc' }, take: Math.min(Math.max(Math.floor(Number(opts.limit)) || 200, 1), 500) }),
     prisma.tryOnFailure.findMany({ where: { createdAt: { gte: dayAgo } }, select: { service: true, clientId: true, httpStatus: true, code: true, error: true } }),
     prisma.tryOnFailure.findMany({ where: { createdAt: { gte: hourAgo } }, select: { clientId: true, httpStatus: true, code: true, error: true } })
   ]);
@@ -84,8 +84,11 @@ export async function listTryOnFailures(opts: { service?: string; clientId?: str
     return [...m].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([reason, n]) => ({ reason, count: n }));
   };
   const shopsLastHour = new Set(lastHour.map(r => r.clientId)).size;
+  // Colour photos run through the same photo-job worker, so only the job says which kind failed.
+  const jobIds = [...new Set(rows.map(r => r.jobId).filter((id): id is string => !!id))];
+  const kinds = new Map((jobIds.length ? await prisma.photoJob.findMany({ where: { id: { in: jobIds } }, select: { id: true, kind: true } }) : []).map(j => [j.id, j.kind]));
   return {
-    rows,
+    rows: rows.map(r => ({ ...r, jobKind: r.jobId ? kinds.get(r.jobId) ?? null : null })),
     lastDay: {
       total: lastDay.length,
       byService: { CATALOG_TRYON: lastDay.filter(r => r.service === 'CATALOG_TRYON').length, SHOPPER_TRYON: lastDay.filter(r => r.service === 'SHOPPER_TRYON').length },
