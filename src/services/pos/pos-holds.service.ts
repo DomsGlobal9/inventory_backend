@@ -19,6 +19,7 @@ import { normalisePhone } from '../../lib/phone';
 import { getSettings, mostUsable, pointsForPayment, valueOf, rupeesOf } from '../loyalty';
 import { post as postPoints } from '../loyalty/loyalty.service';
 import { spendOnSale as spendCredit } from '../store-credit/store-credit.service';
+import { groupNamesOf } from '../customer-groups';
 
 type Tx = Prisma.TransactionClient;
 export const HOLD_TTL_MS = 10 * 60 * 1000;
@@ -37,7 +38,7 @@ const refusal = (statusCode: number, answer: string, message: string) => ({ stat
  * any customer who first bought online, and hid their points and credit from the till.
  */
 export async function customerForTill(db: Tx | typeof prisma, clientId: string, ref: string) {
-  const select = { id: true, name: true, loyaltyPoints: true, storeCreditPaise: true } as const;
+  const select = { id: true, name: true, loyaltyPoints: true, storeCreditPaise: true, tags: true } as const;
   const n = normalisePhone(ref);
   if (n.ok) {
     const holder = await db.customer.findFirst({ where: { clientId, phone: n.value, deletedAt: null }, select, orderBy: { createdAt: 'asc' } });
@@ -76,7 +77,9 @@ export async function wallet(clientId: string, query: { customerRef?: unknown; b
   if (!Number.isInteger(billPaise) || billPaise < 0) throw badRequest('Say the bill in whole paise, in billPaise.');
   const c = await tillCustomer(prisma, clientId, query.customerRef);
   const ref = String(query.customerRef).trim();
-  if (!c) return { customerRef: masked(ref), customerName: null, points: null, credit: null, reason: 'No customer with that number here yet.' };
+  if (!c) return { customerRef: masked(ref), customerName: null, groups: [], points: null, credit: null, reason: 'No customer with that number here yet.' };
+  // For the till's badge only (VIP, Wholesale): names, never the groups' message rules.
+  const groups = await groupNamesOf(clientId, c.tags);
 
   const s = await getSettings(clientId);
   let points: any = null;
@@ -96,7 +99,7 @@ export async function wallet(clientId: string, query: { customerRef?: unknown; b
   }
   const creditAvailable = Math.max(0, c.storeCreditPaise - await liveHeld(prisma, clientId, c.id, 'CREDIT'));
   return {
-    customerRef: masked(ref), customerName: c.name, points,
+    customerRef: masked(ref), customerName: c.name, groups, points,
     credit: { balancePaise: creditAvailable, usablePaise: Math.min(creditAvailable, billPaise) }, reason
   };
 }

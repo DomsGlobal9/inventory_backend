@@ -67,6 +67,19 @@ export async function quietGroupOf(clientId: string, tags: string[], purpose: Gr
   return row?.name ?? null;
 }
 
+/**
+ * A customer's groups by name, once each, for the till's badge: the group row's spelling where there
+ * is one, else the customer's own tag. Names only -- the message rules are not a cashier's business.
+ */
+export async function groupNamesOf(clientId: string, tags: string[]): Promise<string[]> {
+  const byKey = new Map<string, string>();
+  for (const t of tags) if (keyOf(t) && !byKey.has(keyOf(t))) byKey.set(keyOf(t), String(t).trim().replace(/\s+/g, ' '));
+  if (!byKey.size) return [];
+  const rows = await prisma.customerGroup.findMany({ where: { clientId, key: { in: [...byKey.keys()] } }, select: { key: true, name: true } });
+  for (const r of rows) byKey.set(r.key, r.name);
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b));
+}
+
 /** The name a group goes by: its row's spelling, else the spelling customers carry. Null if no such group. */
 async function displayName(clientId: string, key: string): Promise<string | null> {
   const row = await prisma.customerGroup.findUnique({ where: { clientId_key: { clientId, key } }, select: { name: true } });
