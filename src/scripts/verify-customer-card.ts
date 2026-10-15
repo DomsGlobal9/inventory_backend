@@ -111,6 +111,43 @@ async function main() {
   check('another shop cannot write on this customer', wrongShop?.statusCode === 404);
   check('...and the customer page sees the same notes field', ((await prisma.customer.findUnique({ where: { id: customer.id } }))?.notes ?? '').split('\n').length === 2);
   void newbie;
+
+  console.log('\nE. ONLINE PURCHASES COUNT TOO');
+  await prisma.customer.update({ where: { id: customer.id }, data: { email: 'meena@example.com' } });
+  // An online-shop order where she typed her number but did not prove it: kept on its own record.
+  const unproved = await prisma.customer.create({ data: { clientId: C, customerCode: `CU-${STAMP}`, name: 'Meena I', email: 'other@example.com' } });
+  const onlineBill = (cust: string, phone: string | null, items: { v: any; qty: number }[], total: number, channel = 'ONLINE') => prisma.salesOrder.create({ data: {
+    clientId: C, orderNumber: `SO-${STAMP}-${++n}`, customerId: cust, customerPhone: phone, channel: channel as any, locationId: store.id, status: 'CONFIRMED' as any,
+    subtotal: total, discountAmount: 0, taxAmount: 0, shippingAmount: 0, total,
+    items: { create: items.map(i => ({ variantId: i.v.id, quantity: i.qty, listUnitPrice: total / i.qty, unitPrice: total / i.qty, unitCost: 0, totalPrice: total })) }
+  } as any });
+  await onlineBill(unproved.id, '+919848011122', [{ v: lBlue, qty: 1 }], 3000);
+  // A Shopify customer record with the same email, no phone.
+  const shopify = await prisma.customer.create({ data: { clientId: C, customerCode: `CS-${STAMP}`, name: 'Meena Iyer', email: 'MEENA@example.com', externalCustomerId: `shopify:${STAMP}` } });
+  await onlineBill(shopify.id, null, [{ v: kBlueM, qty: 1 }], 1500, 'MARKETPLACE');
+  // A stranger online, another number: never hers.
+  const stranger = await prisma.customer.create({ data: { clientId: C, customerCode: `CX-${STAMP}`, name: 'Stranger', email: 'x@example.com' } });
+  await onlineBill(stranger.id, '+919848099999', [{ v: kPinkM, qty: 9 }], 90000);
+
+  const all: any = await customerCard.lookup(C, '9848011122', store.id);
+  check('her bills now include both online orders: 5 = 3 in store + 2 online', all.visits.bills === 5 && all.visits.inStore === 3 && all.visits.online === 2, all.visits);
+  check('...the Lehenga she bought online is in her garments', JSON.stringify(all.dna.kinds) === JSON.stringify(['Kurti', 'Lehenga', 'Saree']), all.dna.kinds);
+  check('...and is never offered back to her', !all.picks.some((p: any) => p.variantId === lBlue.id), all.picks);
+  check('...the stranger\'s 9 pink kurtis count for nothing', all.dna.colours[0] === 'Blue' && all.dna.spend.to < 10000, all.dna);
+
+  const onlyOnline = await prisma.customer.create({ data: { clientId: C, customerCode: `CO2-${STAMP}`, name: 'Ravi Online' } });
+  await onlineBill(onlyOnline.id, '+919848011177', [{ v: sMaroon, qty: 1 }], 8000);
+  const ravi: any = await customerCard.lookup(C, '9848011177', store.id);
+  check('someone who has only bought online, number never proved, still has a card', ravi.customer?.name === 'Ravi Online' && ravi.visits.online === 1 && ravi.dna.kinds[0] === 'Saree', ravi);
+
+  console.log('\nF. A LONG HISTORY');
+  const regular = await prisma.customer.create({ data: { clientId: C, customerCode: `CR-${STAMP}`, name: 'Regular', phone: '+919848011188' } });
+  await prisma.salesOrder.createMany({ data: Array.from({ length: 205 }, (_, i) => ({
+    clientId: C, orderNumber: `SO-${STAMP}-R${i}`, customerId: regular.id, channel: 'POS', locationId: store.id, status: 'DISPATCHED',
+    subtotal: 1000, discountAmount: 0, taxAmount: 0, shippingAmount: 0, total: 1000
+  })) as any });
+  const history: any = await customerCard.lookup(C, '9848011188', store.id);
+  check('205 bills are all counted, not only the latest 200', history.visits.bills === 205, history.visits);
 }
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {

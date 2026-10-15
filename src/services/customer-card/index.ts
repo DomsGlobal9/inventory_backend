@@ -7,12 +7,18 @@
  * theirs usually comes to, and what in THIS store today is in their size. Staff notes go in the
  * customer's own notes field, one dated line each, so the customer page shows them too.
  */
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { normalisePhone } from '../../lib/phone';
 import { badRequest, notFound } from '../../utils/httpError';
 import { groupNamesOf } from '../customer-groups';
 
-const BILLS = 200;          // the latest bills a card reads; plenty to see a habit
+// shortcut: a hard ceiling so one bad record can never make the card slow; nobody has 5,000 bills yet.
+const MAX_BILLS = 5000;
+/** The shared rows for bills with no customer details (pos-events WALK_IN_KEY, Shopify guest). */
+const SHARED_CUSTOMERS = ['POS:WALK-IN', 'shopify:guest'];
+// NOT IN alone would also drop every ordinary customer, whose external id is empty.
+const notShared = { OR: [{ externalCustomerId: null }, { externalCustomerId: { notIn: SHARED_CUSTOMERS } }] };
 const PICKS = 6;
 const MAX_NOTE = 300;
 
@@ -37,18 +43,32 @@ export const customerCard = {
   async lookup(clientId: string, rawPhone: unknown, locationId?: string) {
     const phone = normalisePhone(rawPhone);
     if (!phone.ok) throw badRequest(phone.reason);
-    const customer = await prisma.customer.findFirst({
-      where: { clientId, phone: phone.value, deletedAt: null },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true, name: true, customerCode: true, phone: true, notes: true, tags: true, loyaltyPoints: true, storeCreditPaise: true, birthday: true, anniversary: true }
-    });
+    const select = { id: true, name: true, customerCode: true, phone: true, email: true, notes: true, tags: true, loyaltyPoints: true, storeCreditPaise: true, birthday: true, anniversary: true } as const;
+    let customer = await prisma.customer.findFirst({ where: { clientId, phone: phone.value, deletedAt: null }, orderBy: { createdAt: 'asc' }, select });
+    // Bought online and never proved the number: the order carries it, the customer row does not
+    // (on purpose -- see phoneForOutsideCustomer). They are still that person's purchases.
+    if (!customer) {
+      const online = await prisma.salesOrder.findFirst({
+        where: { clientId, customerPhone: phone.value, deletedAt: null, customer: { deletedAt: null, ...notShared } },
+        orderBy: { createdAt: 'desc' }, select: { customerId: true }
+      });
+      if (online) customer = await prisma.customer.findUnique({ where: { id: online.customerId }, select });
+    }
     if (!customer) return { phone: phone.value, customer: null };
 
+    /*
+     * Everything this person bought, at the till AND online: their own record, any order where this
+     * number was typed at checkout (an online order the shop kept on a separate record because the
+     * number was not proved), and a Shopify record with the same email. All of it, not a recent
+     * slice -- the habit is in the whole history.
+     */
+    const same: Prisma.SalesOrderWhereInput[] = [{ customerId: customer.id }, { customerPhone: phone.value }];
+    if (customer.email) same.push({ customer: { email: { equals: customer.email, mode: 'insensitive' }, ...notShared } });
     const orders = await prisma.salesOrder.findMany({
-      where: { clientId, customerId: customer.id, status: { not: 'CANCELLED' }, deletedAt: null },
-      orderBy: { createdAt: 'desc' }, take: BILLS,
+      where: { clientId, status: { not: 'CANCELLED' }, deletedAt: null, OR: same },
+      orderBy: { createdAt: 'desc' }, take: MAX_BILLS,
       select: {
-        createdAt: true, total: true,
+        createdAt: true, total: true, channel: true,
         items: { select: { quantity: true, variantId: true, variant: { select: { size: true, colorName: true, product: { select: { id: true, title: true, dressType: true } } } } } }
       }
     });
@@ -78,7 +98,12 @@ export const customerCard = {
         birthday: customer.birthday, anniversary: customer.anniversary,
         notes: (customer.notes ?? '').split('\n').map(l => l.trim()).filter(Boolean).slice(-5).reverse()
       },
-      visits: { bills: orders.length, lastVisit: orders[0]?.createdAt ?? null },
+      visits: {
+        bills: orders.length, lastVisit: orders[0]?.createdAt ?? null,
+        // Till and counter-made orders are the shop floor; the online shop and marketplaces are online.
+        inStore: orders.filter(o => o.channel === 'POS' || o.channel === 'MANUAL').length,
+        online: orders.filter(o => o.channel === 'ONLINE' || o.channel === 'MARKETPLACE').length
+      },
       dna: { sizes, colours: topColours, kinds: topKinds, spend: spendBand(orders.map(o => Number(o.total))) },
       picks: locationId ? await picksFor(clientId, locationId, { sizes, colours: topColours, kinds: topKinds, bought, boughtProducts }) : []
     };
