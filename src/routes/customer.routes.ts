@@ -10,6 +10,8 @@ import { tenantMiddleware } from '../middleware/tenant.middleware';
 
 import { requirePermission } from '../middleware/permission.middleware';
 import { customerCard } from '../services/customer-card';
+import { doorCheckins } from '../services/door-checkin';
+import { prisma } from '../lib/prisma';
 import { respondWithError } from '../utils/respondWithError';
 
 const router = Router();
@@ -26,6 +28,22 @@ router.get('/card', requirePermission('customer:view'), async (req, res) => {
     const locationId = typeof req.query.locationId === 'string' && req.query.locationId ? req.query.locationId : undefined;
     res.json({ success: true, data: await customerCard.lookup((req as any).clientId, req.query.phone, locationId) });
   } catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+// Door QR check-in: who is in this store now, "I'll take them", and the QR for the door.
+router.get('/checkins', requirePermission('customer:view'), async (req, res) => {
+  try { res.json({ success: true, data: await doorCheckins.list((req as any).clientId, req.query.locationId) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.post('/checkins/:id/take', requirePermission('customer:view'), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const name = user?.id ? (await prisma.user.findFirst({ where: { id: user.id, clientId: (req as any).clientId }, select: { name: true } }))?.name ?? null : null;
+    res.json({ success: true, data: await doorCheckins.take((req as any).clientId, String(req.params.id), { id: user?.id ?? null, name }) });
+  } catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.get('/door-qr', requirePermission('customer:view'), async (req, res) => {
+  try { res.json({ success: true, data: await doorCheckins.doorQr((req as any).clientId, req.query.locationId) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
 router.post('/:id/notes', requirePermission('customer:update'), async (req, res) => {
   try {

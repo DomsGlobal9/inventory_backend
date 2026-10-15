@@ -4777,3 +4777,21 @@ model PosInboundEvent {
   @@index([clientId, status])
   @@map("pos_inbound_events")
 }
+
+/// A customer who scanned the QR at a store's door ("I'm at the shop" on WhatsApp), for the
+/// salespeople's "In the store now" list. One row per arrival; taken_* says who went to them.
+model StoreCheckin {
+  id          String    @id @default(uuid())
+  clientId    String    @map("client_id")
+  locationId  String    @map("location_id")
+  /// E.164, as the customer's WhatsApp sent it.
+  phone       String
+  customerId  String?   @map("customer_id")
+  takenById   String?   @map("taken_by_id")
+  takenByName String?   @map("taken_by_name")
+  takenAt     DateTime? @map("taken_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([clientId, locationId, createdAt])
+  @@map("store_checkins")
+}

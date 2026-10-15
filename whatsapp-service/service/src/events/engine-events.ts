@@ -4,6 +4,7 @@ import { digitsFromJid } from '../lib/phone';
 import { applyMessageStatus, recordSent } from '../messages/status-apply';
 import { setAccountStatus } from '../accounts/service';
 import { enqueueForAllModules } from './module-events';
+import { checkInCode } from '../domain/checkin';
 
 // Events pushed by the engine (Evolution's global webhook). Each handler is idempotent: the
 // engine may send an event twice or out of order, and the health watch may already have
@@ -163,8 +164,10 @@ async function onMessagesUpsert(ctx: Ctx, instance: string, data: Record<string,
   const msg = (data.message ?? {}) as Record<string, unknown>;
   const ext = (msg.extendedTextMessage ?? {}) as Record<string, unknown>;
   const words = typeof msg.conversation === 'string' ? msg.conversation : typeof ext.text === 'string' ? ext.text : '';
-  // Only a reply that is exactly a stop word counts; the text itself is never stored or logged.
-  if (!STOP_WORDS.has(words.trim().toUpperCase().replace(/[.!]+$/, ''))) return;
+  const doorCode = checkInCode(words);
+  // Only a reply that is exactly a stop word, or one carrying a door code, counts; the text itself
+  // is never stored or logged.
+  if (!doorCode && !STOP_WORDS.has(words.trim().toUpperCase().replace(/[.!]+$/, ''))) return;
   const from =
     digitsFromJid(typeof key.remoteJid === 'string' ? key.remoteJid : null) ??
     digitsFromJid(typeof key.remoteJidAlt === 'string' ? key.remoteJidAlt : null) ??
@@ -172,6 +175,17 @@ async function onMessagesUpsert(ctx: Ctx, instance: string, data: Record<string,
   if (!from) return;
   const account = await ctx.db.account.findUnique({ where: { instanceName: instance } });
   if (!account) return;
+  if (doorCode) {
+    // A customer at a shop's door. Only a shop's own number has a door; the shop's module decides
+    // which store the code names and what to show its staff.
+    if (account.kind !== 'CLIENT') return;
+    await ctx.db.$transaction((tx) => enqueueForAllModules(tx, 'contact.checked_in', {
+      accountId: account.id, clientId: account.clientId, kind: account.kind,
+      contact: from, code: doorCode, at: new Date().toISOString(),
+    }));
+    ctx.log.info({ accountId: account.id }, 'customer checked in at the door');
+    return;
+  }
   await ctx.db.$transaction(async (tx) => {
     const created = await tx.optOut.createMany({ data: [{ accountId: account.id, toDigits: from }], skipDuplicates: true });
     if (created.count > 0) {

@@ -12,7 +12,8 @@ export type ModuleEventType =
   | 'account.connected'
   | 'account.disconnected'
   | 'account.status'
-  | 'contact.opted_out';
+  | 'contact.opted_out'
+  | 'contact.checked_in';
 
 type Tx = Prisma.TransactionClient;
 
