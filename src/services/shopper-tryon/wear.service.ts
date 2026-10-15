@@ -122,7 +122,8 @@ export async function wearIt(params: {
       clientId,
       garmentImageUrl: garment.imageUrl,
       humanImageUrl,
-      category: categoryFor(garment.dressType)
+      category: categoryFor(garment.dressType),
+      place: params.from
     });
 
     // Counted after the fact and never awaited: the meter must not be able to fail the thing it

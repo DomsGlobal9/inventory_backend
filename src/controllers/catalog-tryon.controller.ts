@@ -3,7 +3,7 @@ import { catalogTryOnService } from '../services/tryon';
 import { tryOnUsageService } from '../services/tryon';
 // Lives beside the gateway it names jobs for. The photo-job worker needs the same rule and
 // has no request to reach a controller from, so the function moved to where both can see it.
-import { jobKeyFor } from '../services/tryon';
+import { jobKeyFor, recordTryOnFailure } from '../services/tryon';
 import { respondWithError } from '../utils/respondWithError';
 
 export class CatalogTryOnController {
@@ -62,6 +62,10 @@ export class CatalogTryOnController {
         // was printed in the shop's browser. It is kept here, where we can read it, and
         // the merchant is told the one thing they can act on instead.
         console.error(`[catalog-tryon] upstream refused (${upstream.status}):`, text.slice(0, 500));
+        recordTryOnFailure({
+          clientId, service: 'CATALOG_TRYON', place: 'CATALOG_STREAM', httpStatus: upstream.status, code: 'STUDIO_REFUSED',
+          error: text || `HTTP ${upstream.status} with no body`, shownMessage: 'The photo studio could not be reached just now.'
+        });
         res.status(upstream.status || 502).json({
           success: false,
           message: 'The photo studio could not be reached just now. Your photos are safe -- please try again in a minute.'
@@ -105,6 +109,9 @@ export class CatalogTryOnController {
         // The service says so with an ERROR event before it closes.
         if (/"type"\s*:\s*"ERROR"/.test(chunk)) {
           upstreamEnded = /"code"\s*:\s*"CANCELLED"/.test(chunk) ? 'cancelled' : 'failed';
+          if (upstreamEnded === 'failed') {
+            recordTryOnFailure({ clientId, service: 'CATALOG_TRYON', place: 'CATALOG_STREAM', code: 'STUDIO_ERROR', error: chunk.slice(0, 4000) });
+          }
         }
       }
 

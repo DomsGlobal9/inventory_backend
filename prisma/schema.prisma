@@ -3102,6 +3102,33 @@ model TryOnUsage {
 /// Try-on is GPU work, so an unmetered client is real money rather than just load. The absence
 /// of a row means no limit, which is the right default for a platform that already has
 /// customers -- but the console should make an unlimited client visible rather than quiet.
+/// One try-on that failed, with the REAL reason from the far end and what the shop was told.
+/// Shops only ever see a friendly sentence; this is for ScaleEzy (Platform Console → Errors →
+/// Try-on). Plain text everywhere -- no enums on the shared database. Kept 90 days.
+model TryOnFailure {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+  /// CATALOG_TRYON (four views) or SHOPPER_TRYON (a customer trying a piece on).
+  service String
+  /// PHOTO_JOB, CATALOG_STREAM, SHOP_PAGE, COUNTER, STOREFRONT.
+  place   String
+  httpStatus Int?   @map("http_status")
+  /// Short machine code where there is one (STUDIO_REFUSED, STALLED, TIMEOUT, NO_IMAGE, LIMIT...).
+  code    String?
+  /// The far end's own words, as they came (trimmed to 4,000 characters).
+  error   String  @db.Text
+  /// What the shop or shopper was shown instead.
+  shownMessage String? @map("shown_message") @db.Text
+  productId String? @map("product_id")
+  jobId     String? @map("job_id")
+  attempt   Int?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([clientId, createdAt])
+  @@map("tryon_failures")
+}
+
 model ClientServiceLimit {
   id       String        @id @default(uuid())
   clientId String        @map("client_id")

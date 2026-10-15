@@ -1,5 +1,5 @@
 import { env } from '../../config/env';
-import { serviceCredentialService } from '../tryon';
+import { serviceCredentialService, recordTryOnFailure, type TryOnFailurePlace } from '../tryon';
 
 /**
  * The outbound call to the gateway for a shopper try-on, and nothing else.
@@ -81,7 +81,12 @@ export class ShopperTryOnGatewayService {
     garmentImageUrl: string;
     humanImageUrl: string;
     category?: TryOnCategory;
+    /** Where the shopper was, for the console's failure list. */
+    place?: TryOnFailurePlace;
   }): Promise<ShopperTryOnResult> {
+    const failed = (error: unknown, shown: string, httpStatus: number | null, code: string) => recordTryOnFailure({
+      clientId: params.clientId, service: 'SHOPPER_TRYON', place: params.place ?? 'STOREFRONT', error, shownMessage: shown, httpStatus, code
+    });
     const url = this.gatewayUrl();
     const { key } = await serviceCredentialService.keyFor(params.clientId, 'SHOPPER_TRYON');
 
@@ -107,6 +112,7 @@ export class ShopperTryOnGatewayService {
         // services or quota mechanics. The status is kept so the caller can tell a refusal
         // from a breakage, and the detail goes to our logs.
         console.error(`[ShopperTryOn] gateway ${response.status} for ${params.clientId}: ${text.slice(0, 300)}`);
+        failed(text || `HTTP ${response.status} with no body`, 'The try-on service could not complete this request.', response.status, 'STUDIO_REFUSED');
         throw Object.assign(
           new Error('The try-on service could not complete this request.'),
           { statusCode: response.status >= 500 ? 502 : response.status }
@@ -117,6 +123,7 @@ export class ShopperTryOnGatewayService {
       const resultImageUrl = body?.resultImageUrl ?? body?.result_image_url;
 
       if (!resultImageUrl) {
+        failed(`200 without an image: ${JSON.stringify(body).slice(0, 1000)}`, 'The try-on finished but produced no image.', response.status, 'NO_IMAGE');
         // A 200 with nothing usable in it is a failure, and must be recorded as one rather
         // than handed to the shopper as an empty screen.
         throw Object.assign(
@@ -128,6 +135,7 @@ export class ShopperTryOnGatewayService {
       return { resultImageUrl, processingTimeMs: body?.processingTimeMs };
     } catch (error: any) {
       if (error?.name === 'AbortError') {
+        failed(`No answer within ${GENERATION_TIMEOUT_MS / 1000} s; the request was stopped.`, 'The try-on took too long and was stopped. Please try again.', 504, 'TIMEOUT');
         throw Object.assign(
           new Error('The try-on took too long and was stopped. Please try again.'),
           { statusCode: 504 }

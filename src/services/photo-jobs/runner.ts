@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
 import { safeMessage } from '../../lib/safeMessage';
-import { catalogTryOnService, tryOnUsageService, jobKeyFor } from '../tryon';
+import { catalogTryOnService, tryOnUsageService, jobKeyFor, recordTryOnFailure } from '../tryon';
 import { imageService } from '../image.service';
 import { VIEW_ORDER, API_VIEW_TO_LOCAL } from './catalog';
 
@@ -280,11 +280,21 @@ export class PhotoJobRunner {
    * writing a status is a shop watching "being made" forever.
    */
   static async runJob(job: Job): Promise<void> {
+    // Every FAILED ending: what the shop is told, and the far end's own words for the console.
+    const fail = async (shown: string, error: unknown, more: { httpStatus?: number; code?: string } = {}) => {
+      recordTryOnFailure({
+        clientId: job.clientId, service: 'CATALOG_TRYON', place: 'PHOTO_JOB', error, shownMessage: shown,
+        productId: job.productId, jobId: job.id, attempt: job.attempts, ...more
+      });
+      await finish(job.id, 'FAILED', shown);
+    };
+
     // Checked before anything is started, so a shop out of allowance is told rather than charged.
     try {
       await tryOnUsageService.assertWithinLimit(job.clientId);
     } catch (err: any) {
-      await finish(job.id, 'FAILED', safeMessage(err?.message, 'This shop has used its picture generations for the month.'));
+      await fail(safeMessage(err?.message, 'This shop has used its picture generations for the month.'), err?.message ?? err,
+        { code: 'LIMIT', httpStatus: err?.statusCode });
       return;
     }
 
@@ -355,7 +365,8 @@ export class PhotoJobRunner {
         // Kept where we can read it; the shop is told the one thing they can act on. The far
         // end's own words go in the log, never on a shop owner's screen.
         console.error(`[photo-jobs] ${job.id}: upstream refused (${upstream.status}):`, text.slice(0, 500));
-        await finish(job.id, 'FAILED', 'The photo studio could not be reached just now. Your photos are safe -- please try again in a minute.');
+        await fail('The photo studio could not be reached just now. Your photos are safe -- please try again in a minute.',
+          text || `HTTP ${upstream.status} with no body`, { httpStatus: upstream.status, code: 'STUDIO_REFUSED' });
         return;
       }
 
@@ -365,6 +376,7 @@ export class PhotoJobRunner {
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
       let upstreamError: string | null = null;
+      let upstreamRaw: string | null = null;   // the far end's own words, for the console
 
       // The same three traps the browser reader had to get right: keepalive comment lines that
       // are not events, a frame split across two network chunks, and views arriving one at a
@@ -392,6 +404,7 @@ export class PhotoJobRunner {
                 // Every size of this colour has gone. There is nowhere left to put the
                 // photographs, so carrying on would spend the rest of the generation on nothing.
                 upstreamError = 'That colour was removed while its photographs were being made.';
+                upstreamRaw = 'Every size of this colour was deleted while it was being made; nothing left to save views against.';
                 abort.abort();
                 break reading;
               }
@@ -405,6 +418,7 @@ export class PhotoJobRunner {
               // The far end's wording is written for whoever built it. Through the same gate as
               // every other message before it can reach a shop owner's screen.
               upstreamError = safeMessage(data.error, 'The photo studio could not finish this one. Please try again.');
+              upstreamRaw = typeof data.error === 'string' ? data.error : JSON.stringify(data);
               break reading;
             } else if (data.type === 'COMPLETE') {
               break reading;
@@ -421,7 +435,8 @@ export class PhotoJobRunner {
 
       if (stalled) {
         void tryOnUsageService.record(job.clientId, { failed: true });
-        await finish(job.id, 'FAILED', 'The photo studio stopped responding. Please try this one again.');
+        await fail('The photo studio stopped responding. Please try this one again.',
+          `No frame for ${STALL_AFTER_MS / 60000} minutes; the stream was given up (${viewsSaved} view(s) saved).`, { code: 'STALLED' });
         return;
       }
 
@@ -429,15 +444,16 @@ export class PhotoJobRunner {
         void tryOnUsageService.record(job.clientId, { failed: true, viewsGenerated: viewsSaved });
         // Partial work is kept and SAID. Three of four is a real outcome, and a shop that is
         // told "it failed" when three photographs are sitting there will not go and look.
-        await finish(job.id, 'FAILED', viewsSaved > 0
+        await fail(viewsSaved > 0
           ? `${upstreamError} The ${viewsSaved} view${viewsSaved === 1 ? '' : 's'} already made ${viewsSaved === 1 ? 'is' : 'are'} kept.`
-          : upstreamError);
+          : upstreamError, upstreamRaw ?? upstreamError, { code: 'STUDIO_ERROR' });
         return;
       }
 
       if (viewsSaved === 0) {
         void tryOnUsageService.record(job.clientId, { failed: true });
-        await finish(job.id, 'FAILED', 'The photo studio finished without sending any photographs. Please try again.');
+        await fail('The photo studio finished without sending any photographs. Please try again.',
+          'The stream ended without a single VIEW_READY.', { code: 'NO_IMAGE' });
         return;
       }
 
@@ -454,10 +470,10 @@ export class PhotoJobRunner {
       }
       console.error(`[photo-jobs] ${job.id} failed:`, err?.message);
       void tryOnUsageService.record(job.clientId, { failed: true, viewsGenerated: viewsSaved });
-      await finish(job.id, 'FAILED', safeMessage(
+      await fail(safeMessage(
         err?.message,
         'Something went wrong while making these photographs. Please try again.'
-      ));
+      ), err?.message ?? err, { code: 'EXCEPTION' });
     } finally {
       clearInterval(heartbeat);
       await removeSuperseded(job, superseded);
@@ -480,6 +496,23 @@ export class PhotoJobRunner {
 
     // Beyond a second go. Failed rather than retried: whatever is wrong is not being fixed by
     // trying again, and a shop's allowance should not pay to find that out repeatedly.
+    // Written down before they are failed, so the console can show which jobs a redeploy cost.
+    const giving = await prisma.photoJob.findMany({
+      where: {
+        status: 'RUNNING',
+        attempts: { gte: MAX_ATTEMPTS },
+        OR: [{ heartbeatAt: { lt: deadline } }, { heartbeatAt: null, startedAt: { lt: deadline } }]
+      },
+      select: { id: true, clientId: true, productId: true, attempts: true }
+    });
+    for (const j of giving) {
+      recordTryOnFailure({
+        clientId: j.clientId, service: 'CATALOG_TRYON', place: 'PHOTO_JOB', code: 'INTERRUPTED',
+        error: `Interrupted ${j.attempts} times (no heartbeat for ${STALL_AFTER_MS / 60000} minutes) -- most often a redeploy mid-generation.`,
+        shownMessage: 'This was interrupted and did not finish. Anything already made is kept -- please run it again.',
+        productId: j.productId, jobId: j.id, attempt: j.attempts
+      });
+    }
     const exhausted = await prisma.photoJob.updateMany({
       where: {
         status: 'RUNNING',

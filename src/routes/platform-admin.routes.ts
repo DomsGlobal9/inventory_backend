@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { verifyPlatformAdmin } from '../middleware/platform-admin.middleware';
 import { links, LinkRuleError } from '../services/links';
 import * as platformWhatsApp from '../services/whatsapp/platform';
+import { listTryOnFailures } from '../services/tryon';
 import { WhatsAppServiceError } from '../services/whatsapp/client';
 import {
   login,
@@ -74,6 +75,13 @@ consoleRouter.patch('/platform-admins/:id/status', setPlatformAdminStatus);
 consoleRouter.post('/platform-admins/:id/password', resetPlatformAdminPassword);
 consoleRouter.get('/audit-log', listAuditLog);
 consoleRouter.get('/client-errors', listClientErrors);
+// Try-on failures with the far end's real words (shops only ever see a friendly sentence).
+consoleRouter.get('/tryon-failures', async (req, res, next) => {
+  try {
+    const q = req.query as Record<string, string | undefined>;
+    res.json({ success: true, data: await listTryOnFailures({ service: q.service || undefined, clientId: q.clientId || undefined, days: Number(q.days) || 7 }) });
+  } catch (e) { next(e); }
+});
 // Offers and Shopify across every shop: copies failing, orders waiting, codes run out. Read only.
 consoleRouter.get('/offers-health', getOffersHealth);
 consoleRouter.get('/till-health', getTillHealth);

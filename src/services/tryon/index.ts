@@ -18,3 +18,5 @@ export type { CredentialSummary } from './credential.service';
 export { tryOnUsageService } from './usage.service';
 export type { UsageSummary } from './usage.service';
 export { jobKeyFor } from './jobKey';
+export { recordTryOnFailure, listTryOnFailures } from './failures';
+export type { TryOnFailureService, TryOnFailurePlace } from './failures';
