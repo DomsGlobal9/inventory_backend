@@ -159,7 +159,11 @@ async function main() {
   console.log('\nD. THE DAY BOOK');
   const db: any = await dayBookService.getDay(C, new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
   check('vouchers used on bills today and returned onto them are in the Gift vouchers section', db.giftVouchers?.used === 3000 + 3000 + 2500 + 500 && db.giftVouchers?.returnedOnto === 3500, db.giftVouchers);
-  check('the money section lists voucher payments by name, apart from cash', db.money.taken.VOUCHER?.amount === 9000 && db.money.cashInDrawer === (db.money.taken.CASH?.amount ?? 0) - (db.money.paidBack.CASH?.amount ?? 0) + (db.giftVouchers.soldBy.CASH ?? 0), db.money);
+  // The bills say ₹12,000 by voucher across 6 rows: S1 3,000 + S2 3,000 + S3 2,000 + 500 + S4 3,000 + S6 500. S4's hold was
+  // already spent by S1, so its ₹3,000 line stays on the bill (what the till printed) but nothing came off a voucher: the
+  // Gift vouchers section above says ₹9,000 used, and the ₹3,000 between them is that one bill, which carries a warning.
+  check('the money section lists voucher payments by name, as the bills say them (S4 included)', db.money.taken.VOUCHER?.amount === 12000 && db.money.taken.VOUCHER?.count === 6, db.money);
+  check('...and cash in the drawer is cash taken, less cash paid back, plus cash paid for new vouchers', db.giftVouchers?.soldBy?.CASH > 0 && db.money.cashInDrawer === (db.money.taken.CASH?.amount ?? 0) - (db.money.paidBack.CASH?.amount ?? 0) + db.giftVouchers.soldBy.CASH, { money: db.money, soldBy: db.giftVouchers?.soldBy });
 }
 
 (async () => {
