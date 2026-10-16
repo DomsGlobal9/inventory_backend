@@ -6,7 +6,7 @@
  */
 import { prisma } from '../lib/prisma';
 import * as wa from '../services/whatsapp/service';
-import { doorCheckins, doorCode, checkinWelcome, VISIT_MS } from '../services/door-checkin';
+import { doorCheckins, doorCode, checkinWelcome, VISIT_MS, doorNumber } from '../services/door-checkin';
 
 const STAMP = Date.now();
 const C = `door-${STAMP}`;
@@ -87,6 +87,13 @@ async function main() {
   const qr: any = await doorCheckins.doorQr(C, main.id);
   check('the message names the shop, the store and the door code', qr.text === `Hi! I'm at Lakshmi Silks, Main Store. Check-in code: IN-${mainCode}` && qr.code === `IN-${mainCode}`, qr);
   check('a shop with no WhatsApp linked gets no link, and is told why', qr.link === null && /Link the shop's WhatsApp/.test(qr.reason ?? ''), qr);
+  // The service hands back only ••••1234 for the linked phone; the QR once used that as the number (16 Oct).
+  const linked = { status: 'CONNECTED', digits: '9623' };
+  check('a linked shop gets the full number from its own phone, never the masked 4 digits', (doorNumber(linked, '+91 98480 29623') as any).digits === '919848029623');
+  check('...a 10-digit shop phone gets India\'s 91 in front', (doorNumber(linked, '9848029623') as any).digits === '919848029623');
+  check('...a shop phone that is not the linked one is refused, with both endings shown', /••••1111.*••••9623/.test((doorNumber(linked, '+919848021111') as any).reason ?? ''));
+  check('...no shop phone: told where to add it', (doorNumber(linked, null) as any).fix === 'GENERAL');
+  check('...WhatsApp not connected: told to link it', (doorNumber({ status: 'DISCONNECTED', digits: '9623' }, '+919848029623') as any).fix === 'WHATSAPP');
   const notMine = await doorCheckins.doorQr(C, elsewhere.id).then(() => null, e => e);
   check('another shop\'s store is refused', notMine?.statusCode === 404);
 

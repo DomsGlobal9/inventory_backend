@@ -67,7 +67,8 @@ export const doorCheckins = {
     });
     const row = await prisma.storeCheckin.create({ data: { clientId, locationId: store.id, phone: phone.value, customerId: customer?.id ?? null, createdAt: now } });
 
-    const shop = (await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true } }))?.businessName?.trim() || 'the shop';
+    const settings = await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true, businessPhone: true } });
+    const shop = settings?.businessName?.trim() || 'the shop';
     const first = customer?.name.trim().split(/\s+/)[0];
     const text = first
       ? `Welcome back, ${first}! Someone from ${shop} will be with you in a moment.`
@@ -117,16 +118,32 @@ export const doorCheckins = {
     if (typeof locationId !== 'string' || !locationId) throw badRequest('Say which store.');
     const store = await prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { id: true, name: true } });
     if (!store) throw notFound('That store could not be found.');
-    const shop = (await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true } }))?.businessName?.trim() || 'the shop';
+    const settings = await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true, businessPhone: true } });
+    const shop = settings?.businessName?.trim() || 'the shop';
     const code = doorCode(clientId, store.id);
     const text = `Hi! I'm at ${shop}, ${store.name}. Check-in code: IN-${code}`;
     const { shopNumber } = await import('../whatsapp/service');
-    const number = await shopNumber(clientId).catch(() => null);
-    const digits = number?.status === 'CONNECTED' ? number.digits : null;
-    return {
-      shop, store: store.name, code: `IN-${code}`, text,
-      number: digits, link: digits ? `https://wa.me/${digits}?text=${encodeURIComponent(text)}` : null,
-      reason: digits ? null : "Link the shop's WhatsApp number in Settings first. The QR opens a chat with that number."
-    };
+    const linked = await shopNumber(clientId).catch(() => null);
+    const base = { shop, store: store.name, code: `IN-${code}`, text, number: null as string | null, link: null as string | null };
+    const n = doorNumber(linked, settings?.businessPhone);
+    if ('reason' in n) return { ...base, ...n };
+    return { ...base, fix: null, number: n.digits, link: `https://wa.me/${n.digits}?text=${encodeURIComponent(text)}`, reason: null };
   }
 };
+
+/**
+ * Which number the door QR opens. The WhatsApp service only ever gives the last 4 digits of the
+ * linked phone (it masks on purpose), so the full number is the shop's own verified phone, and it
+ * must end the same way -- otherwise the QR would open a chat nobody reads.
+ */
+export function doorNumber(linked: { status: string; digits: string | null } | null, businessPhone: string | null | undefined): { digits: string } | { fix: string; reason: string } {
+  if (linked?.status !== 'CONNECTED') return { fix: 'WHATSAPP', reason: "Link the shop's WhatsApp number in Settings first. The QR opens a chat with that number." };
+  const own = normalisePhone(businessPhone);
+  const digits = own.ok ? own.value.replace(/\D/g, '') : null;
+  const last4 = (linked.digits ?? '').replace(/\D/g, '').slice(-4);
+  if (!digits) return { fix: 'GENERAL', reason: "Add the shop's phone number in Settings → Profile and shop details. The QR opens a WhatsApp chat with it." };
+  if (last4.length < 4 || !digits.endsWith(last4)) {
+    return { fix: 'GENERAL', reason: `The shop phone in Settings (••••${digits.slice(-4)}) is not the number linked to WhatsApp (••••${last4 || '????'}). Make them the same so the QR reaches your WhatsApp.` };
+  }
+  return { digits };
+}
