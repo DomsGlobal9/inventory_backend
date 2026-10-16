@@ -67,8 +67,7 @@ export const doorCheckins = {
     });
     const row = await prisma.storeCheckin.create({ data: { clientId, locationId: store.id, phone: phone.value, customerId: customer?.id ?? null, createdAt: now } });
 
-    const settings = await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true, businessPhone: true } });
-    const shop = settings?.businessName?.trim() || 'the shop';
+    const shop = (await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true } }))?.businessName?.trim() || 'the shop';
     const first = customer?.name.trim().split(/\s+/)[0];
     const text = first
       ? `Welcome back, ${first}! Someone from ${shop} will be with you in a moment.`
@@ -118,13 +117,13 @@ export const doorCheckins = {
     if (typeof locationId !== 'string' || !locationId) throw badRequest('Say which store.');
     const store = await prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { id: true, name: true } });
     if (!store) throw notFound('That store could not be found.');
-    const settings = await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true, businessPhone: true } });
+    const settings = await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true, businessPhone: true, logoUrl: true } });
     const shop = settings?.businessName?.trim() || 'the shop';
     const code = doorCode(clientId, store.id);
     const text = `Hi! I'm at ${shop}, ${store.name}. Check-in code: IN-${code}`;
     const { shopNumber } = await import('../whatsapp/service');
     const linked = await shopNumber(clientId).catch(() => null);
-    const base = { shop, store: store.name, code: `IN-${code}`, text, number: null as string | null, link: null as string | null };
+    const base = { shop, store: store.name, logo: settings?.logoUrl ?? null, code: `IN-${code}`, text, number: null as string | null, link: null as string | null };
     const n = doorNumber(linked, settings?.businessPhone);
     if ('reason' in n) return { ...base, ...n };
     return { ...base, fix: null, number: n.digits, link: `https://wa.me/${n.digits}?text=${encodeURIComponent(text)}`, reason: null };
