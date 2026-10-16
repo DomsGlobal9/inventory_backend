@@ -5,6 +5,7 @@ import {
   localDayRange, localDayKey, localDayKeyFromParts, previousDayKey, isDayInProgress, todayKey, DEFAULT_TIMEZONE
 } from '../utils/businessDay';
 import { SnapshotService } from './snapshot.service';
+import * as giftVouchers from './gift-vouchers';
 
 /**
  * The day book: what happened on one business day, and whether the books balance.
@@ -649,16 +650,25 @@ export class DayBookService {
       payRows.filter(r => r.kind === kind).map(r => [r.method, { amount: round(Number(r._sum.amount ?? 0)), count: r._count._all }])
     ) as Record<string, { amount: number; count: number }>;
     const taken = moneyOf('PAYMENT'), paidBack = moneyOf('REFUND');
+    // Gift vouchers sold, spent and returned onto: money owed back in goods, never sales or profit.
+    const vouchers = await giftVouchers.dayBook(clientId, start, end, locationId ?? null);
+    const giftVoucherSection = vouchers.soldCount || vouchers.usedPaise || vouchers.refundedPaise || vouchers.owedPaise ? {
+      sold: round(vouchers.soldPaise / 100), soldCount: vouchers.soldCount,
+      soldBy: Object.fromEntries(Object.entries(vouchers.soldByMethodPaise).map(([m, p]) => [m, round(p / 100)])),
+      used: round(vouchers.usedPaise / 100), returnedOnto: round(vouchers.refundedPaise / 100), owedNow: round(vouchers.owedPaise / 100)
+    } : null;
     const money = {
       taken,
       paidBack,
-      // Cash that should be in the drawer from today's counter: taken in cash less paid back in cash.
-      cashInDrawer: round((taken.CASH?.amount ?? 0) - (paidBack.CASH?.amount ?? 0))
+      // Cash that should be in the drawer from today's counter: taken in cash less paid back in cash,
+      // plus cash taken for gift vouchers (it goes in the same drawer).
+      cashInDrawer: round((taken.CASH?.amount ?? 0) - (paidBack.CASH?.amount ?? 0) + (vouchers.soldByMethodPaise.CASH ?? 0) / 100)
     };
 
     return {
       date: dayKey,
       money,
+      giftVouchers: giftVoucherSection,
       // Set for a range only: the days it covers, first and last included, and a row for each.
       range: isRange ? { from: fromKey, to: toKey, dayCount: perDay.size } : null,
       days: isRange ? [...perDay.values()] : null,

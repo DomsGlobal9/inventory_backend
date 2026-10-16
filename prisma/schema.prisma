@@ -68,6 +68,10 @@ enum PaymentMethod {
   /// Recorded only once it has cleared (reference: "cheque number / bank"). A bounced cheque was
   /// never recorded, so nothing has to be undone.
   CHEQUE
+  /// A gift voucher spent on a bill (reference: its code). Money the shop took when the voucher was
+  /// sold, not money in now -- like POINTS and CREDIT. Added 16 Oct 2026: the code that knows it is
+  /// deployed before any row carries it (the shared-DB enum rule).
+  VOUCHER
 }
 
 enum TransferStatus {
@@ -3882,10 +3886,14 @@ model PosHold {
   id           String @id @default(uuid())
   clientId     String @map("client_id")
   connectionId String @map("connection_id")
-  customerId   String @map("customer_id")
-  /// POINTS | CREDIT
+  /// The customer whose points or credit are held. Null for a VOUCHER hold: a voucher can be spent
+  /// by whoever holds the code, walk-ins included.
+  customerId   String? @map("customer_id")
+  /// VOUCHER holds only: the voucher whose balance is held.
+  giftVoucherId String? @map("gift_voucher_id")
+  /// POINTS | CREDIT | VOUCHER
   kind         String
-  /// Points for POINTS, paise for CREDIT.
+  /// Points for POINTS, paise for CREDIT and VOUCHER.
   amount       Int
   /// What it takes off the bill, in paise.
   valuePaise   Int    @map("value_paise")
@@ -3904,6 +3912,7 @@ model PosHold {
 
   @@unique([clientId, idempotencyKey])
   @@index([clientId, customerId, status])
+  @@index([clientId, giftVoucherId, status])
   @@index([status, expiresAt])
   @@map("pos_holds")
 }
@@ -4794,4 +4803,73 @@ model StoreCheckin {
 
   @@index([clientId, locationId, createdAt])
   @@map("store_checkins")
+}
+
+/// Gift vouchers (PLAN-gift-vouchers.md). Sold at the till, spent at any till of the shop. Inventory
+/// holds the balance; the till asks, reserves (pos_holds kind VOUCHER) and confirms, as for store
+/// credit. status is TEXT, not an enum (the shared-DB rule).
+model GiftVoucher {
+  id           String    @id @default(uuid())
+  clientId     String    @map("client_id")
+  /// GV-XXXX-XXXX, upper case.
+  code         String
+  initialPaise Int       @map("initial_paise")
+  /// The sum of its entries.
+  balancePaise Int       @map("balance_paise")
+  /// ACTIVE | BLOCKED. Expired is worked out from expiresAt, never stored.
+  status       String    @default("ACTIVE")
+  expiresAt    DateTime  @map("expires_at")
+  soldAt       DateTime  @default(now()) @map("sold_at")
+  soldLocationId   String? @map("sold_location_id")
+  soldConnectionId String? @map("sold_connection_id")
+  buyerCustomerId  String? @map("buyer_customer_id")
+  buyerName        String? @map("buyer_name")
+  buyerPhone       String? @map("buyer_phone")
+  /// The till's key for the sale: the same key again answers the same voucher.
+  idempotencyKey   String? @map("idempotency_key")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@unique([clientId, code])
+  @@unique([clientId, idempotencyKey])
+  @@index([clientId, soldAt])
+  @@map("gift_vouchers")
+}
+
+/// Every change to a voucher's balance, and every extension or block, with who and why.
+model GiftVoucherEntry {
+  id           String   @id @default(uuid())
+  clientId     String   @map("client_id")
+  voucherId    String   @map("voucher_id")
+  /// SOLD | USED | REFUNDED | EXTENDED | BLOCKED | UNBLOCKED
+  kind         String
+  /// Signed paise: + sold or refunded back, - used. 0 for EXTENDED / BLOCKED / UNBLOCKED.
+  amountPaise  Int      @map("amount_paise")
+  balancePaise Int      @map("balance_paise")
+  /// SOLD only: how the voucher was paid for, [{ method, amountPaise, reference }] -- the Day Book's money in.
+  payments     Json?
+  locationId   String?  @map("location_id")
+  salesOrderId String?  @map("sales_order_id")
+  invoiceNo    String?  @map("invoice_no")
+  note         String?
+  createdBy    String?  @map("created_by")
+  onceKey      String   @unique @map("once_key")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, voucherId, createdAt])
+  @@index([clientId, createdAt])
+  @@map("gift_voucher_entries")
+}
+
+/// A shop's gift-voucher rules. No row means switched off.
+model GiftVoucherSettings {
+  clientId    String   @id @map("client_id")
+  enabled     Boolean  @default(false)
+  validMonths Int      @default(12) @map("valid_months")
+  minPaise    Int      @default(50000) @map("min_paise")
+  maxPaise    Int      @default(5000000) @map("max_paise")
+  updatedBy   String?  @map("updated_by")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("gift_voucher_settings")
 }

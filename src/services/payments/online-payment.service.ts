@@ -604,7 +604,7 @@ const ORDER_MONEY: Purpose[] = ['CANCELLED', 'OWNER', 'RETURN'];
 async function givenBackElsewhere(db: any, salesOrderId: string | null): Promise<number> {
   if (!salesOrderId) return 0;
   const sum = await db.salesOrderPayment.aggregate({
-    where: { salesOrderId, kind: 'REFUND', method: { notIn: ['ONLINE', 'POINTS'] } }, _sum: { amount: true }
+    where: { salesOrderId, kind: 'REFUND', method: { notIn: ['ONLINE', 'POINTS', 'VOUCHER'] } }, _sum: { amount: true }
   });
   return sum._sum.amount ? toMinor(sum._sum.amount as any) : 0;
 }
@@ -1269,7 +1269,7 @@ export async function activity(clientId: string, limit = 30) {
   const byId = new Map(orders.map(o => [o.id, o]));
   const outside = await prisma.salesOrderPayment.groupBy({
     by: ['salesOrderId'],
-    where: { clientId, salesOrderId: { in: orders.map(o => o.id) }, kind: 'REFUND', method: { notIn: ['ONLINE', 'POINTS'] } },
+    where: { clientId, salesOrderId: { in: orders.map(o => o.id) }, kind: 'REFUND', method: { notIn: ['ONLINE', 'POINTS', 'VOUCHER'] } },
     _sum: { amount: true }
   });
   const outsideOf = new Map(outside.map(o => [o.salesOrderId, o._sum.amount ? toMinor(o._sum.amount as any) : 0]));

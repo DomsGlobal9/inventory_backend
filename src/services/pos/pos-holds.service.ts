@@ -20,10 +20,11 @@ import { getSettings, mostUsable, pointsForPayment, valueOf, rupeesOf } from '..
 import { post as postPoints } from '../loyalty/loyalty.service';
 import { spendOnSale as spendCredit } from '../store-credit/store-credit.service';
 import { groupNamesOf } from '../customer-groups';
+import { lockForHold, spendOnSale as spendVoucher } from '../gift-vouchers';
 
 type Tx = Prisma.TransactionClient;
 export const HOLD_TTL_MS = 10 * 60 * 1000;
-const KINDS = ['POINTS', 'CREDIT'] as const;
+const KINDS = ['POINTS', 'CREDIT', 'VOUCHER'] as const;
 export type HoldKind = typeof KINDS[number];
 
 /** A refusal the till shows as one plain line; `answer` is its code on the wire. */
@@ -109,14 +110,28 @@ export async function reserve(clientId: string, connectionId: string, body: any)
   const key = typeof body?.idempotencyKey === 'string' ? body.idempotencyKey.trim() : '';
   if (!key || key.length > 120) throw badRequest('Send an idempotencyKey for the reserve, up to 120 characters.');
   const kind = String(body?.kind ?? '') as HoldKind;
-  if (!KINDS.includes(kind)) throw badRequest('kind must be POINTS or CREDIT.');
+  if (!KINDS.includes(kind)) throw badRequest('kind must be POINTS, CREDIT or VOUCHER.');
   const amount = Number(body?.amount);
   const billPaise = Number(body?.billPaise);
-  if (!Number.isInteger(amount) || amount <= 0) throw badRequest(kind === 'POINTS' ? 'Say how many points, a whole number above zero.' : 'Say the credit in whole paise, above zero.');
+  if (!Number.isInteger(amount) || amount <= 0) throw badRequest(kind === 'POINTS' ? 'Say how many points, a whole number above zero.' : kind === 'VOUCHER' ? 'Say the voucher amount in whole paise, above zero.' : 'Say the credit in whole paise, above zero.');
   if (!Number.isInteger(billPaise) || billPaise <= 0) throw badRequest('Say the bill in whole paise, in billPaise.');
 
   const same = await prisma.posHold.findUnique({ where: { clientId_idempotencyKey: { clientId, idempotencyKey: key } } });
   if (same) return shape(same);
+
+  if (kind === 'VOUCHER') {
+    // A voucher is spent by whoever holds the code -- a walk-in too -- so the lock is the voucher's row.
+    if (amount > billPaise) throw badRequest(`A voucher cannot pay more than the bill (${rupeesOf(billPaise)}).`);
+    return prisma.$transaction(async (tx) => {
+      const { voucher, available } = await lockForHold(tx, clientId, connectionId, body?.voucherCode);
+      if (amount > available) throw refusal(409, 'NOT_ENOUGH', `This voucher has ${rupeesOf(available)} left.`);
+      const now = new Date();
+      const made = await tx.posHold.create({
+        data: { clientId, connectionId, customerId: null, giftVoucherId: voucher.id, kind, amount, valuePaise: amount, billPaise, idempotencyKey: key, status: 'RESERVED', expiresAt: new Date(now.getTime() + HOLD_TTL_MS) }
+      });
+      return shape(made);
+    });
+  }
 
   return prisma.$transaction(async (tx) => {
     const c = await tillCustomer(tx, clientId, body?.customerRef);
@@ -187,19 +202,20 @@ export async function sweep(now = new Date()) {
  * a warning says so -- the bill is the bill. Returns what the points and credit paid, for earning.
  */
 export async function settleOnSale(
-  tx: Tx, clientId: string, order: { id: string; customerId: string | null; externalOrderId?: string | null },
+  tx: Tx, clientId: string, order: { id: string; customerId: string | null; externalOrderId?: string | null; locationId?: string | null },
   payments: { method: string; amountPaise: number; holdId?: string | null }[]
-): Promise<{ pointsPaidMinor: number; creditPaidMinor: number; warnings: string[] }> {
-  const out = { pointsPaidMinor: 0, creditPaidMinor: 0, warnings: [] as string[] };
+): Promise<{ pointsPaidMinor: number; creditPaidMinor: number; voucherPaidMinor: number; warnings: string[] }> {
+  const out = { pointsPaidMinor: 0, creditPaidMinor: 0, voucherPaidMinor: 0, warnings: [] as string[] };
   for (const row of payments) {
-    if (row.method !== 'POINTS' && row.method !== 'CREDIT') continue;
-    const what = row.method === 'POINTS' ? 'points' : 'store credit';
-    const untouched = `The customer's ${what} were not changed.`;
+    if (row.method !== 'POINTS' && row.method !== 'CREDIT' && row.method !== 'VOUCHER') continue;
+    const what = row.method === 'POINTS' ? 'points' : row.method === 'VOUCHER' ? 'a gift voucher' : 'store credit';
+    const untouched = row.method === 'VOUCHER' ? 'The voucher was not changed.' : `The customer's ${what} were not changed.`;
     if (!row.holdId) { out.warnings.push(`This bill was part-paid with ${what} but names no hold, so Inventory could not settle it. ${untouched}`); continue; }
     const h = await tx.posHold.findFirst({ where: { id: String(row.holdId), clientId } });
     if (!h) { out.warnings.push(`Hold ${row.holdId} on this bill is not one Inventory gave. ${untouched}`); continue; }
-    if (h.kind !== row.method) { out.warnings.push(`Hold ${h.id} is for ${h.kind === 'POINTS' ? 'points' : 'store credit'}, not ${what}. ${untouched}`); continue; }
-    if (h.customerId !== order.customerId) { out.warnings.push(`Hold ${h.id} belongs to another customer. ${untouched}`); continue; }
+    if (h.kind !== row.method) { out.warnings.push(`Hold ${h.id} is for ${h.kind === 'POINTS' ? 'points' : h.kind === 'VOUCHER' ? 'a gift voucher' : 'store credit'}, not ${what}. ${untouched}`); continue; }
+    // A voucher belongs to whoever holds the code; points and credit to one customer.
+    if (h.kind !== 'VOUCHER' && h.customerId !== order.customerId) { out.warnings.push(`Hold ${h.id} belongs to another customer. ${untouched}`); continue; }
     if (h.salesOrderId && h.salesOrderId !== order.id) { out.warnings.push(`Hold ${h.id} was already used by another bill. ${untouched}`); continue; }
     if (h.status === 'SWEPT') { out.warnings.push(`Hold ${h.id} expired before the sale was confirmed. ${untouched}`); continue; }
     if (h.status === 'RELEASED') { out.warnings.push(`Hold ${h.id} was released before this bill landed. ${untouched}`); continue; }
@@ -207,11 +223,14 @@ export async function settleOnSale(
       out.warnings.push(`The ${what} row says ${rupeesOf(Math.round(row.amountPaise))} but hold ${h.id} reserved ${rupeesOf(h.valuePaise)}; the hold's amount was used.`);
     }
     try {
-      if (h.kind === 'POINTS') {
-        await postPoints(tx, { clientId, customerId: h.customerId, kind: 'USED', points: -h.amount, onceKey: `USED:${order.id}`, salesOrderId: order.id, activity: true, note: `${rupeesOf(h.valuePaise)} off the bill, at the till` });
+      if (h.kind === 'VOUCHER') {
+        await spendVoucher(tx, clientId, { voucherId: h.giftVoucherId!, paise: h.amount, orderId: order.id, invoiceNo: h.invoiceNo ?? order.externalOrderId ?? null, holdId: h.id, locationId: order.locationId ?? null });
+        out.voucherPaidMinor += h.valuePaise;
+      } else if (h.kind === 'POINTS') {
+        await postPoints(tx, { clientId, customerId: h.customerId!, kind: 'USED', points: -h.amount, onceKey: `USED:${order.id}`, salesOrderId: order.id, activity: true, note: `${rupeesOf(h.valuePaise)} off the bill, at the till` });
         out.pointsPaidMinor += h.valuePaise;
       } else {
-        await spendCredit(tx, { clientId, customerId: h.customerId, orderId: order.id, paise: h.amount, userId: null });
+        await spendCredit(tx, { clientId, customerId: h.customerId!, orderId: order.id, paise: h.amount, userId: null });
         out.creditPaidMinor += h.valuePaise;
       }
     } catch (e: any) {

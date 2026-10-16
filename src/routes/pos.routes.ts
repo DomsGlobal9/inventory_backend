@@ -28,6 +28,7 @@ import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
 import { checkReturnAmounts, exchangeTooEarly, type PosEventResult } from '../services/pos/pos-events.service';
 import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptWriteOff, acceptExchange, acceptSkip, saleStatus } from '../services/pos/pos-queue.service';
 import { SKIP_KIND } from '../utils/posConnection';
+import * as giftVouchers from '../services/gift-vouchers';
 
 const router = Router();
 
@@ -221,6 +222,25 @@ router.delete('/holds/:holdId', async (req: Request, res: Response, next: NextFu
     const ctx = storefrontContext(req, res);
     if (!ctx) return;
     res.json({ success: true, data: await holds.release(ctx.clientId, String(req.params.holdId)) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
+});
+
+/**
+ * Gift vouchers (PLAN-gift-vouchers.md): the till takes the money, then asks Inventory for the code;
+ * a code is checked before it is spent, and spent through /holds with kind VOUCHER.
+ */
+router.post('/vouchers', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await giftVouchers.sell(ctx.clientId, { connectionId: ctx.connectionId, locationId: ctx.locationIds?.[0] ?? null }, req.body) });
+  } catch (error: any) { if (!holdFailure(res, error)) next(error); }
+});
+router.get('/vouchers/:code', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await giftVouchers.check(ctx.clientId, ctx.connectionId, req.params.code, req.query.billPaise) });
   } catch (error: any) { if (!holdFailure(res, error)) next(error); }
 });
 

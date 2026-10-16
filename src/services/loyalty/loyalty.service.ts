@@ -306,7 +306,8 @@ export async function earnOnCollection(tx: Tx, clientId: string, orderId: string
   let money = 0, notMoney = 0;
   for (const p of order.payments) {
     const minor = toMinor(p.amount as any);
-    const isMoney = p.method !== 'POINTS' && p.method !== 'CREDIT' && !p.settlesReturnId;
+    // A gift voucher was paid for when it was sold: spending it is not money in, and earns nothing.
+    const isMoney = p.method !== 'POINTS' && p.method !== 'CREDIT' && p.method !== 'VOUCHER' && !p.settlesReturnId;
     if (p.kind === 'PAYMENT') { if (isMoney) money += minor; else notMoney += minor; }
     else if (isMoney && !p.salesReturnId) money -= minor; // a bounced cheque; a return's refund is the return's business
   }

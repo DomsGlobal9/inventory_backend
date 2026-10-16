@@ -32,7 +32,7 @@ import {
 } from './pos-events.service';
 import { planReturnLines } from './pos-returns.service';
 
-const METHODS: RefundMethod[] = ['CASH', 'UPI', 'CARD', 'CREDIT'];
+const METHODS: RefundMethod[] = ['CASH', 'UPI', 'CARD', 'CREDIT', 'VOUCHER'];
 
 export type PosExchangeEvent = {
   /** The till's own number for the whole exchange. Idempotency hangs off this. */

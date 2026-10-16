@@ -32,7 +32,7 @@ export const RBAC_DATA = {
         'offer:publish_external', 'offer:manual_discount_unlimited', 'offer:settings',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
         'admin:locations', 'admin:catalog', 'admin:users', 'team:view_password', 'whatsapp:manage',
-        'loyalty:manage', 'campaign:send', 'return:counter'
+        'loyalty:manage', 'campaign:send', 'return:counter', 'voucher:manage'
       ]
     },
 
@@ -54,7 +54,9 @@ export const RBAC_DATA = {
         // customer, and they may take money off by hand -- but only with a reason, which is kept
         // on the order. A system that forbids this gets worked around by editing the product's
         // price, which is worse for everybody.
-        'offer:view', 'offer:manual_discount'
+        'offer:view', 'offer:manual_discount',
+        // Who holds a voucher and what is left, to answer a customer at the counter.
+        'voucher:view'
       ]
     },
 

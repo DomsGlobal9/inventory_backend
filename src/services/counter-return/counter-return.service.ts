@@ -29,6 +29,7 @@ import { post as postCredit, rupees } from '../store-credit';
 import { normalisePhone } from '../../lib/phone';
 import * as onlinePayments from '../payments/online-payment.service';
 import { OnlineShopRuleError } from '../online-shop/rules';
+import { refundOntoVouchers } from '../gift-vouchers';
 
 export type Actor = { id: string; clientId: string; name?: string | null; permissions?: string[]; roles?: string[] };
 const may = (a: Actor, key: string) => holdsEverything(a.permissions, a.roles) || grants(a.permissions ?? [], key);
@@ -39,9 +40,10 @@ function requireCounter(a: Actor) {
   }
 }
 
-export type RefundMethod = 'CASH' | 'UPI' | 'CARD' | 'CREDIT';
+// VOUCHER only from the till (pos-returns): the part of a bill paid by gift voucher goes back onto it.
+export type RefundMethod = 'CASH' | 'UPI' | 'CARD' | 'CREDIT' | 'VOUCHER';
 const METHODS: RefundMethod[] = ['CASH', 'UPI', 'CARD', 'CREDIT'];
-const METHOD_WORD: Record<RefundMethod, string> = { CASH: 'cash', UPI: 'UPI', CARD: 'card', CREDIT: 'store credit' };
+const METHOD_WORD: Record<RefundMethod, string> = { CASH: 'cash', UPI: 'UPI', CARD: 'card', CREDIT: 'store credit', VOUCHER: 'the gift voucher' };
 /**
  * The counter's ways, plus ONLINE: back through Razorpay to however the customer paid. Only for a bill
  * paid online, and only from the counter's screens -- the till records what IT did, and cannot send
@@ -340,7 +342,13 @@ export async function writeRefund(tx: Prisma.TransactionClient, input: {
       note: input.exchange ? `Exchange: return ${input.returnNumber}` : input.method === 'CREDIT' ? `Return ${input.returnNumber}` : `Return ${input.returnNumber}: the part paid with store credit`
     });
   }
-  if (otherMinor > 0) {
+  if (otherMinor > 0 && input.method === 'VOUCHER') {
+    // Never money out: back onto the voucher(s) that paid this bill (the code, if given, picks one).
+    const codes = await refundOntoVouchers(tx, input.clientId, { orderId: input.orderId, returnId: input.returnId, paise: otherMinor, code: input.reference, locationId: input.locationId });
+    await tx.salesOrderPayment.create({
+      data: { clientId: input.clientId, salesOrderId: input.orderId, locationId: input.locationId, kind: 'REFUND', method: 'VOUCHER', amount: fromMinor(otherMinor), reference: codes.join(', ').slice(0, 40), salesReturnId: input.returnId, receivedById: input.userId }
+    });
+  } else if (otherMinor > 0) {
     await tx.salesOrderPayment.create({
       data: { clientId: input.clientId, salesOrderId: input.orderId, locationId: input.locationId, kind: 'REFUND', method: input.method!, amount: fromMinor(otherMinor), reference: input.reference, salesReturnId: input.returnId, receivedById: input.userId }
     });

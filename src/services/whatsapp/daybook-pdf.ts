@@ -30,7 +30,7 @@ const money = (v: unknown) => `Rs. ${Number(v || 0).toLocaleString('en-IN', { ma
  * missing from it is not printed at all. Money paid through the online shop would have vanished from
  * the Day Book PDF, with the totals still counting it -- a report that does not add up to itself.
  */
-const METHOD_NAMES: Record<string, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Loyalty points', CREDIT: 'Store credit', ONLINE: 'Online (Razorpay)', BANK_TRANSFER: 'Bank transfer', CHEQUE: 'Cheque' };
+const METHOD_NAMES: Record<string, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Loyalty points', CREDIT: 'Store credit', ONLINE: 'Online (Razorpay)', BANK_TRANSFER: 'Bank transfer', CHEQUE: 'Cheque', VOUCHER: 'Gift voucher' };
 function moneyRows(d: any): string[][] {
   const taken = d.money?.taken ?? {}, back = d.money?.paidBack ?? {};
   return Object.keys(METHOD_NAMES).filter(m => taken[m] || back[m]).map(m => [
@@ -198,6 +198,19 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
           widths: ['40%', '30%', '30%'],
           align: ['left', 'right', 'right'],
           rows: moneyRows(d)
+        })) : null,
+
+      d.giftVouchers ? Section({ title: 'Gift vouchers', subtitle: 'Money owed back in goods. Not counted as sales or profit.' },
+        Table({
+          head: ['', 'Amount'],
+          widths: ['70%', '30%'],
+          align: ['left', 'right'],
+          rows: [
+            [`Sold (${d.giftVouchers.soldCount})${Object.keys(d.giftVouchers.soldBy).length ? ` · ${Object.entries(d.giftVouchers.soldBy).map(([m, v]: any) => `${METHOD_NAMES[m] ?? m} ${money(v)}`).join(', ')}` : ''}`, money(d.giftVouchers.sold)],
+            ['Used on bills', money(d.giftVouchers.used)],
+            ...(d.giftVouchers.returnedOnto ? [['Returned onto vouchers', money(d.giftVouchers.returnedOnto)]] : []),
+            ['Still owed to customers, all vouchers', money(d.giftVouchers.owedNow)]
+          ]
         })) : null,
 
       isRange && d.days?.length > 0 ? h(View, { style: styles.section },

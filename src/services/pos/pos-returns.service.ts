@@ -24,7 +24,7 @@ import { returnService } from '../return.service';
 import { writeRefund, creditShare, type RefundMethod } from '../counter-return/counter-return.service';
 import { POS_SOURCE, dateFromTill, type PosEventResult, type PosLine } from './pos-events.service';
 
-const METHODS: RefundMethod[] = ['CASH', 'UPI', 'CARD', 'CREDIT'];
+const METHODS: RefundMethod[] = ['CASH', 'UPI', 'CARD', 'CREDIT', 'VOUCHER'];
 
 /**
  * One return per credit note, enforced by the database rather than by looking first.

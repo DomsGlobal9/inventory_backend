@@ -19,6 +19,7 @@ import purchaseOrderRoutes from './purchase-order.routes';
 import reportRoutes from './report.routes';
 import customerRoutes from './customer.routes';
 import customerGroupRoutes from './customer-groups.routes';
+import giftVoucherRoutes from './gift-voucher.routes';
 import salesOrderRoutes from './sales-order.routes';
 import counterSaleRoutes from './counter-sale.routes';
 import shelvesRoutes from './shelves.routes';
@@ -182,6 +183,7 @@ router.use('/reorder', hideCostUnlessPermitted({
 router.use('/daybook', dayBookRoutes);
 router.use('/reports', hideCost, reportRoutes);
 router.use('/customers', hideCost, customerRoutes);
+router.use('/gift-vouchers', giftVoucherRoutes);
 router.use('/customer-groups', customerGroupRoutes);
 router.use('/sales-orders', hideCost, salesOrderRoutes);
 // Selling at the counter. hideCost as a second guard: nothing here selects cost, and nothing should.

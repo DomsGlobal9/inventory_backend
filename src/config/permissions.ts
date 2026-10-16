@@ -177,6 +177,12 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'loyalty:manage',  group: 'Selling', label: "Set the loyalty points rules, and change a customer's points by hand",
     implies: ['customer:view'], sensitive: true },
   { key: 'campaign:view',   group: 'Selling', label: 'See WhatsApp campaigns and how they did', implies: ['customer:view'] },
+
+  // Gift vouchers (PLAN-gift-vouchers.md). Selling and spending one happens at the POS till with its
+  // own key. In Inventory: seeing who holds what, and the few hand changes a shop needs.
+  { key: 'voucher:view',    group: 'Selling', label: 'See gift vouchers, their balances and history' },
+  { key: 'voucher:manage',  group: 'Selling', label: 'Switch gift vouchers on, set their rules, and extend or block a voucher',
+    implies: ['voucher:view'], sensitive: true },
   { key: 'campaign:send',   group: 'Selling', label: 'Write and send WhatsApp campaigns to customers',
     implies: ['campaign:view'], sensitive: true },
 

@@ -432,12 +432,12 @@ export async function writeSaleInTransaction(
 
   const warningsOut: string[] = [...referenceWarnings];
   const billMinor = event.lines.reduce((a, l) => a + Math.round(l.lineTotalPaise), 0);
-  const settled = await settleHolds(tx, clientId, { id: made.id, customerId: customerPhone ? made.customerId : null, externalOrderId: event.invoiceNo }, event.payments ?? []);
+  const settled = await settleHolds(tx, clientId, { id: made.id, customerId: customerPhone ? made.customerId : null, externalOrderId: event.invoiceNo, locationId }, event.payments ?? []);
   warningsOut.push(...settled.warnings);
   if (customerPhone && made.customerId) {
-    // Money paid is what the till says it took in money: every POINTS / CREDIT row earns nothing,
+    // Money paid is what the till says it took in money: every POINTS / CREDIT / VOUCHER row earns nothing,
     // whether or not its hold could be settled (an unsettled row is already a warning above).
-    const notMoney = (event.payments ?? []).filter(p => p.method === 'POINTS' || p.method === 'CREDIT').reduce((a, p) => a + Math.round(p.amountPaise), 0);
+    const notMoney = (event.payments ?? []).filter(p => p.method === 'POINTS' || p.method === 'CREDIT' || p.method === 'VOUCHER').reduce((a, p) => a + Math.round(p.amountPaise), 0);
     // Udhaar: what was not paid yet earns when it is collected (pos-payments → earnOnCollection).
     const paidAll = (event.payments ?? []).reduce((a, p) => a + Math.round(p.amountPaise), 0);
     const owedMinor = billMinor + (Number.isFinite(roundOffPaise) ? roundOffPaise : 0) - paidAll;

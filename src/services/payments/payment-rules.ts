@@ -22,7 +22,7 @@
 import { badRequest } from '../../utils/httpError';
 import { toMinor } from '../pricing';
 
-export type PaymentMethod = 'CASH' | 'UPI' | 'CARD' | 'POINTS' | 'CREDIT' | 'BANK_TRANSFER' | 'CHEQUE';
+export type PaymentMethod = 'CASH' | 'UPI' | 'CARD' | 'POINTS' | 'CREDIT' | 'BANK_TRANSFER' | 'CHEQUE' | 'VOUCHER';
 
 export interface PaymentInput {
   method: PaymentMethod;
@@ -42,7 +42,7 @@ export interface PlannedPayment {
 export const MAX_PAYMENT_ROWS = 6;
 const REFERENCE_MAX = 40;
 
-const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Points', CREDIT: 'Store credit', BANK_TRANSFER: 'Bank transfer', CHEQUE: 'Cheque' };
+const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: 'Cash', UPI: 'UPI', CARD: 'Card', POINTS: 'Points', CREDIT: 'Store credit', BANK_TRANSFER: 'Bank transfer', CHEQUE: 'Cheque', VOUCHER: 'Gift voucher' };
 
 const rupees = (minor: number) =>
   `₹${(minor / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -114,6 +114,12 @@ export function planPayments(totalMinor: number, rows: PaymentInput[] | null | u
       creditRows += 1;
       if (row.cashReceived !== null && row.cashReceived !== undefined) throw badRequest('Only cash has change. Enter the store credit amount exactly.');
       return { method, amountMinor, cashReceivedMinor: null, changeMinor: null, reference: null };
+    }
+    // A gift voucher: whether it holds that much is the voucher module's question, asked inside the
+    // sale's transaction through the hold. Its code is the reference. Several vouchers may share a bill.
+    if (method === 'VOUCHER') {
+      if (row.cashReceived !== null && row.cashReceived !== undefined) throw badRequest('Only cash has change. Enter the voucher amount exactly.');
+      return { method, amountMinor, cashReceivedMinor: null, changeMinor: null, reference: cleanReference(method, row.reference) };
     }
     if (method === 'POINTS') {
       pointsRows += 1;
