@@ -148,6 +148,19 @@ async function main() {
   })) as any });
   const history: any = await customerCard.lookup(C, '9848011188', store.id);
   check('205 bills are all counted, not only the latest 200', history.visits.bills === 205, history.visits);
+
+  console.log('\nG. EDGES');
+  const ways = ['+91 98480 11122', '098480 11122', '919848011122', '9848011122'];
+  const names = await Promise.all(ways.map(w => customerCard.lookup(C, w, store.id).then((r: any) => r.customer?.name)));
+  check('the same number typed four ways finds the same customer', names.every(x => x === 'Meena Iyer'), names);
+  const strangeStore: any = await customerCard.lookup(C, '9848011122', other.id.replace(/.$/, '0'));
+  check('a store that is not this shop\'s gives no picks, and no error', strangeStore.customer?.name === 'Meena Iyer' && strangeStore.picks.length === 0);
+  await customerCard.addNote(C, customer.id, 'line one\nline two\t<script>x</script>', null);
+  const tidy: any = await customerCard.lookup(C, '9848011122', store.id);
+  check('a note typed over several lines stays one line (and is kept as plain text)', /: line one line two <script>x<\/script>$/.test(tidy.customer.notes[0]), tidy.customer.notes[0]);
+  const gone = await prisma.customer.create({ data: { clientId: C, customerCode: `CG-${STAMP}`, name: 'Deleted Person', phone: '+919848011133', deletedAt: new Date() } });
+  check('a deleted customer is not shown', (await customerCard.lookup(C, '9848011133', store.id)).customer === null);
+  void gone;
 }
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {

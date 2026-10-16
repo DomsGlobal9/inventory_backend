@@ -63,7 +63,7 @@ export const doorCheckins = {
     }
 
     const customer = await prisma.customer.findFirst({
-      where: { clientId, phone: phone.value, deletedAt: null }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true }
+      where: { clientId, phone: phone.value, deletedAt: null }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, whatsappStoppedAt: true }
     });
     const row = await prisma.storeCheckin.create({ data: { clientId, locationId: store.id, phone: phone.value, customerId: customer?.id ?? null, createdAt: now } });
 
@@ -72,6 +72,9 @@ export const doorCheckins = {
     const text = first
       ? `Welcome back, ${first}! Someone from ${shop} will be with you in a moment.`
       : `Welcome to ${shop}! Someone will be with you in a moment.`;
+    // Somebody who replied STOP gets nothing, not even this: the WhatsApp Service would refuse it
+    // anyway, and the shop's message log would show a failed welcome for no reason.
+    if (customer?.whatsappStoppedAt) return { id: row.id, fresh: true };
     // Best effort: a shop whose WhatsApp is not linked still sees the customer in the list.
     await checkinWelcome.send({ clientId, to: phone.value, text, idempotencyKey: `welcome:${row.id}` })
       .catch(err => console.error('[door-checkin] welcome not sent:', (err as Error)?.message));

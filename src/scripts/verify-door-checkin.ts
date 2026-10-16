@@ -89,6 +89,40 @@ async function main() {
   check('a shop with no WhatsApp linked gets no link, and is told why', qr.link === null && /Link the shop's WhatsApp/.test(qr.reason ?? ''), qr);
   const notMine = await doorCheckins.doorQr(C, elsewhere.id).then(() => null, e => e);
   check('another shop\'s store is refused', notMine?.statusCode === 404);
+
+  console.log('\nF. EDGES');
+  // A store that has been closed (inactive): its old standee must not put anybody anywhere.
+  const closed = await prisma.stockLocation.create({ data: { clientId: C, name: 'Closed Store', code: `DX-${STAMP}`, type: 'STORE' as any, active: false } });
+  await arrive(C, '919848033322', doorCode(C, closed.id));
+  check('a closed store\'s old QR records nothing', (await rows({ phone: '+919848033322' })).length === 0);
+
+  // A customer who replied STOP: shown to staff, but no welcome is even tried.
+  await prisma.customer.create({ data: { clientId: C, customerCode: `DS-${STAMP}`, name: 'Stopped Person', phone: '+919848033344', whatsappStoppedAt: new Date() } });
+  const before2 = sent.length;
+  await arrive(C, '919848033344', mainCode);
+  check('someone who replied STOP shows in the list, and gets no welcome', (await rows({ phone: '+919848033344' })).length === 1 && sent.length === before2);
+
+  // The WhatsApp Service down: the arrival is still recorded and the event still handled.
+  const realSend = checkinWelcome.send;
+  checkinWelcome.send = async () => { throw new Error('service unreachable'); };
+  const down = await arrive(C, '919848033366', mainCode);
+  checkinWelcome.send = realSend;
+  check('the WhatsApp Service down: the arrival is still recorded, nothing breaks', down.handled === true && (await rows({ phone: '+919848033366' })).length === 1);
+
+  // Two salespeople pressing "I'll take them" at the same moment: exactly one wins.
+  const fresh = (await rows({ phone: '+919848033366' }))[0];
+  const both = await Promise.allSettled([
+    doorCheckins.take(C, fresh.id, { id: 'u-a', name: 'Anil' }),
+    doorCheckins.take(C, fresh.id, { id: 'u-b', name: 'Bhavna' })
+  ]);
+  const won = both.filter(r => r.status === 'fulfilled').length;
+  const lostWith = both.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
+  const winner = (await prisma.storeCheckin.findUnique({ where: { id: fresh.id } }))?.takenByName;
+  check('two at the same moment: exactly one gets them, the other is told who', won === 1 && lostWith?.reason?.statusCode === 409 && lostWith.reason.message === `${winner} is already with them.`, { won, winner, msg: lostWith?.reason?.message });
+
+  check('another shop asking for this store\'s list gets nothing', (await doorCheckins.list(OTHER, main.id)).length === 0);
+  const nobody = await doorCheckins.take(C, '00000000-0000-0000-0000-000000000000', { id: 'x', name: 'X' }).then(() => null, e => e);
+  check('taking an arrival that does not exist is refused in words', nobody?.statusCode === 404);
 }
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {
