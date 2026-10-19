@@ -51,6 +51,13 @@ async function main() {
     const e = await gv.saveSettings(C, bad, null).then(() => null, x => x);
     check(`a rule that makes no sense is refused (${why})`, e?.statusCode === 400, e?.message);
   }
+  // The till reads the switch from its catalogue, so it can hide "Sell a gift voucher" before taking money (POS ask, 19 Oct).
+  const cat0 = await T.get('/catalogue');
+  check('the till\'s catalogue says vouchers are off, with the default limits', cat0.status === 200 && JSON.stringify(cat0.data?.data?.giftVouchers) === JSON.stringify({ enabled: false, minPaise: 50000, maxPaise: 5000000 }), JSON.stringify(cat0.data?.data?.giftVouchers ?? cat0.status));
+  await gv.saveSettings(C, { enabled: true, validMonths: 12, minPaise: 100000, maxPaise: 2500000 }, 'tester');
+  const cat1 = await T.get('/catalogue');
+  check('...switched on with ₹1,000 to ₹25,000: the catalogue says exactly that', JSON.stringify(cat1.data?.data?.giftVouchers) === JSON.stringify({ enabled: true, minPaise: 100000, maxPaise: 2500000 }), JSON.stringify(cat1.data?.data?.giftVouchers));
+  check('...and the rest of the catalogue is still there (UPI QR field unchanged)', typeof cat1.data?.data?.upiQr?.enabled === 'boolean', JSON.stringify(cat1.data?.data?.upiQr));
   await gv.saveSettings(C, { enabled: true, validMonths: 12, minPaise: 50000, maxPaise: 5000000 }, 'tester');
 
   console.log('\nB. SELLING');

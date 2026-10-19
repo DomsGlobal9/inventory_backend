@@ -90,12 +90,13 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
      * into that column would turn the owner's choice into its opposite (contract, catalogue
      * addition). Measured by the till on the manual part of a bill only, never on an offer.
      */
-    const [{ manualDiscountMaxPercent: max }, gst, store, payAccount, payReady] = await Promise.all([
+    const [{ manualDiscountMaxPercent: max }, gst, store, payAccount, payReady, vouchers] = await Promise.all([
       getShopSettings(ctx.clientId),
       prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true, businessName: true, businessAddress: true, businessPhone: true, receiptFooter: true, returnWindowDays: true, counterReturnMax: true } }),
       prisma.stockLocation.findFirst({ where: { clientId: ctx.clientId, id: { in: ctx.locationIds } }, select: { address: true, phone: true } }),
       prisma.shopPaymentAccount.findUnique({ where: { clientId: ctx.clientId }, select: { upiQrEnabled: true } }),
-      paymentAccounts.readiness(ctx.clientId)
+      paymentAccounts.readiness(ctx.clientId),
+      giftVouchers.getSettings(ctx.clientId)
     ]);
     if (gst?.logoUrl) printLogo(gst.logoUrl).catch(() => undefined);
     res.json({ success: true, data: {
@@ -116,6 +117,9 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
       // as a PNG, for documents that cannot embed WebP (the till's WhatsApp PDF). Same till key.
       // On only when the owner switched it on AND the Razorpay account can take money now.
       upiQr: { enabled: !!payAccount?.upiQrEnabled && payReady.ready },
+      // Settings -> Gift vouchers, so the till hides "Sell a gift voucher" and states the limits BEFORE
+      // taking money. Display only: POST /vouchers stays the authority (VOUCHERS_OFF, AMOUNT).
+      giftVouchers: { enabled: vouchers.enabled, minPaise: vouchers.minPaise, maxPaise: vouchers.maxPaise },
       // Settings -> Returns and exchanges, one rule for both counters. null = no limit (every shop starts
       // there). Past the window, or above staffMax, the till asks for a manager -- never a refusal.
       returns: {
