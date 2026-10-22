@@ -1,4 +1,5 @@
 import { myDay } from '../services/my-day.service';
+import { dashboardOverview } from '../services/dashboard-overview';
 import { Router } from 'express';
 import { dashboardController } from '../controllers/dashboard.controller';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
@@ -12,6 +13,14 @@ router.get('/summary', requirePermission('dashboard:view'), dashboardController.
 router.get('/my-day', requirePermission('dashboard:view'), async (req, res, next) => {
   try {
     res.json({ success: true, data: await myDay((req as any).clientId, (req as any).user ?? {}, (req as any).locationId) });
+  } catch (error) { next(error); }
+});
+
+// The redesigned top half: sales, stock, top sellers, latest orders -- each part only for somebody
+// allowed it (see services/dashboard-overview).
+router.get('/overview', requirePermission('dashboard:view'), async (req, res, next) => {
+  try {
+    res.json({ success: true, data: await dashboardOverview((req as any).clientId, (req as any).user ?? {}, (req as any).locationId) });
   } catch (error) { next(error); }
 });
 
