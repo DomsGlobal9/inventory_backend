@@ -30,6 +30,19 @@ const RECENT_SPEND_MS = 2 * 365 * 86_400_000;
 /** A purchase counts half as much for every year since: last month's size beats one from three years ago. */
 export const weight = (at: Date, now = Date.now()) => 0.5 ** (Math.max(0, now - at.getTime()) / (365 * 86_400_000));
 
+/**
+ * Their colours: half how often they buy a colour, half how much they spend on it. Pieces alone let
+ * two cheap dupattas outvote a ₹38,000 lehenga; money alone lets one wedding buy outvote ten everyday
+ * kurtis. Each half is a share of their whole buying, so the two are on the same scale.
+ */
+export function colourScores(pieces: Map<string, number>, money: Map<string, number>): Map<string, number> {
+  const sum = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0);
+  const p = sum(pieces), r = sum(money);
+  const out = new Map<string, number>();
+  for (const [k, n] of pieces) out.set(k, r > 0 ? 0.5 * n / p + 0.5 * (money.get(k) ?? 0) / r : n / p);
+  return out;
+}
+
 /** Most common first, ties by name so the card does not reshuffle between looks. */
 function top(counts: Map<string, number>, n: number): string[] {
   return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n).map(([k]) => k);
@@ -77,7 +90,7 @@ export const customerCard = {
       orderBy: { createdAt: 'desc' }, take: MAX_BILLS,
       select: {
         createdAt: true, total: true, channel: true,
-        items: { select: { id: true, quantity: true, variantId: true, variant: { select: { size: true, colorName: true, product: { select: { id: true, title: true, dressType: true } } } } } },
+        items: { select: { id: true, quantity: true, unitPrice: true, variantId: true, variant: { select: { size: true, colorName: true, product: { select: { id: true, title: true, dressType: true } } } } } },
         // Goods actually back in the shop; a return only asked for, or turned down, changes nothing.
         returns: { where: { status: { in: BACK_IN_SHOP } }, select: { refundTotal: true, items: { select: { quantity: true, salesOrderItemId: true, dispatchItem: { select: { salesOrderItemId: true } } } } } }
       }
@@ -85,7 +98,7 @@ export const customerCard = {
 
     // Size per kind of garment: a "M" kurti and a "Free Size" saree are both true at once.
     const sizesByKind = new Map<string, Map<string, number>>();
-    const colours = new Map<string, number>(), kinds = new Map<string, number>();
+    const colourPieces = new Map<string, number>(), colourMoney = new Map<string, number>(), kinds = new Map<string, number>();
     const bought = new Set<string>(), boughtProducts = new Set<string>();
     const now = Date.now();
     for (const o of orders) {
@@ -99,7 +112,9 @@ export const customerCard = {
         if (!kept) continue;
         const kind = it.variant.product.dressType?.trim() || 'Other';
         bump(kinds, kind, kept * w);
-        bump(colours, colourFamily(it.variant.colorName), kept * w);
+        const family = colourFamily(it.variant.colorName);
+        bump(colourPieces, family, kept * w);
+        bump(colourMoney, family, kept * Number(it.unitPrice) * w);
         if (!sizesByKind.has(kind)) sizesByKind.set(kind, new Map());
         bump(sizesByKind.get(kind)!, it.variant.size, kept * w);
       }
@@ -110,7 +125,7 @@ export const customerCard = {
     const spend = spendBand((lately.length >= 3 ? lately : kept).map(b => b.paid));
     const topKinds = top(kinds, 3);
     const sizes = topKinds.map(kind => ({ kind, size: top(sizesByKind.get(kind) ?? new Map(), 1)[0] ?? null })).filter(s => s.size);
-    const topColours = top(colours, 3);
+    const topColours = top(colourScores(colourPieces, colourMoney), 3);
 
     return {
       phone: phone.value,

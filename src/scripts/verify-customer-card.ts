@@ -6,7 +6,7 @@
  *   npx tsx src/scripts/verify-customer-card.ts
  */
 import { prisma } from '../lib/prisma';
-import { customerCard, spendBand, sizeKey, weight } from '../services/customer-card';
+import { customerCard, spendBand, sizeKey, weight, colourScores } from '../services/customer-card';
 import { colourFamily } from '../services/customer-card/colours';
 
 const STAMP = Date.now();
@@ -168,6 +168,13 @@ async function main() {
   const fams = names2.map(colourFamily);
   check('colour names from the real catalogue fall into families (Navy→Blue, Maroon→Red, Medium Violet Red→Pink, Blue Violet→Purple, skyblue→Blue…); an unknown name stays as typed',
     JSON.stringify(fams) === JSON.stringify(['Blue', 'Blue', 'Blue', 'Blue', 'Red', 'Red', 'Pink', 'Purple', 'Gold', 'Orange', 'Brown', 'Blue', 'White', 'Green', 'Service']), Object.fromEntries(names2.map((x, i) => [x, fams[i]])));
+  // Colours: half how often, half how much. Priya's one ₹38,000 red lehenga beats her two ₹400 mustard
+  // dupattas; but ten ₹800 blue kurtis still beat one red wedding lehenga.
+  const pick = (p: [string, number, number][]) => top1(colourScores(new Map(p.map(([c, n]) => [c, n])), new Map(p.map(([c, n, r]) => [c, n * r]))));
+  const top1 = (m: Map<string, number>) => [...m].sort((a, b) => b[1] - a[1])[0][0];
+  check('colours weigh money too: one ₹38,000 Red lehenga beats two ₹400 Yellow dupattas', pick([['Red', 1, 38000], ['Yellow', 2, 400]]) === 'Red');
+  check('...but ten ₹800 Blue kurtis still beat one ₹38,000 Red lehenga (what they come back for)', pick([['Blue', 10, 800], ['Red', 1, 38000]]) === 'Blue');
+  check('...and with no prices at all, it is pieces alone', top1(colourScores(new Map([['Green', 3], ['Pink', 1]]), new Map())) === 'Green');
   check('a purchase a year old counts half; today\'s counts in full', Math.abs(weight(new Date(Date.now() - 365 * 86_400_000)) - 0.5) < 0.001 && weight(new Date()) === 1);
 
   // Asha: three Green kurtis in S four years ago; lately Navy and Indigo kurtis in M; a Pink XL she sent back;
