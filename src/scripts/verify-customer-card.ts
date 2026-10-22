@@ -6,7 +6,8 @@
  *   npx tsx src/scripts/verify-customer-card.ts
  */
 import { prisma } from '../lib/prisma';
-import { customerCard, spendBand, sizeKey } from '../services/customer-card';
+import { customerCard, spendBand, sizeKey, weight } from '../services/customer-card';
+import { colourFamily } from '../services/customer-card/colours';
 
 const STAMP = Date.now();
 const C = `card-${STAMP}`;
@@ -76,7 +77,7 @@ async function main() {
   check('the group shows as a badge', JSON.stringify(card.customer?.groups) === JSON.stringify(['vip']), card.customer?.groups);
   check('3 bills (the cancelled one does not count), last visit 10 days ago', card.visits.bills === 3 && Math.round((Date.now() - new Date(card.visits.lastVisit).getTime()) / 86_400_000) === 10, card.visits);
   check('sizes per garment: Kurti M, Saree Free', JSON.stringify(card.dna.sizes) === JSON.stringify([{ kind: 'Kurti', size: 'M' }, { kind: 'Saree', size: 'Free' }]), card.dna.sizes);
-  check('colours most bought first: Blue (3 pieces), then Maroon', JSON.stringify(card.dna.colours) === JSON.stringify(['Blue', 'Maroon']), card.dna.colours);
+  check('colours by family, most bought first: Blue (3 pieces), then Red (the Maroon saree)', JSON.stringify(card.dna.colours) === JSON.stringify(['Blue', 'Red']), card.dna.colours);
   check('garments: Kurti, Saree -- not the Lehenga on the cancelled bill', JSON.stringify(card.dna.kinds) === JSON.stringify(['Kurti', 'Saree']), card.dna.kinds);
   check('usual spend from the three real bills: ₹1,000 – ₹2,000', JSON.stringify(card.dna.spend) === JSON.stringify({ from: 1000, to: 2000 }), card.dna.spend);
 
@@ -161,10 +162,57 @@ async function main() {
   const gone = await prisma.customer.create({ data: { clientId: C, customerCode: `CG-${STAMP}`, name: 'Deleted Person', phone: '+919848011133', deletedAt: new Date() } });
   check('a deleted customer is not shown', (await customerCard.lookup(C, '9848011133', store.id)).customer === null);
   void gone;
+
+  console.log('\nH. SMARTER: COLOUR FAMILIES, RETURNS, RECENT BUYING, BUDGET');
+  const names2 = ['Navy', 'Indigo', 'Peacock', 'Dodger Blue', 'Maroon', 'Firebrick', 'Medium Violet Red', 'Blue Violet', 'Goldenrod', 'Peach Puff', 'Dark Khaki', 'skyblue', 'Off White', 'Sea Green', 'Service'];
+  const fams = names2.map(colourFamily);
+  check('colour names from the real catalogue fall into families (Navy→Blue, Maroon→Red, Medium Violet Red→Pink, Blue Violet→Purple, skyblue→Blue…); an unknown name stays as typed',
+    JSON.stringify(fams) === JSON.stringify(['Blue', 'Blue', 'Blue', 'Blue', 'Red', 'Red', 'Pink', 'Purple', 'Gold', 'Orange', 'Brown', 'Blue', 'White', 'Green', 'Service']), Object.fromEntries(names2.map((x, i) => [x, fams[i]])));
+  check('a purchase a year old counts half; today\'s counts in full', Math.abs(weight(new Date(Date.now() - 365 * 86_400_000)) - 0.5) < 0.001 && weight(new Date()) === 1);
+
+  // Asha: three Green kurtis in S four years ago; lately Navy and Indigo kurtis in M; a Pink XL she sent back;
+  // and a return she only asked for (not back yet), which must change nothing.
+  const asha = await prisma.customer.create({ data: { clientId: C, customerCode: `CA-${STAMP}`, name: 'Asha', phone: '+919848011144' } });
+  const kurtiOld = await product('Mul Kurti', 'Kurti'), kurtiNavy = await product('Chanderi Kurti', 'Kurti'), kurtiInd = await product('Ikat Kurti', 'Kurti'), kurtiPink = await product('Party Kurti', 'Kurti');
+  const vOldS = await variant(kurtiOld.id, 'Green', 'S'), vNavyM = await variant(kurtiNavy.id, 'Navy', 'M', 1500), vIndM = await variant(kurtiInd.id, 'Indigo', 'M', 1800), vPinkXL = await variant(kurtiPink.id, 'Pink', 'XL', 9000);
+  const billFor = async (v: any, total: number, daysAgo: number) => prisma.salesOrder.create({ data: {
+    clientId: C, orderNumber: `SO-${STAMP}-${++n}`, customerId: asha.id, channel: 'POS' as any, locationId: store.id, status: 'DISPATCHED' as any,
+    subtotal: total, discountAmount: 0, taxAmount: 0, shippingAmount: 0, total, createdAt: new Date(Date.now() - daysAgo * 86_400_000),
+    items: { create: [{ variantId: v.id, quantity: 1, listUnitPrice: total, unitPrice: total, unitCost: 0, totalPrice: total }] }
+  } as any, include: { items: true } });
+  const giveBack = async (o: any, status: string, refund: number) => {
+    const d = await prisma.dispatch.create({ data: { clientId: C, salesOrderId: o.id, dispatchNumber: `D-${STAMP}-${++n}` } as any });
+    const di = await prisma.dispatchItem.create({ data: { dispatchId: d.id, salesOrderItemId: o.items[0].id, quantity: 1 } as any });
+    await prisma.salesReturn.create({ data: { clientId: C, returnNumber: `R-${STAMP}-${++n}`, salesOrderId: o.id, reason: 'SIZE_ISSUE', status, refundTotal: refund,
+      items: { create: [{ dispatchItemId: di.id, salesOrderItemId: o.items[0].id, quantity: 1, refundAmount: refund }] } } as any });
+  };
+  for (const ago of [1460, 1470, 1480]) await billFor(vOldS, 900, ago);
+  await billFor(vNavyM, 1500, 30);
+  await billFor(vIndM, 1800, 20);
+  await giveBack(await billFor(vPinkXL, 9000, 10), 'COMPLETED', 9000);
+  await giveBack(await billFor(vNavyM, 1200, 5), 'REQUESTED', 0);
+  // In the store, all Kurtis in M: a Royal Navy one in budget, a Green one in budget, a Blue one well over it.
+  const pNavy = await product('Handloom Kurti', 'Kurti'), pGreen = await product('Khadi Kurti', 'Kurti'), pDear = await product('Zardozi Kurti', 'Kurti');
+  const vRoyal = await variant(pNavy.id, 'Royal Navy', 'M', 1400), vGreenM = await variant(pGreen.id, 'Green', 'M', 1000), vDear = await variant(pDear.id, 'Blue', 'M', 6000);
+  for (const v of [vRoyal, vGreenM, vDear]) await stock(v.id, 3);
+  await stock(vPinkXL.id, 2);   // the one she sent back: never offered again
+
+  const a: any = await customerCard.lookup(C, '9848011144', store.id);
+  check('size: Kurti M (two recent) beats S (three, four years old), and never XL (sent back)', JSON.stringify(a.dna.sizes) === JSON.stringify([{ kind: 'Kurti', size: 'M' }]), a.dna.sizes);
+  check('colours: Blue (Navy + Indigo, recent) before Green (old); not Pink (sent back)', JSON.stringify(a.dna.colours) === JSON.stringify(['Blue', 'Green']), a.dna.colours);
+  check('usual spend from the last two years, after the refund: ₹1,200 – ₹1,500 (not the old ₹900s, not the ₹9,000 she got back)', JSON.stringify(a.dna.spend) === JSON.stringify({ from: 1200, to: 1500 }), a.dna.spend);
+  check('every bill still counts as a visit (7)', a.visits.bills === 7, a.visits);
+  const order2 = a.picks.map((p: any) => `${p.title}:${p.inBudget ? 'in' : 'over'}:${p.yourColour ? 'hers' : '-'}`);
+  // Section B's Blue kurtis in M (Cotton, Linen) are in this store too, and are hers as well.
+  check('picks: in budget first -- her Blues (Cotton, Royal Navy Handloom, Linen), then Green (Khadi) -- then the ₹6,000 Zardozi over budget; the sent-back Pink never',
+    JSON.stringify(order2) === JSON.stringify(['Cotton Kurti:in:hers', 'Handloom Kurti:in:hers', 'Linen Kurti:in:hers', 'Khadi Kurti:in:hers', 'Zardozi Kurti:over:hers']), order2);
 }
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {
   const w = { clientId: C };
+  await prisma.salesReturn.deleteMany({ where: w }).catch(e => console.log('left returns', e.message));
+  await prisma.dispatchItem.deleteMany({ where: { dispatch: w } }).catch(e => console.log('left dispatch items', e.message));
+  await prisma.dispatch.deleteMany({ where: w }).catch(e => console.log('left dispatches', e.message));
   await prisma.salesOrderItem.deleteMany({ where: { salesOrder: w } }).catch(e => console.log('left items', e.message));
   await prisma.salesOrder.deleteMany({ where: w }).catch(e => console.log('left orders', e.message));
   await prisma.inventoryStock.deleteMany({ where: w }).catch(e => console.log('left stock', e.message));
