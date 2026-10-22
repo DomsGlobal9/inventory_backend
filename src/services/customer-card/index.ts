@@ -23,7 +23,8 @@ const notShared = { OR: [{ externalCustomerId: null }, { externalCustomerId: { n
 const PICKS = 6;
 const MAX_NOTE = 300;
 const BACK_IN_SHOP: ReturnStatus[] = ['RECEIVED', 'INSPECTED', 'COMPLETED'];
-/** Up to a quarter over their usual top still counts as their budget. */
+/** Their budget: from half their usual low to a quarter over their usual top. */
+const BUDGET_FLOOR = 0.5;
 const BUDGET_STRETCH = 1.25;
 const RECENT_SPEND_MS = 2 * 365 * 86_400_000;
 /** A purchase counts half as much for every year since: last month's size beats one from three years ago. */
@@ -150,7 +151,7 @@ export const customerCard = {
  * What to show them first: in stock in THIS store, in the size they buy for that kind of garment,
  * a kind they buy, never something they already have. Within what they usually spend first, then
  * their colours (by family: a Navy saree for someone who buys blues), then the garment they buy most.
- * Over-budget pieces still come, after, so a short shelf is not an empty card. With the shelf it is
+ * Pieces well outside that range (far dearer, or far cheaper) still come, after, so a short shelf is not an empty card. With the shelf it is
  * on when the store uses shelves.
  */
 async function picksFor(clientId: string, locationId: string, d: { sizes: { kind: string; size: string | null }[]; colours: string[]; kinds: string[]; bought: Set<string>; boughtProducts: Set<string>; spend: { from: number; to: number } | null }) {
@@ -166,8 +167,9 @@ async function picksFor(clientId: string, locationId: string, d: { sizes: { kind
   });
   const colourRank = (c: string | null) => { const f = (colourFamily(c) ?? '').toLowerCase(); const i = d.colours.findIndex(x => x.toLowerCase() === f); return i < 0 ? 99 : i; };
   const priceOf = (s: { variant: { sellingPrice: unknown; product: { basePrice: unknown } } }) => Number(s.variant.sellingPrice ?? s.variant.product.basePrice) || null;
-  // A little over their usual top is still worth showing; no price, or no history, is never held against a piece.
-  const inBudget = (s: Parameters<typeof priceOf>[0]) => { const p = priceOf(s); return !d.spend || p == null || p <= d.spend.to * BUDGET_STRETCH; };
+  // Their range, give or take: down to half their usual low (a ₹1,650 cotton saree is not a pick for someone
+  // who spends ₹8,000–₹18,500), up to a quarter over their usual top. No price, or no history, is never held against a piece.
+  const inBudget = (s: Parameters<typeof priceOf>[0]) => { const p = priceOf(s); return !d.spend || p == null || (p >= d.spend.from * BUDGET_FLOOR && p <= d.spend.to * BUDGET_STRETCH); };
   const kindRank = (k: string | null) => { const i = d.kinds.findIndex(x => x.toLowerCase() === (k ?? '').toLowerCase()); return i < 0 ? 99 : i; };
   const fits = stock.filter(s => {
     if (s.quantity - s.reservedQty <= 0 || d.bought.has(s.variant.id)) return false;

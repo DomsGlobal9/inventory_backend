@@ -194,7 +194,9 @@ async function main() {
   // In the store, all Kurtis in M: a Royal Navy one in budget, a Green one in budget, a Blue one well over it.
   const pNavy = await product('Handloom Kurti', 'Kurti'), pGreen = await product('Khadi Kurti', 'Kurti'), pDear = await product('Zardozi Kurti', 'Kurti');
   const vRoyal = await variant(pNavy.id, 'Royal Navy', 'M', 1400), vGreenM = await variant(pGreen.id, 'Green', 'M', 1000), vDear = await variant(pDear.id, 'Blue', 'M', 6000);
-  for (const v of [vRoyal, vGreenM, vDear]) await stock(v.id, 3);
+  // And one far below what she spends (under half her usual low of ₹1,200): hers in colour and size, but not her kind of piece.
+  const pCheap = await product('Budget Kurti', 'Kurti'); const vCheap = await variant(pCheap.id, 'Blue', 'M', 400);
+  for (const v of [vRoyal, vGreenM, vDear, vCheap]) await stock(v.id, 3);
   await stock(vPinkXL.id, 2);   // the one she sent back: never offered again
 
   const a: any = await customerCard.lookup(C, '9848011144', store.id);
@@ -202,10 +204,10 @@ async function main() {
   check('colours: Blue (Navy + Indigo, recent) before Green (old); not Pink (sent back)', JSON.stringify(a.dna.colours) === JSON.stringify(['Blue', 'Green']), a.dna.colours);
   check('usual spend from the last two years, after the refund: ₹1,200 – ₹1,500 (not the old ₹900s, not the ₹9,000 she got back)', JSON.stringify(a.dna.spend) === JSON.stringify({ from: 1200, to: 1500 }), a.dna.spend);
   check('every bill still counts as a visit (7)', a.visits.bills === 7, a.visits);
-  const order2 = a.picks.map((p: any) => `${p.title}:${p.inBudget ? 'in' : 'over'}:${p.yourColour ? 'hers' : '-'}`);
+  const order2 = a.picks.map((p: any) => `${p.title}:${p.inBudget ? 'in' : 'out'}:${p.yourColour ? 'hers' : '-'}`);
   // Section B's Blue kurtis in M (Cotton, Linen) are in this store too, and are hers as well.
-  check('picks: in budget first -- her Blues (Cotton, Royal Navy Handloom, Linen), then Green (Khadi) -- then the ₹6,000 Zardozi over budget; the sent-back Pink never',
-    JSON.stringify(order2) === JSON.stringify(['Cotton Kurti:in:hers', 'Handloom Kurti:in:hers', 'Linen Kurti:in:hers', 'Khadi Kurti:in:hers', 'Zardozi Kurti:over:hers']), order2);
+  check('picks: in her range first -- her Blues (Cotton, Royal Navy Handloom, Linen), then Green (Khadi) -- then, outside it, the ₹400 Budget and the ₹6,000 Zardozi; the sent-back Pink never',
+    JSON.stringify(order2) === JSON.stringify(['Cotton Kurti:in:hers', 'Handloom Kurti:in:hers', 'Linen Kurti:in:hers', 'Khadi Kurti:in:hers', 'Budget Kurti:out:hers', 'Zardozi Kurti:out:hers']), order2);
 }
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {
