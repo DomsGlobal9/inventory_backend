@@ -612,6 +612,7 @@ model Product {
   variants ProductVariant[]
   images   ProductImage[]
   interests ShopInterest[]
+  shopViews ShopProductView[]
   photoJobs PhotoJob[]
 
   // Soft Delete & Timestamps
@@ -4613,6 +4614,32 @@ model ShopInterest {
   @@index([productId])
   @@index([handledAt])
   @@map("shop_interests")
+}
+
+/// What a shopper who proved their number looked at, and tried on, in the online shop -- so the
+/// Customer card can say "she looked at this three times" when she walks in. Only for a browser that
+/// proved its number (nobody anonymous is ever tracked), one row per person per product, and gone
+/// 30 days after they last looked (housekeeping).
+model ShopProductView {
+  id        String @id @default(uuid())
+  clientId  String @map("client_id")
+  productId String @map("product_id")
+  /// E.164, as the shop's number proof stores it.
+  phone     String
+
+  views     Int      @default(0)
+  tryOns    Int      @default(0) @map("try_ons")
+  /// The colour last looked at, for the card to show; not a relation, a variant can be deleted.
+  variantId String?  @map("variant_id")
+  firstAt   DateTime @default(now()) @map("first_at")
+  lastAt    DateTime @default(now()) @map("last_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, phone, productId])
+  @@index([clientId, phone])
+  @@index([lastAt])
+  @@map("shop_product_views")
 }
 
 // =============================================================================

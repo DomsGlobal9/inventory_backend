@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getProduct, money, askOnWhatsApp, shareThis , offerWords } from '../api';
+import { getProduct, money, askOnWhatsApp, shareThis , offerWords, markSeen } from '../api';
 import DeliveryCheck from '../components/DeliveryCheck';
 import TellTheShop from '../components/TellTheShop';
 import { addToBag, useBag } from '../bag';
@@ -201,6 +201,9 @@ export default function ProductPage({ slug, shop }) {
   }, [slug, code, nonce]);
 
   const p = state.product;
+
+  /* Told to the shop only when this browser proved its number here (markSeen sends nothing otherwise). */
+  useEffect(() => { if (p?.productCode) markSeen(slug, p.productCode); }, [slug, p?.productCode]);
 
   /**
    * The colours and sizes this piece comes in, in the order the shop entered them.

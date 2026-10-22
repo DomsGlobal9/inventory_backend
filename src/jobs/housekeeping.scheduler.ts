@@ -6,6 +6,7 @@ import { fillService } from '../services/shelves/fill.service';
 import { links } from '../services/links';
 import { purgeUnusedCampaignMedia } from '../services/campaigns';
 import { shopCheckout, shopOtp } from '../services/online-shop';
+import { forgetOldViews } from '../services/shop-views';
 
 /**
  * Throwing away what has stopped meaning anything.
@@ -41,7 +42,7 @@ export class HousekeepingScheduler {
   /** How long a handled WhatsApp event's id is remembered. */
   static readonly WHATSAPP_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-  /** How long a spent or expired checkout code is kept. A day is far more than anybody needs. */
+  /** How long a spent or expired checkout code is kept (a day), unless its browser session is still live. */
   static readonly PHONE_CODE_RETENTION_MS = 24 * 60 * 60 * 1000;
 
   /**
@@ -97,15 +98,19 @@ export class HousekeepingScheduler {
       .catch(error => { console.error('[Housekeeping] stale online holds not released:', (error as Error)?.message); return 0; });
 
     // Codes nobody will ever type again. They are hashed, but a row per checkout still grows.
-    const phoneCodes = await shopOtp.forgetOldCodes(new Date(now.getTime() - this.PHONE_CODE_RETENTION_MS))
+    const phoneCodes = await shopOtp.forgetOldCodes(new Date(now.getTime() - this.PHONE_CODE_RETENTION_MS), now)
       .catch(error => { console.error('[Housekeeping] phone code clean-up failed:', (error as Error)?.message); return 0; });
+
+    // What known shoppers looked at online: kept 30 days after their last look, then gone.
+    const shopViews = await forgetOldViews(now)
+      .catch(error => { console.error('[Housekeeping] shop views clean-up failed:', (error as Error)?.message); return 0; });
 
     return {
       unusedCampaignPictures: campaignPictures,
       unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried,
       whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded,
       shelfSaveKeys: shelfSaveKeys.count, shortLinkTaps: shortLinks.taps, testShortLinks: shortLinks.testLinks,
-      staleHolds, phoneCodes, tillHolds
+      staleHolds, phoneCodes, tillHolds, shopViews
     };
   }
 

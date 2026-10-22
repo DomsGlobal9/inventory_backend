@@ -279,8 +279,15 @@ export async function isVerified(clientId: string, rawPhone: unknown): Promise<b
   return !!held?.verifiedAt && Date.now() - held.verifiedAt.getTime() < PROOF_LASTS_MS;
 }
 
-/** Codes nobody will ever type again. Called by housekeeping. */
-export async function forgetOldCodes(before: Date) {
-  const { count } = await prisma.onlineShopPhoneCode.deleteMany({ where: { expiresAt: { lt: before } } });
+/**
+ * Codes nobody will ever type again. Called by housekeeping.
+ *
+ * The row also carries the browser's 30-day "this is me" session, so a spent code is kept while that
+ * session lives: deleting it after a day signed every returning shopper out the next morning.
+ */
+export async function forgetOldCodes(before: Date, now = new Date()) {
+  const { count } = await prisma.onlineShopPhoneCode.deleteMany({
+    where: { expiresAt: { lt: before }, OR: [{ sessionExpiresAt: null }, { sessionExpiresAt: { lte: now } }] }
+  });
   return count;
 }

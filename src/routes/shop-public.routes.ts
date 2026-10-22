@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, shopInterest, OnlineShopRuleError } from '../services/online-shop';
 import * as onlinePayments from '../services/payments/online-payment.service';
 import { prisma } from '../lib/prisma';
+import * as shopViews from '../services/shop-views';
 
 /**
  * What a shopper's browser asks for at `shop.scaleezy.com/<slug>`.
@@ -169,6 +170,34 @@ router.get('/:slug/products/:productCode', async (req: Request, res: Response) =
   res.json({ success: true, data: product });
 });
 
+/** "Customers who bought this also bought": empty until two different people bought both. */
+router.get('/:slug/products/:productCode/also-bought', async (req: Request, res: Response) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') return notOpen(res, shop.state, (shop as { name?: string }).name);
+  try {
+    res.json({ success: true, data: await onlineShop.publicAlsoBought(shop, req.params.productCode) });
+  } catch (e) {
+    // A row of suggestions is never worth an error on a product page: no row instead.
+    console.error('[shop] also-bought failed:', (e as Error)?.message);
+    res.json({ success: true, data: { products: [] } });
+  }
+});
+
+/**
+ * "This shopper looked at this piece." Recorded only for a browser that proved its number (the
+ * token it earned), so the shop can greet them knowing it; anonymous visits are not recorded at all.
+ * Always answers OK: a page view never fails, and nobody learns from the answer whose token is live.
+ */
+router.post('/:slug/products/:productCode/seen', priceLimiter, async (req: Request, res: Response) => {
+  try {
+    const shop = await onlineShop.publicShop(req.params.slug);
+    if (shop.state === 'OPEN') await shopViews.seen(shop.clientId, req.body?.token, req.params.productCode, 'VIEW', req.body?.variantCode);
+  } catch (e) {
+    console.error('[shop] a view was not recorded:', (e as Error)?.message);
+  }
+  res.json({ success: true });
+});
+
 /*
  * ── Buying ────────────────────────────────────────────────────────────────────────────────
  *
@@ -292,7 +321,11 @@ router.post('/:slug/products/:productCode/tryon', tryOnLimiter, buying(async (re
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   // variantCode says which colour the shopper is looking at, so the right one is tried on them.
   // Optional: an older shop page that does not send it still works, on the product's lead photo.
-  return shopTryOn.seeItOn(shop.clientId, req.params.productCode, req.body?.photo, req.body?.variantCode);
+  const result = await shopTryOn.seeItOn(shop.clientId, req.params.productCode, req.body?.photo, req.body?.variantCode);
+  // A known shopper (proved number) trying it on is worth the shop knowing; never fails the try-on.
+  await shopViews.seen(shop.clientId, req.body?.token, req.params.productCode, 'TRYON', req.body?.variantCode)
+    .catch(e => console.error('[shop] a try-on was not recorded:', (e as Error)?.message));
+  return result;
 }));
 
 /*

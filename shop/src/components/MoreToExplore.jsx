@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom';
 import { getProducts, money } from '../api';
 import AlsoIn from './AlsoIn';
+import AlsoBought from './AlsoBought';
 import Tile from './Tile';
 import Shot from './Shot';
 
@@ -415,14 +416,17 @@ export default function MoreToExplore({ slug, product, shop }) {
 
   /* What the "more like this" row is showing, so the grid below does not show it twice. */
   const [reel, setReel] = useState([]);
+  const [together, setTogether] = useState([]);
 
   return (
     <>
       <Promo slug={slug} banner={top} />
+      {/* What people actually bought with this, first: it is the one row that is about this piece. */}
+      <AlsoBought slug={slug} product={product} onRows={rows => setTogether(rows.map(p => p.productCode))} />
       <AlsoIn slug={slug} product={product} shop={shop} onRows={rows => setReel(rows.map(p => p.productCode))} />
       <ShopBy slug={slug} shop={shop} />
       <Recent slug={slug} product={product} />
-      <Endless slug={slug} product={product} skip={reel} banner={mid} />
+      <Endless slug={slug} product={product} skip={[...reel, ...together]} banner={mid} />
     </>
   );
 }

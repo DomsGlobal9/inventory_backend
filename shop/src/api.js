@@ -74,6 +74,21 @@ export const getProducts = (slug, query, opts) => {
 export const getProduct = (slug, code, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(code)}`, opts);
 
+/** "Customers who bought this also bought": the shop's own bills; empty until two people bought both. */
+export const getAlsoBought = (slug, code, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(code)}/also-bought`, opts);
+
+/*
+ * "I looked at this", told to the shop ONLY by a browser that proved its number here -- so the shop
+ * can greet the shopper knowing it. Anonymous browsing sends nothing at all. Never fails the page.
+ */
+export const markSeen = (slug, code, variantCode) => {
+  const token = heldProof(slug);
+  if (!token) return Promise.resolve();
+  return get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(code)}/seen`, { send: { token, variantCode } })
+    .catch(() => {});
+};
+
 /*
  * ── Buying ────────────────────────────────────────────────────────────────────────────────
  *
@@ -150,7 +165,8 @@ export const tryOn = (slug, productCode, photo, variantCode, opts) =>
     // variantCode says which COLOUR is on screen, so the shop sends the front view of that one.
     // Without it a shopper looking at the blue saree was tried on in whichever colour happened to
     // lead the product.
-    { ...opts, send: { photo, variantCode } });
+    // The proof token (only if this browser proved its number) lets the shop note the try-on for them.
+    { ...opts, send: { photo, variantCode, token: heldProof(slug) || undefined } });
 
 export const sendCode = (slug, phone, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/verify/send`, { ...opts, send: { phone } });

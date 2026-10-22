@@ -372,6 +372,8 @@ export default function CheckoutPage({ shop }) {
                 </div>
               )}
               {proof.said ? <p className="said">{proof.said}</p> : null}
+              {/* Said before they confirm, not after: what confirming lets the shop see (shop-views, 30 days). */}
+              <p className="said privacy">Once your number is confirmed, the shop can see which pieces you look at and try on here for 30 days, so it can help you when you visit.</p>
             </div>
           )}
 

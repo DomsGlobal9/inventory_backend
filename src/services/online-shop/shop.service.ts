@@ -26,6 +26,7 @@ import {
 import { facetsFor, type Facets } from './facets';
 import { canVerify } from './otp';
 import { paymentAccounts } from '../payments/account.service';
+import { alsoBoughtCodes } from '../also-bought';
 
 export { OnlineShopRuleError };
 
@@ -632,4 +633,36 @@ export async function publicProduct(
   // The same badge the tile wore, and per size as well: the page is where a shopper picks one,
   // and an offer that covers only the large is a fact they need at that moment.
   return withOffers(forShopper(p, shop.showFewLeft !== false), await windowOffers(shop));
+}
+
+/** How many tiles "Customers who bought this also bought" shows at most. */
+const ALSO_BOUGHT_TILES = 8;
+
+/**
+ * "Customers who bought this also bought", for a product's page: from the shop's own bills (till and
+ * online), only what at least two different people bought together, and only pieces a shopper can
+ * buy online right now. Empty -- and the row hidden -- until the shop has that history.
+ */
+export async function publicAlsoBought(
+  shop: { clientId: string; locationIds: string[]; showFewLeft?: boolean },
+  productCode: unknown
+) {
+  const code = typeof productCode === 'string' ? productCode.trim() : '';
+  if (!code) throw fail(400, 'Which product is missing.');
+  const codes = await alsoBoughtCodes(shop.clientId, code, ALSO_BOUGHT_TILES * 3);
+  if (!codes.length) return { products: [] };
+  const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false };
+  const offers = await windowOffers(shop);
+  const products: any[] = [];
+  // Most shared buyers first; each through the same catalogue the shop page reads, so prices,
+  // hidden photos and offers are exactly what that product's own page would show.
+  for (const c of codes) {
+    const p = await storefrontCatalogueService.getProduct(scope, c);
+    if (!p) continue;
+    const shown = forShopper(p, shop.showFewLeft !== false);
+    if (!shown.variants.some(v => v.sellable)) continue;
+    products.push(withOffers(shown, offers));
+    if (products.length === ALSO_BOUGHT_TILES) break;
+  }
+  return { products };
 }

@@ -13,6 +13,8 @@ import { normalisePhone } from '../../lib/phone';
 import { badRequest, notFound } from '../../utils/httpError';
 import { groupNamesOf } from '../customer-groups';
 import { colourFamily } from './colours';
+import { lookedAt } from '../shop-views';
+import { alsoBought } from '../also-bought';
 
 // shortcut: a hard ceiling so one bad record can never make the card slow; nobody has 5,000 bills yet.
 const MAX_BILLS = 5000;
@@ -143,7 +145,11 @@ export const customerCard = {
         online: orders.filter(o => o.channel === 'ONLINE' || o.channel === 'MARKETPLACE').length
       },
       dna: { sizes, colours: topColours, kinds: topKinds, spend },
-      picks: locationId ? await picksFor(clientId, locationId, { sizes, colours: topColours, kinds: topKinds, bought, boughtProducts, spend }) : []
+      picks: locationId ? await picksFor(clientId, locationId, { sizes, colours: topColours, kinds: topKinds, bought, boughtProducts, spend }) : [],
+      // What they looked at in the online shop lately (only ever recorded after they proved this number there).
+      lookedOnline: await lookedOnline(clientId, phone.value, locationId, boughtProducts),
+      // What other people who bought what they bought also bought, here and in their size.
+      othersAlsoBought: locationId ? await othersAlsoBought(clientId, locationId, { sizes, bought, boughtProducts }) : []
     };
   },
 
@@ -204,5 +210,88 @@ async function picksFor(clientId: string, locationId: string, d: { sizes: { kind
     colour: s.variant.colorName, size: s.variant.size, price: priceOf(s),   // a colour with no price of its own sells at the product's
     inStock: s.quantity - s.reservedQty, yourColour: colourRank(s.variant.colorName) < 99, inBudget: inBudget(s),
     shelf: shelves.find(x => x.variantId === s.variant.id)?.spot.address ?? null
+  }));
+}
+
+const LOOKED = 6;
+const ALSO = 4;
+
+/** Where a piece is kept in this store, when the store uses shelves. */
+async function shelvesOf(clientId: string, locationId: string, variantIds: string[]) {
+  if (!variantIds.length) return new Map<string, string>();
+  const rows = await prisma.spotStock.findMany({
+    where: { clientId, locationId, variantId: { in: variantIds }, quantity: { gt: 0 } },
+    select: { variantId: true, spot: { select: { address: true } } }
+  });
+  return new Map(rows.map(r => [r.variantId, r.spot.address]));
+}
+
+/**
+ * "Looked at online lately": the pieces this number opened or tried on in the online shop in the last
+ * 30 days, most recent first, minus anything they have bought since. With what this store holds of
+ * the colour they looked at (else any colour of it), and its shelf, so staff can fetch it.
+ */
+async function lookedOnline(clientId: string, phone: string, locationId: string | undefined, boughtProducts: Set<string>) {
+  const looks = (await lookedAt(clientId, phone)).filter(l => !boughtProducts.has(l.productId)).slice(0, LOOKED);
+  if (!looks.length) return [];
+  const products = await prisma.product.findMany({
+    where: { clientId, id: { in: looks.map(l => l.productId) } },
+    select: { id: true, title: true, variants: { select: { id: true, colorName: true } } }
+  });
+  const stock = locationId ? await prisma.inventoryStock.findMany({
+    where: { clientId, locationId, quantity: { gt: 0 }, variant: { productId: { in: looks.map(l => l.productId) } } },
+    select: { variantId: true, quantity: true, reservedQty: true, variant: { select: { productId: true } } }
+  }) : [];
+  const here = stock.filter(s => s.quantity - s.reservedQty > 0);
+  const shelf = locationId ? await shelvesOf(clientId, locationId, here.map(s => s.variantId)) : new Map<string, string>();
+  return looks.flatMap(l => {
+    const p = products.find(x => x.id === l.productId);
+    if (!p) return [];
+    const theirs = here.filter(s => s.variantId === l.variantId);
+    const any = theirs.length ? theirs : here.filter(s => s.variant.productId === l.productId);
+    const at = any.find(s => shelf.has(s.variantId)) ?? any[0];
+    return [{
+      productId: p.id, title: p.title,
+      colour: p.variants.find(v => v.id === l.variantId)?.colorName ?? null,
+      views: l.views, tryOns: l.tryOns, lastAt: l.lastAt,
+      inStock: any.reduce((t, s) => t + s.quantity - s.reservedQty, 0),
+      shelf: at ? shelf.get(at.variantId) ?? null : null
+    }];
+  });
+}
+
+/**
+ * "Others who bought what they bought also bought": products at least two other people bought along
+ * with any of theirs (also-bought), in stock in this store, in their size for that kind of garment,
+ * never something they already have. One colour per product, the best-stocked; with its shelf.
+ */
+async function othersAlsoBought(clientId: string, locationId: string, d: { sizes: { kind: string; size: string | null }[]; bought: Set<string>; boughtProducts: Set<string> }) {
+  if (!d.boughtProducts.size) return [];
+  const together = await alsoBought(clientId, [...d.boughtProducts], { limit: 30 });
+  if (!together.length) return [];
+  const sizeOf = new Map(d.sizes.map(s => [s.kind.toLowerCase(), sizeKey(s.size)]));
+  const stock = await prisma.inventoryStock.findMany({
+    where: {
+      clientId, locationId, quantity: { gt: 0 },
+      variant: { productId: { in: together.map(t => t.productId) }, product: { status: 'ACTIVE', trashedAt: null } }
+    },
+    select: { quantity: true, reservedQty: true, variant: { select: { id: true, size: true, colorName: true, sellingPrice: true, product: { select: { id: true, title: true, dressType: true, basePrice: true } } } } }
+  });
+  const fits = stock.filter(s => {
+    if (s.quantity - s.reservedQty <= 0 || d.bought.has(s.variant.id)) return false;
+    const want = sizeOf.get((s.variant.product.dressType ?? '').toLowerCase());
+    return !want || sizeKey(s.variant.size) === want;
+  });
+  const chosen: { s: typeof fits[number]; buyers: number }[] = [];
+  for (const t of together) {   // most shared buyers first
+    const best = fits.filter(s => s.variant.product.id === t.productId).sort((a, b) => (b.quantity - b.reservedQty) - (a.quantity - a.reservedQty))[0];
+    if (best) chosen.push({ s: best, buyers: t.buyers });
+    if (chosen.length === ALSO) break;
+  }
+  const shelf = await shelvesOf(clientId, locationId, chosen.map(c => c.s.variant.id));
+  return chosen.map(({ s, buyers }) => ({
+    variantId: s.variant.id, productId: s.variant.product.id, title: s.variant.product.title, kind: s.variant.product.dressType,
+    colour: s.variant.colorName, size: s.variant.size, price: Number(s.variant.sellingPrice ?? s.variant.product.basePrice) || null,
+    buyers, inStock: s.quantity - s.reservedQty, shelf: shelf.get(s.variant.id) ?? null
   }));
 }
