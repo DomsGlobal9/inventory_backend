@@ -10,9 +10,12 @@ import { prisma } from '../../lib/prisma';
  * otherwise every walk-in bill would be "one customer who bought everything".
  *
  * A product is shown only when at least MIN_BUYERS different people bought both, so one person's
- * odd basket never turns into a suggestion for everybody. Cancelled and deleted orders do not count.
+ * odd basket never turns into a suggestion for everybody. Cancelled, deleted and draft orders do not
+ * count, nor a line whose pieces all came back.
  */
 const SHARED_CUSTOMERS = ['POS:WALK-IN', 'shopify:guest'];
+/** Return statuses where the goods are back in the shop (the Customer card uses the same). */
+const BACK_IN_SHOP = ['RECEIVED', 'INSPECTED', 'COMPLETED'];
 export const MIN_BUYERS = 2;
 /** Older baskets say less about what goes together now. */
 const LOOK_BACK_MS = 2 * 365 * 86_400_000;
@@ -46,10 +49,21 @@ export async function alsoBought(
       JOIN customers c ON c.id = so.customer_id
       JOIN sales_order_items i ON i.sales_order_id = so.id
       JOIN inventory_product_variants v ON v.id = i.variant_id
+      -- What came back to the shop on each line (a return only asked for, or turned down, is nothing).
+      LEFT JOIN (
+        SELECT COALESCE(ri.sales_order_item_id, di.sales_order_item_id) AS item_id, SUM(ri.quantity) AS back
+        FROM sales_return_items ri
+        JOIN sales_returns r ON r.id = ri.sales_return_id
+        JOIN dispatch_items di ON di.id = ri.dispatch_item_id
+        WHERE r.status::text IN (${Prisma.join(BACK_IN_SHOP)})
+        GROUP BY 1
+      ) rt ON rt.item_id = i.id
       WHERE so.client_id = ${clientId}
         AND so.deleted_at IS NULL
-        AND so.status::text <> 'CANCELLED'
+        AND so.status::text NOT IN ('CANCELLED', 'DRAFT')
         AND so.created_at >= ${since}
+        -- Bought and sent back is not "bought": a line counts only if something of it was kept.
+        AND COALESCE(rt.back, 0) < i.quantity
         AND (NULLIF(so.customer_phone, '') IS NOT NULL
              OR c.external_customer_id IS NULL
              OR c.external_customer_id NOT IN (${Prisma.join(SHARED_CUSTOMERS)}))

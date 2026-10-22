@@ -156,12 +156,65 @@ async function main() {
   check('a spent code whose browser session still lives is kept: the shopper is still recognised', (await whoIs(C, liveToken)) === '+919000000108');
   check('a spent code whose session ended is removed', !(await prisma.onlineShopPhoneCode.findFirst({ where: { clientId: C, phone: '+919000000109' } })) && (await whoIs(C, deadToken)) === null);
   check('a spent code that never became a session is removed', !(await prisma.onlineShopPhoneCode.findFirst({ where: { clientId: C, phone: '+919000000110' } })));
+
+  console.log('\nE. RETURNS, DRAFTS, BINNED PRODUCTS');
+  const pallu = await product('Silk Pallu Stole', 'Accessory'), palluV = await variant(pallu.id, 'Gold', 'Free');
+  const g = await person('Gita', '+919000000111'), h = await person('Hema', '+919000000112'), k = await person('Kala', '+919000000113');
+  const giveBack = async (o: any, status: string, qty = 1) => {
+    const full = await prisma.salesOrder.findUnique({ where: { id: o.id }, include: { items: true } });
+    const line = full!.items.find((x: any) => x.variantId === palluV.id)!;
+    const dsp = await prisma.dispatch.create({ data: { clientId: C, salesOrderId: o.id, dispatchNumber: `D-${STAMP}-${++n}` } as any });
+    const di = await prisma.dispatchItem.create({ data: { dispatchId: dsp.id, salesOrderItemId: line.id, quantity: line.quantity } as any });
+    await prisma.salesReturn.create({ data: { clientId: C, returnNumber: `R-${STAMP}-${++n}`, salesOrderId: o.id, reason: 'SIZE_ISSUE', status, refundTotal: 0,
+      items: { create: [{ dispatchItemId: di.id, quantity: qty, refundAmount: 0 }] } } as any });   // no salesOrderItemId: found through the dispatch line
+  };
+  await giveBack(await bill(g, [sareeV, palluV]), 'COMPLETED');   // Gita sent the stole back
+  await giveBack(await bill(h, [sareeV, palluV]), 'REQUESTED');   // Hema only asked to: still hers
+  let t = Object.fromEntries((await alsoBought(C, [saree.id])).map(x => [x.productId, x.buyers]));
+  check('a piece sent back does not count as bought with it (Gita), one only asked about still does (Hema): 1, so not shown', !(pallu.id in t), t[pallu.id]);
+  await bill(k, [sareeV, palluV], { status: 'DRAFT' });
+  t = Object.fromEntries((await alsoBought(C, [saree.id])).map(x => [x.productId, x.buyers]));
+  check('a draft order is not a purchase: still not shown', !(pallu.id in t), t[pallu.id]);
+  const two = await prisma.salesOrder.create({ data: { clientId: C, orderNumber: `SO-${STAMP}-${++n}`, customerId: k.id, channel: 'POS' as any, locationId: store.id, status: 'DISPATCHED' as any,
+    subtotal: 2000, discountAmount: 0, taxAmount: 0, shippingAmount: 0, total: 3000,
+    items: { create: [{ variantId: sareeV.id, quantity: 1, listUnitPrice: 1000, unitPrice: 1000, unitCost: 0, totalPrice: 1000 }, { variantId: palluV.id, quantity: 2, listUnitPrice: 1000, unitPrice: 1000, unitCost: 0, totalPrice: 2000 }] } } as any });
+  await giveBack(two, 'COMPLETED', 1);   // Kala bought two stoles and kept one
+  t = Object.fromEntries((await alsoBought(C, [saree.id])).map(x => [x.productId, x.buyers]));
+  check('one of two sent back still leaves one kept: Kala counts, now Hema + Kala = 2, shown', t[pallu.id] === 2, t[pallu.id]);
+  await prisma.product.update({ where: { id: pallu.id }, data: { trashedAt: new Date() } });
+  check('a binned product never reaches the online shop', !(await alsoBoughtCodes(C, saree.productCode)).includes(pallu.productCode));
+  await prisma.product.update({ where: { id: pallu.id }, data: { trashedAt: null, status: 'DRAFT' as any } });
+  check('...nor a product put back to draft', !(await alsoBoughtCodes(C, saree.productCode)).includes(pallu.productCode));
+
+  console.log('\nF. TWO TABS AT ONCE, AND WHAT THIS STORE DOES NOT HOLD');
+  const iToken = await session(C, '+919000000114');
+  const many = await Promise.allSettled(Array.from({ length: 6 }, () => seen(C, iToken, fall.productCode, 'VIEW')));
+  const rowsF = await prisma.shopProductView.findMany({ where: { clientId: C, phone: '+919000000114', productId: fall.id } });
+  check('six views of a new piece in the same instant: no error, one row, one look', many.every(m => m.status === 'fulfilled') && rowsF.length === 1 && rowsF[0].views === 1, { many: many.map(m => m.status), rowsF });
+  const tries = await Promise.allSettled(Array.from({ length: 3 }, () => seen(C, iToken, jewel.productCode, 'TRYON')));
+  const rowJ = await prisma.shopProductView.findFirst({ where: { clientId: C, phone: '+919000000114', productId: jewel.id } });
+  check('three try-ons at once all count (each is a real try-on): 3', tries.every(m => m.status === 'fulfilled') && rowJ?.tryOns === 3, rowJ);
+  const branch = await prisma.stockLocation.create({ data: { clientId: C, name: 'Branch', code: `B-${STAMP}`, type: 'STORE' as any, active: true } });
+  await prisma.inventoryStock.create({ data: { clientId: C, variantId: oddV.id, locationId: branch.id, quantity: 3, reservedQty: 0 } });
+  const ira = await person('Ira', '+919000000114');   // no bills at all yet
+  await seen(C, iToken, odd.productCode, 'VIEW');
+  const atMain: any = await customerCard.lookup(C, '9000000114', store.id);
+  const atBranch: any = await customerCard.lookup(C, '9000000114', branch.id);
+  const oddMain = atMain.lookedOnline.find((l: any) => l.productId === odd.id), oddBranch = atBranch.lookedOnline.find((l: any) => l.productId === odd.id);
+  check('a customer with no bills yet still gets "Looked at online" (she browsed before buying)', atMain.visits.bills === 0 && atMain.lookedOnline.length === 3, atMain.lookedOnline.map((l: any) => l.title));
+  check('a piece this store does not hold shows 0 here (the screen says "not in this store")', oddMain?.inStock === 0 && oddMain?.shelf === null, oddMain);
+  check('...and the other store, which holds it, shows its 3', oddBranch?.inStock === 3, oddBranch);
+  check('no bills means nothing to compare: no "also bought" for her', atMain.othersAlsoBought.length === 0);
+  void ira;
 }
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {
   const w = { clientId: { in: [C, OTHER] } };
   await prisma.shopProductView.deleteMany({ where: w }).catch(e => console.log('left views', e.message));
   await prisma.onlineShopPhoneCode.deleteMany({ where: w }).catch(e => console.log('left codes', e.message));
+  await prisma.salesReturn.deleteMany({ where: w }).catch(e => console.log('left returns', e.message));
+  await prisma.dispatchItem.deleteMany({ where: { dispatch: w } }).catch(e => console.log('left dispatch items', e.message));
+  await prisma.dispatch.deleteMany({ where: w }).catch(e => console.log('left dispatches', e.message));
   await prisma.salesOrderItem.deleteMany({ where: { salesOrder: w } }).catch(e => console.log('left items', e.message));
   await prisma.salesOrder.deleteMany({ where: w }).catch(e => console.log('left orders', e.message));
   await prisma.inventoryStock.deleteMany({ where: w }).catch(e => console.log('left stock', e.message));

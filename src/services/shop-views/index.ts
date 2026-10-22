@@ -37,16 +37,25 @@ export async function seen(clientId: string, token: unknown, productCode: unknow
   const key = { clientId_phone_productId: { clientId, phone, productId: product.id } };
   const held = await prisma.shopProductView.findUnique({ where: key, select: { lastAt: true, views: true } });
   const sameLook = kind === 'VIEW' && !!held && held.views > 0 && now.getTime() - held.lastAt.getTime() < SAME_LOOK_MS;
-  await prisma.shopProductView.upsert({
-    where: key,
-    create: { clientId, phone, productId: product.id, views: kind === 'VIEW' ? 1 : 0, tryOns: kind === 'TRYON' ? 1 : 0, variantId: variant?.id ?? null, firstAt: now, lastAt: now },
-    update: {
-      ...(kind === 'VIEW' && !sameLook ? { views: { increment: 1 } } : {}),
-      ...(kind === 'TRYON' ? { tryOns: { increment: 1 } } : {}),
-      ...(variant ? { variantId: variant.id } : {}),
-      lastAt: now
-    }
-  });
+  const update = {
+    ...(kind === 'VIEW' && !sameLook ? { views: { increment: 1 } } : {}),
+    ...(kind === 'TRYON' ? { tryOns: { increment: 1 } } : {}),
+    ...(variant ? { variantId: variant.id } : {}),
+    lastAt: now
+  };
+  try {
+    await prisma.shopProductView.upsert({
+      where: key,
+      create: { clientId, phone, productId: product.id, views: kind === 'VIEW' ? 1 : 0, tryOns: kind === 'TRYON' ? 1 : 0, variantId: variant?.id ?? null, firstAt: now, lastAt: now },
+      update
+    });
+  } catch (e) {
+    // Two tabs opening the same piece at once both try to create its first row; one wins, the other
+    // finds it there. Two views in the same instant are one look; a try-on still counts.
+    if ((e as { code?: string })?.code !== 'P2002') throw e;
+    const { views: _sameLook, ...rest } = update as typeof update & { views?: unknown };
+    await prisma.shopProductView.update({ where: key, data: kind === 'VIEW' ? rest : update });
+  }
   return kind === 'TRYON' || !sameLook;
 }
 

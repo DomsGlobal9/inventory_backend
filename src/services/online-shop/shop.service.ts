@@ -638,6 +638,26 @@ export async function publicProduct(
 /** How many tiles "Customers who bought this also bought" shows at most. */
 const ALSO_BOUGHT_TILES = 8;
 
+/*
+ * Which products go together, remembered for a few minutes per product. Working it out reads two
+ * years of the shop's bills, and every product page asks -- crawlers included. What goes together
+ * barely moves in ten minutes; whether a piece can be bought does, so that is still read fresh below.
+ */
+const TOGETHER_MS = 10 * 60 * 1000;
+const TOGETHER_MAX = 2000;
+const together = new Map<string, { at: number; codes: string[] }>();
+async function togetherFor(clientId: string, productCode: string, now = Date.now()) {
+  const key = `${clientId}\u0000${productCode}`;
+  const held = together.get(key);
+  if (held && now - held.at < TOGETHER_MS) return held.codes;
+  const codes = await alsoBoughtCodes(clientId, productCode, ALSO_BOUGHT_TILES * 3);
+  together.delete(key);
+  together.set(key, { at: now, codes });
+  // Oldest first out (a Map keeps insertion order), so a crawl through the catalogue cannot grow it for ever.
+  while (together.size > TOGETHER_MAX) together.delete(together.keys().next().value!);
+  return codes;
+}
+
 /**
  * "Customers who bought this also bought", for a product's page: from the shop's own bills (till and
  * online), only what at least two different people bought together, and only pieces a shopper can
@@ -649,20 +669,23 @@ export async function publicAlsoBought(
 ) {
   const code = typeof productCode === 'string' ? productCode.trim() : '';
   if (!code) throw fail(400, 'Which product is missing.');
-  const codes = await alsoBoughtCodes(shop.clientId, code, ALSO_BOUGHT_TILES * 3);
+  const codes = await togetherFor(shop.clientId, code);
   if (!codes.length) return { products: [] };
   const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false };
   const offers = await windowOffers(shop);
   const products: any[] = [];
   // Most shared buyers first; each through the same catalogue the shop page reads, so prices,
   // hidden photos and offers are exactly what that product's own page would show.
-  for (const c of codes) {
-    const p = await storefrontCatalogueService.getProduct(scope, c);
-    if (!p) continue;
-    const shown = forShopper(p, shop.showFewLeft !== false);
-    if (!shown.variants.some(v => v.sellable)) continue;
-    products.push(withOffers(shown, offers));
-    if (products.length === ALSO_BOUGHT_TILES) break;
+  // A row's worth at a time, side by side: one after another was 3-5 seconds on a product page.
+  for (let i = 0; i < codes.length && products.length < ALSO_BOUGHT_TILES; i += ALSO_BOUGHT_TILES) {
+    const batch = await Promise.all(codes.slice(i, i + ALSO_BOUGHT_TILES).map(c => storefrontCatalogueService.getProduct(scope, c)));
+    for (const p of batch) {
+      if (!p) continue;
+      const shown = forShopper(p, shop.showFewLeft !== false);
+      if (!shown.variants.some(v => v.sellable)) continue;
+      products.push(withOffers(shown, offers));
+      if (products.length === ALSO_BOUGHT_TILES) break;
+    }
   }
   return { products };
 }
