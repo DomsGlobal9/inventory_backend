@@ -21,12 +21,12 @@
  */
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
-import { applySale, POS_SOURCE, WALK_IN_KEY, type PosEventResult } from './pos-events.service';
+import { applySale, POS_SOURCE, WALK_IN_KEY, saleOnItsWay, notAppliedYet, type PosEventResult } from './pos-events.service';
 import { applyReturn } from './pos-returns.service';
 import { applyPaymentUpdate, faultInPaymentShape } from './pos-payments.service';
 import { applyWriteOff, faultInWriteOffShape } from './pos-writeoff.service';
 import { applyExchange, faultInExchangeShape } from './pos-exchange.service';
-import { SKIP_KIND } from '../../utils/posConnection';
+import { SKIP_KIND, HANDOVER_KIND, NOT_BILLS } from '../../utils/posConnection';
 
 /** How many events one tick may take on. */
 const BATCH = 10;
@@ -170,6 +170,55 @@ export async function acceptSkip(clientId: string, locationId: string, event: an
   return { answer: count ? 'APPLIED' : 'ALREADY_APPLIED' } as PosEventResult;
 }
 
+/**
+ * A kept order's goods went out at the till: { invoiceNo, handedOverAt, duePaise }.
+ *
+ * Applied on the spot, never queued, like a left-out marker: it moves no stock (a kept sale is
+ * dispatched when it is made, see applySale) and no money (a balance paid at collection still comes
+ * as payment.updated). It marks the order kept and dates its hand-over -- what Finance needs to know
+ * when an advance becomes a sale. A sale filed as TAKEN_NOW before the till sent `handover` is
+ * turned into a kept order here. duePaise is kept in the stored event as information only.
+ *
+ * Answers: a sale still in our queue is SALE_NOT_YET_APPLIED (409, try again); a bill the owner left
+ * out has nothing to hand over and is noted as APPLIED; a bill we never had is UNKNOWN_ORDER.
+ */
+export async function acceptHandOver(clientId: string, locationId: string, event: any): Promise<PosEventResult> {
+  const invoiceNo = String(event?.invoiceNo ?? '').trim();
+  if (!invoiceNo) return { answer: 'BAD_PAYLOAD', detail: 'Say which bill was handed over, in "invoiceNo".' };
+
+  // The till's time, within the same 7 days dateFromTill allows; otherwise now.
+  const sent = new Date(String(event?.handedOverAt ?? ''));
+  const now = Date.now();
+  const at = Number.isNaN(sent.getTime()) || sent.getTime() > now || sent.getTime() < now - 7 * 86_400_000 ? new Date(now) : sent;
+
+  const order = await prisma.salesOrder.findFirst({
+    where: { clientId, externalOrderId: invoiceNo, sourceSystem: POS_SOURCE },
+    select: { id: true, orderNumber: true }
+  });
+  if (!order) {
+    if (await saleOnItsWay(clientId, invoiceNo)) return notAppliedYet(invoiceNo, 'hand-over');
+    const leftOut = await prisma.posInboundEvent.count({ where: { clientId, kind: SKIP_KIND, invoiceNo } });
+    if (!leftOut) return { answer: 'UNKNOWN_ORDER', detail: `No sale here for invoice ${invoiceNo}.` };
+  }
+
+  return prisma.$transaction(async tx => {
+    const { count } = await tx.posInboundEvent.createMany({
+      data: [{
+        clientId, locationId, kind: HANDOVER_KIND, invoiceNo, payload: event,
+        status: 'APPLIED', answer: 'APPLIED', orderNumber: order?.orderNumber ?? null,
+        detail: order ? null : 'The bill was left out of Inventory, so there was nothing to hand over.',
+        settledAt: new Date()
+      }],
+      skipDuplicates: true
+    });
+    if (!count) return { answer: 'ALREADY_APPLIED', orderNumber: order?.orderNumber } as PosEventResult;
+    if (order) {
+      await tx.salesOrder.update({ where: { id: order.id }, data: { handover: 'KEEP_FOR_CUSTOMER', handedOverAt: at } });
+    }
+    return { answer: 'APPLIED', orderNumber: order?.orderNumber } as PosEventResult;
+  });
+}
+
 async function accept(
   clientId: string,
   locationId: string,
@@ -249,8 +298,8 @@ export async function saleStatus(clientId: string, invoiceNo: string) {
    * to?" should not also have to say which sort of thing it was asking about.
    */
   const row = await prisma.posInboundEvent.findFirst({
-    // A left-out marker is not the bill: asking after a bill that never applied must not say APPLIED.
-    where: { clientId, invoiceNo, kind: { not: SKIP_KIND } },
+    // A left-out marker or a hand-over is not the bill: asking after a bill that never applied must not say APPLIED.
+    where: { clientId, invoiceNo, kind: { notIn: NOT_BILLS } },
     orderBy: { receivedAt: 'desc' },
     select: {
       id: true, status: true, answer: true, orderNumber: true, detail: true,

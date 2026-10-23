@@ -1,6 +1,6 @@
 import { prisma } from '../../lib/prisma';
 import { generateCredential } from '../../utils/storefrontCredential';
-import { POS_BASE_URL, POS_ONLY, SKIP_KIND } from '../../utils/posConnection';
+import { POS_BASE_URL, POS_ONLY, SKIP_KIND, NOT_BILLS } from '../../utils/posConnection';
 
 /**
  * Till keys: what an owner makes in Settings → POS (billing counter) and pastes into the POS.
@@ -54,7 +54,7 @@ export const posConnectionService = {
        */
       locationIds.length
         ? prisma.posInboundEvent.groupBy({
-          by: ['locationId'], where: { clientId, locationId: { in: locationIds }, kind: { not: SKIP_KIND } }, _max: { receivedAt: true }
+          by: ['locationId'], where: { clientId, locationId: { in: locationIds }, kind: { notIn: NOT_BILLS } }, _max: { receivedAt: true }
         })
         : Promise.resolve([] as { locationId: string; _max: { receivedAt: Date | null } }[])
     ]);

@@ -157,6 +157,25 @@ export interface PosSaleEvent {
    * whole business and the POS day close is one drawer -- two documents, not a double count.
    */
   payments?: PosPayment[];
+  /**
+   * Whether the goods went with the customer or are kept for them. Missing or anything else is
+   * TAKEN_NOW, as before the till sent it: a sale is never refused over this.
+   */
+  handover?: 'KEEP_FOR_CUSTOMER' | 'TAKEN_NOW' | null;
+  /** KEEP_FOR_CUSTOMER only: the collection date the cashier typed, "YYYY-MM-DD". A bad date is dropped. */
+  promisedAt?: string | null;
+}
+
+/** The till's handover, read leniently: only an exact KEEP_FOR_CUSTOMER keeps the order. */
+export const handoverOf = (event: { handover?: unknown }) =>
+  event.handover === 'KEEP_FOR_CUSTOMER' ? 'KEEP_FOR_CUSTOMER' as const : 'TAKEN_NOW' as const;
+
+/** "YYYY-MM-DD" to midday UTC (so it reads as the same day in India), or null. */
+export function promisedDateOf(raw: unknown): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw ?? '').trim());
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12));
+  return d.getUTCMonth() === +m[2] - 1 ? d : null;
 }
 
 export interface PosReturnEvent {
@@ -322,7 +341,7 @@ export async function writeSaleInTransaction(
          */
         allowOversell: true,
         status: 'CONFIRMED',
-        handover: 'TAKEN_NOW',
+        handover: handoverOf(event),
         items: event.lines.map(l => ({
           variantId: byCode.get(l.itemCode)!,
           quantity: l.qty,
@@ -427,6 +446,9 @@ export async function writeSaleInTransaction(
   if (Number.isFinite(roundOffPaise) && roundOffPaise !== 0) {
     await tx.salesOrder.update({ where: { id: made.id }, data: { roundOff: fromMinor(roundOffPaise) } });
   }
+
+  const promisedAt = handoverOf(event) === 'KEEP_FOR_CUSTOMER' ? promisedDateOf(event.promisedAt) : null;
+  if (promisedAt) await tx.salesOrder.update({ where: { id: made.id }, data: { promisedAt } });
 
   await dateFromTill(tx, event.occurredAt, { orderId: made.id });
 
@@ -731,7 +753,7 @@ export async function applySale(
  * -- no order a moment ago, nothing waiting now. Answering UNKNOWN_ORDER there stops the shop's
  * queue over a sale that exists (seen in verify-pos-endpoints section L under load, 1 and 5 Oct).
  */
-async function saleOnItsWay(clientId: string, invoiceNo: string): Promise<boolean> {
+export async function saleOnItsWay(clientId: string, invoiceNo: string): Promise<boolean> {
   const waiting = await prisma.posInboundEvent.findFirst({
     where: { clientId, kind: 'sale.completed', invoiceNo, status: { in: ['QUEUED', 'RUNNING'] } },
     select: { id: true }
@@ -740,7 +762,7 @@ async function saleOnItsWay(clientId: string, invoiceNo: string): Promise<boolea
   return (await prisma.salesOrder.count({ where: { clientId, externalOrderId: invoiceNo, sourceSystem: POS_SOURCE } })) > 0;
 }
 
-const notAppliedYet = (invoiceNo: string, what: string): PosEventResult => ({
+export const notAppliedYet = (invoiceNo: string, what: string): PosEventResult => ({
   answer: 'SALE_NOT_YET_APPLIED',
   detail: `Invoice ${invoiceNo} has been taken in but not applied yet. Send this ${what} again in a moment.`
 });

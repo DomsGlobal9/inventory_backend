@@ -1,5 +1,5 @@
 import { prisma } from '../../lib/prisma';
-import { POS_ONLY, SKIP_KIND } from '../../utils/posConnection';
+import { POS_ONLY, SKIP_KIND, HANDOVER_KIND } from '../../utils/posConnection';
 
 const DAY = 86_400_000;
 
@@ -59,7 +59,7 @@ export class TillHealthService {
       prisma.storefrontConnection.groupBy({ by: ['clientId'], where: { ...POS_ONLY, status: 'ACTIVE' }, _count: { _all: true } }),
       prisma.$queryRaw<{ client_id: string; last_bill: Date | null; waiting: bigint; stuck: bigint; refused: bigint }[]>`
         SELECT client_id,
-               MAX(received_at) FILTER (WHERE kind <> ${SKIP_KIND})                         AS last_bill,
+               MAX(received_at) FILTER (WHERE kind <> ${SKIP_KIND} AND kind <> ${HANDOVER_KIND}) AS last_bill,
                COUNT(*) FILTER (WHERE status IN ('QUEUED', 'RUNNING'))                     AS waiting,
                COUNT(*) FILTER (WHERE (status = 'QUEUED' AND received_at < ${stuckBefore})
                                    OR (status = 'RUNNING' AND (heartbeat_at IS NULL OR heartbeat_at < ${stuckBefore}))) AS stuck,

@@ -26,8 +26,8 @@ import { getShopSettings } from '../lib/clientSettings';
 import { prisma } from '../lib/prisma';
 import { listForPos, stockForPos } from '../services/pos/pos-catalogue.service';
 import { checkReturnAmounts, exchangeTooEarly, type PosEventResult } from '../services/pos/pos-events.service';
-import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptWriteOff, acceptExchange, acceptSkip, saleStatus } from '../services/pos/pos-queue.service';
-import { SKIP_KIND } from '../utils/posConnection';
+import { acceptSale, acceptReturn, acceptPaymentUpdate, acceptWriteOff, acceptExchange, acceptSkip, acceptHandOver, saleStatus } from '../services/pos/pos-queue.service';
+import { SKIP_KIND, HANDOVER_KIND } from '../utils/posConnection';
 import * as giftVouchers from '../services/gift-vouchers';
 
 const router = Router();
@@ -448,6 +448,26 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
       const noted = await acceptSkip(ctx.clientId, locationId, event);
       const ok = noted.answer === 'APPLIED' || noted.answer === 'ALREADY_APPLIED';
       res.status(ok ? 200 : 422).json({ success: ok, data: noted });
+      return;
+    }
+
+    if (kind === HANDOVER_KIND) {
+      // A kept order's goods went out. Recorded on the spot like a left-out bill: nothing to queue.
+      const locationId = ctx.locationIds[0];
+      if (!locationId) {
+        res.status(422).json({
+          success: false,
+          data: { answer: 'BAD_PAYLOAD', detail: 'This connection has no location, so a hand-over has nowhere to be noted.' } as PosEventResult
+        });
+        return;
+      }
+      const handed = await acceptHandOver(ctx.clientId, locationId, event);
+      if (handed.answer === 'SALE_NOT_YET_APPLIED') {
+        res.status(409).json({ success: false, data: handed });
+        return;
+      }
+      const ok = handed.answer === 'APPLIED' || handed.answer === 'ALREADY_APPLIED';
+      res.status(ok ? 200 : 422).json({ success: ok, data: handed });
       return;
     }
 

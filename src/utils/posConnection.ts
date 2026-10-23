@@ -25,3 +25,12 @@ export const WEBSITES_ONLY = { NOT: { baseUrl: { startsWith: 'pos://' } } } as c
  * applied, so it is not a bill: "last bill received" and "where did that bill get to?" skip it.
  */
 export const SKIP_KIND = 'document.skipped';
+
+/**
+ * A kept order's goods handed over at the till. Recorded on the spot and never queued, and like a
+ * left-out marker it is not a bill: it shares its invoice number with the sale it closes.
+ */
+export const HANDOVER_KIND = 'order.handed_over';
+
+/** Event kinds that are not bills, for "last bill received" and "where did that bill get to?". */
+export const NOT_BILLS = [SKIP_KIND, HANDOVER_KIND];

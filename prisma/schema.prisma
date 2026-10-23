@@ -1300,6 +1300,10 @@ model SalesOrder {
 
   /// Counter orders only: whether the goods went with the customer or are kept for them.
   handover SalesOrderHandover?
+  /// KEEP_FOR_CUSTOMER only: the collection date the cashier typed at the till.
+  promisedAt   DateTime? @map("promised_at")
+  /// KEEP_FOR_CUSTOMER only: when the till said the goods went out (order.handed_over). Null while kept.
+  handedOverAt DateTime? @map("handed_over_at")
 
   // Customer Snapshot Fields
   customerName    String? @map("customer_name")
