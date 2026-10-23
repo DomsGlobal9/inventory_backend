@@ -104,9 +104,12 @@ async function stockPart(clientId: string, locationId: string | undefined, money
     FROM inventory_product_variants v
     JOIN inventory_products p ON p.id = v.product_id
     LEFT JOIN (SELECT variant_id, SUM(quantity) AS qty FROM inventory_stocks WHERE client_id = ${clientId} ${here} GROUP BY variant_id) s ON s.variant_id = v.id
-    WHERE v.client_id = ${clientId} AND p.status::text <> 'TRASHED' AND p.trashed_at IS NULL`;
+    WHERE v.client_id = ${clientId} AND p.status::text <> 'TRASHED' AND p.is_service = false`;
   // Pieces count every product not binned -- the same stock the value below is worked out on (an
-  // archived product's pieces are still on the shelf). Low and sold out only for what is on sale:
+  // archived product's pieces are still on the shelf). The status says binned, as it does for the
+  // value: a binned date alone (one old test product, archived) is not enough to drop its pieces
+  // from one card while the other counts them. Services (an alteration, a fall-and-pico) hold no stock:
+  // never a colour, never "sold out". Low and sold out only for what is on sale:
   // active or draft, as the low-stock count everywhere else in the app.
   const selling = Prisma.sql`p.status::text IN ('ACTIVE', 'DRAFT')`;
   const [[c], lowest, value, nights] = await Promise.all([prisma.$queryRaw<{ units: unknown; colours: bigint; low: bigint; out: bigint; low_pieces: unknown }[]>(Prisma.sql`

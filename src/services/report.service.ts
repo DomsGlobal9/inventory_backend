@@ -310,12 +310,16 @@ export class ReportService {
 
   async getDeadStock(clientId: string, thresholdDays: number = 90, locationId?: string) {
     const stockJoinFilter = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
+    // Valued and filtered exactly as the Dead Stock Value tile above it (getDashboardSummary): the same
+    // cost chain, binned products left out. It used average cost alone and kept binned products, so
+    // the moment a shop had dead stock the list would not have added up to the tile.
     const rawRows = await prisma.$queryRaw<any[]>`
-      SELECT v.id, v.sku, p.id as "productId", COALESCE(s.qty, 0) as quantity, COALESCE(s.qty, 0) * v.average_cost as inventory_value, v.last_movement_at, p.title as "productTitle", p.category
+      SELECT v.id, v.sku, p.id as "productId", COALESCE(s.qty, 0) as quantity, COALESCE(s.qty, 0) * ${UNIT_COST} as inventory_value, v.last_movement_at, p.title as "productTitle", p.category
       FROM "inventory_product_variants" v
-      LEFT JOIN "inventory_products" p ON v.product_id = p.id
+      JOIN "inventory_products" p ON v.product_id = p.id
       LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
       WHERE v.client_id = ${clientId}
+      AND p.status != 'TRASHED'
       AND COALESCE(s.qty, 0) > 0
       AND v.last_movement_at IS NOT NULL
       AND v.last_movement_at < NOW() - make_interval(days => ${thresholdDays}::int)
