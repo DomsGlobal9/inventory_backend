@@ -150,6 +150,26 @@ async function main() {
       { sales: !!got.sales, stock: !!got.stock, value: got.stock?.value, orders: !!got.latestOrders, perms: perms.filter(p => /report|inventory:view|sales_order:view/.test(p)) });
   }
 
+  console.log('\nJ. THE STOCK VALUE, NIGHT BY NIGHT, FOR THIS STORE');
+  // Main's nightly figures: 40 days ago (too old), 5 days ago 1,000, 3 days ago 1,200, and one for today
+  // that the live figure must replace. The whole shop has its own nightly row, 4 days ago 5,000.
+  const night = (days: number) => new Date(Date.UTC(2026, 9, 22 - days));
+  await prisma.dailyLocationSnapshot.createMany({ data: [
+    { clientId: C, locationId: main.id, snapshotDate: night(40), totalUnits: 1, totalValue: 99 },
+    { clientId: C, locationId: main.id, snapshotDate: night(5), totalUnits: 10, totalValue: 1000 },
+    { clientId: C, locationId: main.id, snapshotDate: night(3), totalUnits: 12, totalValue: 1200 },
+    { clientId: C, locationId: main.id, snapshotDate: night(0), totalUnits: 12, totalValue: 1234 },
+    { clientId: C, locationId: branch.id, snapshotDate: night(3), totalUnits: 7, totalValue: 700 }
+  ] });
+  await prisma.dailyInventorySnapshot.create({ data: { clientId: C, snapshotDate: night(4), totalValue: 5000, totalUnits: 30 } as any });
+  const v: any = await dashboardOverview(C, OWNER, main.id, NOW);
+  check('this store\'s nights only (not the other store\'s), nothing older than 30 days, ending today at the live 1,700 (not the 1,234 snapshot, no second "today")',
+    eq(v.stock.valueTrend, [{ day: '2026-10-17', value: 1000 }, { day: '2026-10-19', value: 1200 }, { day: '2026-10-22', value: 1700 }]), v.stock.valueTrend);
+  const w: any = await dashboardOverview(C, OWNER, undefined, NOW);
+  check('with no store chosen: the whole shop\'s nights, ending at the whole shop\'s live value', eq(w.stock.valueTrend, [{ day: '2026-10-18', value: 5000 }, { day: '2026-10-22', value: w.stock.value }]) && w.stock.value === 2400, w.stock.valueTrend);
+  const noMoney: any = await dashboardOverview(C, { permissions: ['dashboard:view', 'inventory:view'] }, main.id, NOW);
+  check('no value history for somebody not allowed money', noMoney.stock.valueTrend === null && noMoney.stock.value === null);
+
   console.log('\nI. A BRAND-NEW SHOP');
   const e: any = await dashboardOverview(EMPTY, OWNER, undefined, NOW);
   check('nothing at all: zeros everywhere, 30 empty days, 9 empty months, empty lists -- no error', e.today.orders === 0 && e.sales.last30 === 0 && e.sales.daily.length === 30 && e.sales.daily.every((d: any) => d.till === 0 && d.online === 0) && e.sales.monthly.length === 9 && e.stock.units === 0 && e.stock.low === 0 && e.topSellers.length === 0 && e.latestOrders.length === 0, e);
@@ -157,6 +177,8 @@ async function main() {
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {
   const w = { clientId: { in: [C, EMPTY] } };
+  await prisma.dailyLocationSnapshot.deleteMany({ where: w }).catch(e => console.log('left location nights', e.message));
+  await prisma.dailyInventorySnapshot.deleteMany({ where: w }).catch(e => console.log('left nights', e.message));
   await prisma.salesOrderItem.deleteMany({ where: { salesOrder: w } }).catch(e => console.log('left items', e.message));
   await prisma.salesOrder.deleteMany({ where: w }).catch(e => console.log('left orders', e.message));
   await prisma.productImage.deleteMany({ where: { product: w } }).catch(e => console.log('left images', e.message));

@@ -51,7 +51,7 @@ export async function dashboardOverview(clientId: string, user: User, locationId
       SELECT COUNT(*) AS orders, COALESCE(SUM(so.total), 0) AS total FROM sales_orders so
       WHERE ${real} AND ${istDay} = ((${now}::timestamp AT TIME ZONE 'UTC') AT TIME ZONE ${TZ})::date`),
     money ? salesPart(real, istDay, online, now) : null,
-    stockOk ? stockPart(clientId, locationId, money) : null,
+    stockOk ? stockPart(clientId, locationId, money, now) : null,
     topOk ? topPart(real, now, money) : null,
     ordersOk ? latestPart(clientId, locationId) : null
   ]);
@@ -97,7 +97,7 @@ async function salesPart(real: Prisma.Sql, istDay: Prisma.Sql, online: Prisma.Sq
 }
 
 /** Pieces on hand, colours (variants) plenty / low / sold out, and the lowest few. */
-async function stockPart(clientId: string, locationId: string | undefined, money: boolean) {
+async function stockPart(clientId: string, locationId: string | undefined, money: boolean, now: Date) {
   const here = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
   const qty = Prisma.sql`COALESCE(s.qty, 0)`;
   const base = Prisma.sql`
@@ -109,7 +109,7 @@ async function stockPart(clientId: string, locationId: string | undefined, money
   // archived product's pieces are still on the shelf). Low and sold out only for what is on sale:
   // active or draft, as the low-stock count everywhere else in the app.
   const selling = Prisma.sql`p.status::text IN ('ACTIVE', 'DRAFT')`;
-  const [[c], lowest, value] = await Promise.all([prisma.$queryRaw<{ units: unknown; colours: bigint; low: bigint; out: bigint; low_pieces: unknown }[]>(Prisma.sql`
+  const [[c], lowest, value, nights] = await Promise.all([prisma.$queryRaw<{ units: unknown; colours: bigint; low: bigint; out: bigint; low_pieces: unknown }[]>(Prisma.sql`
     SELECT COALESCE(SUM(${qty}), 0) AS units, COUNT(*) AS colours,
            COUNT(*) FILTER (WHERE ${selling} AND ${lowStockSql(qty)}) AS low, COUNT(*) FILTER (WHERE ${selling} AND ${outOfStockSql(qty)}) AS out,
            COALESCE(SUM(${qty}) FILTER (WHERE ${selling} AND ${lowStockSql(qty)}), 0) AS low_pieces ${base}`),
@@ -117,12 +117,36 @@ async function stockPart(clientId: string, locationId: string | undefined, money
     SELECT p.id AS product_id, p.title, v.color_name AS colour, v.size, ${qty} AS qty, v.reorder_level AS level ${base} AND ${selling} AND ${lowStockSql(qty)}
     ORDER BY ${qty}::float / NULLIF(v.reorder_level, 0) ASC, p.title LIMIT ${LOW_LIST}`),
   // What it is worth, the same figure as the Inventory value tile; only for somebody allowed money.
-  money ? inventoryValueFor(clientId, locationId) : Promise.resolve(null)]);
+  money ? inventoryValueFor(clientId, locationId) : Promise.resolve(null),
+  money ? nightlyValues(clientId, locationId, now) : Promise.resolve(null)]);
+  const valueTrend = nights && value != null ? endingToday(nights, value, now) : null;
   return {
     units: n(c?.units), colours: Number(c?.colours ?? 0), low: Number(c?.low ?? 0), out: Number(c?.out ?? 0), lowPieces: n(c?.low_pieces),
     value,
+    // What it was worth night by night over the last 30 days, this store's (or the whole shop's), ending today.
+    valueTrend,
     lowest: lowest.map(r => ({ productId: r.product_id, title: r.title, colour: r.colour, size: r.size, left: n(r.qty), level: r.level }))
   };
+}
+
+/**
+ * The stock value over the last 30 days: the nightly snapshot for this store (or for the whole shop with
+ * no store chosen), and today's live figure as the last point so the line ends where the card's number is.
+ */
+const istDayKey = (d: Date) => new Date(d.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10);
+async function nightlyValues(clientId: string, locationId: string | undefined, now: Date) {
+  const since = new Date(now.getTime() - 30 * DAY);
+  const rows = locationId
+    ? await prisma.dailyLocationSnapshot.findMany({ where: { clientId, locationId, snapshotDate: { gte: since } }, orderBy: { snapshotDate: 'asc' }, select: { snapshotDate: true, totalValue: true } })
+    : await prisma.dailyInventorySnapshot.findMany({ where: { clientId, snapshotDate: { gte: since } }, orderBy: { snapshotDate: 'asc' }, select: { snapshotDate: true, totalValue: true } });
+  return rows.map(r => ({ day: istDayKey(r.snapshotDate), value: n(r.totalValue) }));
+}
+function endingToday(nights: { day: string; value: number }[], today: number, now: Date) {
+  const points = nights.map(p => ({ ...p }));
+  const todayKey = istDayKey(now);
+  if (points.length && points[points.length - 1].day === todayKey) points[points.length - 1].value = today;
+  else points.push({ day: todayKey, value: today });
+  return points;
 }
 
 /** The best sellers of the last 30 days, by value (or by pieces for somebody not allowed money), with a photo. */
