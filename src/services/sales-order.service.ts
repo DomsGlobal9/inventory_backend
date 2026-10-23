@@ -17,6 +17,7 @@ import { getShopSettings } from '../lib/clientSettings';
 import { phoneForOutsideCustomer } from './customer.service';
 import { phoneSearchDigits } from '../lib/phone';
 import { paymentSummary } from './payments/payment-rules';
+import { whyNotCollect } from './order-payments';
 import { freezeTaxForLine } from './pricing/freezeTax';
 import { mayChargeTax, documentKindFor, registrationInForce } from './pricing/tax';
 import { settleSentOut } from './loyalty';
@@ -883,11 +884,15 @@ export class SalesOrderService {
       ...item,
       heldQty: inventoryReservations.reduce((sum, r) => sum + Math.max(0, r.reservedQty - r.dispatchedQty), 0)
     }));
+    const payment = paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), order.payments, toMinor(order.writtenOff ?? 0));
     return {
       ...order,
       items,
       atCounter: order.sourceSystem === COUNTER_SOURCE,
-      payment: paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), order.payments, toMinor(order.writtenOff ?? 0))
+      payment,
+      // Why money cannot be recorded here (services/order-payments), or null when it can: the order
+      // page shows Record payment only then, and says the reason otherwise.
+      collectBlocked: whyNotCollect(order, toMinor(payment.due))
     };
   }
 

@@ -18,6 +18,7 @@ export interface MyDay {
   returnsToInspect?: number;
   customersToday?: number;
   transfersOnTheWay?: number;
+  keptOverdue?: number;
 }
 
 export async function myDay(clientId: string, user: { permissions?: string[]; roles?: string[] }, locationId?: string): Promise<MyDay> {
@@ -48,7 +49,12 @@ export async function myDay(clientId: string, user: { permissions?: string[]; ro
         clientId, status: { in: ['APPROVED', 'IN_TRANSIT'] },
         ...(locationId ? { OR: [{ fromLocationId: locationId }, { toLocationId: locationId }] } : {})
       }
-    }).then(n => { out.transfersOnTheWay = n; })
+    }).then(n => { out.transfersOnTheWay = n; }),
+    // Kept for a customer at the till, still in the shop, and the day they promised to collect has gone.
+    // promisedAt is stored at midday of that day, so "before today began" means yesterday or earlier.
+    may('sales_order:view') && prisma.salesOrder.count({
+      where: { clientId, ...store, deletedAt: null, status: { not: 'CANCELLED' }, handover: 'KEEP_FOR_CUSTOMER', handedOverAt: null, promisedAt: { lt: since } }
+    }).then(n => { out.keptOverdue = n; })
   ]);
   return out;
 }

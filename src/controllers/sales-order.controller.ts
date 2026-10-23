@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { salesOrderService } from '../services/sales-order.service';
 import { filterOrders, orderFilterQuery } from '../services/order-filters';
+import { collectPayment, collectBody } from '../services/order-payments';
 import { prisma } from '../lib/prisma';
 import { createOrderSchema, createFullOrderSchema } from '../validations/sales-order.schema';
 import { respondWithError } from '../utils/respondWithError';
@@ -112,6 +113,22 @@ export const getOrders = async (req: Request, res: Response) => {
     const filters = { status: text(req.query.status), search: text(req.query.search), source: text(req.query.source) };
     const orders = await salesOrderService.getOrders(clientId, filters);
     res.json(orders);
+  } catch (error: any) {
+    return respondWithError(res, error, { status: 500 });
+  }
+};
+
+/** Money collected later -- pay on delivery, an order typed in by hand -- recorded against the order (services/order-payments). */
+export const collectOrderPayment = async (req: Request, res: Response) => {
+  try {
+    const clientId = (req as any).clientId as string;
+    const body = collectBody.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ success: false, message: 'Enter the amount and how it was paid.' });
+      return;
+    }
+    const out = await collectPayment(clientId, (req as any).user?.id ?? null, req.params.id as string, body.data);
+    res.json({ success: true, data: out });
   } catch (error: any) {
     return respondWithError(res, error, { status: 500 });
   }
