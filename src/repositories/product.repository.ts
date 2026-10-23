@@ -28,9 +28,13 @@ export class ProductRepository {
 
   async findManyWithFilters(clientId: string, queryParams: any): Promise<{ data: Product[], meta: any }> {
     const { page, limit, search, status, category, sortBy, order } = queryParams;
-    const skip = (page - 1) * limit;
+    // `ids`: these products exactly, in this order -- the Products page's filters (services/product-filters)
+    // choose and sort them, and the rows still come out of here so they look the same either way.
+    const ids: string[] | undefined = queryParams.ids;
+    if (ids && ids.length === 0) return { data: [], meta: { page: 1, limit: 0, total: 0, pages: 0 } };
+    const skip = ids ? 0 : (page - 1) * limit;
 
-    const where: Prisma.ProductWhereInput = {
+    const where: Prisma.ProductWhereInput = ids ? { clientId, id: { in: ids } } : {
       clientId,
       ...(status ? { status } : { status: { in: ['ACTIVE', 'DRAFT'] } }),
       ...(category && { category }),
@@ -46,8 +50,8 @@ export class ProductRepository {
       prisma.product.findMany({
         where,
         skip,
-        take: limit,
-        orderBy: { [sortBy]: order },
+        take: ids ? ids.length : limit,
+        orderBy: ids ? undefined : { [sortBy]: order },
         // Only the three fields the summary below actually reads.
         //
         // This was `include: { variants: { include: { stocks: true } } }`, which fetched every
@@ -181,6 +185,7 @@ export class ProductRepository {
         variantSummary: { variantCount, totalUnits, lowStockVariants, variantsWithoutImages }
       };
     });
+    if (ids) data.sort((a: any, b: any) => ids.indexOf(a.id) - ids.indexOf(b.id));
 
     return {
       data,

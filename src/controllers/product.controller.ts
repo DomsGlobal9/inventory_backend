@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { parseBody } from '../validations/parseBody';
 import { productService } from '../services/product.service';
 import { createProductSchema, updateProductSchema, productQuerySchema } from '../validations/product.schema';
+import { filterProducts, productFilterQuery } from '../services/product-filters';
 
 export class ProductController {
   
@@ -19,8 +20,13 @@ export class ProductController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;
+      // The Products page's search, filters and counts; every other caller gets the plain list below.
+      if (req.query.facets === '1') {
+        res.status(200).json({ success: true, ...(await filterProducts(clientId, productFilterQuery.parse(req.query))) });
+        return;
+      }
       const queryParams = productQuerySchema.parse(req.query);
-      
+
       const result = await productService.getProducts(clientId, queryParams);
       res.status(200).json({ success: true, ...result });
     } catch (error) {
