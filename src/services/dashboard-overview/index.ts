@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { lowStockSql, outOfStockSql } from '../../lib/lowStock';
-import { inventoryValueFor } from '../../lib/inventoryValuation';
+import { inventoryValueFor, UNIT_COST } from '../../lib/inventoryValuation';
 import { grants, holdsEverything } from '../../config/permissions';
 
 /**
@@ -27,6 +27,7 @@ const MONTHS = 9;
 const TOP = 5;
 const LATEST = 5;
 const LOW_LIST = 4;
+const NEED_LIST = 30;
 
 type User = { permissions?: string[]; roles?: string[] };
 
@@ -46,19 +47,59 @@ export async function dashboardOverview(clientId: string, user: User, locationId
 
   // Every part at once: each is a trip to the database, and one after another they took ~3 s.
   // Today, in India, is counted for everybody who can see the dashboard: how many orders, not their value.
-  const [[today], sales, stock, topSellers, latestOrders] = await Promise.all([
+  const [[today], sales, stock, topSellers, latestOrders, tiedUp] = await Promise.all([
     prisma.$queryRaw<{ orders: bigint; total: unknown }[]>(Prisma.sql`
       SELECT COUNT(*) AS orders, COALESCE(SUM(so.total), 0) AS total FROM sales_orders so
       WHERE ${real} AND ${istDay} = ((${now}::timestamp AT TIME ZONE 'UTC') AT TIME ZONE ${TZ})::date`),
     money ? salesPart(real, istDay, online, now) : null,
     stockOk ? stockPart(clientId, locationId, money, now) : null,
     topOk ? topPart(real, now, money) : null,
-    ordersOk ? latestPart(clientId, locationId) : null
+    ordersOk ? latestPart(clientId, locationId) : null,
+    money ? tiedUpPart(clientId, locationId, now) : null
   ]);
 
   return {
     today: { orders: Number(today?.orders ?? 0), total: money ? n(today?.total) : null },
-    sales, stock, topSellers, latestOrders
+    sales, stock, topSellers, latestOrders, tiedUp
+  };
+}
+
+/**
+ * Money tied up: what suppliers still owe in goods, and stock that has not moved in 90 days.
+ *
+ * "Still to arrive" is what is LEFT on open purchase orders -- ordered less received, at the order's
+ * price -- for orders coming to this store. The old Open PO tile summed the whole of every open
+ * order across the shop, the parts already on the shelf included: sphl's Main Store read ₹26,500
+ * with nothing on its way to it, and only ₹8,500 still to come anywhere.
+ *
+ * "Not moved in 90 days" is the old Dead Stock tile's figure, unchanged: same cost chain, binned
+ * products out, pieces held here whose last movement (any store) was over 90 days ago.
+ */
+async function tiedUpPart(clientId: string, locationId: string | undefined, now: Date) {
+  const here = locationId ? Prisma.sql`AND location_id = ${locationId}` : Prisma.empty;
+  const [orders, [dead]] = await Promise.all([
+    prisma.purchaseOrder.findMany({
+      where: { clientId, status: { in: ['SENT', 'PARTIALLY_RECEIVED'] } },
+      select: { locationId: true, items: { select: { orderedQty: true, receivedQty: true, unitPrice: true } } }
+    }),
+    prisma.$queryRaw<{ value: unknown; pieces: unknown; colours: bigint }[]>(Prisma.sql`
+      SELECT COALESCE(SUM(s.qty * ${UNIT_COST}), 0) AS value, COALESCE(SUM(s.qty), 0) AS pieces, COUNT(*) AS colours
+      FROM inventory_product_variants v
+      JOIN inventory_products p ON p.id = v.product_id
+      JOIN (SELECT variant_id, SUM(quantity) AS qty FROM inventory_stocks WHERE client_id = ${clientId} ${here} GROUP BY variant_id) s ON s.variant_id = v.id
+      WHERE v.client_id = ${clientId} AND p.status::text <> 'TRASHED' AND s.qty > 0
+        AND v.last_movement_at IS NOT NULL AND v.last_movement_at < ${new Date(now.getTime() - 90 * DAY)}`)
+  ]);
+  const left = (o: typeof orders[0]) => o.items.reduce((t, i) => t + Math.max(0, i.orderedQty - i.receivedQty) * n(i.unitPrice), 0);
+  const coming = orders.map(o => ({ to: o.locationId, value: left(o) })).filter(o => o.value > 0);
+  const mine = locationId ? coming.filter(o => o.to === locationId) : coming;
+  return {
+    toArrive: mine.reduce((t, o) => t + o.value, 0),
+    toArriveOrders: mine.length,
+    // The whole shop's, so a store with nothing coming can still see what is on its way elsewhere.
+    toArriveAll: coming.reduce((t, o) => t + o.value, 0),
+    toArriveAllOrders: coming.length,
+    dead: n(dead?.value), deadPieces: n(dead?.pieces), deadColours: Number(dead?.colours ?? 0)
   };
 }
 
@@ -112,13 +153,18 @@ async function stockPart(clientId: string, locationId: string | undefined, money
   // never a colour, never "sold out". Low and sold out only for what is on sale:
   // active or draft, as the low-stock count everywhere else in the app.
   const selling = Prisma.sql`p.status::text IN ('ACTIVE', 'DRAFT')`;
-  const [[c], lowest, value, nights] = await Promise.all([prisma.$queryRaw<{ units: unknown; colours: bigint; low: bigint; out: bigint; low_pieces: unknown }[]>(Prisma.sql`
+  const [[c], lowest, soldOut, value, nights] = await Promise.all([prisma.$queryRaw<{ units: unknown; colours: bigint; low: bigint; out: bigint; low_pieces: unknown }[]>(Prisma.sql`
     SELECT COALESCE(SUM(${qty}), 0) AS units, COUNT(*) AS colours,
            COUNT(*) FILTER (WHERE ${selling} AND ${lowStockSql(qty)}) AS low, COUNT(*) FILTER (WHERE ${selling} AND ${outOfStockSql(qty)}) AS out,
            COALESCE(SUM(${qty}) FILTER (WHERE ${selling} AND ${lowStockSql(qty)}), 0) AS low_pieces ${base}`),
   prisma.$queryRaw<{ product_id: string; title: string; colour: string | null; size: string | null; qty: unknown; level: number }[]>(Prisma.sql`
     SELECT p.id AS product_id, p.title, v.color_name AS colour, v.size, ${qty} AS qty, v.reorder_level AS level ${base} AND ${selling} AND ${lowStockSql(qty)}
-    ORDER BY ${qty}::float / NULLIF(v.reorder_level, 0) ASC, p.title LIMIT ${LOW_LIST}`),
+    ORDER BY ${qty}::float / NULLIF(v.reorder_level, 0) ASC, p.title LIMIT ${NEED_LIST}`),
+  // Published and sold out here: sales being lost right now, so first on the restocking list. Drafts
+  // with nothing yet are not on sale and are left to the Products page.
+  prisma.$queryRaw<{ product_id: string; title: string; colour: string | null; size: string | null; level: number }[]>(Prisma.sql`
+    SELECT p.id AS product_id, p.title, v.color_name AS colour, v.size, v.reorder_level AS level ${base} AND p.status::text = 'ACTIVE' AND ${outOfStockSql(qty)}
+    ORDER BY p.title, v.color_name LIMIT ${NEED_LIST}`),
   // What it is worth, the same figure as the Inventory value tile; only for somebody allowed money.
   money ? inventoryValueFor(clientId, locationId) : Promise.resolve(null),
   money ? nightlyValues(clientId, locationId, now) : Promise.resolve(null)]);
@@ -128,7 +174,13 @@ async function stockPart(clientId: string, locationId: string | undefined, money
     value,
     // What it was worth night by night over the last 30 days, this store's (or the whole shop's), ending today.
     valueTrend,
-    lowest: lowest.map(r => ({ productId: r.product_id, title: r.title, colour: r.colour, size: r.size, left: n(r.qty), level: r.level }))
+    lowest: lowest.slice(0, LOW_LIST).map(r => ({ productId: r.product_id, title: r.title, colour: r.colour, size: r.size, left: n(r.qty), level: r.level })),
+    // The lower half's restocking list: sold out (published) first, then running low, lowest first.
+    toRestock: [
+      ...soldOut.map(r => ({ productId: r.product_id, title: r.title, colour: r.colour, size: r.size, left: 0, level: r.level, soldOut: true })),
+      ...lowest.map(r => ({ productId: r.product_id, title: r.title, colour: r.colour, size: r.size, left: n(r.qty), level: r.level, soldOut: false }))
+    ].slice(0, NEED_LIST),
+    soldOutLive: soldOut.length
   };
 }
 

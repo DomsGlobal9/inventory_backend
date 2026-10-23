@@ -329,6 +329,8 @@ export class ReportService {
 
     return rawRows.map((item: any) => ({
       id: item.id,
+      // So a row can open its product. Selected above but never sent, and the old widget's rows did nothing.
+      productId: item.productId,
       sku: item.sku,
       productTitle: item.productTitle,
       category: item.category,

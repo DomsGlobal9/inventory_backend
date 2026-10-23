@@ -8,6 +8,7 @@
 import { prisma } from '../lib/prisma';
 import { dashboardOverview } from '../services/dashboard-overview';
 import { grants, holdsEverything } from '../config/permissions';
+import { reportService } from '../services/report.service';
 
 const STAMP = Date.now();
 const C = `dash-${STAMP}`;
@@ -173,12 +174,60 @@ async function main() {
   console.log('\nI. A BRAND-NEW SHOP');
   const e: any = await dashboardOverview(EMPTY, OWNER, undefined, NOW);
   check('nothing at all: zeros everywhere, 30 empty days, 9 empty months, empty lists -- no error', e.today.orders === 0 && e.sales.last30 === 0 && e.sales.daily.length === 30 && e.sales.daily.every((d: any) => d.till === 0 && d.online === 0) && e.sales.monthly.length === 9 && e.stock.units === 0 && e.stock.low === 0 && e.topSellers.length === 0 && e.latestOrders.length === 0, e);
+  check('a brand-new shop: nothing tied up, nothing to restock', eq(e.tiedUp, { toArrive: 0, toArriveOrders: 0, toArriveAll: 0, toArriveAllOrders: 0, dead: 0, deadPieces: 0, deadColours: 0 }) && e.stock.toRestock.length === 0, { tiedUp: e.tiedUp, toRestock: e.stock.toRestock });
+
+  console.log('\nK. MONEY TIED UP, WHAT TO RESTOCK, SERVICES');
+  const supplier = await prisma.supplier.create({ data: { clientId: C, supplierCode: `SUP-${STAMP}`, name: 'Weaver' } as any });
+  const po = (status: string, locationId: string | null, lines: [any, number, number, number][], totalAmount: number) => prisma.purchaseOrder.create({ data: {
+    clientId: C, poNumber: `PO-${STAMP}-${++n}`, supplierId: supplier.id, locationId, status: status as any, totalAmount,
+    items: { create: lines.map(([v, ordered, received, price]) => ({ variantId: v.id, sku: v.sku, variantCode: v.variantCode, productTitle: 'x', orderedQty: ordered, receivedQty: received, unitPrice: price })) }
+  } as any });
+  await po('SENT', main.id, [[vPlenty, 10, 0, 100], [vLow, 5, 5, 50]], 1250);             // Main: 1,000 still to come (the 250 is in)
+  await po('PARTIALLY_RECEIVED', branch.id, [[vLower, 10, 7, 200]], 2000);                  // Branch: 600 still to come
+  await po('SENT', null, [[vLow, 2, 0, 150]], 300);                                          // no store: whole shop only, 300
+  await po('SENT', main.id, [[vPlenty, 3, 3, 100]], 300);                                    // all in, status never moved on: nothing to come
+  await po('RECEIVED', main.id, [[vPlenty, 4, 0, 999]], 3996);                               // closed: never counted
+  await po('DRAFT', main.id, [[vPlenty, 3, 0, 77]], 231);                                    // not sent: never counted
+  // Not moved in 90 days: Low (3 at Main, 120 days still) and the archived Old Saree (1, 200 days); Lower moved 10 days ago;
+  // Gone has nothing to be dead.
+  const since = (days: number) => new Date(NOW.getTime() - days * DAY);
+  await prisma.productVariant.update({ where: { id: vLow.id }, data: { lastMovementAt: since(120) } });
+  await prisma.productVariant.update({ where: { id: vArch.id }, data: { lastMovementAt: since(200) } });
+  await prisma.productVariant.update({ where: { id: vLower.id }, data: { lastMovementAt: since(10) } });
+  await prisma.productVariant.update({ where: { id: vOut.id }, data: { lastMovementAt: since(300) } });
+  // A service (fall and pico): no stock, a reorder level, published. Never a colour, never sold out.
+  const service = await product('Fall and Pico', { isService: true }); await variant(service.id, 'None', 5);
+  // A draft with nothing yet: sold out by count, but not on sale, so not on the restocking list.
+  const draft = await product('Draft Saree', { status: 'DRAFT' }); await variant(draft.id, 'Teal', 5);
+
+  const k: any = await dashboardOverview(C, OWNER, main.id, NOW);
+  check('Main: ₹1,000 still to arrive on 1 order -- the part already in, the closed, draft and fully-received orders left out',
+    k.tiedUp.toArrive === 1000 && k.tiedUp.toArriveOrders === 1, k.tiedUp);
+  check('Main also sees the whole shop: ₹1,900 on 3 orders (Branch 600, the order with no store 300)', k.tiedUp.toArriveAll === 1900 && k.tiedUp.toArriveAllOrders === 3, k.tiedUp);
+  const kb: any = await dashboardOverview(C, OWNER, branch.id, NOW);
+  check('Branch: ₹600 on 1 order (ordered 10, 7 in, at ₹200) -- not the order\'s ₹2,000 total', kb.tiedUp.toArrive === 600 && kb.tiedUp.toArriveOrders === 1, kb.tiedUp);
+  const kw: any = await dashboardOverview(C, OWNER, undefined, NOW);
+  check('whole shop: ₹1,900 on 3 orders', kw.tiedUp.toArrive === 1900 && kw.tiedUp.toArriveOrders === 3, kw.tiedUp);
+  check('not moved in 90 days at Main: Low 3 × ₹100 + archived 1 × ₹100 = ₹400, 4 pieces in 2 colours (Lower moved lately, Gone has none)',
+    k.tiedUp.dead === 400 && k.tiedUp.deadPieces === 4 && k.tiedUp.deadColours === 2, k.tiedUp);
+  check('the old dead-stock tile, for the same store, says the same ₹400', (await reportService.getDashboardSummary(C, main.id)).deadStockValue === 400);
+  const deadList: any[] = await reportService.getDeadStock(C, 90, main.id);
+  check('the dead-stock list adds up to it and each row can open its product', deadList.reduce((t, r) => t + r.inventoryValue, 0) === 400 && deadList.every(r => r.productId), deadList);
+  check('the service is not a colour and not sold out: 7 colours (6 + the draft), 2 sold out (Gone, the draft)', k.stock.colours === 7 && k.stock.out === 2, { colours: k.stock.colours, out: k.stock.out });
+  check('to restock: sold out on sale first (Gone), then lowest first (Lower, Low); no service, no draft, no archived',
+    eq(k.stock.toRestock.map((r: any) => [r.title, r.left, r.soldOut]), [['Gone Saree', 0, true], ['Lower Saree', 2, false], ['Low Saree', 3, false]]) && k.stock.soldOutLive === 1, k.stock.toRestock);
+  check('the top card\'s list is still the 4 lowest at most', k.stock.lowest.length <= 4);
+  const kInv: any = await dashboardOverview(C, { permissions: ['dashboard:view', 'inventory:view'] }, main.id, NOW);
+  check('without money: nothing tied up is sent at all, the restocking list is', kInv.tiedUp === null && kInv.stock.toRestock.length === 3);
 }
 
 main().catch(e => { failed++; console.error(e); }).finally(async () => {
   const w = { clientId: { in: [C, EMPTY] } };
   await prisma.dailyLocationSnapshot.deleteMany({ where: w }).catch(e => console.log('left location nights', e.message));
   await prisma.dailyInventorySnapshot.deleteMany({ where: w }).catch(e => console.log('left nights', e.message));
+  await prisma.purchaseOrderItem.deleteMany({ where: { po: w } }).catch(e => console.log('left PO lines', e.message));
+  await prisma.purchaseOrder.deleteMany({ where: w }).catch(e => console.log('left POs', e.message));
+  await prisma.supplier.deleteMany({ where: w }).catch(e => console.log('left suppliers', e.message));
   await prisma.salesOrderItem.deleteMany({ where: { salesOrder: w } }).catch(e => console.log('left items', e.message));
   await prisma.salesOrder.deleteMany({ where: w }).catch(e => console.log('left orders', e.message));
   await prisma.productImage.deleteMany({ where: { product: w } }).catch(e => console.log('left images', e.message));
