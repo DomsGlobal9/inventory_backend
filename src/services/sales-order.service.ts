@@ -777,6 +777,8 @@ export class SalesOrderService {
   async getOrders(clientId: string, filters: any = {}) {
     const where: any = { clientId, deletedAt: null };
     if (filters.status) where.status = filters.status;
+    // One page of the Orders page, already filtered and ordered by services/order-filters.
+    if (Array.isArray(filters.ids)) where.id = { in: filters.ids };
 
     // Where it came from, as a shop says it: the counter, Shopify, or anything else.
     if (filters.source === 'COUNTER') where.sourceSystem = COUNTER_SOURCE;

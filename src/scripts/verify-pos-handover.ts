@@ -11,6 +11,7 @@
  *   G  a bill the owner left out: noted, nothing to hand over
  *   H  the till's time: kept within 7 days, a future or unreadable one is now
  *   I  /events/status still answers about the sale, not the hand-over
+ *   J  the Orders page's "Kept orders" filter: waiting, past the promised date, handed over
  *
  *   npx tsx src/scripts/verify-pos-handover.ts     (needs the local backend on :4006)
  */
@@ -19,6 +20,7 @@ import { prisma } from '../lib/prisma';
 import { inventoryMutationService } from '../services/inventory-mutation.service';
 import { posConnectionService } from '../services/pos/pos-connection.service';
 import { applySale } from '../services/pos/pos-events.service';
+import { filterOrders, orderFilterQuery } from '../services/order-filters';
 
 const API = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
 const STAMP = Date.now();
@@ -165,6 +167,22 @@ async function main() {
     await prisma.posInboundEvent.create({ data: { clientId: CLIENT, locationId: store.id, kind: 'sale.completed', invoiceNo: inv('A'), payload: sale('A') as any, status: 'APPLIED', answer: 'APPLIED', orderNumber: oa?.orderNumber, receivedAt: new Date(Date.now() - 3600_000), settledAt: new Date(Date.now() - 3600_000) } });
     const i2 = await T.get('/events/status', { params: { invoiceNo: inv('A') } });
     check('with the sale stored: answers about the sale (APPLIED, its order number), though the hand-over is newer', i2.status === 200 && i2.data?.data?.status === 'APPLIED' && i2.data?.data?.orderNumber === oa?.orderNumber, brief(i2));
+
+    console.log('\nJ. THE ORDERS PAGE\'S KEPT FILTER');
+    // A kept order promised for yesterday and still in the shop is past its date.
+    await sell('J', { handover: 'KEEP_FOR_CUSTOMER', promisedAt: new Date(Date.now() + 330 * 60_000 - 86_400_000).toISOString().slice(0, 10) });
+    const kept = await prisma.salesOrder.findMany({ where: { clientId: CLIENT, handover: 'KEEP_FOR_CUSTOMER' }, select: { externalOrderId: true, handedOverAt: true, promisedAt: true } });
+    const want = {
+      HANDED_OVER: kept.filter(k => k.handedOverAt).length,
+      OVERDUE: kept.filter(k => !k.handedOverAt && k.promisedAt && k.promisedAt.toISOString().slice(0, 10) < new Date(Date.now() + 330 * 60_000).toISOString().slice(0, 10)).length
+    };
+    const all: any = await filterOrders(CLIENT, orderFilterQuery.parse({}));
+    const facet = Object.fromEntries(all.facets.kept.map((f: any) => [f.value, f.count]));
+    check(`kept counts: ${JSON.stringify(facet)} -- handed over ${want.HANDED_OVER}, past date ${want.OVERDUE} (J)`, facet.HANDED_OVER === want.HANDED_OVER && facet.OVERDUE === 1 && want.OVERDUE === 1 && facet.WAITING === kept.length - want.HANDED_OVER - 1, JSON.stringify({ facet, want, kept: kept.length }));
+    const late: any = await filterOrders(CLIENT, orderFilterQuery.parse({ kept: 'OVERDUE' }));
+    const oj = await order('J');
+    check('  ...filtering "past the promised date" gives exactly order J, marked so', late.summary.count === 1 && late.ids[0] === oj?.id && late.kept[oj!.id]?.state === 'OVERDUE', JSON.stringify(late.summary));
+    check('  ...a taken-now order is in no kept choice', !(await filterOrders(CLIENT, orderFilterQuery.parse({ kept: 'WAITING|OVERDUE|HANDED_OVER' })) as any).ids.includes((await order('B2'))?.id));
   } finally {
     await teardown();
   }

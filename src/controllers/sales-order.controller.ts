@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { salesOrderService } from '../services/sales-order.service';
+import { filterOrders, orderFilterQuery } from '../services/order-filters';
 import { prisma } from '../lib/prisma';
 import { createOrderSchema, createFullOrderSchema } from '../validations/sales-order.schema';
 import { respondWithError } from '../utils/respondWithError';
@@ -89,6 +90,24 @@ export const createFullOrder = async (req: Request, res: Response) => {
 export const getOrders = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
+    /*
+     * The Orders page's search, filters, counts, paging and export (services/order-filters). Every
+     * other caller -- the app, the POS link's checks -- gets the plain list below, unchanged.
+     */
+    if (req.query.facets === '1') {
+      const asked = orderFilterQuery.safeParse(req.query);
+      if (!asked.success) {
+        res.status(400).json({ success: false, message: 'Those filters could not be read. Clear them and try again.' });
+        return;
+      }
+      const found: any = await filterOrders(clientId, asked.data);
+      if (!found.ids) { res.json(found); return; }
+      const rows = found.ids.length ? await salesOrderService.getOrders(clientId, { ids: found.ids }) : [];
+      const byId = new Map(rows.map((o: any) => [o.id, o]));
+      const { ids, ...rest } = found;
+      res.json({ ...rest, orders: ids.map((id: string) => byId.get(id)).filter(Boolean) });
+      return;
+    }
     const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
     const filters = { status: text(req.query.status), search: text(req.query.search), source: text(req.query.source) };
     const orders = await salesOrderService.getOrders(clientId, filters);
