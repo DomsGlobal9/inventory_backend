@@ -4,6 +4,7 @@ import { getProducts, money } from '../api';
 import { GridSkeleton, Problem, Say } from '../components/States';
 import { NoMatch } from '../components/Motion';
 import Tile from '../components/Tile';
+import Banners, { placed } from '../components/Banners';
 import Picker from '../components/Picker';
 
 /**
@@ -27,7 +28,11 @@ const SORTS = [
   ['NAME', 'A–Z']
 ];
 
+/** How many products come before banners placed between the products: a row or two on any screen. */
+const SPLIT_AT = 4;
+
 export default function ShopHome({ slug, shop }) {
+  const middle = placed(shop?.banners, 'HOME_MIDDLE');
   const [params, setParams] = useSearchParams();
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [nonce, setNonce] = useState(0);
@@ -232,8 +237,16 @@ export default function ShopHome({ slug, shop }) {
               {total === 1 ? '1 piece' : `${total} pieces`}
               {shown.length < total ? <span> · showing {shown.length}</span> : null}
             </p>
+            {/* Banners placed "between the products" sit after the first row or two, on the plain home
+                page only: inside a search or filtered results they would interrupt what was asked for. */}
+            {middle.length > 0 && !chosen.length && shown.length > SPLIT_AT ? (
+              <>
+                <div className="grid">{shown.slice(0, SPLIT_AT).map(p => <Tile key={p.productCode} slug={slug} p={p} />)}</div>
+                <Banners slug={slug} banners={middle} inline label="Offers" />
+              </>
+            ) : null}
             <div className="grid">
-              {shown.map(p => <Tile key={p.productCode} slug={slug} p={p} />)}
+              {(middle.length > 0 && !chosen.length && shown.length > SPLIT_AT ? shown.slice(SPLIT_AT) : shown).map(p => <Tile key={p.productCode} slug={slug} p={p} />)}
               {/* The shape of the next lot, while it is on its way. */}
               {fetchingMore ? Array.from({ length: 4 }, (_, i) => (
                 <div key={`more-${i}`} className="tile">

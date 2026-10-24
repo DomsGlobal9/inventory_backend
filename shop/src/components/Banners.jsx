@@ -25,7 +25,24 @@ import { useNavigate } from 'react-router-dom';
  */
 const EVERY_MS = 3500;
 
-export default function Banners({ slug, banners }) {
+/**
+ * The banners for one spot on the shop: HOME_TOP (the slider), HOME_MIDDLE (between the products) or
+ * PRODUCT (under a product). One with no places listed is the shop's old single picture, which was
+ * always the slider.
+ */
+export const placed = (banners, place) =>
+  (banners ?? []).filter(b => (b.placements?.length ? b.placements.includes(place) : place === 'HOME_TOP'));
+
+/** Where a tap goes, the same for a banner and for the announcement bar. */
+export function linkPath(slug, link) {
+  if (!link) return null;
+  if (link.kind === 'SEARCH') return `/${slug}?q=${encodeURIComponent(link.value)}`;
+  if (link.kind === 'CATEGORY') return `/${slug}?category=${encodeURIComponent(link.value)}`;
+  if (link.kind === 'PRODUCT') return `/${slug}/p/${encodeURIComponent(link.value)}`;
+  return null;
+}
+
+export default function Banners({ slug, banners, inline = false, label }) {
   const nav = useNavigate();
   const strip = useRef(null);
   const [at, setAt] = useState(0);
@@ -77,10 +94,8 @@ export default function Banners({ slug, banners }) {
   if (!count) return null;
 
   const go = (b) => {
-    if (!b.link) return;
-    if (b.link.kind === 'SEARCH') nav(`/${slug}?q=${encodeURIComponent(b.link.value)}`);
-    else if (b.link.kind === 'CATEGORY') nav(`/${slug}?category=${encodeURIComponent(b.link.value)}`);
-    else if (b.link.kind === 'PRODUCT') nav(`/${slug}/p/${encodeURIComponent(b.link.value)}`);
+    const to = linkPath(slug, b.link);
+    if (to) nav(to);
   };
 
   const show = (i) => {
@@ -96,7 +111,8 @@ export default function Banners({ slug, banners }) {
 
   return (
     <div
-      className="banners"
+      className={inline ? 'banners inline' : 'banners'}
+      aria-label={label}
       onMouseEnter={hold}
       onMouseLeave={release}
       onFocusCapture={hold}

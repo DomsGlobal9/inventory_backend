@@ -10,6 +10,7 @@ import { Problem, Say } from '../components/States';
 const TryOn = lazy(() => import('../components/TryOn'));
 import { Ticked } from '../components/Motion';
 import MoreToExplore from '../components/MoreToExplore';
+import Banners, { placed } from '../components/Banners';
 
 /**
  * One piece: its photographs, the colours and sizes it comes in, and the way to buy it.
@@ -619,6 +620,9 @@ export default function ProductPage({ slug, shop }) {
 
       {/* The page carries on being a shop rather than stopping at the description: an offer, more
           like this, other fabrics and budgets, what they looked at before, then the rest of it. */}
+      {/* Banners the shop placed on every product page (the same on all of them). */}
+      <Banners slug={slug} banners={placed(shop?.banners, 'PRODUCT')} inline label="Offers" />
+
       <MoreToExplore slug={slug} product={p} shop={shop} />
 
       {trying ? (

@@ -5,6 +5,7 @@
  */
 export * as onlineShop from './shop.service';
 export * as shopBanners from './banners';
+export * as shopAnnouncement from './announcement';
 /** The square picture a browser shows in its tab for this shop. */
 export * as shopIcon from './icon';
 export * as shopCheckout from './checkout';

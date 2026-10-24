@@ -157,6 +157,18 @@ button.slide { cursor: pointer; }
 .banners .pips i { background: rgba(255,255,255,.5); }
 .banners .pips i[data-on='true'] { background: #fff; }
 
+/* Banners inside the page (between the products, on a product page): rounded, a little shorter. */
+.banners.inline { margin: 18px 0; border-radius: var(--r); overflow: hidden; }
+.banners.inline .slide img { aspect-ratio: 2 / 1; }
+@media (min-width: 720px) { .banners.inline .slide img { aspect-ratio: 4 / 1; max-height: 260px; } }
+
+/* The shop's one line across the top of every page, in its own colour. */
+.announce {
+  display: block; padding: 8px 16px; text-align: center; font-size: 13px; font-weight: 600; line-height: 1.35;
+  background: var(--accent); color: var(--accent-ink); text-decoration: none;
+}
+a.announce:hover { text-decoration: underline; }
+
 /* ── Looking for something ──────────────────────────────────────────────────────────── */
 
 .seek {

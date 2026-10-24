@@ -4162,6 +4162,14 @@ model OnlineShop {
 
   /// Required on every page by the Consumer Protection (E-Commerce) Rules 2020: the shop is the
   /// seller, so its own details must be reachable. Filled from ClientSettings where they exist.
+  /// The one line across the top of every shop page ("Diwali sale: 10% off till 5 Nov"), its tap and its dates.
+  announcementText      String?              @map("announcement_text")
+  announcementLinkKind  OnlineShopBannerLink @default(NONE) @map("announcement_link_kind")
+  announcementLinkValue String?              @map("announcement_link_value")
+  announcementActive    Boolean              @default(false) @map("announcement_active")
+  announcementStartsAt  DateTime?            @map("announcement_starts_at")
+  announcementEndsAt    DateTime?            @map("announcement_ends_at")
+
   returnPolicy   String? @map("return_policy") @db.Text
   grievanceName  String? @map("grievance_name")
   grievancePhone String? @map("grievance_phone")
@@ -4565,6 +4573,13 @@ model OnlineShopBanner {
 
   orderIndex Int     @default(0) @map("order_index")
   active     Boolean @default(true)
+
+  /// Where it shows on the shop: HOME_TOP (the slider), HOME_MIDDLE (between the products), PRODUCT
+  /// (under every product's details). Text, not an enum (the shared-DB rule); none = kept but hidden.
+  placements String[]  @default(["HOME_TOP"])
+  /// Optional: shown only from / until these moments (a festival sale switches itself on and off).
+  startsAt   DateTime? @map("starts_at")
+  endsAt     DateTime? @map("ends_at")
 
   createdById String?  @map("created_by_id")
   createdAt   DateTime @default(now()) @map("created_at")

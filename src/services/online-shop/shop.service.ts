@@ -18,6 +18,7 @@ import { env } from '../../config/env';
 import { storefrontCatalogueService, type CatalogueScope } from '../storefront-catalogue.service';
 import { checkSlug, readyToGoLive, shopUrl, OnlineShopRuleError } from './rules';
 import * as banners from './banners';
+import * as announcement from './announcement';
 // The shop window's own offer badges. One matcher, shared with third-party storefronts.
 import {
   pricingQuoteService, windowOfferFor, windowOfferForProduct,
@@ -369,6 +370,8 @@ export async function publicShop(slugRaw: unknown): Promise<
       /** The shop's own number, for "Ask on WhatsApp". Phase 1 has no basket: this IS the order. */
       whatsapp: string | null;
       banners: Awaited<ReturnType<typeof banners.publicFor>>;
+      /** The line across the top of every page, while switched on and inside its days; else null. */
+      announcement: ReturnType<typeof announcement.publicOf>;
       /** What this shop actually sells: the nav, the filter rail and the price range, from its own catalogue. */
       facets: Facets;
       /** Whether this shop offers "see it on you". */
@@ -473,6 +476,7 @@ export async function publicShop(slugRaw: unknown): Promise<
     // Protection Rules. Nothing of a customer's is ever published here.
     whatsapp: seller?.businessPhone ?? shop.grievancePhone ?? null,
     banners: shown,
+    announcement: announcement.publicOf(shop),
     facets,
     grievance: { name: shop.grievanceName, phone: shop.grievancePhone, email: shop.grievanceEmail },
     returnPolicy: shop.returnPolicy

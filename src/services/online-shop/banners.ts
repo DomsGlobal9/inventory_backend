@@ -5,6 +5,8 @@ import { supabase } from '../../lib/supabase';
 import { prepareImage } from '../../lib/imagePrep';
 import { storefrontCatalogueService } from '../storefront-catalogue.service';
 import { OnlineShopRuleError } from './rules';
+import { getShopSettings } from '../../lib/clientSettings';
+import { windowFrom, daysOf, stateOf, showingNow } from './showing';
 
 /**
  * The banners across the top of a shop's own online shop.
@@ -34,35 +36,63 @@ const LIMITS = {
 
 export const MAX_BANNERS = 6;
 
-const view = (b: {
+/**
+ * Where a banner can show (24 Oct). One banner may be in several: the festival picture in the home slider
+ * AND under every product. Text values, not an enum, for the shared-database rule.
+ *   HOME_TOP     the slider at the top of the home page (every banner made before this was there)
+ *   HOME_MIDDLE  a wide strip between the products on the home page
+ *   PRODUCT      under the details on every product's page
+ */
+export const PLACES = ['HOME_TOP', 'HOME_MIDDLE', 'PRODUCT'] as const;
+
+function placesOf(v: unknown): string[] {
+  if (!Array.isArray(v)) throw new OnlineShopRuleError('Choose where the banner shows.');
+  const set = new Set(v.map(x => String(x).toUpperCase()));
+  if ([...set].some(x => !(PLACES as readonly string[]).includes(x))) {
+    throw new OnlineShopRuleError('A banner can show on the home slider, between the products, or on the product page.');
+  }
+  return PLACES.filter(x => set.has(x)); // the screen's order, never the click order
+}
+
+type Row = {
   id: string; imageUrl: string; width: number; height: number;
   heading: string | null; subtext: string | null;
   linkKind: string; linkValue: string | null; orderIndex: number; active: boolean;
-}) => ({
+  placements: string[]; startsAt: Date | null; endsAt: Date | null;
+};
+const view = (b: Row, timeZone: string) => ({
   id: b.id, imageUrl: b.imageUrl, width: b.width, height: b.height,
   heading: b.heading, subtext: b.subtext,
   linkKind: b.linkKind, linkValue: b.linkValue,
-  orderIndex: b.orderIndex, active: b.active
+  orderIndex: b.orderIndex, active: b.active,
+  placements: b.placements,
+  ...daysOf(b.startsAt, b.endsAt, timeZone),
+  // What the owner's list says beside it: showing now, starts later, ended, off, or placed nowhere.
+  state: stateOf(b)
 });
 
 export async function listFor(clientId: string) {
-  const rows = await prisma.onlineShopBanner.findMany({
-    where: { clientId },
-    orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }]
-  });
-  return rows.map(view);
+  const [rows, { timezone }] = await Promise.all([
+    prisma.onlineShopBanner.findMany({ where: { clientId }, orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }] }),
+    getShopSettings(clientId)
+  ]);
+  return rows.map(b => view(b, timezone));
 }
 
-/** Only the ones a shopper should see, in the order the shop put them. */
+/**
+ * Only the ones a shopper should see right now -- switched on, inside their dates, placed somewhere --
+ * in the order the shop put them, each saying where it goes. The page picks its own by place.
+ */
 export async function publicFor(clientId: string) {
   const rows = await prisma.onlineShopBanner.findMany({
-    where: { clientId, active: true },
+    where: { clientId, active: true, NOT: { placements: { isEmpty: true } }, ...showingNow() },
     orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
-    select: { imageUrl: true, width: true, height: true, heading: true, subtext: true, linkKind: true, linkValue: true }
+    select: { imageUrl: true, width: true, height: true, heading: true, subtext: true, linkKind: true, linkValue: true, placements: true }
   });
   return rows.map(b => ({
     imageUrl: b.imageUrl, width: b.width, height: b.height,
     heading: b.heading, subtext: b.subtext,
+    placements: b.placements,
     // Only what the page needs to make a link; the shop's own ids are nobody's business.
     link: b.linkKind === 'NONE' ? null : { kind: b.linkKind, value: b.linkValue }
   }));
@@ -79,7 +109,7 @@ const words = (v: unknown, max: number): string | null => {
  * own catalogue and through the same service the shopper's page reads, which means a product in
  * a location the shop does not sell online is refused too -- exactly as the shopper would find it.
  */
-async function checkProduct(clientId: string, code: string) {
+export async function checkProduct(clientId: string, code: string) {
   const shop = await prisma.onlineShop.findUnique({ where: { clientId }, select: { locationIds: true } });
   const found = await storefrontCatalogueService
     .getProduct({ clientId, locationIds: shop?.locationIds ?? [] }, code)
@@ -97,7 +127,7 @@ async function checkProduct(clientId: string, code: string) {
  * The nav is built from what the catalogue really holds, so a banner pointing at a department the
  * shop has nothing in would land on an empty page -- a dead tap by another name.
  */
-async function checkCategory(clientId: string, value: string) {
+export async function checkCategory(clientId: string, value: string) {
   const { facetsFor } = await import('./facets');
   const shop = await prisma.onlineShop.findUnique({
     where: { clientId }, select: { locationIds: true, hideOutOfStock: true }
@@ -113,7 +143,7 @@ async function checkCategory(clientId: string, value: string) {
 }
 
 /** Where tapping it goes, checked so a banner can never be a dead tap. */
-function link(kind: unknown, value: unknown): { linkKind: OnlineShopBannerLink; linkValue: string | null } {
+export function link(kind: unknown, value: unknown): { linkKind: OnlineShopBannerLink; linkValue: string | null } {
   const k = String(kind ?? 'NONE').toUpperCase();
   if (k === 'NONE' || !k) return { linkKind: 'NONE', linkValue: null };
   if (k !== 'SEARCH' && k !== 'PRODUCT' && k !== 'CATEGORY') {
@@ -131,6 +161,7 @@ function link(kind: unknown, value: unknown): { linkKind: OnlineShopBannerLink; 
 
 export async function add(clientId: string, userId: string | null, input: {
   base64?: unknown; heading?: unknown; subtext?: unknown; linkKind?: unknown; linkValue?: unknown;
+  placements?: unknown; showFrom?: unknown; showUntil?: unknown;
 }) {
   const count = await prisma.onlineShopBanner.count({ where: { clientId } });
   if (count >= MAX_BANNERS) {
@@ -148,6 +179,10 @@ export async function add(clientId: string, userId: string | null, input: {
   const where = link(input.linkKind, input.linkValue);
   if (where.linkKind === 'PRODUCT') await checkProduct(clientId, where.linkValue!);
   if (where.linkKind === 'CATEGORY') await checkCategory(clientId, where.linkValue!);
+  // Not sent (an older screen): the home slider, where every banner went before there was a choice.
+  const placements = input.placements === undefined ? ['HOME_TOP'] : placesOf(input.placements);
+  const { timezone } = await getShopSettings(clientId);
+  const window = windowFrom(input.showFrom, input.showUntil, timezone);
 
   const prepared = await prepareImage(buf, LIMITS);
 
@@ -170,6 +205,7 @@ export async function add(clientId: string, userId: string | null, input: {
         heading: words(input.heading, 60),
         subtext: words(input.subtext, 120),
         ...where,
+        placements, ...window,
         orderIndex: count,
         createdById: userId
       }
@@ -187,6 +223,7 @@ export async function add(clientId: string, userId: string | null, input: {
 /** The words, where it goes, and whether it is shown. Not the picture: that is a new banner. */
 export async function edit(clientId: string, id: string, input: {
   heading?: unknown; subtext?: unknown; linkKind?: unknown; linkValue?: unknown; active?: unknown;
+  placements?: unknown; showFrom?: unknown; showUntil?: unknown;
 }) {
   const row = await prisma.onlineShopBanner.findFirst({ where: { id, clientId } });
   if (!row) throw new OnlineShopRuleError('That banner is not there any more.');
@@ -199,9 +236,14 @@ export async function edit(clientId: string, id: string, input: {
     if (where.linkKind === 'PRODUCT') await checkProduct(clientId, where.linkValue!);
     if (where.linkKind === 'CATEGORY') await checkCategory(clientId, where.linkValue!);
   }
+  // The dates travel together: both sent (either may be empty for "no limit"), or neither changes.
+  const dated = input.showFrom !== undefined || input.showUntil !== undefined;
+  const window = dated ? windowFrom(input.showFrom, input.showUntil, (await getShopSettings(clientId)).timezone) : null;
   await prisma.onlineShopBanner.update({
     where: { id },
     data: {
+      ...(input.placements !== undefined ? { placements: placesOf(input.placements) } : {}),
+      ...(window ?? {}),
       ...(input.heading !== undefined ? { heading: words(input.heading, 60) } : {}),
       ...(input.subtext !== undefined ? { subtext: words(input.subtext, 120) } : {}),
       ...(where ?? {}),

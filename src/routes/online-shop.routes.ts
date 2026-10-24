@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { onlineShop, shopBanners, shopIcon, shopInterest, OnlineShopRuleError } from '../services/online-shop';
+import { onlineShop, shopBanners, shopAnnouncement, shopIcon, shopInterest, OnlineShopRuleError } from '../services/online-shop';
 import { requirePermission } from '../middleware/permission.middleware';
 import { holdsEverything } from '../config/permissions';
 import { paymentAccounts } from '../services/payments/account.service';
@@ -122,5 +122,9 @@ router.post('/banners', handle(req => shopBanners.add(clientId(req), userId(req)
 router.patch('/banners/order', handle(req => shopBanners.reorder(clientId(req), req.body?.ids)));
 router.patch('/banners/:id', handle(req => shopBanners.edit(clientId(req), String(req.params.id), req.body ?? {})));
 router.delete('/banners/:id', handle(req => shopBanners.remove(clientId(req), String(req.params.id))));
+
+// The one line across the top of every shop page (services/online-shop/announcement).
+router.get('/announcement', handle(req => shopAnnouncement.get(clientId(req))));
+router.put('/announcement', handle(req => shopAnnouncement.save(clientId(req), req.body ?? {})));
 
 export default router;

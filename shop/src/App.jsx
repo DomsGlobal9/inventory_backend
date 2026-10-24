@@ -18,7 +18,8 @@ const MyOrdersPage = lazy(() => import('./pages/MyOrdersPage'));
 const PaymentPage = lazy(() => import('./pages/PaymentPage'));
 import Nav from './components/Nav';
 import Footer from './components/Footer';
-import Banners from './components/Banners';
+import Banners, { placed } from './components/Banners';
+import Announcement from './components/Announcement';
 import { Problem, Say, GridSkeleton } from './components/States';
 
 /**
@@ -109,9 +110,10 @@ function Shop({ page }) {
   return (
     <>
       {/* Compact everywhere but the front page: searching from a product page has to leave it. */}
+      <Announcement slug={slug} announcement={shop.announcement} />
       <Nav shop={shop} compact={page !== 'home'} />
 
-      {page === 'home' ? <Banners slug={slug} banners={banners} /> : null}
+      {page === 'home' ? <Banners slug={slug} banners={placed(banners, 'HOME_TOP')} /> : null}
 
       <main className="wrap grow">
         {/* The shape of what is coming, not a spinner: these arrive in a few hundred
