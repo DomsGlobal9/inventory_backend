@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { parcelView, PARCEL_SELECT } from './shipping';
 import { runTransaction } from '../lib/txRetry';
 import { literal } from '../utils/likeText';
 import { generateSequentialCode, generateFreeSequentialCode } from '../utils/codeGenerator';
@@ -862,6 +863,8 @@ export class SalesOrderService {
         },
         createdBy: { select: { id: true, name: true } },
         location: { select: { id: true, name: true } },
+        // Each dispatch as a parcel: its courier, tracking number and whether it arrived (services/shipping).
+        dispatches: { orderBy: { createdAt: 'asc' }, select: PARCEL_SELECT },
         payments: {
           orderBy: { receivedAt: 'asc' },
           select: {
@@ -897,8 +900,10 @@ export class SalesOrderService {
       undone: undoneIds.has(p.id),
       undoable: isCollected({ kind: p.kind, onceKey }) && !undoneIds.has(p.id) && !refunded
     }));
+    const { dispatches, ...rest } = order;
     return {
-      ...order,
+      ...rest,
+      parcels: dispatches.map(parcelView),
       payments,
       items,
       atCounter: order.sourceSystem === COUNTER_SOURCE,

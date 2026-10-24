@@ -9,6 +9,9 @@ import { notFound, badRequest, conflict } from '../utils/httpError';
 import { toMinor, minorToNumber, portionOf } from './pricing';
 import { settleSentOut } from './loyalty';
 
+/** A parcel's courier, already checked: services/shipping shippingFor / shippingFromShopify. */
+export type ParcelShipping = { courierId: string | null; courierName: string; trackingNumber: string | null; trackingUrl?: string | null };
+
 export class DispatchService {
   /**
    * Send out part or all of an order, in its own transaction.
@@ -17,9 +20,9 @@ export class DispatchService {
    * Shopify fulfilment come through. Serializable, because a dispatch reads what is still reserved
    * and writes against it.
    */
-  async createDispatch(clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[]) {
+  async createDispatch(clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[], shipping: ParcelShipping | null = null) {
     return runTransaction(
-      (tx) => this.dispatchInTransaction(tx, clientId, salesOrderId, items),
+      (tx) => this.dispatchInTransaction(tx, clientId, salesOrderId, items, { shipping }),
       {
         label: 'send an order out',
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -44,7 +47,7 @@ export class DispatchService {
    * that can never change back. Off for every other caller, who are all deciding whether goods
    * MAY leave.
    */
-  async dispatchInTransaction(tx: any, clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[], opts: { allowNegative?: boolean } = {}) {
+  async dispatchInTransaction(tx: any, clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[], opts: { allowNegative?: boolean; shipping?: ParcelShipping | null } = {}) {
     if (!Array.isArray(items) || items.length === 0) {
       throw badRequest('Choose at least one item to send out.');
     }
@@ -97,6 +100,9 @@ export class DispatchService {
            * now the two moments are the same one.
            */
           dispatchedAt: new Date(),
+          // Who carried it, when the person sending it out said (services/shipping). Checked before
+          // the transaction began, so a wrong courier never leaves half a dispatch behind.
+          ...(opts.shipping ?? {}),
           items: {
             create: items.map((item: any) => ({
               salesOrderItemId: item.salesOrderItemId,

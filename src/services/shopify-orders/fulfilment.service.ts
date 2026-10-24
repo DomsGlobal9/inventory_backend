@@ -25,6 +25,7 @@
 
 import { prisma } from '../../lib/prisma';
 import { dispatchService } from '../dispatch.service';
+import { shippingFromShopify } from '../shipping';
 import { park, isOrderWaiting, FULFILMENT_TOPIC } from './parking';
 
 export class ShopifyFulfilmentService {
@@ -152,7 +153,8 @@ export class ShopifyFulfilmentService {
     // Everything Shopify has shipped, we had already shipped. A redelivery, and correctly a no-op.
     if (toDispatch.length === 0) return 'ECHO';
 
-    await dispatchService.createDispatch(clientId, order.id, toDispatch);
+    // Shopify's courier and tracking number, when its fulfilment names them (services/shipping).
+    await dispatchService.createDispatch(clientId, order.id, toDispatch, shippingFromShopify(fulfillments));
 
     const units = toDispatch.reduce((s, d) => s + d.quantity, 0);
     console.log(

@@ -19,6 +19,7 @@ const STATES = {
   PLACED: { title: 'Your order is placed', note: 'The shop has it and is getting it ready.' },
   PART_SENT: { title: 'Part of your order is on its way', note: 'The rest follows shortly.' },
   SENT: { title: 'Your order is on its way', note: 'The shop has sent it.' },
+  DELIVERED: { title: 'Your order was delivered', note: 'We hope you love it.' },
   CANCELLED: { title: 'This order was cancelled', note: 'Nothing is owed. Ask the shop if this is a surprise.' }
 };
 
@@ -39,6 +40,7 @@ export default function OrderPage({ shop }) {
   /* 'no' -> 'asking' -> 'doing'. Asked properly, because a cancelled order cannot be un-cancelled. */
   const [calling, setCalling] = useState('no');
   const [refused, setRefused] = useState(null);
+  const [copied, setCopied] = useState(null);
 
   const load = useCallback((signal) => {
     setState(s => ({ ...s, loading: true, error: null }));
@@ -80,6 +82,7 @@ export default function OrderPage({ shop }) {
   const refunding = o.state === 'CANCELLED' && o.paid && o.payWay === 'ONLINE';
   const said = refunding
     ? { title: 'This order was cancelled', note: 'Your payment is being refunded to how you paid. Banks usually take 5–7 working days to show it.' }
+    : o.delivered ? STATES.DELIVERED
     : (STATES[o.state] ?? STATES.PLACED);
   const ask = askOnWhatsApp(shop?.whatsapp, shop?.name, null);
   const when = new Date(o.placedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -92,8 +95,17 @@ export default function OrderPage({ shop }) {
   const steps = [
     { label: 'Placed', done: true },
     { label: 'Packed', done: o.state === 'PART_SENT' || o.state === 'SENT' },
-    { label: 'On its way', done: o.state === 'SENT' }
+    { label: 'On its way', done: o.state === 'SENT' },
+    { label: 'Delivered', done: !!o.delivered }
   ];
+
+  // A courier page that cannot take the number in its link opens with the number already copied.
+  const track = async (p) => {
+    if (p.copyNumber && p.trackingNumber) {
+      try { await navigator.clipboard.writeText(p.trackingNumber); setCopied(p.trackingNumber); } catch { /* the number is on screen anyway */ }
+    }
+    window.open(p.trackingUrl, '_blank', 'noopener');
+  };
 
   return (
     <div className="orderpage">
@@ -114,6 +126,22 @@ export default function OrderPage({ shop }) {
       {o.state !== 'CANCELLED' && (
         <div className="track" aria-label="Where your order has got to">
           {steps.map(st => <div key={st.label} data-done={st.done}><i />{st.label}</div>)}
+        </div>
+      )}
+
+      {/* Who is carrying it, and the number to track it by. */}
+      {o.state !== 'CANCELLED' && (o.parcels ?? []).length > 0 && (
+        <div className="parcels" aria-label="Tracking">
+          {o.parcels.map((p, n) => (
+            <div key={n} className="parcel">
+              <span>
+                <b>{p.deliveredAt ? 'Delivered' : 'Sent'} with {p.courier}</b>
+                {p.trackingNumber ? <span className="awb">Tracking number {p.trackingNumber}</span> : null}
+                {copied && copied === p.trackingNumber ? <span className="awb">Copied: paste it on {p.courier}'s page</span> : null}
+              </span>
+              {p.trackingUrl ? <button type="button" className="go quiet" onClick={() => track(p)}>Track</button> : null}
+            </div>
+          ))}
         </div>
       )}
 

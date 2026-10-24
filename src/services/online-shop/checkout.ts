@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { parcelView, PARCEL_SELECT } from '../shipping';
 import { prisma } from '../../lib/prisma';
 import { salesOrderService } from '../sales-order.service';
 import { pricingQuoteService, fingerprint, toMinor, fromMinor } from '../pricing';
@@ -823,6 +824,8 @@ export async function summary(clientId: string, token: unknown) {
           orderNumber: true, status: true, createdAt: true,
           customerName: true, customerPhone: true, shippingAddress: true,
           subtotal: true, discountAmount: true, shippingAmount: true, total: true,
+          // Who is carrying it and the tracking number, for the customer (services/shipping).
+          dispatches: { orderBy: { createdAt: 'asc' }, select: PARCEL_SELECT },
           items: {
             select: {
               // listUnitPrice is what one costs before anything came off; totalPrice is what the
@@ -870,6 +873,16 @@ export async function summary(clientId: string, token: unknown) {
       : 'PLACED',
     payWay: row.payWay,
     paid: row.paid,
+    /*
+     * The parcels that have a courier: name, number and the tracking page. Nothing of the shop's own
+     * (no ids, no dispatch numbers). `delivered` once every one of them has arrived and nothing is left to send.
+     */
+    parcels: (o as any).dispatches.map(parcelView).filter((p: any) => p.courierName && p.status !== 'CANCELLED').map((p: any) => ({
+      courier: p.courierName, trackingNumber: p.trackingNumber, trackingUrl: p.trackingUrl, copyNumber: p.copyNumber,
+      sentAt: p.sentAt, deliveredAt: p.deliveredAt
+    })),
+    delivered: o.status === 'DISPATCHED' && (o as any).dispatches.some((d: any) => d.courierName)
+      && (o as any).dispatches.filter((d: any) => d.courierName).every((d: any) => d.status === 'DELIVERED'),
     /** Whether the customer can still call it off themselves. */
     mayCancel: o.status === 'CONFIRMED' || o.status === 'DRAFT',
     name: o.customerName,

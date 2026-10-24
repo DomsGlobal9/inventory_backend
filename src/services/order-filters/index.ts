@@ -33,7 +33,7 @@ export const orderFilterQuery = z.object({
   limit: z.preprocess((v) => (v === undefined ? 50 : parseInt(String(v), 10)), z.number().int().min(1).max(100).default(50)),
   q: z.string().max(100).optional(),
   from: day, to: day,
-  status: list, payment: list, source: list, kept: list, store: list,
+  status: list, payment: list, source: list, kept: list, store: list, courier: list, delivery: list,
   min: rupees, max: rupees,
   sort: z.enum(['new', 'old', 'thi', 'tlo', 'due']).default('new'),
   export: z.literal('1').optional()
@@ -44,7 +44,7 @@ export type OrderFilterQuery = z.infer<typeof orderFilterQuery>;
 const SOURCE_OF: Record<string, string> = { SCALEEZY_POS: 'TILL', SCALEEZY_SHOP: 'ONLINE_SHOP', SHOPIFY: 'SHOPIFY', SCALEEZY_COUNTER: 'COUNTER' };
 const sourceOf = (s: string | null) => (s && SOURCE_OF[s]) || 'MANUAL';
 
-const FACETS = ['status', 'payment', 'source', 'kept', 'store'] as const;
+const FACETS = ['status', 'payment', 'source', 'kept', 'store', 'courier', 'delivery'] as const;
 type Facet = typeof FACETS[number];
 
 /** Amount bands, by what the customer pays (the bill plus its round-off). */
@@ -95,7 +95,11 @@ export async function filterOrders(clientId: string, query: OrderFilterQuery) {
       total: true, roundOff: true, writtenOff: true, customerName: true, customerPhone: true,
       customer: { select: { name: true, phone: true } },
       payments: { select: { kind: true, amount: true } },
-      items: { select: { quantity: true } }
+      items: { select: { quantity: true } },
+      dispatches: {
+        orderBy: { createdAt: 'asc' },
+        select: { courierName: true, trackingNumber: true, status: true, deliveredAt: true, courier: { select: { needsNumber: true } } }
+      }
     }
   });
 
@@ -117,7 +121,18 @@ export async function filterOrders(clientId: string, query: OrderFilterQuery) {
       : o.handedOverAt ? 'HANDED_OVER'
       : o.promisedAt && o.promisedAt.toISOString().slice(0, 10) < today ? 'OVERDUE'
       : 'WAITING';
-    return { o, payable: payableMinor / 100, pay, kept, source: sourceOf(o.sourceSystem) };
+    /*
+     * Parcels with a courier (services/shipping). Only those: a till bill or a counter hand-over is a
+     * dispatch too, and would otherwise sit "on the way" for ever. The worst state wins: a parcel still
+     * waiting for its tracking number, then one on its way, then all delivered.
+     */
+    const parcels = o.dispatches.filter(d => d.courierName && d.status !== 'CANCELLED');
+    const courier = parcels.length ? parcels[parcels.length - 1].courierName : null;
+    const delivery = !parcels.length ? null
+      : parcels.some(d => d.status !== 'DELIVERED' && !d.trackingNumber && d.courier?.needsNumber !== false) ? 'NO_NUMBER'
+      : parcels.some(d => d.status !== 'DELIVERED') ? 'ON_THE_WAY'
+      : 'DELIVERED';
+    return { o, payable: payableMinor / 100, pay, kept, source: sourceOf(o.sourceSystem), parcels, courier, delivery };
   });
   type O = typeof orders[number];
 
@@ -129,6 +144,8 @@ export async function filterOrders(clientId: string, query: OrderFilterQuery) {
       // Only kept orders have a kept state; the rest are simply not in this filter's list.
       case 'kept': return x.kept;
       case 'store': return x.o.locationId;
+      case 'courier': return x.courier;
+      case 'delivery': return x.delivery;
     }
   };
   const inBand = (x: O) =>
@@ -158,7 +175,7 @@ export async function filterOrders(clientId: string, query: OrderFilterQuery) {
     }
     // A choice already picked stays in the list even when nothing has it any more, so it can be undone.
     for (const v of query[f]) if (!counts.has(v)) counts.set(v, 0);
-    facets[f] = [...counts].map(([value, count]) => ({ value, count, ...(f === 'store' ? { label: storeNames.get(value) ?? 'Store' } : {}) }));
+    facets[f] = [...counts].map(([value, count]) => ({ value, count, ...(f === 'store' ? { label: storeNames.get(value) ?? 'Store' } : f === 'courier' ? { label: value } : {}) }));
   }
   const banded = orders.filter(x => passes(x, 'amount'));
   facets.amount = BANDS.map(b => ({
@@ -208,7 +225,10 @@ export async function filterOrders(clientId: string, query: OrderFilterQuery) {
         payment: x.pay.status,
         kept: x.kept,
         promisedAt: x.o.promisedAt?.toISOString().slice(0, 10) ?? null,
-        handedOverAt: x.o.handedOverAt?.toISOString() ?? null
+        handedOverAt: x.o.handedOverAt?.toISOString() ?? null,
+        courier: [...new Set(x.parcels.map(d => d.courierName))].join(' + ') || null,
+        trackingNumber: x.parcels.map(d => d.trackingNumber).filter(Boolean).join(', ') || null,
+        deliveredAt: x.delivery === 'DELIVERED' ? x.parcels.map(d => d.deliveredAt?.toISOString()).filter(Boolean).sort().pop() ?? null : null
       }))
     };
   }

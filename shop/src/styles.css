@@ -2233,3 +2233,13 @@ body { overflow-x: hidden; }
   .shot[data-state='waiting'], .promo.waiting { animation: none; }
   .shopby .face img { transition: none; }
 }
+
+/* Who is carrying it, under the steps. */
+.parcels { display: grid; gap: 8px; margin: 10px 0 4px; }
+.parcel {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 11px 14px; border: 1px solid var(--line); border-radius: 11px; font-size: 13.5px;
+}
+.parcel > span { display: grid; gap: 2px; min-width: 0; }
+.parcel .awb { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.parcel .go { flex-shrink: 0; }

@@ -1481,6 +1481,18 @@ model Dispatch {
 
   dispatchedAt DateTime? @map("dispatched_at")
 
+  /// Who carried it (services/shipping). All optional: a counter sale, a POS bill and every
+  /// dispatch made before couriers existed have none.
+  courierId      String?      @map("courier_id")
+  courier        ShopCourier? @relation(fields: [courierId], references: [id], onDelete: SetNull)
+  /// The courier's name when it was sent, kept even if the courier is renamed or removed later.
+  courierName    String?      @map("courier_name")
+  trackingNumber String?      @map("tracking_number")
+  /// A tracking link given whole by the sender (Shopify). Otherwise worked out from the courier's link.
+  trackingUrl    String?      @map("tracking_url")
+  /// When it reached the customer. Set with status DELIVERED, cleared with it.
+  deliveredAt    DateTime?    @map("delivered_at")
+
   items DispatchItem[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -1489,6 +1501,33 @@ model Dispatch {
   @@unique([clientId, dispatchNumber])
   @@index([salesOrderId])
   @@map("dispatches")
+}
+
+/// A courier the shop sends parcels with: DTDC, Delhivery, its own delivery boy. Settings → Couriers.
+model ShopCourier {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+  /// As the shop spells it.
+  name String
+  /// name in lower case: "dtdc" and "DTDC" are one courier.
+  key  String
+  /// The courier's tracking page. With {number} in it, the tracking number is put into the link;
+  /// without, the page opens and the number is copied for pasting.
+  trackingLink String? @map("tracking_link")
+  /// False for the shop's own delivery or a hand-over: no tracking number is asked for.
+  needsNumber Boolean @default(true) @map("needs_number")
+  /// Chosen already when an order with a delivery address is sent out. At most one per shop.
+  isDefault Boolean @default(false) @map("is_default")
+  /// Removed couriers stay so old parcels keep their link; adding the same name brings it back.
+  active Boolean @default(true)
+
+  dispatches Dispatch[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, key])
+  @@map("shop_couriers")
 }
 
 model DispatchItem {
