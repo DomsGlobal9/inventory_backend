@@ -27,7 +27,28 @@ function cleanNumber(raw: unknown): string | null {
 export async function shippingFor(clientId: string, input: any) {
   if (!input || !input.courierId) return null;
   const c = await usable(clientId, input.courierId);
-  return { courierId: c.id, courierName: c.name, trackingNumber: cleanNumber(input.trackingNumber) };
+  const trackingNumber = cleanNumber(input.trackingNumber);
+  await notTaken(clientId, c.name, trackingNumber, null);
+  return { courierId: c.id, courierName: c.name, trackingNumber };
+}
+
+/**
+ * A courier never gives two parcels one tracking number, so the same number twice with the same
+ * courier is a typing mistake -- usually the last slip typed again. Refused, naming the parcel that
+ * has it, rather than leaving two parcels that track as one.
+ */
+async function notTaken(clientId: string, courierName: string | null, number: string | null, exceptId: string | null) {
+  if (!number || !courierName) return;
+  const other = await prisma.dispatch.findFirst({
+    where: {
+      clientId, status: { not: 'CANCELLED' },
+      courierName: { equals: courierName, mode: 'insensitive' },
+      trackingNumber: { equals: number, mode: 'insensitive' },
+      ...(exceptId ? { NOT: { id: exceptId } } : {})
+    },
+    select: { dispatchNumber: true, salesOrder: { select: { orderNumber: true } } }
+  });
+  if (other) throw conflict(`${courierName} ${number} is already on ${other.dispatchNumber} (order ${other.salesOrder.orderNumber}). Check the slip and type its number.`);
 }
 
 /**
@@ -100,6 +121,7 @@ export async function setParcel(clientId: string, dispatchId: string, body: any)
       ...(body?.trackingNumber !== undefined ? { trackingNumber: cleanNumber(body.trackingNumber) } : {})
     };
   }
+  await notTaken(clientId, data.courierName ?? d.courierName ?? null, data.trackingNumber !== undefined ? data.trackingNumber : d.trackingNumber, d.id);
   const saved = await prisma.dispatch.update({ where: { id: d.id }, data, select: PARCEL_SELECT });
   return parcelView(saved);
 }

@@ -63,8 +63,11 @@ async function main() {
   // Enough local stock for the run's orders (earlier runs used it up).
   for (const v of await prisma.productVariant.findMany({ where: { clientId: C }, select: { id: true } })) {
     const have = (await onHand(v.id)) ?? 0;
-    if (have < 30) await inventoryMutationService.applyMovement({ clientId: C, variantId: v.id, locationId: ids.locationId, movementType: 'IN', reason: 'PURCHASE_RECEIPT', quantityDelta: 40 - have, unitCost: 2600, notes: 'verify-couriers local top-up', createdBy: 'verify-couriers' } as any);
+    if (have < 150) await inventoryMutationService.applyMovement({ clientId: C, variantId: v.id, locationId: ids.locationId, movementType: 'IN', reason: 'PURCHASE_RECEIPT', quantityDelta: 300 - have, unitCost: 2600, notes: 'verify-couriers local top-up', createdBy: 'verify-couriers' } as any);
   }
+
+  // Tracking numbers from earlier runs would now be refused as duplicates: cleared (local DB only).
+  await prisma.dispatch.updateMany({ where: { clientId: C }, data: { trackingNumber: null } });
 
   // A clean slate of couriers for this local shop (parcels already sent keep their names).
   await prisma.dispatch.updateMany({ where: { clientId: C }, data: { courierId: null } });
@@ -266,6 +269,150 @@ async function main() {
   check('again: nothing new, both counted as already delivered, dates kept', nn2.data?.data?.parcels === 0 && nn2.data?.data?.alreadyDelivered === 2 && (await prisma.dispatch.findUniqueOrThrow({ where: { id: rows[0].id } })).deliveredAt!.toISOString() === firstAt, brief(nn2));
   const nn3 = await sales.post('/shipping/delivered', { orderIds: [m1.id] });
   check('sales (no dispatch:create): 403', nn3.status === 403, brief(nn3));
+
+  console.log('\nO. WORST CASES');
+  // Double press: the same dispatch sent twice at once. One goes, the other is refused; one parcel, stock out once.
+  const w1 = await freshOrder(0);
+  const w1Stock = await onHand(w1.variantId);
+  const body = { salesOrderId: w1.id, items: [{ salesOrderItemId: w1.itemId, quantity: 2 }], courier: { courierId: dtdc2.id, trackingNumber: 'W1-DOUBLE' } };
+  const [dp1, dp2] = await Promise.all([owner.post('/dispatches', body), owner.post('/dispatches', body)]);
+  const w1Parcels = await prisma.dispatch.findMany({ where: { salesOrderId: w1.id } });
+  check('double press: one 201, one refused; ONE parcel; stock out by 2, not 4', [dp1.status, dp2.status].filter(s => s === 201).length === 1 && w1Parcels.length === 1 && await onHand(w1.variantId) === (w1Stock ?? 0) - 2, `${dp1.status} ${dp2.status} parcels ${w1Parcels.length} stock ${w1Stock} -> ${await onHand(w1.variantId)}`);
+
+  // The same tracking number twice with the same courier: refused, naming the parcel that has it.
+  const w2 = await freshOrder(1);
+  const w2Stock = await onHand(w2.variantId);
+  const dup = await owner.post('/dispatches', { salesOrderId: w2.id, items: [{ salesOrderItemId: w2.itemId, quantity: 1 }], courier: { courierId: dtdc2.id, trackingNumber: 'w1-double' } });
+  check('same DTDC number on a second parcel (other case): 409 naming the first parcel, nothing sent', dup.status === 409 && new RegExp(w1Parcels[0].dispatchNumber).test(msg(dup)) && await onHand(w2.variantId) === w2Stock && (await prisma.dispatch.count({ where: { salesOrderId: w2.id } })) === 0, brief(dup));
+  const sameNoOther = await owner.post('/dispatches', { salesOrderId: w2.id, items: [{ salesOrderItemId: w2.itemId, quantity: 1 }], courier: { courierId: blue.id, trackingNumber: 'W1-DOUBLE' } });
+  check('  ...the same number with ANOTHER courier is fine (different couriers, different number series)', sameNoOther.status === 201, brief(sameNoOther));
+  const w2p = (await parcelsOf(owner, w2.id))[0];
+  const dupLater = await owner.put(`/shipping/dispatches/${w2p.id}`, { courierId: dtdc2.id });
+  check('  ...but switching that parcel to DTDC later is refused (DTDC already has that number)', dupLater.status === 409 && (await prisma.dispatch.findUniqueOrThrow({ where: { id: w2p.id } })).courierName === 'BlueDart Express', brief(dupLater));
+  const sameAgain = await owner.put(`/shipping/dispatches/${w1Parcels[0].id}`, { trackingNumber: 'W1-DOUBLE' });
+  check('  ...saving a parcel with its OWN number again is fine', sameAgain.status === 200, brief(sameAgain));
+
+  // A courier removed while the box was open.
+  const temp = (await owner.post('/shipping/couriers', { name: `Gone ${Date.now()}` })).data.data;
+  await owner.delete(`/shipping/couriers/${temp.id}`);
+  const w3 = await freshOrder(0);
+  const gone = await owner.post('/dispatches', { salesOrderId: w3.id, items: [{ salesOrderItemId: w3.itemId, quantity: 1 }], courier: { courierId: temp.id } });
+  check('a courier removed while the box was open: 404 in words, nothing sent', gone.status === 404 && /not in your list/.test(msg(gone)) && (await prisma.dispatch.count({ where: { salesOrderId: w3.id } })) === 0, brief(gone));
+  const defGone = await owner.patch(`/shipping/couriers/${temp.id}`, { isDefault: true });
+  check('  ...and it cannot be made default', defGone.status === 404, brief(defGone));
+
+  // Odd input.
+  const odd = [
+    ['a Telugu tracking number', { trackingNumber: 'డిటిడిసి123' }],
+    ['a number with < >', { trackingNumber: '<b>12</b>' }],
+    ['a number of only spaces is "no number" (allowed)', { trackingNumber: '   ' }]
+  ];
+  for (const [what, extra] of odd) {
+    const r = await owner.post('/dispatches', { salesOrderId: w3.id, items: [{ salesOrderItemId: w3.itemId, quantity: 1 }], courier: { courierId: own.id, ...(extra as any) } });
+    const allowed = /allowed/.test(what as string);
+    check(`${what}: ${allowed ? '201' : '400'}`, allowed ? r.status === 201 : r.status === 400, brief(r));
+  }
+  const js = await owner.post('/shipping/couriers', { name: 'Evil', trackingLink: 'javascript:alert(1)' });
+  check('a javascript: tracking link: 400', js.status === 400, brief(js));
+  const html = await owner.post('/shipping/couriers', { name: '<img src=x onerror=alert(1)>' });
+  check('a courier name with HTML is kept as plain text (the screens print it, never run it)', html.status === 200 && html.data.data.name === '<img src=x onerror=alert(1)>', brief(html));
+  await owner.delete(`/shipping/couriers/${html.data.data.id}`);
+  const longName = await owner.post('/shipping/couriers', { name: 'A'.repeat(40) });
+  check('a 40-letter name is fine', longName.status === 200, brief(longName));
+  await owner.delete(`/shipping/couriers/${longName.data.data.id}`);
+
+  // Rename onto a REMOVED courier's name: allowed, and adding that name again later does not clash.
+  const r1 = (await owner.post('/shipping/couriers', { name: `Tmp-${Date.now()}` })).data.data;
+  await owner.delete(`/shipping/couriers/${r1.id}`);
+  const r2 = (await owner.post('/shipping/couriers', { name: `Other-${Date.now()}` })).data.data;
+  const ren = await owner.patch(`/shipping/couriers/${r2.id}`, { name: r1.name });
+  check('rename onto a removed courier\'s name: allowed', ren.status === 200 && ren.data.data.name === r1.name, brief(ren));
+  await owner.delete(`/shipping/couriers/${r2.id}`);
+
+  // Removing the default leaves no default; the box then starts with no courier chosen.
+  const defId = (await owner.get('/shipping/couriers')).data.data.couriers.find((c: any) => c.isDefault)?.id;
+  await owner.delete(`/shipping/couriers/${defId}`);
+  check('the default courier removed: no default left', !(await owner.get('/shipping/couriers')).data.data.couriers.some((c: any) => c.isDefault));
+  const back = await owner.post('/shipping/couriers', { name: 'BlueDart Express' });
+  check('  ...adding it back brings the same courier (first in an otherwise-default-less list becomes default only if it is the only one)', back.status === 200 && back.data.data.id === defId, brief(back));
+  await owner.patch(`/shipping/couriers/${defId}`, { isDefault: true });
+
+  // A split order: one parcel delivered, the other not sent yet / on its way.
+  const w4 = await freshOrder(1);
+  await owner.post('/dispatches', { salesOrderId: w4.id, items: [{ salesOrderItemId: w4.itemId, quantity: 1 }], courier: { courierId: dtdc2.id, trackingNumber: `W4A-${Date.now()}` } });
+  const w4tok = `vc-w4-${Date.now()}`;
+  await prisma.onlineShopOrder.create({ data: { clientId: C, salesOrderId: w4.id, placementKey: w4tok, token: w4tok, payWay: 'ON_DELIVERY' } as any });
+  const w4p1 = (await parcelsOf(owner, w4.id))[0];
+  await owner.post(`/shipping/dispatches/${w4p1.id}/delivered`, {});
+  const half = await axios.get(`${ROOT}/shop/${ids.shopSlug}/orders/${w4tok}`, { validateStatus: () => true });
+  check('half sent, that half delivered: the customer is NOT told "delivered" (state PART_SENT)', half.data?.data?.state === 'PART_SENT' && half.data?.data?.delivered === false, brief(half));
+  await owner.post('/dispatches', { salesOrderId: w4.id, items: [{ salesOrderItemId: w4.itemId, quantity: 1 }], courier: { courierId: dtdc2.id, trackingNumber: `W4B-${Date.now()}` } });
+  const f = await owner.get('/sales-orders', { params: { facets: '1', delivery: 'ON_THE_WAY', limit: 100 } });
+  check('  ...second half sent: the order is "On the way" (one parcel still out), not Delivered', (f.data?.orders ?? []).some((o: any) => o.id === w4.id), JSON.stringify((f.data?.orders ?? []).map((o: any) => o.orderNumber)));
+  const all = await axios.get(`${ROOT}/shop/${ids.shopSlug}/orders/${w4tok}`, { validateStatus: () => true });
+  check('  ...the customer sees two parcels, one delivered, and still not "delivered" overall', all.data?.data?.parcels?.length === 2 && all.data?.data?.delivered === false, brief(all));
+
+  // Money and stock never move when a parcel is marked delivered or undone.
+  const { dayBookService } = await import('../services/daybook.service');
+  // The day's sales come back in no fixed order when several went out at once: compared sorted.
+  const dayOf = async () => {
+    const d: any = await dayBookService.getToday(C);
+    if (Array.isArray(d?.sales?.orders)) d.sales.orders.sort((a: any, b: any) => String(a.dispatchNumber).localeCompare(String(b.dispatchNumber)));
+    return JSON.stringify(d);
+  };
+  const before2 = await dayOf();
+  const ledger = await prisma.salesLedger.count({ where: { clientId: C } });
+  const stockNow = await onHand(w4.variantId);
+  await owner.post('/shipping/delivered', { orderIds: [w4.id, w1.id, w2.id] });
+  await owner.post(`/shipping/dispatches/${w1Parcels[0].id}/delivered`, { delivered: false });
+  const after2 = await dayOf();
+  const diffOf = (a: any, b: any, path = ''): string[] => {
+    if (JSON.stringify(a) === JSON.stringify(b)) return [];
+    if (a && b && typeof a === 'object' && typeof b === 'object') return [...new Set([...Object.keys(a), ...Object.keys(b)])].flatMap(k => diffOf(a[k], b[k], `${path}.${k}`));
+    return [`${path}: ${JSON.stringify(a)} -> ${JSON.stringify(b)}`];
+  };
+  check('Mark delivered / undo: the Day Book for today is exactly the same, no new sales rows, stock unchanged',
+    after2 === before2 && await prisma.salesLedger.count({ where: { clientId: C } }) === ledger && await onHand(w4.variantId) === stockNow,
+    diffOf(JSON.parse(before2), JSON.parse(after2)).slice(0, 6));
+
+  // A return after delivery still works, and its parcel stays delivered.
+  const ret = await owner.post('/returns', { salesOrderId: w4.id, items: [{ dispatchItemId: (await prisma.dispatchItem.findFirstOrThrow({ where: { dispatch: { salesOrderId: w4.id } } })).id, quantity: 1 }], reason: 'DAMAGED_IN_TRANSIT', notes: 'verify-couriers: return after delivery' });
+  check('a return can be booked on a delivered parcel', [200, 201].includes(ret.status), brief(ret));
+
+  // Other shops' data and missing data.
+  // Another shop's order: this shop's order moved to another tenant id for the check, then moved back.
+  const theirs = await freshOrder(0);
+  await owner.post('/dispatches', { salesOrderId: theirs.id, items: [{ salesOrderItemId: theirs.itemId, quantity: 2 }], courier: { courierId: own.id } });
+  await prisma.salesOrder.update({ where: { id: theirs.id }, data: { clientId: 'some-other-shop-vc' } });
+  await prisma.dispatch.updateMany({ where: { salesOrderId: theirs.id }, data: { clientId: 'some-other-shop-vc' } });
+  const theirOrder = { id: theirs.id, orderNumber: theirs.number };
+  const leak = await owner.post('/shipping/labels', { orderIds: [theirOrder.id, w4.id, w4.id] });
+  check('another shop\'s order in the ticks: no label, not even named; duplicates ticked once', leak.status === 200 && !JSON.stringify(leak.data).includes(theirOrder.orderNumber) && leak.data.data.labels.length === 2, brief(leak));
+  const leak2 = await owner.post('/shipping/delivered', { orderIds: [theirOrder.id] });
+  check('  ...and Mark delivered on it does nothing', leak2.status === 200 && leak2.data.data.parcels === 0 && leak2.data.data.skipped.length === 0, brief(leak2));
+  check('  ...and its parcel was not touched', (await prisma.dispatch.findFirstOrThrow({ where: { salesOrderId: theirs.id } })).status === 'SHIPPED');
+  await prisma.salesOrder.update({ where: { id: theirs.id }, data: { clientId: C } });
+  await prisma.dispatch.updateMany({ where: { salesOrderId: theirs.id }, data: { clientId: C } });
+  const noAddr = await freshOrder(0);
+  await prisma.salesOrder.update({ where: { id: noAddr.id }, data: { shippingAddress: null } });
+  await owner.post('/dispatches', { salesOrderId: noAddr.id, items: [{ salesOrderItemId: noAddr.itemId, quantity: 2 }], courier: { courierId: own.id } });
+  const na = await owner.get(`/shipping/dispatches/${(await parcelsOf(owner, noAddr.id))[0].id}/label`);
+  check('a label for an order with no address: made, address empty (the label says to write it by hand)', na.status === 200 && na.data.data.to.address === null, brief(na));
+  const ro = as('RETURNS_ONLY');
+  if (tokens.RETURNS_ONLY) {
+    const r3 = await ro.post('/shipping/labels', { orderIds: [w4.id] });
+    const r4 = await ro.get(`/shipping/dispatches/${w4p1.id}/label`);
+    check('someone who may not see orders: 403 on labels (they hold names, addresses, phones)', r3.status === 403 && r4.status === 403, `${r3.status} ${r4.status}`);
+  }
+
+  // A paid order: the label says PREPAID, never cash.
+  const paid = await freshOrder(1);
+  const total = Number((await prisma.salesOrder.findUniqueOrThrow({ where: { id: paid.id } })).total);
+  const pay = await owner.post(`/sales-orders/${paid.id}/payments`, { method: 'UPI', amount: total, cashReceived: null, reference: 'verify-couriers', key: `vc-pay-${Date.now()}` });
+  check('(set-up) the order is paid in full by UPI', [200, 201].includes(pay.status), brief(pay));
+  await owner.post('/dispatches', { salesOrderId: paid.id, items: [{ salesOrderItemId: paid.itemId, quantity: 2 }], courier: { courierId: dtdc2.id, trackingNumber: `PAID-${Date.now()}` } });
+  const pl = await owner.get(`/shipping/dispatches/${(await parcelsOf(owner, paid.id))[0].id}/label`);
+  check('a fully paid order: cash to collect 0 (PREPAID)', pl.data?.data?.cashToCollect === 0 && !pl.data?.data?.cashWithParcel, brief(pl));
 }
 
 main()
