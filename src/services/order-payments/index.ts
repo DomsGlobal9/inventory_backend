@@ -46,6 +46,49 @@ export function whyNotCollect(o: { sourceSystem: string | null; status: string; 
   return null;
 }
 
+export const undoBody = z.object({ reason: z.string().trim().min(5).max(120) });
+
+/** A payment recorded here with Record payment, and not undone: the only kind Undo is offered on. */
+export const isCollected = (p: { kind: string; onceKey: string | null }) => p.kind === 'PAYMENT' && !!p.onceKey?.startsWith('COLLECT:');
+export const undoKeyFor = (paymentId: string) => `UNDO:${paymentId}`;
+
+/**
+ * UNDO A PAYMENT RECORDED BY MISTAKE -- the owner only, with a reason.
+ *
+ * Money rows are never edited or deleted: the mistake stays, and a second row of the same method for
+ * MINUS the amount cancels it, dated now, at the same store, saying why and who. So the order's due comes
+ * back, today's Day Book nets it out (it adds rows by method), and the history shows both -- what an
+ * accountant, and later Finance, expects. A minus PAYMENT row and not a new kind: payment_kind is a
+ * database enum, and a value the live build does not know would break it (the 23 Sep enum hazard).
+ *
+ * Only a payment made with Record payment: a till payment is corrected on the till, an online payment is
+ * refunded, and neither is Inventory's to take back. Not once a return has refunded money on the order
+ * (the refund was worked out from what had been paid). Once only: a second undo finds the first.
+ */
+export async function undoPayment(clientId: string, userId: string | null, orderId: string, paymentId: string, body: z.infer<typeof undoBody>) {
+  return runTransaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM sales_orders WHERE id = ${orderId} AND client_id = ${clientId} FOR UPDATE`;
+    if (!locked.length) throw notFound('That order was not found.');
+    const rows = await tx.salesOrderPayment.findMany({ where: { salesOrderId: orderId }, select: { id: true, kind: true, method: true, amount: true, onceKey: true, locationId: true } });
+    const p = rows.find(r => r.id === paymentId);
+    if (!p) throw notFound('That payment was not found on this order.');
+    if (!isCollected(p)) throw conflict('Only a payment recorded here with Record payment can be undone. A till payment is corrected on the till, and an online payment is refunded.');
+    if (rows.some(r => r.onceKey === undoKeyFor(paymentId))) throw conflict('This payment was already undone.');
+    if (rows.some(r => r.kind === 'REFUND')) throw conflict('Money was refunded on this order for a return, so its payments can no longer be undone.');
+
+    await tx.salesOrderPayment.create({
+      data: {
+        clientId, salesOrderId: orderId, locationId: p.locationId, kind: 'PAYMENT', method: p.method,
+        amount: fromMinor(-toMinor(p.amount)), reference: `Undone: ${body.reason}`.slice(0, 120),
+        receivedById: userId, receivedAt: new Date(), onceKey: undoKeyFor(paymentId)
+      }
+    });
+    const order = await tx.salesOrder.findUniqueOrThrow({ where: { id: orderId }, select: { orderNumber: true, total: true, roundOff: true, writtenOff: true } });
+    const payment = paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), [...rows, { kind: 'PAYMENT', amount: fromMinor(-toMinor(p.amount)) }], toMinor(order.writtenOff ?? 0));
+    return { orderNumber: order.orderNumber, payment };
+  }, { label: `undo payment ${paymentId}`, tooSlowMessage: 'The undo took too long and was not saved. Try again.' });
+}
+
 export async function collectPayment(clientId: string, userId: string | null, orderId: string, body: CollectBody) {
   const onceKey = `COLLECT:${orderId}:${body.key}`;
   return runTransaction(async (tx) => {

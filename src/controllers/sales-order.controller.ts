@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { salesOrderService } from '../services/sales-order.service';
 import { filterOrders, orderFilterQuery } from '../services/order-filters';
-import { collectPayment, collectBody } from '../services/order-payments';
+import { collectPayment, collectBody, undoPayment, undoBody } from '../services/order-payments';
 import { prisma } from '../lib/prisma';
 import { createOrderSchema, createFullOrderSchema } from '../validations/sales-order.schema';
 import { respondWithError } from '../utils/respondWithError';
@@ -128,6 +128,27 @@ export const collectOrderPayment = async (req: Request, res: Response) => {
       return;
     }
     const out = await collectPayment(clientId, (req as any).user?.id ?? null, req.params.id as string, body.data);
+    res.json({ success: true, data: out });
+  } catch (error: any) {
+    return respondWithError(res, error, { status: 500 });
+  }
+};
+
+/** A payment recorded by mistake, cancelled by a minus row with a reason: the account owner only. */
+export const undoOrderPayment = async (req: Request, res: Response) => {
+  try {
+    const clientId = (req as any).clientId as string;
+    const user = (req as any).user;
+    if (!user || !holdsEverything(user.permissions, user.roles)) {
+      res.status(403).json({ success: false, message: 'Only the account owner can undo a payment.' });
+      return;
+    }
+    const body = undoBody.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ success: false, message: 'Say why the payment is being undone, in a few words.' });
+      return;
+    }
+    const out = await undoPayment(clientId, user.id ?? null, req.params.id as string, req.params.paymentId as string, body.data);
     res.json({ success: true, data: out });
   } catch (error: any) {
     return respondWithError(res, error, { status: 500 });

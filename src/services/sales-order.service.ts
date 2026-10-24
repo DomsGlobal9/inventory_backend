@@ -17,7 +17,7 @@ import { getShopSettings } from '../lib/clientSettings';
 import { phoneForOutsideCustomer } from './customer.service';
 import { phoneSearchDigits } from '../lib/phone';
 import { paymentSummary } from './payments/payment-rules';
-import { whyNotCollect } from './order-payments';
+import { whyNotCollect, isCollected } from './order-payments';
 import { freezeTaxForLine } from './pricing/freezeTax';
 import { mayChargeTax, documentKindFor, registrationInForce } from './pricing/tax';
 import { settleSentOut } from './loyalty';
@@ -866,7 +866,7 @@ export class SalesOrderService {
           orderBy: { receivedAt: 'asc' },
           select: {
             id: true, kind: true, method: true, amount: true, cashReceived: true, changeGiven: true,
-            reference: true, receivedAt: true, receivedBy: { select: { name: true } }
+            reference: true, receivedAt: true, receivedBy: { select: { name: true } }, onceKey: true
           }
         }
       }
@@ -885,8 +885,21 @@ export class SalesOrderService {
       heldQty: inventoryReservations.reduce((sum, r) => sum + Math.max(0, r.reservedQty - r.dispatchedQty), 0)
     }));
     const payment = paymentSummary(toMinor(order.total) + toMinor(order.roundOff ?? 0), order.payments, toMinor(order.writtenOff ?? 0));
+    /*
+     * Each payment says whether it was undone, is an undo, or may be undone (a Record payment row the
+     * owner can take back) -- services/order-payments. The keys themselves stay on the server.
+     */
+    const undoneIds = new Set(order.payments.filter(p => p.onceKey?.startsWith('UNDO:')).map(p => p.onceKey!.slice(5)));
+    const refunded = order.payments.some(p => p.kind === 'REFUND');
+    const payments = order.payments.map(({ onceKey, ...p }) => ({
+      ...p,
+      isUndo: !!onceKey?.startsWith('UNDO:'),
+      undone: undoneIds.has(p.id),
+      undoable: isCollected({ kind: p.kind, onceKey }) && !undoneIds.has(p.id) && !refunded
+    }));
     return {
       ...order,
+      payments,
       items,
       atCounter: order.sourceSystem === COUNTER_SOURCE,
       payment,

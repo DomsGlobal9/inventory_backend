@@ -10,7 +10,8 @@ import {
   removeOrderItem,
   confirmOrder,
   cancelOrder,
-  collectOrderPayment
+  collectOrderPayment,
+  undoOrderPayment
 } from '../controllers/sales-order.controller';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
@@ -33,5 +34,7 @@ router.post('/:id/confirm', requirePermission('sales_order:confirm'), confirmOrd
 router.post('/:id/cancel', requirePermission('sales_order:cancel'), cancelOrder);
 // Taking money is the counter permission's job ("Sell at the counter and take payment").
 router.post('/:id/payments', requirePermission('sales_order:counter_sale'), collectOrderPayment);
+// The owner only, checked in the controller (holds every permission).
+router.post('/:id/payments/:paymentId/undo', requirePermission('sales_order:view'), undoOrderPayment);
 
 export default router;

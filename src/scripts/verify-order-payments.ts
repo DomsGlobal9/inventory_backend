@@ -12,6 +12,7 @@
  *   F  only roles that may take payment (sales_order:counter_sale) can; the others get 403
  *   G  the money is in today's Day Book money-in, at the order's store
  *   H  Waiting on you: a kept order whose collection day has gone is counted, one handed over is not
+ *   I  Undo (the owner only, with a reason): a minus row, due back, once only; not a till payment, not after a refund
  *
  *   ROLE_TOKENS=<role-tokens.json from staff-users.ts> npx tsx src/scripts/verify-order-payments.ts
  */
@@ -134,6 +135,51 @@ async function main() {
     check(`one more past its date (${md0.keptOverdue} -> ${md1.keptOverdue}); the handed-over one and the one due in 3 days are not counted`, typeof md1.keptOverdue === 'number' && md1.keptOverdue === (md0.keptOverdue ?? 0) + 1, JSON.stringify({ md0, md1 }));
     const nd = (await as('NO_DASHBOARD').get('/dashboard/my-day')).data?.data ?? {};
     check('a role that cannot see orders is not sent the count', !('keptOverdue' in nd) || nd.keptOverdue === undefined || tokens.NO_DASHBOARD === undefined, JSON.stringify(nd));
+
+    console.log('\nI. UNDO A PAYMENT RECORDED BY MISTAKE (the owner only)');
+    const u = await order('UNDO', {});
+    const u1 = await pay(u.id, { method: 'CASH', amount: 1000 });
+    const paid = (await prisma.salesOrderPayment.findFirstOrThrow({ where: { salesOrderId: u.id } })).id;
+    const undo = (who: any, body: Record<string, unknown>, pid = paid, oid = u.id) => who.post(`/sales-orders/${oid}/payments/${pid}/undo`, body);
+    check('₹1,000 recorded: ₹500 due', u1.data?.data?.payment?.due === 500, brief(u1));
+    if (tokens.ADMIN) {
+      const i1 = await undo(as('ADMIN'), { reason: 'typed the wrong amount' });
+      check('an admin (not the owner): 403', i1.status === 403 && /owner/.test(i1.data?.message ?? ''), brief(i1));
+    }
+    const i2 = await undo(owner, { reason: 'no' });
+    check('no real reason: 400 in words', i2.status === 400 && /why/.test(i2.data?.message ?? ''), brief(i2));
+    const i3 = await undo(owner, { reason: 'typed 1,000 instead of 100' });
+    check('the owner, with a reason: undone, ₹1,500 due again, Not paid', i3.status === 200 && i3.data?.data?.payment?.due === 1500 && i3.data?.data?.payment?.status === 'UNPAID', brief(i3));
+    const urows = await prisma.salesOrderPayment.findMany({ where: { salesOrderId: u.id }, orderBy: { createdAt: 'asc' } });
+    check('  ...both rows kept: +₹1,000 and -₹1,000 Cash, the undo saying why and who', urows.length === 2 && Number(urows[0].amount) === 1000 && Number(urows[1].amount) === -1000 && urows[1].method === 'CASH' && /typed 1,000 instead of 100/.test(urows[1].reference ?? '') && !!urows[1].receivedById, JSON.stringify(urows.map(r => [r.amount, r.method, r.reference])));
+    check('  ...nets to ₹0 for the Day Book (it adds rows by method)', urows.reduce((t, r) => t + Number(r.amount), 0) === 0);
+    const i4 = await undo(owner, { reason: 'typed 1,000 instead of 100' });
+    check('undo again: 409 already undone, nothing more written', i4.status === 409 && /already undone/.test(i4.data?.message ?? '') && await prisma.salesOrderPayment.count({ where: { salesOrderId: u.id } }) === 2, brief(i4));
+    const i5 = await undo(owner, { reason: 'trying to undo the undo' }, urows[1].id);
+    check('the undo row itself cannot be undone: 409', i5.status === 409, brief(i5));
+    const page = (await owner.get(`/sales-orders/${u.id}`)).data;
+    const [orig, rev] = [page.payments.find((p: any) => p.id === paid), page.payments.find((p: any) => p.id === urows[1].id)];
+    check('the order page: the first marked undone (not undoable), the second an undo; no keys sent', orig?.undone === true && orig?.undoable === false && rev?.isUndo === true && !('onceKey' in (orig ?? {})), JSON.stringify({ orig, rev }));
+    check('  ...and money can be recorded again (collectBlocked null)', page.collectBlocked === null, page.collectBlocked);
+    const i6 = await pay(u.id, { method: 'CASH', amount: 100 });
+    check('the right ₹100 recorded after the undo: ₹1,400 due', i6.data?.data?.payment?.due === 1400, brief(i6));
+    const t = await order('UNDO-TILL', { channel: 'POS', sourceSystem: 'SCALEEZY_POS', externalOrderId: `INV/TEST/${STAMP}-U` });
+    const tp = await prisma.salesOrderPayment.create({ data: { clientId: CLIENT, salesOrderId: t.id, locationId: store.id, kind: 'PAYMENT', method: 'CASH', amount: 500 } as any });
+    const i7 = await undo(owner, { reason: 'till payment, should refuse' }, tp.id, t.id);
+    check('a till payment: 409, corrected on the till', i7.status === 409 && /on the till/.test(i7.data?.message ?? ''), brief(i7));
+    // The database rule (20261023180000): a minus amount only on an undo row, never anywhere else.
+    let refused = '';
+    try { await prisma.salesOrderPayment.create({ data: { clientId: CLIENT, salesOrderId: u.id, locationId: store.id, kind: 'PAYMENT', method: 'CASH', amount: -50 } as any }); } catch (e: any) { refused = String(e?.message ?? ''); }
+    check('the database still refuses a minus payment that is not an undo', /amount_positive|23514/.test(refused), refused.slice(0, 160) || 'it was written');
+    let refusedRefund = '';
+    try { await prisma.salesOrderPayment.create({ data: { clientId: CLIENT, salesOrderId: u.id, locationId: store.id, kind: 'REFUND', method: 'CASH', amount: -50, onceKey: `UNDO:fake-${STAMP}` } as any }); } catch (e: any) { refusedRefund = String(e?.message ?? ''); }
+    check('  ...nor a minus refund, even with an undo key', /amount_positive|23514/.test(refusedRefund), refusedRefund.slice(0, 160) || 'it was written');
+    const r = await order('UNDO-REFUND', {});
+    await pay(r.id, { method: 'CASH', amount: 1500 });
+    const rp = (await prisma.salesOrderPayment.findFirstOrThrow({ where: { salesOrderId: r.id } })).id;
+    await prisma.salesOrderPayment.create({ data: { clientId: CLIENT, salesOrderId: r.id, locationId: store.id, kind: 'REFUND', method: 'CASH', amount: 200 } as any });
+    const i8 = await undo(owner, { reason: 'after a return refund' }, rp, r.id);
+    check('after a return refunded money on the order: 409', i8.status === 409 && /refunded/.test(i8.data?.message ?? ''), brief(i8));
   } finally {
     const w = { salesOrderId: { in: made } };
     await prisma.salesOrderPayment.deleteMany({ where: w });
