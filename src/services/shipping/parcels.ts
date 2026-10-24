@@ -125,45 +125,128 @@ export async function setDelivered(clientId: string, dispatchId: string, deliver
  * an advance, or paid online, must not be asked to pay again at the door. A Shopify order is paid on
  * Shopify, so nothing is collected for it here.
  */
-export async function label(clientId: string, dispatchId: string) {
-  const d = await prisma.dispatch.findFirst({
-    where: { id: dispatchId, clientId },
+const LABEL_SELECT = {
+  ...PARCEL_SELECT,
+  createdAt: true,
+  salesOrder: {
     select: {
-      ...PARCEL_SELECT,
-      salesOrder: {
-        select: {
-          id: true, orderNumber: true, sourceSystem: true, total: true, roundOff: true, writtenOff: true,
-          customerName: true, customerPhone: true, shippingAddress: true,
-          customer: { select: { name: true, phone: true } },
-          location: { select: { name: true, address: true, phone: true } },
-          payments: { select: { kind: true, amount: true } }
-        }
-      }
+      id: true, orderNumber: true, sourceSystem: true, total: true, roundOff: true, writtenOff: true,
+      customerName: true, customerPhone: true, shippingAddress: true,
+      customer: { select: { name: true, phone: true } },
+      location: { select: { name: true, address: true, phone: true } },
+      payments: { select: { kind: true, amount: true } },
+      // Which parcel of the order is the first: only that one carries the cash (see below).
+      dispatches: { where: { status: { not: 'CANCELLED' as const } }, orderBy: { createdAt: 'asc' as const }, select: { id: true, dispatchNumber: true }, take: 1 }
     }
-  });
-  if (!d) throw notFound('That dispatch could not be found.');
-  const o = d.salesOrder;
+  }
+} as const;
+
+async function labelsOf(clientId: string, rows: any[]) {
   const shop = await prisma.clientSettings.findUnique({
     where: { clientId },
     select: { businessName: true, businessAddress: true, businessPhone: true, logoUrl: true }
   });
-  const pay = paymentSummary(toMinor(o.total) + toMinor(o.roundOff ?? 0), o.payments, toMinor(o.writtenOff ?? 0));
-  const collect = o.sourceSystem === 'SHOPIFY' ? 0 : pay.due;
+  return rows.map((d) => {
+    const o = d.salesOrder;
+    const pay = paymentSummary(toMinor(o.total) + toMinor(o.roundOff ?? 0), o.payments, toMinor(o.writtenOff ?? 0));
+    /*
+     * An order sent in two parcels must not be collected for twice. The cash goes on its FIRST
+     * parcel only; any later parcel says it was collected with that one.
+     */
+    const first = o.dispatches[0];
+    const isFirst = !first || first.id === d.id;
+    const due = o.sourceSystem === 'SHOPIFY' ? 0 : pay.due;
+    return {
+      parcel: parcelView(d),
+      orderNumber: o.orderNumber,
+      to: {
+        name: o.customerName || o.customer?.name || null,
+        phone: o.customerPhone || o.customer?.phone || null,
+        address: o.shippingAddress || null
+      },
+      from: {
+        name: shop?.businessName || o.location?.name || null,
+        // The store's own address and phone first, as on the bill.
+        address: o.location?.address || shop?.businessAddress || null,
+        phone: o.location?.phone || shop?.businessPhone || null,
+        logoUrl: shop?.logoUrl ?? null
+      },
+      cashToCollect: isFirst ? due : 0,
+      cashWithParcel: !isFirst && due > 0 ? first.dispatchNumber : null
+    };
+  });
+}
+
+/**
+ * Everything the label on the box needs: who it goes to, who it is from (and goes back to if it
+ * cannot be delivered), the courier and tracking number, and the cash the courier must collect.
+ *
+ * Cash to collect is what is still owed on the order -- never the order total: a customer who paid
+ * an advance, or paid online, must not be asked to pay again at the door. A Shopify order is paid on
+ * Shopify, so nothing is collected for it here.
+ */
+export async function label(clientId: string, dispatchId: string) {
+  const d = await prisma.dispatch.findFirst({ where: { id: dispatchId, clientId }, select: LABEL_SELECT });
+  if (!d) throw notFound('That dispatch could not be found.');
+  return (await labelsOf(clientId, [d]))[0];
+}
+
+const MAX_ORDERS = 100;
+
+/**
+ * Labels for many orders at once (Orders → tick → Print labels): one per parcel sent, in the order
+ * the orders were ticked. An order with nothing sent yet has no parcel and so no label -- it is named
+ * in `notSent`, never silently left out.
+ */
+export async function labels(clientId: string, orderIds: unknown) {
+  const ids = Array.isArray(orderIds) ? [...new Set(orderIds.map(String).filter(Boolean))] : [];
+  if (!ids.length) throw badRequest('Tick at least one order.');
+  if (ids.length > MAX_ORDERS) throw badRequest(`Print at most ${MAX_ORDERS} orders' labels at a time.`);
+  const [orders, rows] = await Promise.all([
+    prisma.salesOrder.findMany({ where: { clientId, id: { in: ids }, deletedAt: null }, select: { id: true, orderNumber: true } }),
+    prisma.dispatch.findMany({
+      where: { clientId, salesOrderId: { in: ids }, status: { not: 'CANCELLED' } },
+      orderBy: { createdAt: 'asc' },
+      select: { ...LABEL_SELECT, salesOrderId: true }
+    })
+  ]);
+  const rank = new Map(ids.map((id, n) => [id, n]));
+  rows.sort((a: any, b: any) => (rank.get(a.salesOrderId)! - rank.get(b.salesOrderId)!) || (a.createdAt.getTime() - b.createdAt.getTime()));
+  const sent = new Set(rows.map((r: any) => r.salesOrderId));
   return {
-    parcel: parcelView(d),
-    orderNumber: o.orderNumber,
-    to: {
-      name: o.customerName || o.customer?.name || null,
-      phone: o.customerPhone || o.customer?.phone || null,
-      address: o.shippingAddress || null
-    },
-    from: {
-      name: shop?.businessName || o.location?.name || null,
-      // The store's own address and phone first, as on the bill.
-      address: o.location?.address || shop?.businessAddress || null,
-      phone: o.location?.phone || shop?.businessPhone || null,
-      logoUrl: shop?.logoUrl ?? null
-    },
-    cashToCollect: collect
+    labels: await labelsOf(clientId, rows),
+    notSent: orders.filter(o => !sent.has(o.id)).sort((a, b) => rank.get(a.id)! - rank.get(b.id)!).map(o => o.orderNumber)
   };
+}
+
+/**
+ * Mark delivered for many orders at once (Orders → tick → Mark delivered). Every parcel of those
+ * orders that has a courier and has not arrived yet becomes DELIVERED, now. An order is skipped,
+ * by name and why, when nothing of it was sent or no parcel of it has a courier -- a hand-over at
+ * the counter is not "delivered" by a courier. Parcels already delivered keep their own date.
+ */
+export async function deliverMany(clientId: string, orderIds: unknown) {
+  const ids = Array.isArray(orderIds) ? [...new Set(orderIds.map(String).filter(Boolean))] : [];
+  if (!ids.length) throw badRequest('Tick at least one order.');
+  if (ids.length > MAX_ORDERS) throw badRequest(`Mark at most ${MAX_ORDERS} orders at a time.`);
+  const orders = await prisma.salesOrder.findMany({
+    where: { clientId, id: { in: ids }, deletedAt: null },
+    select: { id: true, orderNumber: true, dispatches: { where: { status: { not: 'CANCELLED' } }, select: { id: true, status: true, courierName: true } } }
+  });
+  const now = new Date();
+  const toMark: string[] = [];
+  const skipped: { orderNumber: string; why: string }[] = [];
+  let already = 0;
+  for (const o of orders) {
+    if (!o.dispatches.length) { skipped.push({ orderNumber: o.orderNumber, why: 'not sent yet' }); continue; }
+    const carried = o.dispatches.filter(d => d.courierName);
+    if (!carried.length) { skipped.push({ orderNumber: o.orderNumber, why: 'no courier on its parcel' }); continue; }
+    const open = carried.filter(d => d.status !== 'DELIVERED');
+    if (!open.length) already++;
+    toMark.push(...open.map(d => d.id));
+  }
+  const done = toMark.length
+    ? await prisma.dispatch.updateMany({ where: { clientId, id: { in: toMark }, status: { not: 'DELIVERED' } }, data: { status: 'DELIVERED', deliveredAt: now } })
+    : { count: 0 };
+  return { parcels: done.count, alreadyDelivered: already, skipped };
 }

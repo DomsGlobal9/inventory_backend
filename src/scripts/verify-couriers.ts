@@ -233,6 +233,39 @@ async function main() {
   check('a cancelled fulfilment and one with no courier give nothing', l2 === null, JSON.stringify(l2));
   const l3 = shippingFromShopify([{ status: 'success', tracking_company: 'DTDC', tracking_number: 'A1', tracking_url: 'javascript:alert(1)' }]);
   check('a link that is not https is dropped, the courier kept', l3?.courierName === 'DTDC' && l3?.trackingUrl === null, JSON.stringify(l3));
+
+  console.log('\nM. MANY LABELS AT ONCE');
+  const m1 = await freshOrder(1), m2 = await freshOrder(0), m3 = await freshOrder(1);
+  await owner.post('/dispatches', { salesOrderId: m1.id, items: [{ salesOrderItemId: m1.itemId, quantity: 1 }], courier: { courierId: dtdc2.id, trackingNumber: 'M1-A' } });
+  await owner.post('/dispatches', { salesOrderId: m1.id, items: [{ salesOrderItemId: m1.itemId, quantity: 1 }], courier: { courierId: dtdc2.id, trackingNumber: 'M1-B' } });
+  await owner.post('/dispatches', { salesOrderId: m2.id, items: [{ salesOrderItemId: m2.itemId, quantity: 2 }], courier: { courierId: own.id } });
+  const ml = await owner.post('/shipping/labels', { orderIds: [m2.id, m1.id, m3.id] });
+  const L = ml.data?.data?.labels ?? [];
+  check('three labels, in the order ticked: m2, then the two parcels of m1, oldest first', ml.status === 200 && L.map((l: any) => l.orderNumber).join() === [m2.number, m1.number, m1.number].join() && L[1].parcel.trackingNumber === 'M1-A' && L[2].parcel.trackingNumber === 'M1-B', brief(ml));
+  check('the order not sent (m3) is named, not printed', JSON.stringify(ml.data?.data?.notSent) === JSON.stringify([m3.number]), JSON.stringify(ml.data?.data?.notSent));
+  const due1 = L[1].cashToCollect;
+  check('m1 sent in two parcels: cash only on the first, the second says "collected with" the first', due1 > 0 && L[2].cashToCollect === 0 && L[2].cashWithParcel === L[1].parcel.dispatchNumber, JSON.stringify([L[1].cashToCollect, L[2].cashToCollect, L[2].cashWithParcel]));
+  const one = await owner.get(`/shipping/dispatches/${L[2].parcel.id}/label`);
+  check('  ...and the one-label page says the same for that parcel', one.data?.data?.cashToCollect === 0 && one.data?.data?.cashWithParcel === L[1].parcel.dispatchNumber, brief(one));
+  const mx = await owner.post('/shipping/labels', { orderIds: [] });
+  const my = await owner.post('/shipping/labels', { orderIds: Array.from({ length: 101 }, (_, n) => `x${n}`) });
+  check('none ticked: 400; 101 orders: 400', mx.status === 400 && my.status === 400 && /100/.test(msg(my)), `${brief(mx)} ${brief(my)}`);
+  const mz = await as('WAREHOUSE').post('/shipping/labels', { orderIds: [m1.id] });
+  check('warehouse may print labels', mz.status === 200 && mz.data.data.labels.length === 2, brief(mz));
+
+  console.log('\nN. MARK MANY DELIVERED');
+  const nn1 = await owner.post('/shipping/delivered', { orderIds: [m1.id, m2.id, m3.id, o3.id] });
+  const r = nn1.data?.data;
+  check('m1 (two parcels) + m2: 3 parcels marked delivered', nn1.status === 200 && r?.parcels === 3, brief(nn1));
+  const sk = (r?.skipped ?? []).map((x: any) => `${x.orderNumber}:${x.why}`).sort();
+  check('  ...m3 skipped "not sent yet", o3 skipped "no courier on its parcel"', JSON.stringify(sk) === JSON.stringify([`${m3.number}:not sent yet`, `${o3.number}:no courier on its parcel`].sort()), JSON.stringify(r?.skipped));
+  const rows = await prisma.dispatch.findMany({ where: { salesOrderId: { in: [m1.id, m2.id] } } });
+  check('  ...in the database every one of their parcels is DELIVERED with a time', rows.length === 3 && rows.every(d => d.status === 'DELIVERED' && d.deliveredAt), JSON.stringify(rows.map(d => [d.status, d.deliveredAt])));
+  const firstAt = rows[0].deliveredAt!.toISOString();
+  const nn2 = await owner.post('/shipping/delivered', { orderIds: [m1.id, m2.id] });
+  check('again: nothing new, both counted as already delivered, dates kept', nn2.data?.data?.parcels === 0 && nn2.data?.data?.alreadyDelivered === 2 && (await prisma.dispatch.findUniqueOrThrow({ where: { id: rows[0].id } })).deliveredAt!.toISOString() === firstAt, brief(nn2));
+  const nn3 = await sales.post('/shipping/delivered', { orderIds: [m1.id] });
+  check('sales (no dispatch:create): 403', nn3.status === 403, brief(nn3));
 }
 
 main()

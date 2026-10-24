@@ -27,7 +27,11 @@ router.patch('/couriers/:id', requirePermission('dispatch:create'), act(req => c
 router.delete('/couriers/:id', requirePermission('dispatch:create'), act(req => couriers.remove(cid(req), id(req))));
 
 // The label for the box. Seeing an order is enough: whoever packs it prints it.
+// Many orders' labels at once: POST because a page of ticked orders is too long for an address.
+router.post('/labels', requirePermission('sales_order:view'), act(req => parcels.labels(cid(req), req.body?.orderIds)));
 router.get('/dispatches/:id/label', requirePermission('sales_order:view'), act(req => parcels.label(cid(req), id(req))));
+// Mark delivered for many ticked orders at once.
+router.post('/delivered', requirePermission('dispatch:create'), act(req => parcels.deliverMany(cid(req), req.body?.orderIds)));
 router.put('/dispatches/:id', requirePermission('dispatch:create'), act(req => parcels.setParcel(cid(req), id(req), req.body)));
 router.post('/dispatches/:id/delivered', requirePermission('dispatch:create'), act(req => parcels.setDelivered(cid(req), id(req), req.body?.delivered)));
 
