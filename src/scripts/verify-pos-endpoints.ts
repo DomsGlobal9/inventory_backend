@@ -1039,6 +1039,8 @@ main()
     // Returns point at the order, so they go first or the order will not delete.
     await prisma.salesReturnItem.deleteMany({ where: { salesReturn: { clientId: CLIENT } } }).catch(() => {});
     await prisma.salesReturn.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
+    // A till sale is handed over at once, so its dispatch (and its lines) point at the order too.
+    await prisma.dispatch.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.salesOrder.deleteMany({ where: { clientId: CLIENT } });
     await prisma.inventoryTransaction.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});
     await prisma.customer.deleteMany({ where: { clientId: CLIENT } }).catch(() => {});

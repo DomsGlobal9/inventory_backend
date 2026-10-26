@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { literal } from '../utils/likeText';
 
 /**
  * How many products or variants actually use a catalogue entry.
@@ -141,7 +142,7 @@ export async function usageCountFor(clientId: string, entry: CatalogEntry): Prom
   try {
     return await count({
       clientId,
-      OR: terms.map(term => ({ [target.field]: { equals: term, mode: 'insensitive' } }))
+      OR: terms.map(term => ({ [target.field]: { equals: literal(term), mode: 'insensitive' } }))
     });
   } catch {
     return 0;

@@ -8,6 +8,7 @@
  * customer's own notes field, one dated line each, so the customer page shows them too.
  */
 import { Prisma, ReturnStatus } from '@prisma/client';
+import { literal } from '../../utils/likeText';
 import { prisma } from '../../lib/prisma';
 import { normalisePhone } from '../../lib/phone';
 import { badRequest, notFound } from '../../utils/httpError';
@@ -86,7 +87,7 @@ export const customerCard = {
      * back does not count, and recent buying counts for more than old (see `weight`).
      */
     const same: Prisma.SalesOrderWhereInput[] = [{ customerId: customer.id }, { customerPhone: phone.value }];
-    if (customer.email) same.push({ customer: { email: { equals: customer.email, mode: 'insensitive' }, ...notShared } });
+    if (customer.email) same.push({ customer: { email: { equals: literal(customer.email), mode: 'insensitive' }, ...notShared } });
     const orders = await prisma.salesOrder.findMany({
       where: { clientId, status: { not: 'CANCELLED' }, deletedAt: null, OR: same },
       orderBy: { createdAt: 'desc' }, take: MAX_BILLS,

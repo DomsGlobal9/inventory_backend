@@ -156,7 +156,9 @@ export class BrandingService {
 
     const { data, error } = await supabase.storage.from(BUCKET).createSignedUploadUrl(storagePath);
     if (error || !data) {
-      throw { statusCode: 502, message: `Could not prepare upload: ${error?.message || 'unknown storage error'}` };
+      // The storage's own words ("fetch failed", bucket names) mean nothing to a shop; keep them in the log.
+      console.error('[upload] could not prepare upload:', error?.message || 'no answer from storage');
+      throw { statusCode: 502, message: 'The logo could not be uploaded just now. Please try again in a minute.' };
     }
 
     const { data: publicUrlData } = supabase.storage.from(BUCKET).getPublicUrl(storagePath);

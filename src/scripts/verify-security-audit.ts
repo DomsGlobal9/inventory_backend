@@ -194,7 +194,9 @@ async function main() {
   // Open to anyone signed in, on purpose.
   const openToAll = new Set([
     'GET /branding/', 'GET /services/', 'GET /support-tickets/', 'POST /support-tickets/',
-    'GET /search/', 'GET /roles/catalogue', 'GET /catalog/config', 'GET /services/tryon-usage'
+    'GET /search/', 'GET /roles/catalogue', 'GET /catalog/config', 'GET /services/tryon-usage',
+    // The store list, on purpose since 14 Oct (location.routes.ts): every store picker in the app needs it.
+    'GET /locations/'
   ]);
   const beforeB = await fingerprintA();
   const allowedWithout: string[] = [];

@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma';
+import { literal } from '../../utils/likeText';
 import { badRequest, notFound, conflict } from '../../utils/httpError';
 import { usable, trackingFor } from './couriers';
 import { paymentSummary } from '../payments/payment-rules';
@@ -42,8 +43,8 @@ async function notTaken(clientId: string, courierName: string | null, number: st
   const other = await prisma.dispatch.findFirst({
     where: {
       clientId, status: { not: 'CANCELLED' },
-      courierName: { equals: courierName, mode: 'insensitive' },
-      trackingNumber: { equals: number, mode: 'insensitive' },
+      courierName: { equals: literal(courierName), mode: 'insensitive' },
+      trackingNumber: { equals: literal(number), mode: 'insensitive' },
       ...(exceptId ? { NOT: { id: exceptId } } : {})
     },
     select: { dispatchNumber: true, salesOrder: { select: { orderNumber: true } } }

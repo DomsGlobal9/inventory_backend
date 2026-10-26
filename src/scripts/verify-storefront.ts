@@ -204,9 +204,13 @@ async function main() {
     check('but different stock -- scope is not cosmetic',
       sum(warehouseOnly) !== sum(wideScope) || sum(storeOnly) !== sum(wideScope),
       `all=${sum(wideScope)} warehouse=${sum(warehouseOnly)} store=${sum(storeOnly)}`);
+    // Every store of the shop, not only these two: other suites add stores to this long-lived test shop.
+    const everyStore = await prisma.stockLocation.findMany({ where: { clientId, active: true }, select: { id: true } });
+    let perStore = 0;
+    for (const l of everyStore) perStore += sum(await storefrontCatalogueService.listProducts({ clientId, locationIds: [l.id] }, { limit: 100 }));
     check('the locations add up to the whole',
-      sum(warehouseOnly) + sum(storeOnly) === sum(wideScope),
-      `${sum(warehouseOnly)} + ${sum(storeOnly)} vs ${sum(wideScope)}`);
+      perStore === sum(wideScope),
+      `${everyStore.length} stores add up to ${perStore} vs ${sum(wideScope)}`);
 
     console.log('\nWHAT A STOREFRONT MAY SEE');
     // Checked against the rule the catalogue actually applies -- status ACTIVE and not
@@ -227,8 +231,10 @@ async function main() {
     check('a draft is not exposed',
       !hiddenDraft || !exposedCodes.includes(hiddenDraft.productCode));
     check('stock is stated, not left to be derived',
-      wideScope.products.every(p => p.variants.every(v =>
-        v.stock.available === Math.max(v.stock.quantity - v.stock.reserved, 0))));
+      // A service (stitching, fall & pico) keeps no count: all three are null, by design.
+      wideScope.products.every(p => p.variants.every(v => v.stock.quantity === null
+        ? v.stock.available === null && v.stock.reserved === null
+        : v.stock.available === Math.max(v.stock.quantity - v.stock.reserved, 0))));
     check('every price carries its currency',
       wideScope.products.every(p => p.variants.every(v => typeof v.currency === 'string' && v.currency.length > 0)));
     check('products are identified publicly, not by internal id',

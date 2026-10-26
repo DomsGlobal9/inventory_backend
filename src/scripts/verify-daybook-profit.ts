@@ -71,6 +71,17 @@ async function main() {
     quantityDelta: 10, unitCost: COST, notes: 'verify-daybook-profit setup', createdBy: 'verify-daybook-profit'
   });
 
+  // GST is optional per shop (7 Oct), so this test cannot assume the test shop charges it -- a fresh
+  // local copy does not. Make it a regular dealer for the run and put back whatever it was.
+  // A registration counts only with a GST number beside it (registrationInForce), so it gets one.
+  const TEST_GSTIN = '36AABCU9603R1ZM';
+  const gstBefore = await prisma.clientSettings.findUnique({ where: { clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true } });
+  await prisma.clientSettings.upsert({
+    where: { clientId },
+    create: { clientId, gstRegistration: 'REGULAR', gstStateCode: '36', gstNumber: TEST_GSTIN },
+    update: { gstRegistration: 'REGULAR', gstStateCode: gstBefore?.gstStateCode ?? '36', gstNumber: gstBefore?.gstNumber || TEST_GSTIN }
+  });
+
   const cred = generateCredential();
   const till = await prisma.storefrontConnection.create({ data: {
     clientId, name: `Day Book profit till ${STAMP}`, baseUrl: POS_BASE_URL,
@@ -149,6 +160,8 @@ async function main() {
   } finally {
     // The till is disconnected; the bills and the product stay, like every other suite's on this shop.
     await prisma.storefrontConnection.update({ where: { id: till.id }, data: { status: 'REVOKED' } });
+    if (gstBefore) await prisma.clientSettings.update({ where: { clientId }, data: gstBefore });
+    else await prisma.clientSettings.update({ where: { clientId }, data: { gstRegistration: 'UNREGISTERED', gstStateCode: null, gstNumber: null } });
   }
 
   console.log(`\nRESULT: ${passed} passed | ${failed} failed`);

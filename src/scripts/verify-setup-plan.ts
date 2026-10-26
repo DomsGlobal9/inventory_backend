@@ -112,7 +112,7 @@ console.log('\nD. SOMETHING IN THE WAY STOPS THAT BRANCH ONLY');
   // P1: a rack the shop switched off.
   const off = planSetup(SPEC, snap([spot('STORE'), spot('STORE-R03', { active: false })]));
   check('a switched-off rack is a conflict, not quietly used', off.spots.find(s => s.address === 'STORE-R03')?.outcome === 'conflict');
-  check('its shelves are skipped, and say which rack to look at', made(off, 'skipped').every(a => a.startsWith('STORE-R03-')) && /switched off/.test(off.spots.find(s => s.address === 'STORE-R03-1')?.reason ?? ''), off.spots.find(s => s.address === 'STORE-R03-1'));
+  check('its shelves are skipped, and say which rack to look at', made(off, 'skipped').every(a => a.startsWith('STORE-R03-')) && /not in use/.test(off.spots.find(s => s.address === 'STORE-R03-1')?.reason ?? ''), off.spots.find(s => s.address === 'STORE-R03-1'));
   check('the other racks are still created: 4 racks + 18 shelves', off.addresses.includes('STORE-R02-1') && off.addresses.includes('STORE-R04-1') && off.counts.created === 22, off.counts);
 
   // P2: a rack renamed since (R01 -> SILK).

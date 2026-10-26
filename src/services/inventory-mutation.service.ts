@@ -101,7 +101,8 @@ export class InventoryMutationService {
       // the one place that can actually enforce it regardless of which caller forgot to.
       const location = await tx.stockLocation.findUnique({ where: { id: locationId } });
       if (!location || location.clientId !== clientId) {
-        throw Object.assign(new Error(`Location ${locationId} not found for this tenant.`), { statusCode: 404 });
+        // In words, never the id or "tenant" (26 Oct worst-case run: a move to a deleted store showed both).
+        throw Object.assign(new Error('That store was not found in this shop. It may have been deleted; choose it again.'), { statusCode: 404 });
       }
 
       // A service (fall & pico, stitching) keeps no stock: selling, returning or "adding" one moves nothing.

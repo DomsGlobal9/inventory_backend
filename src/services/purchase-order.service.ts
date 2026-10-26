@@ -359,7 +359,10 @@ export class PurchaseOrderService {
 
         if (!po) throw Object.assign(new Error('Purchase Order not found'), { statusCode: 404 });
         if (po.status === PurchaseOrderStatus.RECEIVED || po.status === PurchaseOrderStatus.CANCELLED) {
-          throw Object.assign(new Error(`Cannot receive goods for PO in status ${po.status}`), { statusCode: 400 });
+          // Usually a second press of Receive, or a stale screen: say what happened, not the status code.
+          throw Object.assign(new Error(po.status === PurchaseOrderStatus.RECEIVED
+            ? 'Everything on this purchase order has already been received. Refresh to see it.'
+            : 'This purchase order was cancelled, so nothing can be received on it.'), { statusCode: 400 });
         }
 
         const location = await this.receivingLocation(tx, clientId, lineLocations[0] || input.locationId, [po.locationId, selectedLocationId]);

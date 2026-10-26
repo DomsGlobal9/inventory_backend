@@ -11,6 +11,7 @@
  */
 
 import { prisma } from '../../lib/prisma';
+import { literal } from '../../utils/likeText';
 import { Prisma } from '@prisma/client';
 import { generateSequentialCode } from '../../utils/codeGenerator';
 import { badRequest, conflict, notFound } from '../../utils/httpError';
@@ -543,7 +544,7 @@ export class OfferService {
     const [taken, other] = await Promise.all([
       prisma.offerCode.findFirst({ where: { clientId, code }, select: { id: true } }),
       prisma.offer.findFirst({
-        where: { clientId, couponCode: { equals: code, mode: 'insensitive' }, ...(exceptOfferId ? { id: { not: exceptOfferId } } : {}) },
+        where: { clientId, couponCode: { equals: literal(code), mode: 'insensitive' }, ...(exceptOfferId ? { id: { not: exceptOfferId } } : {}) },
         select: { id: true }
       })
     ]);
@@ -571,7 +572,7 @@ export class OfferService {
       const base = source.couponCode.toUpperCase().replace(/-COPY\d*$/, '').slice(0, 24);
       for (let n = 1; n < 100 && !couponCode; n++) {
         const candidate = n === 1 ? `${base}-COPY` : `${base}-COPY${n}`;
-        const clash = await prisma.offer.findFirst({ where: { clientId, couponCode: { equals: candidate, mode: 'insensitive' } }, select: { id: true } })
+        const clash = await prisma.offer.findFirst({ where: { clientId, couponCode: { equals: literal(candidate), mode: 'insensitive' } }, select: { id: true } })
           ?? await prisma.offerCode.findFirst({ where: { clientId, code: candidate }, select: { id: true } });
         if (!clash) couponCode = candidate;
       }

@@ -1,4 +1,5 @@
 import { getShopSettings } from '../lib/clientSettings';
+import { literal } from '../utils/likeText';
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
 
@@ -478,9 +479,9 @@ export class StorefrontCatalogueService {
       clientId: scope.clientId,
       ...ELIGIBLE_PRODUCT,
       ...(opts.category ? { category: opts.category as never } : {}),
-      ...(opts.fabric ? { fabric: { equals: opts.fabric, mode: 'insensitive' } } : {}),
-      ...(opts.craft ? { craft: { equals: opts.craft, mode: 'insensitive' } } : {}),
-      ...(opts.dressType ? { dressType: { equals: opts.dressType, mode: 'insensitive' } } : {}),
+      ...(opts.fabric ? { fabric: { equals: literal(opts.fabric), mode: 'insensitive' } } : {}),
+      ...(opts.craft ? { craft: { equals: literal(opts.craft), mode: 'insensitive' } } : {}),
+      ...(opts.dressType ? { dressType: { equals: literal(opts.dressType), mode: 'insensitive' } } : {}),
       ...(opts.minPrice != null || opts.maxPrice != null
         ? { basePrice: { ...(opts.minPrice != null ? { gte: opts.minPrice } : {}), ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {}) } }
         : {}),

@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { literal } from '../utils/likeText';
 import { ProductCategory } from '@prisma/client';
 import { Product, ProductVariant, InventoryTransaction } from '@prisma/client';
 
@@ -11,6 +12,11 @@ export class SearchRepository {
    */
   async globalSearch(clientId: string, query: string) {
     const q = query.trim();
+    /*
+     * Typed text, taken literally. A case-insensitive equals is a LIKE in the database, so a lone "\\" crashed
+     * the search (500) and "%" matched every product as an "exact" code (26 Oct worst-case run).
+     */
+    const lit = literal(q);
 
     // 1. EXACT MATCHES FIRST (Identifiers)
     // Identifier matches are case-INSENSITIVE. A hardware scanner transmits exactly what
@@ -22,7 +28,7 @@ export class SearchRepository {
       where: {
         clientId,
         status: { notIn: ['TRASHED'] as any },
-        productCode: { equals: q, mode: 'insensitive' }
+        productCode: { equals: lit, mode: 'insensitive' }
       },
       include: {
         images: {
@@ -40,9 +46,9 @@ export class SearchRepository {
         clientId,
         product: { status: { notIn: ['TRASHED'] as any } },
         OR: [
-          { barcode: { equals: q, mode: 'insensitive' } },
-          { variantCode: { equals: q, mode: 'insensitive' } },
-          { sku: { equals: q, mode: 'insensitive' } }
+          { barcode: { equals: lit, mode: 'insensitive' } },
+          { variantCode: { equals: lit, mode: 'insensitive' } },
+          { sku: { equals: lit, mode: 'insensitive' } }
         ]
       },
       include: {
@@ -69,7 +75,7 @@ export class SearchRepository {
         clientId,
         status: { notIn: ['TRASHED'] as any },
         OR: [
-          { title: { contains: q, mode: 'insensitive' } },
+          { title: { contains: lit, mode: 'insensitive' } },
           ...(Object.values(ProductCategory).includes(q.toUpperCase() as any) ? [{ category: { equals: q.toUpperCase() as any } }] : [])
         ]
       },
@@ -90,7 +96,7 @@ export class SearchRepository {
         clientId,
         product: { status: { notIn: ['TRASHED'] as any } },
         OR: [
-          { colorName: { contains: q, mode: 'insensitive' } }
+          { colorName: { contains: lit, mode: 'insensitive' } }
         ]
       },
       include: {
