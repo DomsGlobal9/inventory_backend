@@ -437,10 +437,21 @@ export class PlatformAdminService {
     // using the product, and until now it left this building by being read off a console
     // screen and typed into a message by hand.
     const delivery = await mailService.sendCredentials({
-      recipientName: adminName, email: adminEmail, password: tempPassword, roleLabel: 'SUPER_ADMIN'
+      recipientName: adminName, email: adminEmail, password: tempPassword, roleLabel: 'SUPER_ADMIN',
+      shopName: companyName.trim() || null
     });
 
-    return { clientId, adminName, adminEmail, tempPassword, emailed: delivery.sent, emailReason: delivery.reason };
+    // Then the welcome: the owner, and only the owner (the user's rule, 26 Oct). Sent after the
+    // login on purpose -- it says "your login came in a separate email", so that one goes first.
+    // Never fails the onboarding; it reports, like the login does.
+    const welcome = await mailService.sendWelcome({
+      recipientName: adminName, email: adminEmail, shopName: companyName.trim() || 'Your shop'
+    });
+
+    return {
+      clientId, adminName, adminEmail, tempPassword, emailed: delivery.sent, emailReason: delivery.reason,
+      welcomed: welcome.sent, welcomeReason: welcome.reason
+    };
   }
 
   // ─── SUSPENDING AND DELETING A CLIENT ───────────────────────────────────────

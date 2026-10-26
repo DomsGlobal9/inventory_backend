@@ -1,5 +1,6 @@
 import { env } from '../config/env';
 import { sendMail, emailConfigured, verifyMailConfiguration, SendResult } from '../lib/mailer';
+import { loginEmail, welcomeEmail } from './mail-templates/onboarding';
 
 /**
  * Every message this application is allowed to send.
@@ -13,44 +14,6 @@ import { sendMail, emailConfigured, verifyMailConfiguration, SendResult } from '
  * Every method returns whether it went, and never throws. The work that triggered the email has
  * already succeeded by the time these run.
  */
-
-/** The plain-text half. Some clients show only this, and it must stand alone. */
-function credentialText(input: {
-  recipientName: string; email: string; password: string; roleLabel?: string; loginUrl: string;
-}) {
-  return [
-    `Hi ${input.recipientName},`,
-    '',
-    `You have been added to the Scaleezy Inventory workspace${input.roleLabel ? ` as ${input.roleLabel}` : ''}.`,
-    '',
-    `Email: ${input.email}`,
-    `Password: ${input.password}`,
-    '',
-    `Sign in: ${input.loginUrl}`,
-    '',
-    'Keep this message private. If you need the password changed, ask your Super Admin or Admin.'
-  ].join('\n');
-}
-
-function credentialHtml(input: {
-  recipientName: string; email: string; password: string; roleLabel?: string; loginUrl: string;
-}) {
-  // Inline styles and a table-free layout on purpose: mail clients strip <style> blocks, and
-  // anything clever renders differently in Outlook than everywhere else.
-  return `
-<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;color:#1a1a1a;line-height:1.6">
-  <p>Hi ${escapeHtml(input.recipientName)},</p>
-  <p>You have been added to the Scaleezy Inventory workspace${input.roleLabel ? ` as <strong>${escapeHtml(input.roleLabel)}</strong>` : ''}.</p>
-  <div style="background:#f6f6f4;border:1px solid #e5e5e0;border-radius:8px;padding:16px;margin:20px 0">
-    <div style="font-size:12px;color:#6b6b66;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Email</div>
-    <div style="font-size:15px;margin-bottom:12px">${escapeHtml(input.email)}</div>
-    <div style="font-size:12px;color:#6b6b66;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Password</div>
-    <div style="font-size:16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(input.password)}</div>
-  </div>
-  <p><a href="${escapeHtml(input.loginUrl)}" style="display:inline-block;background:#1a1a1a;color:#fff;text-decoration:none;padding:10px 20px;border-radius:6px">Sign in</a></p>
-  <p style="color:#6b6b66;font-size:13px">Keep this message private. If you need the password changed, ask your Super Admin or Admin.</p>
-</div>`.trim();
-}
 
 /** Names and roles are entered by users, so they are escaped before going into markup. */
 function escapeHtml(value: string): string {
@@ -86,26 +49,27 @@ export class MailService {
     email: string;
     password: string;
     roleLabel?: string;
+    /** Named in the subject and header, so a person in two shops knows which login this is. */
+    shopName?: string | null;
     /** A platform admin signs in somewhere else entirely. */
     audience?: 'shop' | 'platform';
   }): Promise<SendResult> {
     // Two different applications behind one hostname, with separate logins and separate
     // sessions. A platform admin sent to /login meets the shop sign-in page, types correct
     // credentials, and is told they are wrong -- because that form checks a different table.
-    // The link has to match who the message is for.
-    const base = env.FRONTEND_URL.replace(/\/$/, '');
-    const loginUrl = input.audience === 'platform'
-      ? `${base}/platformconsole/login`
-      : `${base}/login`;
-    const body = { ...input, loginUrl };
+    // The link has to match who the message is for (loginEmail picks it).
+    const message = loginEmail({ base: env.FRONTEND_URL.replace(/\/$/, ''), ...input });
+    return sendMail({ to: input.email, subject: message.subject, text: message.text, html: message.html, kind: 'credentials' });
+  }
 
-    return sendMail({
-      to: input.email,
-      subject: 'Your Scaleezy Inventory login',
-      text: credentialText(body),
-      html: credentialHtml(body),
-      kind: 'credentials'
-    });
+  /**
+   * The new owner's welcome: thanks, a first-week plan with links into the app, and where help
+   * is. No password -- that went in its own message just before, because this is the long,
+   * friendly mail people forward. OWNER ONLY: staff get their login and nothing else.
+   */
+  async sendWelcome(input: { recipientName: string; email: string; shopName: string }): Promise<SendResult> {
+    const message = welcomeEmail({ base: env.FRONTEND_URL.replace(/\/$/, ''), ...input });
+    return sendMail({ to: input.email, subject: message.subject, text: message.text, html: message.html, kind: 'welcome' });
   }
 
   /**

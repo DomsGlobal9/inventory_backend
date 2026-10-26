@@ -144,8 +144,10 @@ export class TeamService {
     // and hoping means they either double-send or assume it worked when it did not.
     //
     // It cannot fail the creation -- sendCredentials never throws, it reports.
+    const shop = await prisma.clientSettings.findUnique({ where: { clientId: params.clientId }, select: { businessName: true } }).catch(() => null);
     const delivery = await mailService.sendCredentials({
-      recipientName: user.name, email: user.email, password: finalPassword, roleLabel: role.name
+      recipientName: user.name, email: user.email, password: finalPassword, roleLabel: role.name,
+      shopName: shop?.businessName ?? null
     });
 
     return {
@@ -284,7 +286,8 @@ export class TeamService {
       recipientName: target.name,
       email: target.email,
       password: decryptCredential(target.passwordEncrypted),
-      roleLabel: target.roles[0]?.role.name
+      roleLabel: target.roles[0]?.role.name,
+      shopName: (await prisma.clientSettings.findUnique({ where: { clientId: params.clientId }, select: { businessName: true } }).catch(() => null))?.businessName ?? null
     });
 
     if (!delivery.sent) {
