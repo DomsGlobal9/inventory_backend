@@ -3,6 +3,7 @@ import { ZodSchema } from 'zod';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 import { respondWithError } from '../utils/respondWithError';
+import { prisma } from '../lib/prisma';
 import { spotService, shelfStockService, shelfIssueService } from '../services/shelves';
 import { pickService } from '../services/shelves/pick.service';
 import { shelfCountService } from '../services/shelves/count.service';
@@ -152,9 +153,39 @@ router.post('/putaway', requirePermission('shelf:putaway'), async (req, res) => 
   const body = parse(putawaySchema, req.body, res);
   if (!body) return;
   try {
-    const result = await shelfStockService.move(clientOf(req), userOf(req), {
-      locationId: body.locationId, variantId: body.variantId, toSpotId: body.spotId, quantity: body.quantity
-    });
+    /*
+     * One press, one put-away. A phone on a slow line retries a request whose answer it never saw, and
+     * with enough loose pieces the retry put them away a second time (26 Oct review). The key is claimed
+     * BEFORE the move, so a second copy of the press waits for the first one's answer instead of moving
+     * again; a move that fails gives the key back. Same table as Record shelves' saves.
+     */
+    const clientId = clientOf(req);
+    const key = body.saveKey ? `putaway:${body.saveKey}` : null;
+    if (key) {
+      try {
+        await prisma.shelfFillSave.create({ data: { clientId, spotId: body.spotId, saveKey: key, result: { pending: true } } });
+      } catch (e: any) {
+        if (e?.code !== 'P2002') throw e;
+        for (let i = 0; i < 20; i++) {
+          const first = await prisma.shelfFillSave.findUnique({ where: { clientId_saveKey: { clientId, saveKey: key } } });
+          if (!first) break;
+          if (!(first.result as any)?.pending) { res.json({ success: true, data: { ...(first.result as object), repeat: true } }); return; }
+          await new Promise(r => setTimeout(r, 500));
+        }
+        res.status(409).json({ success: false, message: 'Your first press is still being saved. Look at the shelf in a moment before pressing again.' });
+        return;
+      }
+    }
+    let result;
+    try {
+      result = await shelfStockService.move(clientId, userOf(req), {
+        locationId: body.locationId, variantId: body.variantId, toSpotId: body.spotId, quantity: body.quantity
+      });
+    } catch (error) {
+      if (key) await prisma.shelfFillSave.deleteMany({ where: { clientId, saveKey: key } });
+      throw error;
+    }
+    if (key) await prisma.shelfFillSave.update({ where: { clientId_saveKey: { clientId, saveKey: key } }, data: { result: result as any } });
     res.locals.auditAction = 'SHELF_PUT_AWAY';
     res.locals.auditEntityId = body.variantId;
     res.json({ success: true, data: result });

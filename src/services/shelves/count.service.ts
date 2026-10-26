@@ -51,7 +51,10 @@ export const shelfCountService = {
      * "I counted the whole shelf" on a shelf with nothing recorded and nothing found: the empty shelf is
      * confirmed. Refusing it ("Nothing was counted.") left a worker no way to say "I looked: it is empty".
      */
-    if (lines.length === 0 && complete) return { address: spot.address, counted: 0, matched: 0, issues: 0, failed: 0, results: [], emptyConfirmed: true };
+    if (lines.length === 0 && complete) {
+      await prisma.storageSpot.update({ where: { id: spot.id }, data: { lastCountedAt: new Date() } });
+      return { address: spot.address, counted: 0, matched: 0, issues: 0, failed: 0, results: [], emptyConfirmed: true };
+    }
     if (lines.length === 0) throw badRequest('Nothing was counted.');
 
     const variants = await prisma.productVariant.findMany({
@@ -88,7 +91,28 @@ export const shelfCountService = {
           await tx.$queryRaw`SELECT id FROM inventory_product_variants WHERE id = ${line.variantId} FOR UPDATE`;
           const recorded = (await tx.spotStock.findUnique({ where: { spotId_variantId: { spotId: spot.id, variantId: line.variantId } } }))?.quantity ?? 0;
           const diff = line.counted - recorded;
-          if (diff === 0) return { variantId: line.variantId, recorded, counted: line.counted, onShelfNow: recorded, issue: null };
+          /*
+           * Problems a count answers close by themselves, saying why (they stayed open for ever unless someone
+           * pressed Mark fixed). Which ones, carefully:
+           *   - a picker's "not found on this shelf" report asked for exactly this count: answered by any count
+           *     (the count itself records a real shortfall as its own problem);
+           *   - "count and stock do not match" asked to correct the stock and count again: answered when the
+           *     count now matches;
+           *   - a COUNT's own "N fewer than recorded" stays open: the pieces are still lost, whatever a later
+           *     count of the shelf says (26 Oct -- the first version closed it, and the test caught it).
+           */
+          const closedAt = new Date();
+          const closedReports = await tx.shelfIssue.updateMany({
+            where: { clientId, spotId: spot.id, variantId: line.variantId, resolvedAt: null, kind: 'NOT_FOUND_ON_SHELF', NOT: { message: { startsWith: 'A count of' } } },
+            data: { resolvedAt: closedAt, resolvedBy: userId, resolutionNote: `Closed by itself: ${spot.address} was counted (${line.counted} found).` }
+          });
+          if (diff === 0) {
+            const closed = await tx.shelfIssue.updateMany({
+              where: { clientId, spotId: spot.id, variantId: line.variantId, resolvedAt: null, kind: 'COUNT_BELOW_SHELVES' },
+              data: { resolvedAt: closedAt, resolvedBy: userId, resolutionNote: `Closed by itself: a count of ${spot.address} matched (${line.counted}).` }
+            });
+            return { variantId: line.variantId, recorded, counted: line.counted, onShelfNow: recorded, issue: null, closedProblems: closed.count + closedReports.count };
+          }
 
           let moved = diff;
           let issue: { kind: 'NOT_FOUND_ON_SHELF' | 'COUNT_BELOW_SHELVES'; quantity: number; message: string } | null = null;
@@ -135,6 +159,8 @@ export const shelfCountService = {
       }
     }
 
+    // When it was last counted, whether or not anything changed (Count lists the longest-uncounted first).
+    await prisma.storageSpot.update({ where: { id: spot.id }, data: { lastCountedAt: new Date() } });
     return {
       address: spot.address,
       counted: results.length,

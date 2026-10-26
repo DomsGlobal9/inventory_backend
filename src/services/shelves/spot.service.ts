@@ -109,7 +109,7 @@ function shapeSpot(s: SpotRow & { pieces?: number; items?: number }) {
   return {
     id: s.id, parentId: s.parentId, kind: s.kind, code: s.code, address: s.address, name: s.name,
     depth: s.depth, walkOrder: s.walkOrder, isShopFloor: s.isShopFloor, labelCode: s.labelCode,
-    colour: s.colour, capacity: s.capacity, isTemporary: s.isTemporary, active: s.active,
+    colour: s.colour, capacity: s.capacity, isTemporary: s.isTemporary, active: s.active, lastCountedAt: (s as any).lastCountedAt ?? null,
     pieces: s.pieces ?? 0, items: s.items ?? 0
   };
 }

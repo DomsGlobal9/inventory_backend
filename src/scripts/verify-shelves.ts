@@ -538,9 +538,12 @@ async function main() {
   check('  ...and suggesting a walk moved nothing', await onShelf(c2s2L.id, blue.id) === 2 && await onShelf(boxBL.id, blue.id) === 3);
   const itemA = (await prisma.salesOrderItem.findFirstOrThrow({ where: { salesOrderId: orderAId } })).id;
   const fromShelves = stops.flatMap((s: any) => s.picks.filter((p: any) => p.orderId === orderAId).map((p: any) => ({ spotId: s.spotId, quantity: p.quantity })));
+  // Problems raised BY this dispatch only. "In the last minute" also caught the till sale's own back-room
+  // problem from a few steps above whenever the database answered fast (a local run), and failed a correct dispatch.
+  const dispatchStarted = new Date();
   const dispatched = await wh.post('/dispatches', { salesOrderId: orderAId, items: [{ salesOrderItemId: itemA, quantity: 5, fromSpots: fromShelves }] });
   const dispatchId = dispatched.data?.id ?? dispatched.data?.data?.id;
-  check('dispatching order A with the picked shelves takes exactly those (the back room too) and raises no issue', dispatched.status === 201 && await onShelf(c2s2L.id, blue.id) === 0 && await onShelf(boxBL.id, blue.id) === 0 && (await prisma.shelfIssue.count({ where: { clientId: SHOP, variantId: blue.id, kind: 'SOLD_FROM_BACK_ROOM', createdAt: { gte: new Date(Date.now() - 60_000) } } })) === 0, brief(dispatched));
+  check('dispatching order A with the picked shelves takes exactly those (the back room too) and raises no issue', dispatched.status === 201 && await onShelf(c2s2L.id, blue.id) === 0 && await onShelf(boxBL.id, blue.id) === 0 && (await prisma.shelfIssue.count({ where: { clientId: SHOP, variantId: blue.id, kind: 'SOLD_FROM_BACK_ROOM', createdAt: { gte: dispatchStarted } } })) === 0, brief(dispatched));
   const used = await own.get('/shelves/movements', { params: { referenceType: 'DISPATCH', referenceIds: dispatchId } });
   check('  ...and the order can show which shelves it came from', used.status === 200 && used.data.data.length === 1 && used.data.data[0].legs.map((l: any) => `${l.address}:${l.quantity}:${l.source}`).sort().join() === 'FLOOR-C2-2:-2:SCANNED,STORE-R04-1-B:-3:SCANNED', brief(used));
   const salesPick = await sales.http.get('/shelves/pick/orders', { params: { locationId: store.id } });

@@ -130,6 +130,49 @@ async function main() {
   const line = data(c3)?.results?.[0];
   const issue = await prisma.shelfIssue.findFirst({ where: { clientId: C, variantId: vB, spotId: shelf.id }, orderBy: { createdAt: 'desc' } });
   check('3 → 2: shelf 2, the problem says 1 fewer, the line has no error', await onShelf(shelf.id, vB) === 2 && !line?.error && /1 fewer/.test(issue?.message ?? ''), `${brief(c3)} | ${issue?.message}`);
+
+  console.log('\nK. WHEN A SHELF WAS LAST COUNTED');
+  const counted = await prisma.storageSpot.findUniqueOrThrow({ where: { id: shelf.id } });
+  check('a count records the date on the shelf', !!counted.lastCountedAt && Date.now() - counted.lastCountedAt.getTime() < 10 * 60_000, String(counted.lastCountedAt));
+  const emptyAfter = await prisma.storageSpot.findUniqueOrThrow({ where: { id: empty.id } });
+  check('  ...also when it only confirmed an empty shelf', !!emptyAfter.lastCountedAt);
+  const treeK = data(await owner.get(`/locations/${LOC}/spots`));
+  const findNode = (nodes: any[]): any => { for (const n of nodes ?? []) { if (n.id === shelf.id) return n; const f = findNode(n.children); if (f) return f; } return null; };
+  check('  ...and the shelf list sends it to the screen', !!findNode(treeK?.spots)?.lastCountedAt, JSON.stringify(findNode(treeK?.spots)));
+
+  console.log('\nL. WHICH PROBLEMS A COUNT CLOSES');
+  // A picker's report on vB (shelf holds 2), and the count-made "fewer than recorded" problems from B and J still open.
+  const rep = data(await owner.post('/not-found', { spotId: shelf.id, variantId: vB, missing: 1 }));
+  const countMadeOpen = await prisma.shelfIssue.count({ where: { clientId: C, spotId: shelf.id, variantId: vB, resolvedAt: null, kind: 'NOT_FOUND_ON_SHELF', message: { startsWith: 'A count of' } } });
+  const c4 = await owner.post(`/spots/${shelf.id}/count`, { counts: [{ variantId: vB, counted: 2 }], complete: false });
+  const repAfter = await prisma.shelfIssue.findUnique({ where: { id: rep?.issueId } });
+  check('the picker\'s "not found" report is closed by the count it asked for, saying why', c4.status === 200 && !!repAfter?.resolvedAt && /was counted \(2 found\)/.test(repAfter?.resolutionNote ?? ''), `${brief(c4)} | ${repAfter?.resolutionNote}`);
+  const countMadeAfter = await prisma.shelfIssue.count({ where: { clientId: C, spotId: shelf.id, variantId: vB, resolvedAt: null, kind: 'NOT_FOUND_ON_SHELF', message: { startsWith: 'A count of' } } });
+  check(`  ...but the count's own "pieces missing" problems (${countMadeOpen}) stay open: those pieces are still lost`, countMadeOpen > 0 && countMadeAfter === countMadeOpen, `${countMadeOpen} -> ${countMadeAfter}`);
+  // "Count and stock do not match": an item with 1 in the store, 1 on the shelf, counted 3 -> the problem; counted 1 -> closed.
+  const vX = await item('X', 1);
+  await owner.post('/putaway', { locationId: LOC, variantId: vX, spotId: shelf.id, quantity: 1 });
+  await owner.post(`/spots/${shelf.id}/count`, { counts: [{ variantId: vX, counted: 3 }], complete: false });
+  const mismatch = await prisma.shelfIssue.findFirst({ where: { clientId: C, spotId: shelf.id, variantId: vX, kind: 'COUNT_BELOW_SHELVES' }, orderBy: { createdAt: 'desc' } });
+  check('(set-up) counting 3 where the stock allows 1 raises "count and stock do not match"', !!mismatch && !mismatch.resolvedAt, JSON.stringify(mismatch));
+  await owner.post(`/spots/${shelf.id}/count`, { counts: [{ variantId: vX, counted: 1 }], complete: false });
+  const mismatchAfter = await prisma.shelfIssue.findUnique({ where: { id: mismatch!.id } });
+  check('  ...counted again and it matches (1): closed by itself, saying why', !!mismatchAfter?.resolvedAt && /matched \(1\)/.test(mismatchAfter?.resolutionNote ?? ''), String(mismatchAfter?.resolutionNote));
+
+  console.log('\nM. ONE PRESS, ONE PUT-AWAY');
+  const vM = await item('M', 10);
+  const key = `gap-${STAMP}-press`;
+  const put = { locationId: LOC, variantId: vM, spotId: shelf.id, quantity: 3, saveKey: key };
+  const [m1, m2] = await Promise.all([owner.post('/putaway', put), owner.post('/putaway', put)]);
+  check('the same press sent twice at once: both answered, 3 on the shelf (not 6)', m1.status < 300 && m2.status < 300 && await onShelf(shelf.id, vM) === 3, `${brief(m1)} | ${brief(m2)} | ${await onShelf(shelf.id, vM)}`);
+  check('  ...the second says it is a repeat', [m1, m2].filter(r => data(r)?.repeat).length === 1, `${JSON.stringify(data(m1)?.repeat)} ${JSON.stringify(data(m2)?.repeat)}`);
+  const m3 = await owner.post('/putaway', put);
+  check('  ...sent again later: still 3, answered as a repeat', m3.status < 300 && data(m3)?.repeat === true && await onShelf(shelf.id, vM) === 3, brief(m3));
+  const bad = { ...put, quantity: 50, saveKey: `gap-${STAMP}-bad` };
+  const b1 = await owner.post('/putaway', bad), b2 = await owner.post('/putaway', bad);
+  check('a press that fails gives its key back: the retry gets the same plain refusal, not "still saving"', b1.status >= 400 && b2.status === b1.status && !/still being saved/.test(msg(b2)), `${brief(b1)} | ${brief(b2)}`);
+  const noKey = await owner.post('/putaway', { locationId: LOC, variantId: vM, spotId: shelf.id, quantity: 1 });
+  check('a press with no key (older screens) still works', noKey.status < 300 && await onShelf(shelf.id, vM) === 4, brief(noKey));
 }
 
 main()

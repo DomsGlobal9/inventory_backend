@@ -81,7 +81,9 @@ export const putawaySchema = z.object({
   locationId: id('The location'),
   variantId: id('The item'),
   spotId: id('The shelf'),
-  quantity: pieces
+  quantity: pieces,
+  /** Made by the screen once per press: a retry of the same press is not a second put-away. */
+  saveKey: z.string({ invalid_type_error: 'Press Put away again.' }).min(8, 'Press Put away again.').max(64, 'Press Put away again.').optional()
 }).strict();
 
 export const moveAllSchema = z.object({

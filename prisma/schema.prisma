@@ -359,6 +359,8 @@ model StorageSpot {
   /// Roughly how many pieces fit. A warning, never a refusal.
   capacity    Int?
   isTemporary Boolean @default(false) @map("is_temporary")
+  /// When someone last counted this shelf (Shelves > Count), matched or not. Null: never counted.
+  lastCountedAt DateTime? @map("last_counted_at")
   active      Boolean @default(true)
 
   createdBy String?  @map("created_by")
