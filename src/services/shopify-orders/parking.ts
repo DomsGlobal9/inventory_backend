@@ -10,6 +10,7 @@
 import { prisma } from '../../lib/prisma';
 import { safeMessage } from '../../lib/safeMessage';
 import type { ParkReason } from './mapping';
+import { tellShopOrderWaiting } from './notices';
 
 /** The two topics that carry an ORDER, as opposed to something that happened to one. */
 export const ORDER_TOPICS = ['orders/create', 'orders/updated'];
@@ -57,6 +58,9 @@ export async function park(
     create: { shopDomain, clientId, shopifyOrderId, topic, payload, reason, detail: shown, attempts: 1 },
     update: { reason, detail: shown, payload, clientId, attempts: { increment: 1 }, resolvedAt: null }
   });
+
+  // The shop is told once, in the bell; an unclaimed store has nobody to tell yet.
+  if (clientId) await tellShopOrderWaiting(clientId, shopDomain, shopifyOrderId, payload?.name ?? null, shown);
 
   // The full, unfiltered reason goes to the server log, where it is useful and private.
   console.warn(`[Shopify] ${topic} for order ${shopifyOrderId} from ${shopDomain} parked: ${reason} -- ${detail}`);

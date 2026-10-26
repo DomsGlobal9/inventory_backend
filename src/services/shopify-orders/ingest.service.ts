@@ -21,7 +21,8 @@ import { mapShopifyOrder, MappedOrder, ParkReason } from './mapping';
 import { park, ORDER_TOPICS } from './parking';
 
 export type IngestOutcome =
-  | { status: 'APPLIED'; salesOrderId: string; orderNumber: string }
+  /** created: placed just now, rather than an order already here being brought up to date. */
+  | { status: 'APPLIED'; salesOrderId: string; orderNumber: string; created?: boolean }
   | { status: 'STALE' }
   | { status: 'PARKED'; reason: ParkReason; detail: string };
 
@@ -300,7 +301,7 @@ export class ShopifyOrderIngestService {
     await this.settleStatus(clientId, created.id, order);
 
     console.log(`[Shopify] order ${shopifyOrderId} ingested as ${orderNumber} (${order.status})`);
-    return { status: 'APPLIED', salesOrderId: created.id, orderNumber };
+    return { status: 'APPLIED', salesOrderId: created.id, orderNumber, created: true };
   }
 
   private async createOrder(clientId: string, shopDomain: string, orderNumber: string, customerId: string, order: MappedOrder) {

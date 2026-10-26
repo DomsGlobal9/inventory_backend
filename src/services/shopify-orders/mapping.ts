@@ -252,7 +252,15 @@ export function mapShopifyOrder(payload: any, ctx: MappingContext): MappingResul
   const discountMinor = lines.reduce((s, l) => s + l.lineDiscountMinor + l.allocatedDiscountMinor, 0);
   const taxMinor = toMinor(payload.total_tax);
   const shippingMinor = shippingOf(payload);
-  const totalMinor = subtotalMinor - discountMinor + taxMinor + shippingMinor;
+  /*
+   * Tax is added only when Shopify's prices were WITHOUT it. A store set to "prices include tax"
+   * (the usual way in India) already has the GST inside each price: Shopify's own order says
+   * "Taxes 346.79 -- Included, Total 4,200". Adding it again made the first real Shopify order
+   * (26 Oct, #1001) 4,546.79 here for a sale that was paid 4,200. The tax is still recorded as
+   * taxAmount; it is just not counted twice.
+   */
+  const taxesIncluded = payload.taxes_included === true;
+  const totalMinor = subtotalMinor - discountMinor + (taxesIncluded ? 0 : taxMinor) + shippingMinor;
   const shopifyTotalMinor = toMinor(payload.total_price);
 
   /*

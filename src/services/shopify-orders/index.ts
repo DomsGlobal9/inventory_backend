@@ -32,3 +32,4 @@ export { shopifyFulfilmentService } from './fulfilment.service';
 export { shopifyRefundService } from './refund.service';
 export { shopifyInboxService, REASON_GUIDANCE } from './inbox.service';
 export type { ReplayResult } from './inbox.service';
+export { tellShopOfShopifyOrder, tellShopOrderWaiting } from './notices';

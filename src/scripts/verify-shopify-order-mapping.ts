@@ -199,6 +199,21 @@ function main() {
   check('shipping is read from total_shipping_price_set', shippedNew.shippingMinor === 12000);
   check('  ...and the total includes both', shippedNew.totalMinor === 1266000);
 
+  // The first real Shopify order (26 Oct, #1001): prices include GST, as Indian stores set it.
+  // Shopify: "Taxes 346.79 Included, Total 4,200". It used to land here as 4,546.79.
+  const inclusive = ok(mapShopifyOrder(order({
+    taxes_included: true, total_tax: '346.79', total_price: '4200.00',
+    line_items: [{ variant_id: 9001, sku: 'SAREE-RED-FS', quantity: 1, price: '4200.00', discount_allocations: [] }]
+  }), ctx));
+  check('prices that INCLUDE tax: the total is what was paid, 4,200, tax not added twice',
+    inclusive.totalMinor === 420000, String(inclusive.totalMinor));
+  check('  ...the included tax is still recorded', inclusive.taxMinor === 34679, String(inclusive.taxMinor));
+  check('  ...and it agrees with Shopify, so no mismatch warning', !inclusive.reconcileWarning, String(inclusive.reconcileWarning));
+  const exclusive = ok(mapShopifyOrder(order({
+    taxes_included: false, total_tax: '540.00', total_price: '12540.00'
+  }), ctx));
+  check('prices WITHOUT tax: the tax is added on top, as before', exclusive.totalMinor === 1254000 && !exclusive.reconcileWarning, String(exclusive.totalMinor));
+
   const shippedOld = ok(mapShopifyOrder(order({
     shipping_lines: [{ price: '80.00' }, { price: '40.00' }],
     total_price: '12120.00'
