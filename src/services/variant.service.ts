@@ -460,15 +460,50 @@ export class VariantService {
 
   async getVariants(productId: string, clientId: string) {
     const variants = await variantRepository.findManyByProduct(productId, clientId);
-    
+
+    /*
+     * Which orders are holding pieces of these variants, and how many.
+     *
+     * "Total stock" is what is on the shelf; part of it can already be promised to a customer --
+     * a Shopify order, a kept order -- and is no longer free to sell. Shopify shows the free
+     * figure, the shelf the total, and the two looked like a sync bug (26 Oct: Hot Pink 3 here,
+     * 2 on Shopify, the third held for SO-000074). So the list says both, and names the orders.
+     */
+    const holds = variants.length === 0 ? [] : await prisma.inventoryReservation.findMany({
+      where: { clientId, variantId: { in: variants.map((v: any) => v.id) }, status: 'ACTIVE' },
+      select: {
+        variantId: true, locationId: true, reservedQty: true, dispatchedQty: true,
+        salesOrderItem: { select: { salesOrder: { select: { id: true, orderNumber: true, customerName: true, sourceSystem: true, channel: true, status: true } } } }
+      }
+    });
+    const heldForOf = (variantId: string) => {
+      const byOrder = new Map<string, any>();
+      for (const h of holds) {
+        if (h.variantId !== variantId) continue;
+        const qty = Math.max(0, h.reservedQty - h.dispatchedQty);
+        const so = h.salesOrderItem?.salesOrder;
+        if (!so || qty === 0) continue;
+        const row = byOrder.get(so.id) ?? {
+          orderId: so.id, orderNumber: so.orderNumber, customer: so.customerName ?? null,
+          source: so.sourceSystem ?? so.channel ?? null, quantity: 0
+        };
+        row.quantity += qty;
+        byOrder.set(so.id, row);
+      }
+      return [...byOrder.values()];
+    };
+
     return variants.map((v: any) => {
       const stocks = v.stocks || [];
       const totalQuantity = stocks.reduce((acc: number, s: any) => acc + s.quantity, 0);
-      
+      const totalReserved = stocks.reduce((acc: number, s: any) => acc + (s.reservedQty || 0), 0);
+
       const stockByLocation = stocks.map((s: any) => ({
         locationId: s.locationId,
         name: s.location?.name || s.locationId,
-        quantity: s.quantity
+        quantity: s.quantity,
+        reserved: s.reservedQty || 0,
+        available: Math.max(0, s.quantity - (s.reservedQty || 0))
       }));
       
       const locationSettings = (v.locationProfiles || []).map((p: any) => ({
@@ -505,6 +540,9 @@ export class VariantService {
         tryOnScanUrl,
         imageCount: _count?.images ?? 0,
         totalQuantity,
+        totalReserved,
+        totalAvailable: Math.max(0, totalQuantity - totalReserved),
+        heldFor: heldForOf(v.id),
         stockByLocation,
         locationSettings
       };
