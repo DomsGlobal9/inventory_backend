@@ -180,7 +180,7 @@ console.log('\nD. PUT AWAY AND MOVE (SHELF_MOVE)');
 }
 {
   const e = throws(() => run({ reason: 'SHELF_MOVE', officialBefore: 7, delta: 0, shelves: [shelf('a', 4)], scanned: [{ spotId: 'a', quantity: -1 }, { spotId: 'off', quantity: 1 }] }));
-  check('moving onto a switched-off shelf: refused (400)', e?.status === 400 && /switched off/.test(e?.message ?? ''), JSON.stringify(e));
+  check('moving onto a switched-off shelf: refused (400)', e?.status === 400 && /not in use/.test(e?.message ?? ''), JSON.stringify(e));
 }
 {
   const e = throws(() => run({ reason: 'SHELF_MOVE', officialBefore: 7, delta: 0, shelves: [shelf('a', 4)], scanned: [{ spotId: 'a', quantity: -1 }, { spotId: 'cup', quantity: 1 }] }));

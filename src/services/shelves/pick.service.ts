@@ -15,6 +15,7 @@ const variantSelect = {
   product: {
     select: {
       title: true,
+      isService: true,
       images: { where: { variantId: null }, orderBy: [{ isPrimary: 'desc' as const }, { orderIndex: 'asc' as const }], take: 1, select: { url: true } }
     }
   },
@@ -86,8 +87,9 @@ export const pickService = {
       if (o.status !== 'CONFIRMED' && o.status !== 'PARTIALLY_DISPATCHED') throw badRequest(`${o.orderNumber} is ${o.status.toLowerCase().replace('_', ' ')}, so there is nothing to pick for it.`);
     }
 
+    // Services (stitching, fall & pico) are never on a shelf: every one showed as "short" on every saree order.
     const lines = orders.flatMap(o => o.items
-      .filter(i => i.quantity > i.fulfilledQty)
+      .filter(i => i.quantity > i.fulfilledQty && !(i.variant as any)?.product?.isService)
       .map(i => ({ orderId: o.id, orderNumber: o.orderNumber, salesOrderItemId: i.id, variantId: i.variantId, quantity: i.quantity - i.fulfilledQty, item: describe(i.variant) })));
     const variantIds = [...new Set(lines.map(l => l.variantId))];
 
@@ -165,7 +167,16 @@ export const pickService = {
     if (!variant) throw notFound('That item was not found.');
     const recorded = (await prisma.spotStock.findUnique({ where: { spotId_variantId: { spotId: spot.id, variantId: variant.id } } }))?.quantity ?? 0;
     const name = `${variant.product.title} (${variant.sku})`;
+    // More missing than the shelf ever held is a slip of the finger ("…which should hold 0"), not a fact (26 Oct review).
+    if (recorded === 0) throw badRequest(`${spot.address} has no ${name} recorded on it, so nothing can be missing from it. Count the shelf if something looks wrong.`);
+    if (missing > recorded) throw badRequest(`${spot.address} should hold ${recorded} of ${name}. Say at most ${recorded} missing, or count the shelf.`);
     const message = `${missing} ${missing === 1 ? 'piece' : 'pieces'} of ${name} could not be found on ${spot.address}, which should hold ${recorded}. Count that shelf.`;
+    // The same report pressed twice (a double tap, a retry on a slow line) is one problem, not two.
+    const twin = await prisma.shelfIssue.findFirst({
+      where: { clientId, spotId: spot.id, variantId: variant.id, kind: 'NOT_FOUND_ON_SHELF', resolvedAt: null, message, createdAt: { gte: new Date(Date.now() - 10 * 60_000) } },
+      select: { id: true }
+    });
+    if (twin) return { issueId: twin.id, message, repeat: true };
     const issue = await prisma.$transaction(async tx => {
       const created = await tx.shelfIssue.create({
         data: { clientId, locationId: spot.locationId, variantId: variant.id, spotId: spot.id, address: spot.address, kind: 'NOT_FOUND_ON_SHELF', quantity: missing, message }

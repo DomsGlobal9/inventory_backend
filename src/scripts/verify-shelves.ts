@@ -178,7 +178,7 @@ async function main() {
     const r03 = await prisma.storageSpot.findFirstOrThrow({ where: { clientId: SHOP, locationId: godown.id, address: 'BACK-R03' } });
     await prisma.storageSpot.updateMany({ where: { id: { in: [r03.id] } }, data: { active: false } });
     const withOff = await bulk({ levels: [{ kind: 'AREA', range: { codes: ['BACK'] } }, { kind: 'RACK', range: { from: 1, to: 6, prefix: 'R', pad: 2 } }, { kind: 'SHELF', range: { from: 1, to: 6 }, perParent: [6, 4, 6, 5, 3, 2] }], isShopFloor: false });
-    check('a switched-off rack is left out and said so (P1)', withOff.data.data.conflictCount >= 1 && withOff.data.data.conflicts.some((c: any) => c.address === 'BACK-R03' && /switched off/.test(c.reason)), brief(withOff));
+    check('a switched-off rack is left out and said so (P1)', withOff.data.data.conflictCount >= 1 && withOff.data.data.conflicts.some((c: any) => c.address === 'BACK-R03' && /not in use/.test(c.reason)), brief(withOff));
     check('  ...no new shelf is made inside it: the 6 asked for are skipped, and it keeps the 4 it had', withOff.data.data.skipped === 6 && !withOff.data.data.addresses.some((a: string) => a.startsWith('BACK-R03-')) && (await prisma.storageSpot.count({ where: { clientId: SHOP, locationId: godown.id, address: { startsWith: 'BACK-R03-' } } })) === 4, brief(withOff));
     check('  ...and the new rack R06 with its 2 shelves is still created (P3)', withOff.data.data.create === 3 && !!(await prisma.storageSpot.findFirst({ where: { clientId: SHOP, locationId: godown.id, address: 'BACK-R06-2' } })), brief(withOff));
     check('  ...the switched-off rack is still switched off afterwards (nothing was changed)', (await prisma.storageSpot.findUniqueOrThrow({ where: { id: r03.id } })).active === false);

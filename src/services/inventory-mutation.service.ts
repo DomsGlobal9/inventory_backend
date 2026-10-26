@@ -92,7 +92,8 @@ export class InventoryMutationService {
       // them was written to the Platform Console's Errors page. That page is meant for
       // crashes; routine rejections were burying the real ones.
       if (!variant || variant.clientId !== clientId) {
-        throw Object.assign(new Error(`Variant ${variantId} not found.`), { statusCode: 404 });
+        // In words, never the id: the shelf screens showed "Variant 3f2a…-uuid not found." to a worker (26 Oct review).
+        throw Object.assign(new Error('That item was not found in this shop. It may have been deleted; search for it again.'), { statusCode: 404 });
       }
 
       // Guard against a locationId belonging to a different tenant being used here —

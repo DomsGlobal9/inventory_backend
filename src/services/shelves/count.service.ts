@@ -26,7 +26,7 @@ export const shelfCountService = {
       select: { id: true, address: true, locationId: true, active: true, _count: { select: { children: true } } }
     });
     if (!spot) throw notFound('That shelf was not found.');
-    if (!spot.active) throw badRequest(`${spot.address} is switched off. Switch it on in Racks & shelves first.`);
+    if (!spot.active) throw badRequest(`${spot.address} is not in use. Press Use again on it in Set up racks first.`);
     if (spot._count.children > 0) throw badRequest(`${spot.address} has shelves inside it. Count those instead.`);
 
     if (!Array.isArray(body.counts)) throw badRequest('Send what was counted.');
@@ -47,6 +47,11 @@ export const shelfCountService = {
     if (complete) {
       for (const row of onShelf) if (!seen.has(row.variantId)) lines.push({ variantId: row.variantId, counted: 0 });
     }
+    /*
+     * "I counted the whole shelf" on a shelf with nothing recorded and nothing found: the empty shelf is
+     * confirmed. Refusing it ("Nothing was counted.") left a worker no way to say "I looked: it is empty".
+     */
+    if (lines.length === 0 && complete) return { address: spot.address, counted: 0, matched: 0, issues: 0, failed: 0, results: [], emptyConfirmed: true };
     if (lines.length === 0) throw badRequest('Nothing was counted.');
 
     const variants = await prisma.productVariant.findMany({
@@ -71,50 +76,60 @@ export const shelfCountService = {
     for (const line of lines) {
       const name = nameOf.get(line.variantId)!;
       try {
-        const recorded = (await prisma.spotStock.findUnique({ where: { spotId_variantId: { spotId: spot.id, variantId: line.variantId } } }))?.quantity ?? 0;
-        const diff = line.counted - recorded;
-        if (diff === 0) { results.push({ variantId: line.variantId, recorded, counted: line.counted, onShelfNow: recorded, issue: null }); continue; }
+        /*
+         * One transaction per line, holding the item's lock (the same FOR UPDATE every stock movement
+         * takes): the shelf's figure is read INSIDE it, so two counts of one shelf at once apply once --
+         * the second sees the first's result and finds nothing to change. Read outside, both applied the
+         * difference and a shelf of 5 counted as 3 ended at 1, with two problems (26 Oct review). The
+         * problem and its alert are saved in the same transaction, never "could not record" for a count
+         * that did change the shelf.
+         */
+        const row = await prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT id FROM inventory_product_variants WHERE id = ${line.variantId} FOR UPDATE`;
+          const recorded = (await tx.spotStock.findUnique({ where: { spotId_variantId: { spotId: spot.id, variantId: line.variantId } } }))?.quantity ?? 0;
+          const diff = line.counted - recorded;
+          if (diff === 0) return { variantId: line.variantId, recorded, counted: line.counted, onShelfNow: recorded, issue: null };
 
-        let moved = diff;
-        let issue: { kind: 'NOT_FOUND_ON_SHELF' | 'COUNT_BELOW_SHELVES'; quantity: number; message: string } | null = null;
-        if (diff > 0) {
-          const [stock, shelved] = await Promise.all([
-            prisma.inventoryStock.findUnique({ where: { variantId_locationId: { variantId: line.variantId, locationId: spot.locationId } } }),
-            prisma.spotStock.aggregate({ where: { variantId: line.variantId, locationId: spot.locationId }, _sum: { quantity: true } })
-          ]);
-          const free = Math.max(0, (stock?.quantity ?? 0) - (shelved._sum.quantity ?? 0));
-          moved = Math.min(diff, free);
-          if (moved < diff) {
-            const extra = diff - moved;
+          let moved = diff;
+          let issue: { kind: 'NOT_FOUND_ON_SHELF' | 'COUNT_BELOW_SHELVES'; quantity: number; message: string } | null = null;
+          if (diff > 0) {
+            const [stock, shelved] = await Promise.all([
+              tx.inventoryStock.findUnique({ where: { variantId_locationId: { variantId: line.variantId, locationId: spot.locationId } } }),
+              tx.spotStock.aggregate({ where: { variantId: line.variantId, locationId: spot.locationId }, _sum: { quantity: true } })
+            ]);
+            const free = Math.max(0, (stock?.quantity ?? 0) - (shelved._sum.quantity ?? 0));
+            moved = Math.min(diff, free);
+            if (moved < diff) {
+              const extra = diff - moved;
+              issue = {
+                kind: 'COUNT_BELOW_SHELVES', quantity: extra,
+                message: `A count of ${spot.address} found ${extra} more ${extra === 1 ? 'piece' : 'pieces'} of ${name} than the stock records allow. ` +
+                  'Correct the stock for this location, then count the shelf again.'
+              };
+            }
+          } else {
             issue = {
-              kind: 'COUNT_BELOW_SHELVES', quantity: extra,
-              message: `A count of ${spot.address} found ${extra} more ${extra === 1 ? 'piece' : 'pieces'} of ${name} than the stock records allow. ` +
-                'Correct the stock for this location, then count the shelf again.'
+              kind: 'NOT_FOUND_ON_SHELF', quantity: -diff,
+              message: `A count of ${spot.address} found ${-diff} fewer ${-diff === 1 ? 'piece' : 'pieces'} of ${name} than recorded. ` +
+                `${-diff === 1 ? 'It is' : 'They are'} now counted as not on a shelf. Find ${-diff === 1 ? 'it' : 'them'}, or correct the stock.`
             };
           }
-        } else {
-          issue = {
-            kind: 'NOT_FOUND_ON_SHELF', quantity: -diff,
-            message: `A count of ${spot.address} found ${-diff} fewer ${-diff === 1 ? 'piece' : 'pieces'} of ${name} than recorded. ` +
-              `${-diff === 1 ? 'It is' : 'They are'} now counted as not shelved -- find ${-diff === 1 ? 'it' : 'them'} or correct the stock.`
-          };
-        }
 
-        if (moved !== 0) {
-          await inventoryMutationService.applyMovement({
-            clientId, variantId: line.variantId, locationId: spot.locationId, movementType: 'ADJUSTMENT', reason: 'SHELF_MOVE',
-            quantityDelta: 0, spots: [{ spotId: spot.id, quantity: moved }], referenceType: 'SHELF_COUNT', referenceId: spot.id,
-            notes: `Shelf count of ${spot.address}: ${line.counted} counted, ${recorded} recorded`, createdBy: userId ?? undefined
-          });
-        }
-        if (issue) {
-          await prisma.$transaction([
-            prisma.shelfIssue.create({ data: { clientId, locationId: spot.locationId, variantId: line.variantId, spotId: spot.id, address: spot.address, kind: issue.kind, quantity: issue.quantity, message: issue.message } }),
-            prisma.inventoryAlert.create({ data: { clientId, type: 'STOCK_DISCREPANCY', severity: 'WARNING', title: 'Shelves need a look', message: issue.message, variantId: line.variantId, locationId: spot.locationId } })
-          ]);
-        }
-        const now = (await prisma.spotStock.findUnique({ where: { spotId_variantId: { spotId: spot.id, variantId: line.variantId } } }))?.quantity ?? 0;
-        results.push({ variantId: line.variantId, recorded, counted: line.counted, onShelfNow: now, issue: issue?.message ?? null });
+          if (moved !== 0) {
+            await inventoryMutationService.applyMovement({
+              clientId, variantId: line.variantId, locationId: spot.locationId, movementType: 'ADJUSTMENT', reason: 'SHELF_MOVE',
+              quantityDelta: 0, spots: [{ spotId: spot.id, quantity: moved }], referenceType: 'SHELF_COUNT', referenceId: spot.id,
+              notes: `Shelf count of ${spot.address}: ${line.counted} counted, ${recorded} recorded`, createdBy: userId ?? undefined, tx
+            } as any);
+          }
+          if (issue) {
+            await tx.shelfIssue.create({ data: { clientId, locationId: spot.locationId, variantId: line.variantId, spotId: spot.id, address: spot.address, kind: issue.kind, quantity: issue.quantity, message: issue.message } });
+            await tx.inventoryAlert.create({ data: { clientId, type: 'STOCK_DISCREPANCY', severity: 'WARNING', title: 'Shelves need a look', message: issue.message, variantId: line.variantId, locationId: spot.locationId } });
+          }
+          const now = (await tx.spotStock.findUnique({ where: { spotId_variantId: { spotId: spot.id, variantId: line.variantId } } }))?.quantity ?? 0;
+          return { variantId: line.variantId, recorded, counted: line.counted, onShelfNow: now, issue: issue?.message ?? null };
+        }, { timeout: 60_000, maxWait: 20_000 });
+        results.push(row);
       } catch (error: any) {
         results.push({ variantId: line.variantId, recorded: null, counted: line.counted, onShelfNow: null, issue: null, error: typeof error?.statusCode === 'number' ? error.message : 'Could not record this count.' });
       }

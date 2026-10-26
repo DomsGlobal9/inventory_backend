@@ -39,7 +39,7 @@ async function locationOf(clientId: string, locationId: string, forWriting = fal
   if (!location) throw notFound('That location was not found.');
   // Reading is always fine; working in a place the shop has closed is not.
   if (forWriting && !location.active) {
-    throw badRequest(`${location.name} is switched off. Switch it on in Settings before filling its shelves.`);
+    throw badRequest(`${location.name} is switched off in Settings, Stock locations. Switch it on there before recording its shelves.`);
   }
   return { id: location.id, name: location.name };
 }
@@ -138,7 +138,7 @@ export const fillService = {
     });
     if (!spot) throw notFound('That shelf was not found.');
     if (spot._count.children > 0) throw badRequest(`${spot.address} has shelves or boxes inside it. Stand at one of those.`);
-    if (!spot.active) throw badRequest(`${spot.address} is switched off. Switch it on in Racks & shelves first.`);
+    if (!spot.active) throw badRequest(`${spot.address} is not in use. Press Use again on it in Set up racks first.`);
     await locationOf(clientId, spot.locationId, true);
 
     const held = spot.fillState;
@@ -208,7 +208,7 @@ export const fillService = {
     });
     if (!spot) throw notFound('That shelf was not found.');
     if (spot._count.children > 0) throw badRequest(`${spot.address} has shelves or boxes inside it. Stand at one of those.`);
-    if (!spot.active) throw badRequest(`${spot.address} is switched off. Switch it on in Racks & shelves first.`);
+    if (!spot.active) throw badRequest(`${spot.address} is not in use. Press Use again on it in Set up racks first.`);
     await locationOf(clientId, spot.locationId, true);
     if (input.lines.length > MAX_LINES) throw badRequest(`That is more than ${MAX_LINES} items on one shelf. Save what you have, then carry on.`);
 
@@ -277,10 +277,12 @@ export const fillService = {
     }, TX).catch(async (error: any) => {
       // The same save sent twice at the same moment: the second one loses the race to write the key.
       // It is the same save, so it gets the same answer instead of a failure.
-      if (error?.code === 'P2002') {
-        const done = await prisma.shelfFillSave.findUnique({ where: { clientId_saveKey: { clientId, saveKey: input.saveKey } } });
-        if (done && done.spotId === spotId) return { ...(done.result as object), repeat: true };
-      }
+      // Also when the twin failed for another reason first: it waited on the item lock while the first
+      // used up the loose pieces, so it hit a line problem before the key -- and told the worker "Nothing
+      // was saved" about a shelf that WAS saved (26 Oct review). Whatever went wrong, a finished save with
+      // this key is the answer.
+      const done = await prisma.shelfFillSave.findUnique({ where: { clientId_saveKey: { clientId, saveKey: input.saveKey } } });
+      if (done && done.spotId === spotId) return { ...(done.result as object), repeat: true };
       // Not an error to the person: the shelf simply is not saved yet, and the lines that need
       // changing say so beside themselves. The phone keeps everything they typed.
       if (error instanceof ShelfLinesProblem) {
@@ -307,8 +309,13 @@ export const fillService = {
 
   /** Not now: it stays on the skipped list, and the walk comes back to it at the end. */
   async skipShelf(clientId: string, userId: string | null, spotId: string) {
-    const spot = await prisma.storageSpot.findFirst({ where: { id: spotId, clientId }, select: { id: true, locationId: true, address: true } });
+    const spot = await prisma.storageSpot.findFirst({ where: { id: spotId, clientId }, select: { id: true, locationId: true, address: true, active: true, _count: { select: { children: true } } } });
     if (!spot) throw notFound('That shelf was not found.');
+    // A finished shelf stays finished (Skip turned it back into "skipped"), and only a real, in-use shelf can be skipped (26 Oct review).
+    if (spot._count.children > 0) throw badRequest(`${spot.address} has shelves inside it. Skip one of those instead.`);
+    if (!spot.active) throw badRequest(`${spot.address} is not in use, so it is not on the walk.`);
+    const current = await prisma.spotFillState.findUnique({ where: { spotId }, select: { state: true } });
+    if (current?.state === 'COMPLETED') return { spotId, address: spot.address, state: current.state, alreadyDone: true };
     const state = await prisma.spotFillState.upsert({
       where: { spotId },
       create: { clientId, locationId: spot.locationId, spotId, state: 'SKIPPED', finishedBy: userId, finishedAt: new Date() },
@@ -374,7 +381,7 @@ export const fillService = {
         `You started putting ${row.location.name}'s stock onto shelves on ${row.startedAt?.toDateString()}, and it is not finished yet.\n\n` +
         (status ? `${status.shelves.completed} of ${status.shelves.total} shelves are done${left > 0 ? `, ${left} to go` : ''}, and ${status.piecesWaiting} ${status.piecesWaiting === 1 ? 'piece is' : 'pieces are'} still on no shelf.\n\n` : '') +
         'Nothing is wrong. While it is unfinished, a till sale takes a piece that is on no shelf first, so shelves your staff have counted stay right. ' +
-        'When you are done, open Shelves > Fill shelves and press Finished.';
+        'When you are done, open Shelves > Record shelves and press Finished.';
       for (const owner of owners) {
         const r = await fillMail.send({
           to: owner.email,

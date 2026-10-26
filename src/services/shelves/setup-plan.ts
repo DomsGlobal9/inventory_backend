@@ -192,7 +192,7 @@ export function planSetup(spec: SetupSpec, snapshot: Snapshot): SetupPlan {
     // room, because a till sale taking from it first is the answer that surprises a shop.
     isShopFloor: parent ? parent.isShopFloor : spec.isShopFloor ?? false,
     blocked: parent && !parent.active
-      ? { outcome: 'conflict', reason: `${parent.address} is switched off. Switch it on first, or choose another place.` }
+      ? { outcome: 'conflict', reason: `${parent.address} is not in use. Press Use again on it first, or choose another place.` }
       : parent?.hasStock
         ? { outcome: 'conflict', reason: `${parent.address} holds stock. Move it off first, then add shelves or boxes inside it.` }
         : undefined
@@ -231,7 +231,7 @@ export function planSetup(spec: SetupSpec, snapshot: Snapshot): SetupPlan {
             notes.push(`kept where it is, in the ${found.isShopFloor ? 'shop floor' : 'back room'}`);
           }
           const blocked = !found.active
-            ? { outcome: 'conflict' as const, reason: `${address} is switched off. Switch it on in Racks & shelves, or leave it out.` }
+            ? { outcome: 'conflict' as const, reason: `${address} is not in use. Press Use again on it in Set up racks, or leave it out.` }
             : found.hasStock && i < levels.length - 1
               ? { outcome: 'conflict' as const, reason: `${address} holds stock. Move it off first, then add shelves or boxes inside it.` }
               : undefined;

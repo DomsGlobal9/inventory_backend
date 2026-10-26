@@ -339,7 +339,7 @@ const blueBefore = await onShelf(s12.id, blue.id), greenBefore = await onShelf(s
       // A shelf switched off, or one with shelves inside it.
       await prisma.storageSpot.updateMany({ where: { id: s22.id }, data: { active: false } });
       const off = await ravi.http.post(`/shelves/spots/${s22.id}/fill/open`, {});
-      check('a switched-off shelf cannot be filled, and says why', off.status === 400 && /switched off/.test(off.data.message), brief(off));
+      check('a switched-off shelf cannot be filled, and says why', off.status === 400 && /not in use/.test(off.data.message), brief(off));
       await prisma.storageSpot.updateMany({ where: { id: s22.id }, data: { active: true } });
       const rack = await prisma.storageSpot.findFirstOrThrow({ where: { clientId: SHOP, address: 'FLOOR-R1' } });
       const onRack = await ravi.http.post(`/shelves/spots/${rack.id}/fill/open`, {});

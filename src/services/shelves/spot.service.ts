@@ -136,13 +136,23 @@ export const spotService = {
     const sum = (n: Node): number => (n.branchPieces = n.pieces + n.children.reduce((t, c) => t + sum(c), 0));
     roots.forEach(sum);
 
-    const official = await prisma.inventoryStock.aggregate({ where: { clientId, locationId }, _sum: { quantity: true } });
+    /*
+     * Not on a shelf is worked out item by item, each at zero or more. Summed over the whole location, one
+     * item oversold to -3 by the till hid 3 pieces of every other item waiting to be put away (26 Oct review).
+     */
+    const [official, rows, shelvedRows] = await Promise.all([
+      prisma.inventoryStock.aggregate({ where: { clientId, locationId }, _sum: { quantity: true } }),
+      prisma.inventoryStock.findMany({ where: { clientId, locationId }, select: { variantId: true, quantity: true } }),
+      prisma.spotStock.groupBy({ by: ['variantId'], where: { clientId, locationId }, _sum: { quantity: true } })
+    ]);
+    const shelvedOf = new Map(shelvedRows.map(r => [r.variantId, r._sum.quantity ?? 0]));
     const shelved = stock.reduce((t, s) => t + (s._sum.quantity ?? 0), 0);
+    const notShelved = rows.reduce((t, r) => t + Math.max(0, r.quantity - (shelvedOf.get(r.variantId) ?? 0)), 0);
     return {
       location,
       spots: roots,
       count: spots.length,
-      pieces: { total: official._sum.quantity ?? 0, onShelves: shelved, notShelved: Math.max(0, (official._sum.quantity ?? 0) - shelved) }
+      pieces: { total: official._sum.quantity ?? 0, onShelves: shelved, notShelved }
     };
   },
 
@@ -284,7 +294,7 @@ export const spotService = {
         if (input.active === true && !spot.active) {
           if (spot.parentId) {
             const parent = await tx.storageSpot.findUnique({ where: { id: spot.parentId }, select: { active: true, address: true } });
-            if (parent && !parent.active) throw badRequest(`${parent.address} is switched off. Switch that on first.`);
+            if (parent && !parent.active) throw badRequest(`${parent.address} is not in use. Press Use again on it first.`);
           }
           // Switching a rack off switched everything inside it off, so switching it on brings the
           // same shelves back. Otherwise the shelves stay hidden and unusable, and the shop has to

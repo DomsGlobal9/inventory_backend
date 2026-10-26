@@ -9,12 +9,15 @@ import { z } from 'zod';
 const KINDS = ['AREA', 'RACK', 'CUPBOARD', 'SHELF', 'BOX', 'STACK', 'BUNDLE', 'RAIL', 'RAIL_SECTION', 'COUNTER', 'DRAWER', 'DISPLAY', 'TRUNK', 'OTHER'] as const;
 
 const kind = z.enum(KINDS, { errorMap: () => ({ message: 'Choose what this is: area, rack, cupboard, shelf, box and so on.' }) });
-const id = (what: string) => z.string({ required_error: `${what} is needed.` }).min(1, `${what} is needed.`).max(64);
-const code = z.union([z.string(), z.number()]);
+// Every rule says its own sentence: the defaults ("Expected string, received number", "String must contain at most
+// 200 character(s)") reached shelf workers word for word (26 Oct review).
+const id = (what: string) => z.string({ required_error: `${what} is needed.`, invalid_type_error: `${what} was not sent correctly. Choose it again.` })
+  .min(1, `${what} is needed.`).max(64, `${what} was not sent correctly. Choose it again.`);
+const code = z.union([z.string(), z.number()], { errorMap: () => ({ message: 'A code is letters or numbers, like R1 or 3.' }) });
 const name = z.string().trim().max(80, 'A name can be at most 80 characters.').optional().nullable();
 const colour = z.string().trim().max(24, 'A colour can be at most 24 characters.').optional().nullable();
-const capacity = z.number().int('Capacity is a whole number of pieces.').min(1, 'Capacity is at least 1 piece.').max(100000).optional().nullable();
-const walkOrder = z.number().int('Walking order is a whole number.').min(0).max(1_000_000);
+const capacity = z.number({ invalid_type_error: 'Capacity is a number of pieces.' }).int('Capacity is a whole number of pieces.').min(1, 'Capacity is at least 1 piece.').max(100000, 'Capacity can be at most 100000 pieces.').optional().nullable();
+const walkOrder = z.number({ invalid_type_error: 'Walking order is a number.' }).int('Walking order is a whole number.').min(0, 'Walking order cannot be below 0.').max(1_000_000, 'That walking order number is too big.');
 const pieces = z.number({ invalid_type_error: 'Quantity must be a number.' })
   .int('Quantity must be a whole number of pieces.').min(1, 'Quantity must be at least 1.').max(100000, 'That is too many pieces at once.');
 
@@ -34,7 +37,7 @@ const range = z.union([
   z.object({ codes: z.array(code).min(1).max(2000) }).strict(),
   z.object({ from: z.number().int(), to: z.number().int(), pad: z.number().int().min(0).max(4).optional(), prefix: z.string().max(10).optional() }).strict(),
   z.object({ letterFrom: z.string().length(1), letterTo: z.string().length(1), prefix: z.string().max(10).optional() }).strict()
-]);
+], { errorMap: () => ({ message: 'Each line needs its numbers (from and to, whole numbers), its letters (one letter each), or its own names. The letters before a number can be at most 10.' }) });
 
 export const bulkSpotsSchema = z.object({
   parentId: id('The parent').optional().nullable(),
@@ -69,7 +72,7 @@ export const moveSchema = z.object({
   /** Leave out to take pieces off a shelf, back to Not shelved. */
   toSpotId: id('The shelf it goes to').optional().nullable(),
   quantity: pieces,
-  note: z.string().trim().max(200).optional().nullable()
+  note: z.string({ invalid_type_error: 'The note should be words.' }).trim().max(200, 'A note can be at most 200 characters.').optional().nullable()
 }).strict()
   .refine(v => v.fromSpotId || v.toSpotId, { message: 'Say which shelf the pieces come from or go to.' })
   .refine(v => !v.fromSpotId || v.fromSpotId !== v.toSpotId, { message: 'The pieces are already on that shelf.' });
@@ -98,7 +101,7 @@ export const fillShelfSchema = z.object({
     quantity: pieces
   }).strict()).min(1, 'Add at least one item, or use Skip shelf.').max(200, 'That is a lot for one shelf. Save these, then carry on.'),
   /** Made on the phone, once per shelf visit: a retry after the network drops is not a second save. */
-  saveKey: z.string().min(8, 'The save key is missing.').max(64)
+  saveKey: z.string({ required_error: 'Open the shelf again and save once more.', invalid_type_error: 'Open the shelf again and save once more.' }).min(8, 'Open the shelf again and save once more.').max(64, 'Open the shelf again and save once more.')
 }).strict();
 
 export const finishFillSchema = z.object({

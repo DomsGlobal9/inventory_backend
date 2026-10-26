@@ -146,7 +146,7 @@ export async function applyShelfLegs(tx: Prisma.TransactionClient, input: ShelfL
         type: 'STOCK_DISCREPANCY',
         severity: 'WARNING',
         title: 'Shelves need a look',
-        message: issues.length === 1 ? issues[0].message : `${issues[0].message} (${issues.length - 1} more in Shelf issues.)`,
+        message: issues.length === 1 ? issues[0].message : `${issues[0].message} (${issues.length - 1} more under Shelves, Problems.)`,
         variantId: input.variantId,
         locationId: input.locationId,
         currentQuantity: input.officialAfter
@@ -159,7 +159,13 @@ export async function applyShelfLegs(tx: Prisma.TransactionClient, input: ShelfL
     where: { variantId: input.variantId, locationId: input.locationId },
     _sum: { quantity: true }
   });
-  if ((shelved._sum.quantity ?? 0) > input.officialAfter) {
+  /*
+   * Against zero when the location goes below it. A till sale may oversell (allowNegative): the shelves
+   * are emptied, but 0 can never be "at or below" -1, so this refused the sale and stuck the POS queue
+   * on a bill the customer had already walked out with (26 Oct review). Shelves never hold less than 0,
+   * which is all "fits" can mean there; the database trigger already lets an empty shelf through.
+   */
+  if ((shelved._sum.quantity ?? 0) > Math.max(0, input.officialAfter)) {
     throw conflict('The shelves would hold more of this item than the location has. Nothing was saved.');
   }
 

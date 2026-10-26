@@ -87,7 +87,7 @@ export function planShelfLegs(input: PlanInput): { legs: PlannedLeg[]; issues: P
     if (reason !== 'SHELF_MOVE' && delta < 0 && quantity > 0) throw badRequest('Stock going out can only be taken off a shelf, not put onto one.');
     const current = onShelf.get(spotId)?.quantity ?? 0;
     if (quantity > 0) {
-      if (!spot.active) throw badRequest(`${spot.address} is switched off. Switch it on, or choose another shelf.`);
+      if (!spot.active) throw badRequest(`${spot.address} is not in use. Press Use again on it in Set up racks, or choose another shelf.`);
       if (spot.hasChildren) throw badRequest(`${spot.address} has shelves or boxes inside it. Choose one of those.`);
     } else if (-quantity > current) {
       throw conflict(current === 0
@@ -114,6 +114,11 @@ export function planShelfLegs(input: PlanInput): { legs: PlannedLeg[]; issues: P
   if (delta >= 0) {
     const shelved = total();
     if (shelved > officialAfter) {
+      // None here at all: the stock was entered at another store, or never entered. "Already on a shelf"
+      // sent people hunting the racks for pieces that were never recorded here (26 Oct review).
+      if (officialAfter <= 0) {
+        throw conflict(`The stock record has no pieces of ${itemName} here, so there is nothing to put away. Receive it or correct the stock first.`);
+      }
       const free = Math.max(0, officialAfter - (shelved - Math.max(0, namedTotal)));
       throw conflict(free === 0
         ? `Every piece of ${itemName} here is already on a shelf. Move it from its shelf instead.`
