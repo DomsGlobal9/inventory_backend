@@ -1,3 +1,4 @@
+import { markProductForShopify } from './shopify-products/dirty';
 import { imageRepository } from '../repositories/image.repository';
 import { productRepository } from '../repositories/product.repository';
 import { Prisma } from '@prisma/client';
@@ -168,10 +169,12 @@ export class ImageService {
           data: { isPrimary: false }
         });
         return tx.productImage.create({ data: imageData });
-      });
+      }).then(async (row) => { await markProductForShopify(productId); return row; });
     }
 
-    return imageRepository.create(imageData);
+    const created = await imageRepository.create(imageData);
+    await markProductForShopify(productId);
+    return created;
   }
 
   async getImages(productId: string, clientId: string) {
@@ -190,10 +193,12 @@ export class ImageService {
           data: { isPrimary: false }
         });
         return tx.productImage.update({ where: { id }, data });
-      });
+      }).then(async (row) => { if (image.productId) await markProductForShopify(image.productId); return row; });
     }
 
-    return imageRepository.update(id, data);
+    const updated = await imageRepository.update(id, data);
+    if (image.productId) await markProductForShopify(image.productId);
+    return updated;
   }
 
   async deleteImage(id: string, clientId: string) {
@@ -237,6 +242,7 @@ export class ImageService {
       }
     }
 
+    if (image.productId) await markProductForShopify(image.productId);
     return deleted;
 
   }

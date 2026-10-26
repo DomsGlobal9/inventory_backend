@@ -2,6 +2,7 @@ import { Prisma, StorefrontEventType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { storefrontCatalogueService } from './storefront-catalogue.service';
 import { WEBSITES_ONLY } from '../utils/posConnection';
+import { markProductForShopify, markStockForShopify } from './shopify-products/dirty';
 
 /**
  * Raising an event, and fanning it out to every storefront that should hear it.
@@ -33,6 +34,9 @@ export class StorefrontEventService {
    * because for them different numbers ARE true.
    */
   async stockUpdated(clientId: string, variantId: string, previousQuantity?: number) {
+    // Shopify is not a storefront connection (it is pushed to, not posted to), so it is told here,
+    // before the early return below for shops with no website. Costs nothing off Shopify.
+    await markStockForShopify(variantId);
     await this.emitPerConnection(clientId, async (connection) => {
       const view = await storefrontCatalogueService.variantStockForScope(
         { clientId, locationIds: connection.locationIds }, variantId
@@ -61,6 +65,7 @@ export class StorefrontEventService {
     productId: string,
     eventType: StorefrontEventType
   ) {
+    await markProductForShopify(productId);
     const product = await prisma.product.findFirst({
       where: { id: productId, clientId },
       select: { productCode: true }

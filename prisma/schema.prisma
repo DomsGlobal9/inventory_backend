@@ -355,13 +355,13 @@ model StorageSpot {
   /// Printed in the QR label. Never changes, so a label survives a new address.
   labelCode   String  @map("label_code")
 
-  colour      String?
+  colour        String?
   /// Roughly how many pieces fit. A warning, never a refusal.
-  capacity    Int?
-  isTemporary Boolean @default(false) @map("is_temporary")
+  capacity      Int?
+  isTemporary   Boolean   @default(false) @map("is_temporary")
   /// When someone last counted this shelf (Shelves > Count), matched or not. Null: never counted.
   lastCountedAt DateTime? @map("last_counted_at")
-  active      Boolean @default(true)
+  active        Boolean   @default(true)
 
   createdBy String?  @map("created_by")
   createdAt DateTime @default(now()) @map("created_at")
@@ -586,36 +586,37 @@ model Product {
   brand       String?
 
   // Pricing & Status
-  basePrice   Decimal       @map("base_price") @db.Decimal(10, 2)
+  basePrice Decimal @map("base_price") @db.Decimal(10, 2)
 
   /// GST. Set by the shop, never guessed here: a saree is FABRIC (flat 5%, whatever it costs)
   /// while a stitched saree-style gown is APPAREL (5% up to Rs 2,500 a piece, 18% above). Only
   /// the shop knows which of the two its product is, and the rates changed on 22 Sep 2025.
-  hsnCode    String? @map("hsn_code")
+  hsnCode String? @map("hsn_code")
 
   /// Basis points: 500 = 5%, 1800 = 18%, 0 = exempt. NULL means "not set yet", which is not the
   /// same as zero -- a registered shop cannot issue a tax invoice for it.
-  taxRateBps Int?    @map("tax_rate_bps")
+  taxRateBps Int? @map("tax_rate_bps")
 
   /// True for stitched apparel, where the rate depends on what ONE piece sells for.
   taxSlabbed Boolean @default(false) @map("tax_slabbed")
   /// A service, e.g. fall & pico or stitching: sold by price like any item, but no stock is ever kept --
   /// applyMovement skips it, reservations touch no stock row, and the catalogues send stock as null.
-  isService Boolean @default(false) @map("is_service")
+  isService  Boolean @default(false) @map("is_service")
 
   /// Stitched apparel near the Rs 2,500 threshold must be priced EXCLUSIVE of tax: a tax-inclusive
   /// price between Rs 2,625 and Rs 2,950 has no self-consistent rate. See PLAN-gst.md section 2.
   /// Fabric -- every saree -- stays inclusive, so nothing about today's pricing changes.
-  priceIsExclusive Boolean @default(false) @map("price_is_exclusive")
-  status      ProductStatus @default(DRAFT)
-  publishedAt DateTime?     @map("published_at")
+  priceIsExclusive Boolean       @default(false) @map("price_is_exclusive")
+  status           ProductStatus @default(DRAFT)
+  publishedAt      DateTime?     @map("published_at")
 
   // Relations
-  variants ProductVariant[]
-  images   ProductImage[]
-  interests ShopInterest[]
-  shopViews ShopProductView[]
-  photoJobs PhotoJob[]
+  variants       ProductVariant[]
+  images         ProductImage[]
+  interests      ShopInterest[]
+  shopViews      ShopProductView[]
+  photoJobs      PhotoJob[]
+  shopifyMirrors ShopifyProductMirror[]
 
   // Soft Delete & Timestamps
   trashedAt      DateTime?      @map("trashed_at")
@@ -641,13 +642,13 @@ model ProductVariant {
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   // Identifiers
-  variantCode String      @map("variant_code")
+  variantCode String @map("variant_code")
   sku         String
 
   /// Overrides the product, for a style whose variants are not all the same thing -- a saree sold
   /// with a stitched blouse. Null means "use the product's".
-  hsnCode    String? @map("hsn_code")
-  taxRateBps Int?    @map("tax_rate_bps")
+  hsnCode     String?     @map("hsn_code")
+  taxRateBps  Int?        @map("tax_rate_bps")
   barcodeType BarcodeType @default(INTERNAL_CODE128) @map("barcode_type")
 
   // Attributes
@@ -695,13 +696,13 @@ model ProductVariant {
   InventoryEvent   InventoryEvent[]
   spotStocks       SpotStock[]
   shelfIssues      ShelfIssue[]
+  interests        ShopInterest[]
 
   @@unique([clientId, variantCode], name: "uq_variant_client_code")
   @@unique([clientId, sku])
   @@index([productId])
   @@index([clientId, lastMovementAt])
   @@map("inventory_product_variants")
-  interests ShopInterest[]
 }
 
 // 2.1 INVENTORY RESERVATION
@@ -1161,9 +1162,9 @@ model CustomerGroup {
   id       String @id @default(uuid())
   clientId String @map("client_id")
   /// As the shop spells it, and the spelling written onto customers.tags.
-  name String
+  name     String
   /// name in lower case: "vip" and "VIP" are one group.
-  key  String
+  key      String
 
   /// Campaigns and the points-expiry reminder skip members. Bills and the after-sale points note still go.
   noOfferMessages Boolean @default(false) @map("no_offer_messages")
@@ -1301,11 +1302,11 @@ model SalesOrder {
   createdBy   User?   @relation("SalesOrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
   /// Counter orders only: whether the goods went with the customer or are kept for them.
-  handover SalesOrderHandover?
+  handover     SalesOrderHandover?
   /// KEEP_FOR_CUSTOMER only: the collection date the cashier typed at the till.
-  promisedAt   DateTime? @map("promised_at")
+  promisedAt   DateTime?           @map("promised_at")
   /// KEEP_FOR_CUSTOMER only: when the till said the goods went out (order.handed_over). Null while kept.
-  handedOverAt DateTime? @map("handed_over_at")
+  handedOverAt DateTime?           @map("handed_over_at")
 
   // Customer Snapshot Fields
   customerName    String? @map("customer_name")
@@ -1314,9 +1315,9 @@ model SalesOrder {
   billingAddress  String? @map("billing_address") @db.Text
   /// The buyer as issued on a B2B tax invoice from the till (Rule 46), frozen at sale. Only when the
   /// bill had one: GST is optional for every shop, and a B2C bill leaves all three empty.
-  buyerName    String? @map("buyer_name")
-  buyerGstin   String? @map("buyer_gstin")
-  buyerAddress String? @map("buyer_address") @db.Text
+  buyerName       String? @map("buyer_name")
+  buyerGstin      String? @map("buyer_gstin")
+  buyerAddress    String? @map("buyer_address") @db.Text
 
   channel    SalesChannel  @default(POS)
   locationId String        @map("location_id")
@@ -1333,8 +1334,8 @@ model SalesOrder {
   /// Where the goods are being supplied to, as a two-digit state code. Same as the shop's means
   /// CGST+SGST; different means IGST. A counter sale is always the shop's own state -- the
   /// customer is standing in the shop.
-  placeOfSupplyStateCode String?  @map("place_of_supply_state_code")
-  interState             Boolean  @default(false) @map("inter_state")
+  placeOfSupplyStateCode String? @map("place_of_supply_state_code")
+  interState             Boolean @default(false) @map("inter_state")
 
   /// The bill is rounded to the nearest rupee once, and the difference is its own visible line --
   /// never achieved by bending a tax figure, because the tax figures are what get reported.
@@ -1507,21 +1508,21 @@ model Dispatch {
 
 /// A courier the shop sends parcels with: DTDC, Delhivery, its own delivery boy. Settings → Couriers.
 model ShopCourier {
-  id       String @id @default(uuid())
-  clientId String @map("client_id")
+  id           String  @id @default(uuid())
+  clientId     String  @map("client_id")
   /// As the shop spells it.
-  name String
+  name         String
   /// name in lower case: "dtdc" and "DTDC" are one courier.
-  key  String
+  key          String
   /// The courier's tracking page. With {number} in it, the tracking number is put into the link;
   /// without, the page opens and the number is copied for pasting.
   trackingLink String? @map("tracking_link")
   /// False for the shop's own delivery or a hand-over: no tracking number is asked for.
-  needsNumber Boolean @default(true) @map("needs_number")
+  needsNumber  Boolean @default(true) @map("needs_number")
   /// Chosen already when an order with a delivery address is sent out. At most one per shop.
-  isDefault Boolean @default(false) @map("is_default")
+  isDefault    Boolean @default(false) @map("is_default")
   /// Removed couriers stay so old parcels keep their link; adding the same name brings it back.
-  active Boolean @default(true)
+  active       Boolean @default(true)
 
   dispatches Dispatch[]
 
@@ -1615,7 +1616,7 @@ model SalesReturn {
   /// A return moved stock and nothing else until now, so nothing could say what a refund was
   /// worth -- and with discounts on a line the answer is emphatically not the list price. For a
   /// Shopify refund this is a RECORD: Shopify has already moved the money.
-  refundTotal     Decimal @default(0) @map("refund_total") @db.Decimal(10, 2)
+  refundTotal Decimal @default(0) @map("refund_total") @db.Decimal(10, 2)
 
   /// The credit note this return is, under GST.
   ///
@@ -1628,18 +1629,18 @@ model SalesReturn {
   creditNoteNo String? @map("credit_note_no")
 
   /// What the credit note reverses, frozen the same way an invoice's figures are.
-  taxableValue Decimal? @map("taxable_value") @db.Decimal(15, 2)
-  cgst         Decimal? @db.Decimal(15, 2)
-  sgst         Decimal? @db.Decimal(15, 2)
-  igst         Decimal? @db.Decimal(15, 2)
+  taxableValue    Decimal? @map("taxable_value") @db.Decimal(15, 2)
+  cgst            Decimal? @db.Decimal(15, 2)
+  sgst            Decimal? @db.Decimal(15, 2)
+  igst            Decimal? @db.Decimal(15, 2)
   /// NONE | PENDING | REFUNDED | FAILED
-  refundStatus    String  @default("NONE") @map("refund_status")
+  refundStatus    String   @default("NONE") @map("refund_status")
   /// Of what came back, the part the customer had paid with loyalty points goes back as points,
   /// not money: set when the return is completed, and refundTotal is then the money part only.
-  pointsBack      Int     @default(0) @map("points_back")
-  pointsBackValue Decimal @default(0) @map("points_back_value") @db.Decimal(10, 2)
+  pointsBack      Int      @default(0) @map("points_back")
+  pointsBackValue Decimal  @default(0) @map("points_back_value") @db.Decimal(10, 2)
   /// Points earned on the returned goods, taken back.
-  pointsTakenBack Int     @default(0) @map("points_taken_back")
+  pointsTakenBack Int      @default(0) @map("points_taken_back")
 
   /// Taken back at the counter in one step (booked, checked and completed together).
   atCounter        Boolean   @default(false) @map("at_counter")
@@ -1655,20 +1656,19 @@ model SalesReturn {
 
   items SalesReturnItem[]
 
-  completedAt DateTime?           @map("completed_at")
-  createdAt   DateTime            @default(now()) @map("created_at")
-  updatedAt   DateTime            @updatedAt @map("updated_at")
+  completedAt     DateTime?           @map("completed_at")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
   /// Refunds paid for this return.
-  refunds     SalesOrderPayment[]
+  refunds         SalesOrderPayment[]
+  /// Bills settled by this credit note in an exchange -- see SalesOrderPayment.settlesReturnId.
+  settledPayments SalesOrderPayment[] @relation("PaymentSettledByReturn")
 
   @@unique([clientId, returnNumber])
   @@unique([clientId, creditNoteNo], map: "uq_sales_return_credit_note")
   @@index([salesOrderId])
   @@index([clientId, status])
   @@map("sales_returns")
-  /// Bills settled by this credit note in an exchange -- see SalesOrderPayment.settlesReturnId.
-  settledPayments SalesOrderPayment[] @relation("PaymentSettledByReturn")
-
 }
 
 model SalesReturnItem {
@@ -2830,10 +2830,11 @@ model ShopifyInstallation {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  idMap        ShopifyIdMap[]
-  locationMap  ShopifyLocationMap[]
-  offerMirrors OfferExternalMirror[]
-  echoes       ShopifyInventoryEcho[]
+  idMap          ShopifyIdMap[]
+  locationMap    ShopifyLocationMap[]
+  offerMirrors   OfferExternalMirror[]
+  echoes         ShopifyInventoryEcho[]
+  productMirrors ShopifyProductMirror[]
 
   @@index([clientId])
   @@index([uninstalledAt])
@@ -2970,6 +2971,62 @@ model ShopifyPrivacyRequest {
 /// change and is surfaced rather than silently applied, because ScaleEzy is the authority.
 ///
 /// A time window alone cannot do this: Shopify webhooks can arrive minutes late under load.
+/// One of our products kept as a product in a connected Shopify store.
+///
+/// A row exists only for a product somebody put on Shopify (the "On Shopify" switch) or one that
+/// was already there and matched by SKU. What it holds is how far Shopify has caught up, never a
+/// copy of the product: every push renders the product afresh and sends ABSOLUTE state, so a
+/// retry or a reordering cannot corrupt anything.
+///
+///   origin CREATED  we made it, so we own all of it: title, photos, sizes, price, stock, and
+///                   archiving it when it is switched off or deleted here
+///   origin MATCHED  the shop built it by hand in Shopify; only price and stock are ours to set,
+///                   and it is never archived
+model ShopifyProductMirror {
+  id             String @id @default(uuid())
+  clientId       String @map("client_id")
+  installationId String @map("installation_id")
+  productId      String @map("product_id")
+
+  /// CREATED | MATCHED. TEXT, not an enum: see the 23 September enum note on ClientSettings.
+  origin String @default("CREATED")
+
+  /// The switch. Off means: archive it in Shopify (CREATED) or stop sending to it (MATCHED).
+  wanted Boolean @default(true)
+
+  /// Numeric, as webhooks spell it. Null until the first push has created it.
+  shopifyProductId String? @map("shopify_product_id")
+
+  /// PENDING | SYNCED | FAILED | ARCHIVED
+  status       String  @default("PENDING")
+  /// Only the stock needs sending -- the cheap path, taken on every sale.
+  stockPending Boolean @default(false) @map("stock_pending")
+
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime? @map("next_attempt_at")
+  lockedAt      DateTime? @map("locked_at")
+  /// The last refusal, in words a shop can act on.
+  problem       String?   @db.Text
+
+  /// Hash of what we last sent (title, description, prices, SKUs), to tell our own echo from an
+  /// edit made inside Shopify.
+  lastHash     String?   @map("last_hash")
+  /// Hash of the photo list last sent; photos are only re-sent when it changes.
+  imagesHash   String?   @map("images_hash")
+  lastSyncedAt DateTime? @map("last_synced_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  installation ShopifyInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  product      Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([installationId, productId], name: "uq_shopify_product_mirror")
+  @@index([clientId])
+  @@index([status, nextAttemptAt])
+  @@map("shopify_product_mirrors")
+}
+
 model ShopifyInventoryEcho {
   id             String @id @default(uuid())
   installationId String @map("installation_id")
@@ -3156,23 +3213,23 @@ model TryOnUsage {
 /// Shops only ever see a friendly sentence; this is for ScaleEzy (Platform Console → Errors →
 /// Try-on). Plain text everywhere -- no enums on the shared database. Kept 90 days.
 model TryOnFailure {
-  id       String @id @default(uuid())
-  clientId String @map("client_id")
+  id           String   @id @default(uuid())
+  clientId     String   @map("client_id")
   /// CATALOG_TRYON (four views) or SHOPPER_TRYON (a customer trying a piece on).
-  service String
+  service      String
   /// PHOTO_JOB, CATALOG_STREAM, SHOP_PAGE, COUNTER, STOREFRONT.
-  place   String
-  httpStatus Int?   @map("http_status")
+  place        String
+  httpStatus   Int?     @map("http_status")
   /// Short machine code where there is one (STUDIO_REFUSED, STALLED, TIMEOUT, NO_IMAGE, LIMIT...).
-  code    String?
+  code         String?
   /// The far end's own words, as they came (trimmed to 4,000 characters).
-  error   String  @db.Text
+  error        String   @db.Text
   /// What the shop or shopper was shown instead.
-  shownMessage String? @map("shown_message") @db.Text
-  productId String? @map("product_id")
-  jobId     String? @map("job_id")
-  attempt   Int?
-  createdAt DateTime @default(now()) @map("created_at")
+  shownMessage String?  @map("shown_message") @db.Text
+  productId    String?  @map("product_id")
+  jobId        String?  @map("job_id")
+  attempt      Int?
+  createdAt    DateTime @default(now()) @map("created_at")
 
   @@index([createdAt])
   @@index([clientId, createdAt])
@@ -3929,32 +3986,32 @@ model StoreCreditEntry {
 /// count against the balance. kind and status are TEXT, not enums: adding a value to a shared-DB
 /// enum is what took the alerts endpoint down on 23 September.
 model PosHold {
-  id           String @id @default(uuid())
-  clientId     String @map("client_id")
-  connectionId String @map("connection_id")
+  id             String    @id @default(uuid())
+  clientId       String    @map("client_id")
+  connectionId   String    @map("connection_id")
   /// The customer whose points or credit are held. Null for a VOUCHER hold: a voucher can be spent
   /// by whoever holds the code, walk-ins included.
-  customerId   String? @map("customer_id")
+  customerId     String?   @map("customer_id")
   /// VOUCHER holds only: the voucher whose balance is held.
-  giftVoucherId String? @map("gift_voucher_id")
+  giftVoucherId  String?   @map("gift_voucher_id")
   /// POINTS | CREDIT | VOUCHER
-  kind         String
+  kind           String
   /// Points for POINTS, paise for CREDIT and VOUCHER.
-  amount       Int
+  amount         Int
   /// What it takes off the bill, in paise.
-  valuePaise   Int    @map("value_paise")
-  billPaise    Int    @map("bill_paise")
+  valuePaise     Int       @map("value_paise")
+  billPaise      Int       @map("bill_paise")
   /// The till's key for this reserve: the same key again answers the same hold.
-  idempotencyKey String @map("idempotency_key")
+  idempotencyKey String    @map("idempotency_key")
   /// RESERVED | CONFIRMED | RELEASED | SWEPT
-  status       String @default("RESERVED")
-  invoiceNo    String? @map("invoice_no")
-  salesOrderId String? @map("sales_order_id")
-  expiresAt    DateTime  @map("expires_at")
-  confirmedAt  DateTime? @map("confirmed_at")
-  releasedAt   DateTime? @map("released_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  status         String    @default("RESERVED")
+  invoiceNo      String?   @map("invoice_no")
+  salesOrderId   String?   @map("sales_order_id")
+  expiresAt      DateTime  @map("expires_at")
+  confirmedAt    DateTime? @map("confirmed_at")
+  releasedAt     DateTime? @map("released_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@unique([clientId, idempotencyKey])
   @@index([clientId, customerId, status])
@@ -3968,11 +4025,11 @@ model PosUpiQr {
   clientId       String    @map("client_id")
   connectionId   String    @map("connection_id")
   idempotencyKey String    @map("idempotency_key")
-  qrId           String    @unique @map("qr_id")       // Razorpay's qr_... id
+  qrId           String    @unique @map("qr_id") // Razorpay's qr_... id
   amountPaise    Int       @map("amount_paise")
   invoiceRef     String?   @map("invoice_ref")
   imageUrl       String    @map("image_url")
-  status         String    @default("WAITING")        // WAITING | PAID | PAID_WRONG_AMOUNT | CLOSED
+  status         String    @default("WAITING") // WAITING | PAID | PAID_WRONG_AMOUNT | CLOSED
   paymentId      String?   @map("payment_id")
   utr            String?
   paidPaise      Int?      @map("paid_paise")
@@ -4143,11 +4200,11 @@ model OnlineShop {
   /// Separate from the logo on purpose: a shop's logo is usually a WORDMARK, and a wordmark
   /// squeezed into sixteen pixels is a smudge. Empty is fine -- the page then falls back to the
   /// logo, which is still better than the browser's blank default.
-  iconUrl  String? @map("icon_url")
-  iconPath String? @map("icon_path")
-  bannerUrl   String? @map("banner_url")
-  bannerPath  String? @map("banner_path")
-  accent      String? // one hex colour; the rest of the palette is derived
+  iconUrl    String? @map("icon_url")
+  iconPath   String? @map("icon_path")
+  bannerUrl  String? @map("banner_url")
+  bannerPath String? @map("banner_path")
+  accent     String? // one hex colour; the rest of the palette is derived
 
   /// Which locations' stock may be sold online. Empty means none, so a shop cannot go live by
   /// accident and start selling the stock of a godown it never meant to offer.
@@ -4334,7 +4391,7 @@ model ShopPaymentAccount {
 
   /// UNCHECKED until "Check it works" has run; CONNECTED or FAILED after.
   /// UPI QR at the POS till: off until the owner turns it on (Razorpay charges the shop per payment).
-  upiQrEnabled Boolean @default(false) @map("upi_qr_enabled")
+  upiQrEnabled Boolean   @default(false) @map("upi_qr_enabled")
   status       String    @default("UNCHECKED")
   checkedAt    DateTime? @map("checked_at")
   /// The last check's sentence, in the gateway's own words when it failed.
@@ -4392,7 +4449,7 @@ model OnlinePayment {
   amountPaise Int    @map("amount_paise")
   currency    String @default("INR")
 
-  status String @default("STARTING")
+  status String  @default("STARTING")
   /// How the customer paid, in the gateway's word: upi, card, netbanking, wallet...
   method String?
 
@@ -4465,7 +4522,7 @@ model OnlineRefund {
   /// One refund per reason: CANCEL:<order>, DUPLICATE:<payment>, OWNER:<key from the screen>...
   onceKey String @unique @map("once_key")
 
-  amountPaise Int @map("amount_paise")
+  amountPaise     Int     @map("amount_paise")
   /// REQUESTING (asked, answer not in yet) | PENDING | PROCESSED | FAILED
   status          String  @default("REQUESTING")
   gatewayRefundId String? @unique @map("gateway_refund_id")
@@ -4488,14 +4545,14 @@ model OnlineRefund {
 /// can be answered months later. Badly signed ones are kept too (unlike ShopifyWebhookReceipt):
 /// they are either noise or an attack, and both are worth being able to see.
 model GatewayWebhookReceipt {
-  id             String  @id @default(uuid())
+  id             String    @id @default(uuid())
   /// Null only when the address named no shop at all -- those are not kept.
-  clientId       String? @map("client_id")
+  clientId       String?   @map("client_id")
   gateway        String
-  eventId        String? @map("event_id")
+  eventId        String?   @map("event_id")
   event          String?
-  signatureValid Boolean @map("signature_valid")
-  rawBody        String  @map("raw_body")
+  signatureValid Boolean   @map("signature_valid")
+  rawBody        String    @map("raw_body")
   /// APPLIED | DUPLICATE | IGNORED | FAILED | REFUSED
   outcome        String?
   error          String?
@@ -4896,26 +4953,26 @@ model StoreCheckin {
 /// holds the balance; the till asks, reserves (pos_holds kind VOUCHER) and confirms, as for store
 /// credit. status is TEXT, not an enum (the shared-DB rule).
 model GiftVoucher {
-  id           String    @id @default(uuid())
-  clientId     String    @map("client_id")
+  id               String   @id @default(uuid())
+  clientId         String   @map("client_id")
   /// GV-XXXX-XXXX, upper case.
-  code         String
-  initialPaise Int       @map("initial_paise")
+  code             String
+  initialPaise     Int      @map("initial_paise")
   /// The sum of its entries.
-  balancePaise Int       @map("balance_paise")
+  balancePaise     Int      @map("balance_paise")
   /// ACTIVE | BLOCKED. Expired is worked out from expiresAt, never stored.
-  status       String    @default("ACTIVE")
-  expiresAt    DateTime  @map("expires_at")
-  soldAt       DateTime  @default(now()) @map("sold_at")
-  soldLocationId   String? @map("sold_location_id")
-  soldConnectionId String? @map("sold_connection_id")
-  buyerCustomerId  String? @map("buyer_customer_id")
-  buyerName        String? @map("buyer_name")
-  buyerPhone       String? @map("buyer_phone")
+  status           String   @default("ACTIVE")
+  expiresAt        DateTime @map("expires_at")
+  soldAt           DateTime @default(now()) @map("sold_at")
+  soldLocationId   String?  @map("sold_location_id")
+  soldConnectionId String?  @map("sold_connection_id")
+  buyerCustomerId  String?  @map("buyer_customer_id")
+  buyerName        String?  @map("buyer_name")
+  buyerPhone       String?  @map("buyer_phone")
   /// The till's key for the sale: the same key again answers the same voucher.
-  idempotencyKey   String? @map("idempotency_key")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  idempotencyKey   String?  @map("idempotency_key")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
   @@unique([clientId, code])
   @@unique([clientId, idempotencyKey])

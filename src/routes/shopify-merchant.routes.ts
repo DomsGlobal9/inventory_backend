@@ -15,6 +15,7 @@ import {
   shopifyLocationPairingService, shopifyVariantMatchingService
 } from '../services/shopify-mapping';
 import { respondWithError } from '../utils/respondWithError';
+import { shopifyProductPushService } from '../services/shopify-products';
 
 /**
  * The merchant's side of Shopify: starting an install, and claiming one that started on
@@ -233,9 +234,61 @@ router.get('/products/summary', requirePermission(PERMISSION), async (req, res) 
 router.post('/products/match', requirePermission(PERMISSION), async (req, res) => {
   try {
     const result = await shopifyVariantMatchingService.matchBySku(clientOf(req), await storeApi(req));
+    // Newly matched products start following our price and stock straight away.
+    const installation = await activeInstallation(clientOf(req));
+    await shopifyProductPushService.ensureMatchedMirrors(clientOf(req), installation.id);
     res.json({ success: true, data: { ...result, replay: result.newlyMatched > 0 ? await retryWaiting(req) : null } });
   } catch (error) {
     respondWithError(res, error, { status: 502, message: 'Could not match your Shopify products.' });
+  }
+});
+
+// ── Our products in Shopify ──────────────────────────────────────────────────────────────────
+
+/** How many products are on Shopify, and how far they have got. Null data when no store. */
+router.get('/products/push', requirePermission('product:view'), async (req, res) => {
+  try {
+    res.json({ success: true, data: await shopifyProductPushService.summary(clientOf(req)) });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not read your Shopify products.' });
+  }
+});
+
+/** "Put all products on Shopify". */
+router.post('/products/push-all', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    res.json({ success: true, data: await shopifyProductPushService.putAll(clientOf(req)) });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not put your products on Shopify.' });
+  }
+});
+
+/** Try every product that failed again, now. */
+router.post('/products/retry', requirePermission(PERMISSION), async (req, res) => {
+  try {
+    res.json({ success: true, data: await shopifyProductPushService.retryFailed(clientOf(req)) });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not try again.' });
+  }
+});
+
+/** One product's Shopify state, for its page. */
+router.get('/products/:productId/shopify', requirePermission('product:view'), async (req, res) => {
+  try {
+    res.json({ success: true, data: await shopifyProductPushService.forProduct(clientOf(req), String(req.params.productId)) });
+  } catch (error) {
+    respondWithError(res, error, { status: 500, message: 'Could not read whether this product is on Shopify.' });
+  }
+});
+
+/** The "On Shopify" switch. Whoever may edit the product may decide where it is sold. */
+router.put('/products/:productId/shopify', requirePermission('product:update'), async (req, res) => {
+  try {
+    const body = z.object({ on: z.boolean({ invalid_type_error: 'Say on or off.' }) }).parse(req.body);
+    res.json({ success: true, data: await shopifyProductPushService.setOnShopify(clientOf(req), String(req.params.productId), body.on) });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: error.issues[0]?.message ?? 'Invalid request' });
+    respondWithError(res, error, { status: 500, message: 'Could not change whether this product is on Shopify.' });
   }
 });
 

@@ -10,6 +10,14 @@ import { valuationService } from './valuation.service';
 import { notFound } from '../utils/httpError';
 import { conflict } from '../utils/httpError';
 import { isLive, notLiveReason } from '../utils/product-state-machine';
+import { markProductForShopify } from './shopify-products/dirty';
+
+/** A variant's size, colour or price changed: its product's Shopify copy (if any) is re-sent. */
+async function shopifyFollowVariants(variantIds: string[]) {
+  if (variantIds.length === 0) return;
+  const rows = await prisma.productVariant.findMany({ where: { id: { in: variantIds } }, select: { productId: true } }).catch(() => []);
+  for (const productId of new Set(rows.map(r => r.productId))) await markProductForShopify(productId);
+}
 
 /**
  * How many rows of a bulk import are worked on at once.
@@ -172,6 +180,7 @@ export class VariantService {
       await this.applyInitialStock(clientId, created.id, data.quantity, locationIds, performedBy || 'SYSTEM', data.costPrice);
     }
 
+    await markProductForShopify(productId);
     return created;
   }
 
@@ -315,6 +324,7 @@ export class VariantService {
       }
     }
 
+    await markProductForShopify(productId);
     return { created, skipped, errors, adjusted, stockNotApplied };
   }
 
@@ -440,6 +450,11 @@ export class VariantService {
         reason: result.reason?.message || String(result.reason)
       }));
 
+    // Rows are named by SKU here, not id.
+    const forShopify = await prisma.productVariant.findMany({
+      where: { clientId, sku: { in: updates.map((u: any) => u?.sku).filter(Boolean) } }, select: { id: true }
+    }).catch(() => []);
+    await shopifyFollowVariants(forShopify.map(t => t.id));
     return { updated, skipped, errors };
   }
 
@@ -529,11 +544,16 @@ export class VariantService {
       }
     }
 
+    await shopifyFollowVariants([id]);
     return updated;
   }
 
   async deleteVariant(id: string, clientId: string) {
-    return variantRepository.delete(id, clientId);
+    // Read before it goes: afterwards there is no way back to its product.
+    const before = await prisma.productVariant.findFirst({ where: { id, clientId }, select: { productId: true } });
+    const result = await variantRepository.delete(id, clientId);
+    if (before) await markProductForShopify(before.productId);
+    return result;
   }
 
   async searchVariants(clientId: string, params: { q: string, page: number, limit: number, includeInventory?: boolean, includeCosting?: boolean }) {

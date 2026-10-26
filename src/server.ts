@@ -17,6 +17,7 @@ import { SnapshotScheduler } from './jobs/snapshot.scheduler';
 import { HousekeepingScheduler } from './jobs/housekeeping.scheduler';
 import { WhatsAppDayBookScheduler } from './jobs/whatsapp-daybook.scheduler';
 import { OfferMirrorWorker } from './services/shopify-discounts';
+import { ShopifyProductWorker } from './services/shopify-products';
 import { StorefrontDispatcherService } from './services/storefront-dispatcher.service';
 
 import cookieParser from 'cookie-parser';
@@ -261,6 +262,7 @@ app.listen(PORT, () => {
     WhatsAppDayBookScheduler.start();
     CampaignsScheduler.start();
     OfferMirrorWorker.start();
+    ShopifyProductWorker.start();
   }
 
   /*

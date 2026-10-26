@@ -13,10 +13,12 @@ import {
   shopifyOrderCancelService,
   shopifyFulfilmentService,
   shopifyRefundService,
-  shopifyInboxService
+  shopifyInboxService,
+  tellShopOfShopifyOrder
 } from '../services/shopify-orders';
 import { offerMirrorService, discountGidFromWebhook } from '../services/shopify-discounts';
 import { shopifyPrivacyService } from '../services/shopify-privacy';
+import { shopifyProductPushService } from '../services/shopify-products';
 
 /**
  * The two Shopify endpoints that CANNOT be authenticated the normal way.
@@ -222,6 +224,10 @@ async function handleWebhook(topic: string, shopDomain: string, webhookId: strin
         const installation = await prisma.shopifyInstallation.findUnique({
           where: { shopDomain }, select: { clientId: true }
         });
+        // The bell, once per order: only the delivery that actually created it says so.
+        if (installation?.clientId && result.created) {
+          await tellShopOfShopifyOrder(installation.clientId, result.salesOrderId, payload?.name ?? null);
+        }
         if (installation?.clientId) {
           await shopifyInboxService
             .applyFollowUps(installation.clientId, shopDomain, String(payload.id), result.salesOrderId)
@@ -268,6 +274,29 @@ async function handleWebhook(topic: string, shopDomain: string, webhookId: strin
       if (!discountGid) return 'IGNORED';
       const flagged = await offerMirrorService.flagChangedInShopify(discountGid);
       return flagged > 0 ? 'APPLIED' : 'IGNORED';
+    }
+
+    /*
+     * Our products, changed or deleted in Shopify, and stock changed there.
+     *
+     * Each starts by telling our own echo apart -- every push we make comes straight back as one of
+     * these -- and only then treats it as somebody's edit: put ScaleEzy's version back and say so
+     * in the bell. Stock is re-sent a little later rather than at once, so an order that caused
+     * the change lands here and moves our count first.
+     */
+    case 'products/update': {
+      const payload = JSON.parse(raw.toString('utf8'));
+      return shopifyProductPushService.onProductUpdated(shopDomain, payload);
+    }
+
+    case 'products/delete': {
+      const payload = JSON.parse(raw.toString('utf8'));
+      return shopifyProductPushService.onProductDeleted(shopDomain, payload);
+    }
+
+    case 'inventory_levels/update': {
+      const payload = JSON.parse(raw.toString('utf8'));
+      return shopifyProductPushService.onInventoryChanged(shopDomain, payload);
     }
 
     case 'app/uninstalled': {
