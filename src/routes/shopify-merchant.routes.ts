@@ -142,7 +142,8 @@ router.get('/status', requirePermission(PERMISSION), async (req, res, next) => {
       where: { clientId: clientOf(req), uninstalledAt: null },
       select: {
         id: true, shopDomain: true, installedAt: true, claimedAt: true,
-        scopes: true, source: true, accessTokenExpiresAt: true
+        scopes: true, source: true, accessTokenExpiresAt: true,
+        refreshTokenEncrypted: true, refreshTokenExpiresAt: true
       }
     });
 
@@ -154,8 +155,16 @@ router.get('/status', requirePermission(PERMISSION), async (req, res, next) => {
         ...installation,
         // Never the token. Only whether it is currently usable.
         accessTokenExpiresAt: undefined,
+        refreshTokenEncrypted: undefined,
+        refreshTokenExpiresAt: undefined,
+        // Usable means "we can call Shopify", not "the hour-long key has not run out": an expired
+        // short key is renewed on the next call with the long-lived refresh key. Judging by the
+        // short key alone showed NEEDS RECONNECTING after every quiet hour (26 Oct) on a store
+        // that was perfectly connected.
         tokenValid: !installation.accessTokenExpiresAt
-          || installation.accessTokenExpiresAt.getTime() > Date.now(),
+          || installation.accessTokenExpiresAt.getTime() > Date.now()
+          || (!!installation.refreshTokenEncrypted
+            && (!installation.refreshTokenExpiresAt || installation.refreshTokenExpiresAt.getTime() > Date.now())),
         missingScopes: shopifyInstallationService.missingScopes(installation.scopes)
       }
     });
