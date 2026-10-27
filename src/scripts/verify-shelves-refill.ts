@@ -169,6 +169,72 @@ async function main() {
   const unknown = await owner.get(`/shelves/locations/00000000-0000-0000-0000-000000000000/refill`);
   check('an unknown location is a 404, not a crash', unknown.status === 404, brief(unknown));
 
+  // ── More of what happens in a real shop ──────────────────────────────────────────────────
+  console.log('\n7. MORE SCENARIOS');
+  const linesNow = async (min?: number) => ((await refill(warehouse, min)).data?.data?.lines ?? []) as any[];
+  const mkIn = async (c: string, productId: string) => prisma.productVariant.create({ data: { clientId: SHOP, productId, sku: `RF-${c}-${STAMP}`, variantCode: `V-RF-${c}-${STAMP}`, colorName: c, size: 'Free Size', sellingPrice: 1000, costPrice: 600, averageCost: 600 } });
+
+  // Some back-room pieces held: only the free ones are carried.
+  const teal = await mk('TEAL');
+  await stockIn(teal.id, 3); await put(teal.id, S.B11, 3);
+  await prisma.inventoryStock.update({ where: { variantId_locationId: { variantId: teal.id, locationId: store.id } }, data: { reservedQty: 2 } });
+  const tealLine = (await linesNow()).filter(l => l.variantId === teal.id);
+  check('3 in the back, 2 held for orders: carry only the 1 free piece', tealLine.length === 1 && tealLine[0].quantity === 1, JSON.stringify(tealLine));
+
+  // A service (alteration, fall-pico) is never stocked on a shelf, but if it is, it is not carried.
+  const svc = await prisma.product.create({ data: { clientId: SHOP, title: 'Fall and pico', productCode: `RFS-${STAMP}`, slug: `rfs-${STAMP}`, category: 'WOMEN', productType: 'READY_TO_WEAR', basePrice: 100, status: 'ACTIVE' } });
+  const svcV = await mkIn('SVC', svc.id);
+  await stockIn(svcV.id, 2); await put(svcV.id, S.B11, 2);
+  await prisma.product.update({ where: { id: svc.id }, data: { isService: true } });
+  // A product moved to the bin.
+  const binned = await prisma.product.create({ data: { clientId: SHOP, title: 'Binned Saree', productCode: `RFT-${STAMP}`, slug: `rft-${STAMP}`, category: 'WOMEN', productType: 'READY_TO_WEAR', basePrice: 900, status: 'ACTIVE' } });
+  const binV = await mkIn('BIN', binned.id);
+  await stockIn(binV.id, 2); await put(binV.id, S.B11, 2);
+  await prisma.product.update({ where: { id: binned.id }, data: { trashedAt: new Date() } });
+  const more = await linesNow();
+  check('a service is not on the list', !more.some(l => l.variantId === svcV.id), JSON.stringify(more.map(l => l.sku)));
+  check('a product in the bin is not on the list', !more.some(l => l.variantId === binV.id), JSON.stringify(more.map(l => l.sku)));
+
+  // Only on the floor (nothing in the back), or in stock but on no shelf: nothing to carry.
+  const plum = await mk('PLUM'), sand = await mk('SAND');
+  await stockIn(plum.id, 1); await put(plum.id, S.F2, 1);
+  await stockIn(sand.id, 4);
+  const quiet = await linesNow();
+  check('1 on the floor and none in the back room: not listed (nothing to bring)', !quiet.some(l => l.variantId === plum.id));
+  check('in stock but on no shelf at all: not listed (that is Put away\'s job)', !quiet.some(l => l.variantId === sand.id));
+
+  // A second store is its own list.
+  const second = await prisma.stockLocation.create({ data: { clientId: SHOP, name: 'Second Store', code: 'SECOND', type: 'STORE', active: true } });
+  const ownerB = api(ownerT, second.id);
+  const layoutB = await ownerB.post(`/shelves/locations/${second.id}/spots/import`, { rows: [{ address: 'SB-1', shopFloor: 'no' }] });
+  const secondId = (await prisma.storageSpot.findFirstOrThrow({ where: { clientId: SHOP, locationId: second.id, address: 'SB-1' } })).id;
+  const inB = await ownerB.post('/inventory/stock-in', { variantId: blue.id, quantity: 5, reason: 'PURCHASE', unitCost: 600, locationId: second.id });
+  const putB = await ownerB.post('/shelves/putaway', { locationId: second.id, variantId: blue.id, spotId: secondId, quantity: 5 });
+  const listB = await ownerB.get(`/shelves/locations/${second.id}/refill`);
+  check('the second store (back room only) says it has no floor shelves', layoutB.status === 201 && inB.status < 300 && putB.status === 200 && listB.status === 200 && listB.data.data.usesFloorShelves === false, `${brief(layoutB)} | ${brief(putB)} | ${brief(listB)}`);
+  const blueHere = (await linesNow(4)).filter(l => l.variantId === blue.id);
+  check('...and its 5 blue never appear on the main store\'s list', blueHere.length > 0 && blueHere.every(l => l.inBackRoom === 4 && !l.from.address.startsWith('SB')), JSON.stringify(blueHere));
+
+  // The floor shelf it was last on has since been switched off: no destination, the person chooses.
+  const area2 = await owner.post(`/shelves/locations/${store.id}/spots/import`, { rows: [{ address: 'WINDOW-A-1', shopFloor: 'yes' }] });
+  const W = await spot('WINDOW-A-1');
+  const ruby = await mk('RUBY');
+  await stockIn(ruby.id, 5); await put(ruby.id, W, 1); await put(ruby.id, S.B21, 4);
+  const toBack = await warehouse.post('/shelves/move', { locationId: store.id, variantId: ruby.id, fromSpotId: W, toSpotId: S.B21, quantity: 1 });
+  const before = (await linesNow()).find(l => l.variantId === ruby.id);
+  const windowArea = await prisma.storageSpot.findFirstOrThrow({ where: { clientId: SHOP, locationId: store.id, address: 'WINDOW' } });
+  const off = await owner.patch(`/shelves/spots/${windowArea.id}`, { active: false });
+  const afterOff = (await linesNow()).find(l => l.variantId === ruby.id);
+  check('ruby was last on WINDOW-A-1, so it is sent back there', area2.status === 201 && toBack.status === 200 && before?.to?.address === 'WINDOW-A-1', `${brief(toBack)} | ${JSON.stringify(before)}`);
+  check('after the window is switched off, it is not sent to a shelf nobody can use (the person chooses)', off.status === 200 && afterOff && afterOff.to === null, `${brief(off)} | ${JSON.stringify(afterOff)}`);
+
+  // Two people press Moved on the same line at the same moment: one carries it, the other is told.
+  const goldLine = (await linesNow(4)).find(l => l.variantId === gold.id)!;
+  const both = await Promise.all([1, 2].map(() => warehouse.post('/shelves/move', { locationId: store.id, variantId: gold.id, fromSpotId: goldLine.from.spotId, toSpotId: goldLine.to.spotId, quantity: 4 })));
+  const codes = both.map(x => x.status).sort();
+  check('two people carry the same 4 gold at once: exactly one succeeds, the other gets a plain refusal', codes[0] === 200 && codes[1] >= 400 && codes[1] < 500 && typeof both.find(x => x.status !== 200)?.data?.message === 'string', both.map(brief).join(' | '));
+  await agree('after the extra scenarios');
+
   check('no request produced a server error', serverErrors.length === 0, serverErrors.slice(0, 5).join(' | '));
 }
 

@@ -107,7 +107,7 @@ export async function refillList(clientId: string, locationId: string, minOnFloo
     let toCarry = Math.min(minOnFloor - v.floor, carryable);
     if (toCarry <= 0) continue;
 
-    const already = [...v.floorShelves].sort((a, b) => b.quantity - a.quantity)[0]?.spotId;
+    const already = [...v.floorShelves].filter(f => usable(spotById.get(f.spotId)!)).sort((a, b) => b.quantity - a.quantity)[0]?.spotId;
     const toId = already ?? lastFloor.get(variantId) ?? null;
     const to = toId ? spotById.get(toId)! : null;
 

@@ -16,6 +16,7 @@ import { AuthService } from '../services/auth.service';
 import { seedRolesForClient } from '../services/rbac-seed.service';
 import { platformAdminService } from '../services/platform-admin.service';
 import { returnService } from '../services/return.service';
+import { inventoryMutationService } from '../services/inventory-mutation.service';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 const STAMP = Date.now();
@@ -139,6 +140,50 @@ async function main() {
   console.log('\n6. ONLY WITH A LOCATION');
   const noLoc = await owner.get(`/shelves/variants/${pink.id}`);
   check('asking without a location still answers, without came-off', noLoc.status === 200 && noLoc.data.data.places.every((pl: any) => !('cameOff' in pl)), brief(noLoc));
+
+  console.log('\n7. A TILL SALE, THEN THE CUSTOMER BRINGS IT BACK');
+  const lime = await mk('LIME');
+  await stockIn(lime.id, 1); await put(lime.id, S.FL3, 1);
+  await inventoryMutationService.applyMovement({ clientId: SHOP, variantId: lime.id, locationId: store.id, movementType: 'OUT', reason: 'SALE', quantityDelta: -1, notes: 'verify-shelves-returns: till sale', createdBy: 'verify-shelves-returns' } as any);
+  await inventoryMutationService.applyMovement({ clientId: SHOP, variantId: lime.id, locationId: store.id, movementType: 'IN', reason: 'CUSTOMER_RETURN', quantityDelta: 1, notes: 'verify-shelves-returns: till return', createdBy: 'verify-shelves-returns' } as any);
+  const l = await whereIs(lime.id);
+  check('a till sale and return: FL-3 offered, "sold from here"', l?.cameOff?.address === 'FL-3' && l.cameOff.leftAs === 'SALE', JSON.stringify(l?.cameOff));
+
+  console.log('\n8. A RETURN THAT IS NOT PUT BACK IN STOCK');
+  const rust = await mk('RUST');
+  await stockIn(rust.id, 1); await put(rust.id, S.FL3, 1);
+  const quoteR = await owner.post('/pricing/quote', { locationId: store.id, channel: 'POS', customerId: customer.id, lines: [{ variantId: rust.id, quantity: 1 }] });
+  const orderR = await owner.post('/sales-orders/full', { locationId: store.id, quoteId: quoteR.data?.data?.quoteId, customer: { id: customer.id }, items: [{ variantId: rust.id, quantity: 1 }], status: 'CONFIRMED' });
+  const orderRId = orderR.data?.id ?? orderR.data?.data?.id;
+  const itemR = await prisma.salesOrderItem.findFirstOrThrow({ where: { salesOrderId: orderRId } });
+  await owner.post('/dispatches', { salesOrderId: orderRId, items: [{ salesOrderItemId: itemR.id, quantity: 1, fromSpots: [{ spotId: S.FL3, quantity: 1 }] }] });
+  const dR = await prisma.dispatch.findFirstOrThrow({ where: { salesOrderId: orderRId }, include: { items: true } });
+  const retR: any = await returnService.createReturn(SHOP, orderRId, [{ dispatchItemId: dR.items[0].id, quantity: 1 }], 'Torn');
+  await returnService.receiveReturn(SHOP, retR.id);
+  await returnService.inspectReturn(SHOP, retR.id, retR.items.map((i: any) => ({ salesReturnItemId: i.id, disposition: 'DAMAGED' as const })));
+  await returnService.completeReturn(SHOP, retR.id);
+  const ru = await whereIs(rust.id);
+  check('returned damaged: nothing waits to be put away, so no shelf is offered', (ru?.notShelved ?? 0) === 0 && !ru?.cameOff, JSON.stringify(ru));
+
+  console.log('\n9. THE SHELF WAS REMOVED AFTER THE SALE');
+  const olive = await mk('OLIVE');
+  const temp = await owner.post(`/shelves/locations/${store.id}/spots/import`, { rows: [{ address: 'TMP-1', shopFloor: 'yes' }] });
+  const TMP = await spot('TMP-1');
+  await stockIn(olive.id, 1); await put(olive.id, TMP, 1);
+  await sellAndReturn(olive.id, [{ spotId: TMP, quantity: 1 }]);
+  const o1 = await whereIs(olive.id);
+  const removed = await owner.delete(`/shelves/spots/${TMP}`);
+  const o2 = await whereIs(olive.id);
+  check('before removal TMP-1 is offered; after, nothing and no error', temp.status === 201 && o1?.cameOff?.address === 'TMP-1' && removed.status === 200 && o2 && !o2.cameOff && o2.notShelved === 1, `${brief(removed)} | ${JSON.stringify(o1?.cameOff)} | ${JSON.stringify(o2)}`);
+
+  console.log('\n10. TWO RETURNED, ONE PUT BACK');
+  const navy = await mk('NAVY');
+  await stockIn(navy.id, 2); await put(navy.id, S.FL3, 2);
+  await sellAndReturn(navy.id, [{ spotId: S.FL3, quantity: 2 }], 2);
+  const n1 = await whereIs(navy.id);
+  const putOne = await owner.post('/shelves/putaway', { locationId: store.id, variantId: navy.id, spotId: n1.cameOff.spotId, quantity: 1 });
+  const n2 = await whereIs(navy.id);
+  check('2 returned: FL-3 offered; after 1 goes back, FL-3 is still first, now as "already kept on"', n1?.notShelved === 2 && n1.cameOff?.address === 'FL-3' && putOne.status === 200 && n2?.notShelved === 1 && !n2.cameOff && n2.shelves[0]?.address === 'FL-3', `${JSON.stringify(n1?.cameOff)} | ${JSON.stringify(n2)}`);
 
   check('no request produced a server error', serverErrors.length === 0, serverErrors.slice(0, 5).join(' | '));
 }
