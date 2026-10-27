@@ -12,6 +12,7 @@ import {
   putawaySchema, resolveIssueSchema, updateSpotSchema
 } from '../services/shelves/shelf.schema';
 import { fillService } from '../services/shelves/fill.service';
+import { refillList } from '../services/shelves/refill.service';
 
 /**
  * Racks and shelves.
@@ -79,6 +80,13 @@ router.get('/locations/:locationId/labels', requirePermission('shelf:manage'), a
     const ids = typeof req.query.spotIds === 'string' ? req.query.spotIds.split(',').filter(Boolean).slice(0, 2000) : undefined;
     res.json({ success: true, data: await spotService.labels(clientOf(req), param(req, 'locationId'), ids) });
   } catch (error) { return fail(res, error, 'Could not prepare the labels.'); }
+});
+
+// What to carry from the back room to the shop floor before the floor runs out. Suggests; moves nothing.
+router.get('/locations/:locationId/refill', requirePermission('shelf:putaway'), async (req, res) => {
+  try {
+    res.json({ success: true, data: await refillList(clientOf(req), param(req, 'locationId'), req.query.min) });
+  } catch (error) { return fail(res, error, 'Could not make the refill list.'); }
 });
 
 router.get('/locations/:locationId/not-shelved', requirePermission('shelf:view'), async (req, res) => {
