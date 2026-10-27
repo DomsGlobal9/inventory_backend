@@ -136,6 +136,41 @@ async function whereFor(clientId: string, variants: VariantRow[], locationId?: s
   });
 }
 
+const RETURN_REASONS = ['RETURN', 'CUSTOMER_RETURN'] as const;
+
+/**
+ * A returned piece goes back where it was sold from. When the newest stock to arrive here is a
+ * return, this is the shelf the item last left the store from (a sale, an order, a transfer -- not a
+ * move between shelves). Null when the newest arrival is not a return, the shelf is gone or switched
+ * off or has shelves inside it now, or the item is still on that shelf (then it is already offered as
+ * "Already kept on").
+ */
+async function cameOffFor(clientId: string, variantId: string, locationId: string, stillOn: string[]) {
+  const arrived = await prisma.inventoryTransaction.findFirst({
+    where: { clientId, variantId, locationId, quantity: { gt: 0 } },
+    orderBy: { createdAt: 'desc' },
+    select: { reason: true, createdAt: true }
+  });
+  if (!arrived || !RETURN_REASONS.includes(arrived.reason as typeof RETURN_REASONS[number])) return null;
+  const newest = await prisma.inventoryTransactionSpot.findFirst({
+    where: { clientId, variantId, locationId, quantity: { lt: 0 }, spotId: { not: null }, transaction: { reason: { not: 'SHELF_MOVE' } }, createdAt: { lte: arrived.createdAt } },
+    orderBy: { createdAt: 'desc' },
+    select: { transactionId: true }
+  });
+  if (!newest) return null;
+  // One sale or dispatch can take from several shelves: of those, the one it no longer sits on and
+  // that gave the most.
+  const legs = await prisma.inventoryTransactionSpot.findMany({
+    where: { clientId, variantId, transactionId: newest.transactionId, quantity: { lt: 0 }, spotId: { not: null } },
+    orderBy: { quantity: 'asc' },
+    select: { createdAt: true, transaction: { select: { reason: true } }, spot: { select: { id: true, address: true, name: true, colour: true, isShopFloor: true, active: true, _count: { select: { children: true } } } } }
+  });
+  const left = legs.find(l => l.spot && l.spot.active && l.spot._count.children === 0 && !stillOn.includes(l.spot.id));
+  if (!left?.spot) return null;
+  const spot = left.spot;
+  return { spotId: spot.id, address: spot.address, name: spot.name, colour: spot.colour, isShopFloor: spot.isShopFloor, leftAt: left.createdAt, leftAs: left.transaction.reason };
+}
+
 async function capacityWarning(spotId: string) {
   const spot = await prisma.storageSpot.findUnique({ where: { id: spotId }, select: { capacity: true, address: true } });
   if (!spot?.capacity) return null;
@@ -167,6 +202,10 @@ export const shelfStockService = {
       if (!location) throw notFound('That location was not found.');
     }
     const [item] = await whereFor(clientId, [variant], locationId);
+    if (locationId) {
+      const place = item.places.find(p => p.locationId === locationId);
+      if (place && place.notShelved > 0) (place as typeof place & { cameOff?: unknown }).cameOff = await cameOffFor(clientId, variantId, locationId, place.shelves.map(s => s.spotId));
+    }
     return item;
   },
 
