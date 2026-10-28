@@ -1335,6 +1335,10 @@ model SalesOrder {
   /// CGST+SGST; different means IGST. A counter sale is always the shop's own state -- the
   /// customer is standing in the shop.
   placeOfSupplyStateCode String? @map("place_of_supply_state_code")
+  /// Shopify only: the customer pays on delivery (cash on delivery), so until Shopify marks it paid the
+  /// shop has money to collect. Set when the order comes in; null for every other order and for Shopify
+  /// orders that came in before 28 Oct 2026 (those were recorded with no payments, paid or not).
+  payOnDelivery Boolean? @map("pay_on_delivery")
   interState             Boolean @default(false) @map("inter_state")
 
   /// The bill is rounded to the nearest rupee once, and the difference is its own visible line --

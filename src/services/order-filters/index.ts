@@ -90,7 +90,7 @@ export async function filterOrders(clientId: string, query: OrderFilterQuery) {
     orderBy: { createdAt: 'desc' },
     take: MAX_ROWS,
     select: {
-      id: true, orderNumber: true, externalOrderId: true, createdAt: true, status: true, sourceSystem: true,
+      id: true, orderNumber: true, externalOrderId: true, createdAt: true, status: true, sourceSystem: true, payOnDelivery: true,
       handover: true, promisedAt: true, handedOverAt: true, locationId: true, location: { select: { name: true } },
       total: true, roundOff: true, writtenOff: true, customerName: true, customerPhone: true,
       customer: { select: { name: true, phone: true } },
@@ -111,8 +111,10 @@ export async function filterOrders(clientId: string, query: OrderFilterQuery) {
    * owed: a cancelled or draft order with money still open, and a Shopify order, have no payment
    * state here and nothing due. A cancelled order that was paid and refunded still says Refunded.
    */
+  // A Shopify order paid on delivery is the exception (28 Oct): its money really is still to collect
+  // until Shopify marks it paid, and Shopify orders now arrive with their payments recorded.
   const notOwed = (o: typeof rows[number], status: string) =>
-    o.sourceSystem === 'SHOPIFY' || ((o.status === 'CANCELLED' || o.status === 'DRAFT') && (status === 'UNPAID' || status === 'PART_PAID'));
+    (o.sourceSystem === 'SHOPIFY' && !o.payOnDelivery) || ((o.status === 'CANCELLED' || o.status === 'DRAFT') && (status === 'UNPAID' || status === 'PART_PAID'));
   const orders = rows.map(o => {
     const payableMinor = toMinor(o.total) + toMinor(o.roundOff ?? 0);
     const summed = paymentSummary(payableMinor, o.payments, toMinor(o.writtenOff ?? 0));

@@ -363,7 +363,8 @@ export class ShopifyOrderIngestService {
           // Fixed at sale time: a bill keeps the kind it was issued under.
           documentKind: gst.documentKind,
           placeOfSupplyStateCode: gst.placeOfSupplyStateCode,
-          interState: gst.interState
+          interState: gst.interState,
+          payOnDelivery: order.payment.cod
         }
       });
 
@@ -461,6 +462,7 @@ export class ShopifyOrderIngestService {
       billingAddress: order.customer.billingAddress,
       placeOfSupplyStateCode: gst.placeOfSupplyStateCode,
       interState: gst.interState,
+      payOnDelivery: order.payment.cod,
       // An order placed before kinds were stored takes one now; one that has a kind keeps it.
       ...(current.documentKind ? {} : { documentKind: gst.documentKind })
     };

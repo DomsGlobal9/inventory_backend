@@ -23,6 +23,7 @@
  */
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
+import { filterOrders, orderFilterQuery } from '../services/order-filters';
 import { shopifyProductPushService } from '../services/shopify-products';
 
 const API = process.env.VERIFY_API_URL ?? 'http://localhost:4016/api/v1';
@@ -214,6 +215,16 @@ async function main() {
   check('...its piece is held', (await stockOf('A', 'saree')).reservedQty === reservedBefore + 1);
   check('...and NO payment yet', so?.payments.length === 0, so?.payments.map(pay));
   check('...yet it has its tax invoice number already (the goods are going)', so?.invoiceSeries === 'SHP' && so?.invoiceNumber != null, [so?.invoiceSeries, so?.invoiceNumber]);
+  // 28 Oct: the Orders list shows what is still to collect on a cash-on-delivery Shopify order.
+  const unpaidIds = async () => (await filterOrders(CLIENTS.A, orderFilterQuery.parse({ payment: 'UNPAID', limit: '100' })) as any).ids as string[];
+  const codRow = await prisma.salesOrder.findFirst({ where: { clientId: CLIENTS.A, externalOrderId: String(cod.id), sourceSystem: 'SHOPIFY' }, select: { id: true, payOnDelivery: true } });
+  const prepaidRow = await prisma.salesOrder.findFirst({ where: { clientId: CLIENTS.A, sourceSystem: 'SHOPIFY', payOnDelivery: false }, select: { id: true } });
+  check('...it is marked pay-on-delivery, and a prepaid Shopify order is not', codRow?.payOnDelivery === true && !!prepaidRow, [codRow?.payOnDelivery, !!prepaidRow]);
+  const unpaidNow = await unpaidIds();
+  check('...the Payment filter "Not paid" finds it (money to collect), and not the prepaid order', unpaidNow.includes(codRow!.id) && !unpaidNow.includes(prepaidRow!.id), unpaidNow.length);
+  await prisma.salesOrder.update({ where: { id: prepaidRow!.id }, data: { payOnDelivery: null } });
+  check('...an older Shopify order (came in before this, pay-on-delivery unknown) is never shown as owing', !(await unpaidIds()).includes(prepaidRow!.id));
+  await prisma.salesOrder.update({ where: { id: prepaidRow!.id }, data: { payOnDelivery: false } });
 
   const shipped = await hook('A', 'orders/fulfilled', {
     ...cod, updated_at: '2026-10-28T12:00:00Z', fulfillment_status: 'fulfilled',
@@ -227,6 +238,7 @@ async function main() {
   check('...one CASH payment of Rs 10,500.00',
     so?.payments.length === 1 && JSON.stringify(pay(so.payments[0])) === JSON.stringify({ kind: 'PAYMENT', method: 'CASH', amount: 1050000 }), so?.payments.map(pay));
   check('...the order stays dispatched', so?.status === 'DISPATCHED', so?.status);
+  check('...and it leaves the "Not paid" list once Shopify says paid', !(await unpaidIds()).includes(codRow!.id));
   const st = await stockOf('A', 'saree');
   check('...and the held piece was let go when it shipped, not held for ever', st.reservedQty === reservedBefore, [reservedBefore, st.reservedQty]);
   await hook('A', 'orders/updated', { ...codPaid, updated_at: '2026-10-29T09:05:00Z' });
