@@ -21,7 +21,7 @@ const BASE = (import.meta.env.VITE_API_URL || '/_api').replace(/\/+$/, '');
 export class ShopError extends Error {
   constructor(kind, message) {
     super(message);
-    this.kind = kind; // 'UNKNOWN_SHOP' | 'CLOSED' | 'GONE' | 'OFFLINE' | 'BROKEN' | 'RULE'
+    this.kind = kind; // 'UNKNOWN_SHOP' | 'CLOSED' | 'GONE' | 'OFFLINE' | 'BROKEN' | 'RULE' | 'NEEDS_NUMBER'
   }
 }
 
@@ -52,6 +52,8 @@ async function get(path, { signal, send, method } = {}) {
    * number does not look right" -- comes back as 400 with the sentence to show. It is not a
    * failure of the shop, so it is not dressed up as one.
    */
+  // A try-on asked for before the shopper proved their number (or the proof ran out): show that step.
+  if (res.status === 400 && body?.needsNumber) throw new ShopError('NEEDS_NUMBER', body.message);
   if (res.status === 400 && body?.message) throw new ShopError('RULE', body.message);
   if (res.status === 404 && body?.state === 'UNKNOWN') throw new ShopError('UNKNOWN_SHOP', 'There is no shop at this address.');
   if (res.status === 503 && body?.state === 'CLOSED') throw new ShopError('CLOSED', body.message || 'This shop is not open just now.');
@@ -168,8 +170,9 @@ export const tryOn = (slug, productCode, photo, variantCode, opts) =>
     // The proof token (only if this browser proved its number) lets the shop note the try-on for them.
     { ...opts, send: { photo, variantCode, token: heldProof(slug) || undefined } });
 
-export const sendCode = (slug, phone, opts) =>
-  get(`/shop/${encodeURIComponent(slug)}/verify/send`, { ...opts, send: { phone } });
+// purpose 'TRYON' for the number asked before a try-on: its own WhatsApp wording, and always a fresh code.
+export const sendCode = (slug, phone, opts, purpose) =>
+  get(`/shop/${encodeURIComponent(slug)}/verify/send`, { ...opts, send: { phone, ...(purpose ? { purpose } : {}) } });
 
 export const checkCode = (slug, phone, code, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/verify/check`, { ...opts, send: { phone, code } });

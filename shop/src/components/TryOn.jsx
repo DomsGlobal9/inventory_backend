@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { tryOn } from '../api';
+import { tryOn, sendCode, checkCode, heldProof, holdProof, dropProof } from '../api';
 import { Working, Dressing } from '../components/Motion';
 
 /**
@@ -42,7 +42,78 @@ const hasCamera = () => {
   catch { return false; }
 };
 
-export default function TryOn({ slug, product, chosen, onClose }) {
+/*
+ * Their WhatsApp number first (owner, 28 Oct), proved with a code from the shop's own number, so the
+ * shop knows who tried what. Only when the shop can send a code (`asksForNumber`, the shop's
+ * canVerifyPhone): a shop with no WhatsApp linked lets everybody try on as before. Once proved, this
+ * phone keeps the pass for 30 days and goes straight to the photograph.
+ */
+function NumberStep({ slug, onProved }) {
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState(null);
+
+  const send = async () => {
+    if (phone.replace(/\D/g, '').length < 10) { setSaid('Enter your 10-digit WhatsApp number.'); return; }
+    setBusy(true); setSaid(null);
+    try {
+      await sendCode(slug, phone, undefined, 'TRYON');
+      setSent(true); setCode('');
+      setSaid('We have sent a code to your WhatsApp.');
+    } catch (err) {
+      setSaid(err?.message ?? 'That code could not be sent. Try again.');
+    } finally { setBusy(false); }
+  };
+
+  const check = async () => {
+    setBusy(true); setSaid(null);
+    try {
+      const out = await checkCode(slug, phone, code);
+      holdProof(slug, out?.token);
+      onProved();
+    } catch (err) {
+      setSaid(err?.message ?? 'That code was not right.');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="verify tryverify">
+      {sent ? (
+        <>
+          <label>
+            <span>The code we sent to your WhatsApp</span>
+            <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric"
+              autoComplete="one-time-code" maxLength={6} placeholder="123456" autoFocus />
+          </label>
+          <div className="row">
+            <button type="button" className="go" disabled={busy || code.replace(/\D/g, '').length !== 6} onClick={check}>
+              {busy ? 'Checking…' : 'Confirm'}
+            </button>
+            <button type="button" className="again" disabled={busy} onClick={send}>Send it again</button>
+            <button type="button" className="again" disabled={busy} onClick={() => { setSent(false); setSaid(null); }}>Change number</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="why">Enter your WhatsApp number. We'll send a code to check it's yours.</p>
+          <label>
+            <span>WhatsApp number</span>
+            <input value={phone} onChange={e => setPhone(e.target.value)} inputMode="tel" autoComplete="tel"
+              placeholder="98480 11122" maxLength={16} />
+          </label>
+          <button type="button" className="go" disabled={busy} onClick={send}>{busy ? 'Sending…' : 'Send code'}</button>
+        </>
+      )}
+      {said ? <p className="said" role="status">{said}</p> : null}
+    </div>
+  );
+}
+
+export default function TryOn({ slug, product, chosen, asksForNumber = false, onClose }) {
+  // Proved already on this phone (the pass from the code), or not asked at all for this shop.
+  const [proved, setProved] = useState(() => !asksForNumber || !!heldProof(slug));
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
   const [onPhone] = useState(hasCamera);
@@ -72,6 +143,8 @@ export default function TryOn({ slug, product, chosen, onClose }) {
       const out = await tryOn(slug, product.productCode, photo, chosen?.variantCode);
       setResult(out.imageUrl);
     } catch (err) {
+      // The pass ran out, or the shop has just started asking: back to the number, photo kept.
+      if (err?.kind === 'NEEDS_NUMBER') { dropProof(slug); setProved(false); setSaid(null); return; }
       setSaid(err?.message ?? 'That did not work. Please try another photograph.');
     } finally {
       setBusy(false);
@@ -91,7 +164,9 @@ export default function TryOn({ slug, product, chosen, onClose }) {
           <button type="button" className="icon" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
-        {result ? (
+        {!proved ? (
+          <NumberStep slug={slug} onProved={() => setProved(true)} />
+        ) : result ? (
           <>
             <div className="tryshot big">
               <img src={result} alt={`${product.title}, on you`} />

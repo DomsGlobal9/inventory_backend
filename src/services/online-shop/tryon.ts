@@ -1,6 +1,7 @@
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
 import { wearIt, TryOnWearError } from '../shopper-tryon';
+import { shopperFor } from '../shopper-tryon/who.service';
 import { OnlineShopRuleError } from './rules';
 
 /**
@@ -24,10 +25,14 @@ export async function offersTryOn(clientId: string): Promise<boolean> {
 }
 
 /** One try-on: this piece, in this colour, on this person. */
-export async function seeItOn(clientId: string, productCodeRaw: unknown, photoRaw: unknown, variantCodeRaw?: unknown) {
+export async function seeItOn(clientId: string, productCodeRaw: unknown, photoRaw: unknown, variantCodeRaw?: unknown, token?: unknown) {
   if (!(await offersTryOn(clientId))) {
     throw new OnlineShopRuleError('This shop does not offer try-on just now.');
   }
+
+  // Their WhatsApp number first, proved with a code, when this shop can send one (28 Oct): the
+  // shop knows who tried what. A shop whose WhatsApp is not linked carries on as before, anonymous.
+  await shopperFor(clientId, token);
 
   const productCode = typeof productCodeRaw === 'string' ? productCodeRaw.trim() : '';
   if (!productCode) throw new OnlineShopRuleError('Which piece is missing.');

@@ -4,6 +4,7 @@ import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, shopIntere
 import * as onlinePayments from '../services/payments/online-payment.service';
 import { prisma } from '../lib/prisma';
 import * as shopViews from '../services/shop-views';
+import { NumberNeededError } from '../services/shopper-tryon/who.service';
 
 /**
  * What a shopper's browser asks for at `shop.scaleezy.com/<slug>`.
@@ -106,7 +107,8 @@ const buying = (fn: (req: Request) => Promise<unknown>) =>
     try {
       res.json({ success: true, data: await fn(req) });
     } catch (e) {
-      if (e instanceof OnlineShopRuleError) return res.status(400).json({ success: false, message: e.message });
+      // needsNumber: the shopper must prove their WhatsApp number first; the page shows that step.
+      if (e instanceof OnlineShopRuleError) return res.status(400).json({ success: false, message: e.message, ...(e instanceof NumberNeededError ? { needsNumber: true } : {}) });
       console.error('[shop] something went wrong while buying:', e);
       res.status(500).json({ success: false, message: 'Something went wrong at the shop. Please try again.' });
     }
@@ -321,7 +323,7 @@ router.post('/:slug/products/:productCode/tryon', tryOnLimiter, buying(async (re
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   // variantCode says which colour the shopper is looking at, so the right one is tried on them.
   // Optional: an older shop page that does not send it still works, on the product's lead photo.
-  const result = await shopTryOn.seeItOn(shop.clientId, req.params.productCode, req.body?.photo, req.body?.variantCode);
+  const result = await shopTryOn.seeItOn(shop.clientId, req.params.productCode, req.body?.photo, req.body?.variantCode, req.body?.token);
   // A known shopper (proved number) trying it on is worth the shop knowing; never fails the try-on.
   await shopViews.seen(shop.clientId, req.body?.token, req.params.productCode, 'TRYON', req.body?.variantCode)
     .catch(e => console.error('[shop] a try-on was not recorded:', (e as Error)?.message));
@@ -346,7 +348,8 @@ const codeLimiter = rateLimit({
 router.post('/:slug/verify/send', codeLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
-  return shopOtp.sendCode(shop.clientId, req.body?.phone);
+  // purpose TRYON: the number asked before a try-on, with its own message wording.
+  return shopOtp.sendCode(shop.clientId, req.body?.phone, req.body?.purpose === 'TRYON' ? 'TRYON' : 'ORDER');
 }));
 
 router.post('/:slug/verify/check', codeLimiter, buying(async (req) => {

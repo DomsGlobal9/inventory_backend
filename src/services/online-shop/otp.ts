@@ -103,9 +103,18 @@ const forgetLink = (clientId: string) => { linkSeen.delete(clientId); };
  * something about it: "wait a moment" for too many, and a plain refusal for a number that is not
  * a number. Nothing here says whether that number has ever shopped here before.
  */
-export async function sendCode(clientId: string, rawPhone: unknown) {
+/**
+ * What the code is for. ORDER is the checkout; TRYON is the number asked before a try-on (28 Oct), on
+ * the tag's QR page and in the online shop -- same code, same table, its own words.
+ */
+export type CodePurpose = 'ORDER' | 'TRYON';
+
+export async function sendCode(clientId: string, rawPhone: unknown, purpose: CodePurpose = 'ORDER') {
+  const forTryOn = purpose === 'TRYON';
   if (!(await canVerify(clientId))) {
-    throw new OnlineShopRuleError('This shop cannot send a code just now. Place your order and it will ring you.');
+    throw new OnlineShopRuleError(forTryOn
+      ? 'This shop cannot send a code just now. Try again in a little while.'
+      : 'This shop cannot send a code just now. Place your order and it will ring you.');
   }
   const phone = asPhone(rawPhone);
   const now = new Date();
@@ -114,16 +123,18 @@ export async function sendCode(clientId: string, rawPhone: unknown) {
     where: { clientId_phone: { clientId, phone } }
   });
 
-  // Already proved, and the proof has not run out: nothing to send.
-  if (held?.verifiedAt && now.getTime() - held.verifiedAt.getTime() < PROOF_LASTS_MS) {
+  // Already proved, and the proof has not run out: nothing to send. Not for a try-on: that needs THIS
+  // browser's pass (the token from typing the code back), and a number proved elsewhere gives none --
+  // anybody who knows a number would otherwise get past.
+  if (!forTryOn && held?.verifiedAt && now.getTime() - held.verifiedAt.getTime() < PROOF_LASTS_MS) {
     return { sent: false, alreadyVerified: true, expiresInSeconds: 0 };
   }
 
   const fresh = held && held.expiresAt > now;
   if (fresh && held.sentCount >= MAX_SENDS) {
-    throw new OnlineShopRuleError(
-      'A few codes have already gone to that number. Wait a few minutes, or place your order and the shop will ring you.'
-    );
+    throw new OnlineShopRuleError(forTryOn
+      ? 'A few codes have already gone to that number. Wait a few minutes and try again.'
+      : 'A few codes have already gone to that number. Wait a few minutes, or place your order and the shop will ring you.');
   }
 
   const code = String(crypto.randomInt(0, 10 ** DIGITS)).padStart(DIGITS, '0');
@@ -155,7 +166,9 @@ export async function sendCode(clientId: string, rawPhone: unknown) {
        * every scam message these customers are warned about; naming the shop and the reason is what
        * makes it believable, and the warning not to pass it on is the one line that matters.
        */
-      text: `${code} is your code to confirm your order with ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`,
+      text: forTryOn
+        ? `${code} is your code to try on clothes at ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`
+        : `${code} is your code to confirm your order with ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`,
       kind: 'ORDER_UPDATE',
       referenceId: null,
       // One code, one send, however many times the request is retried.
@@ -171,9 +184,9 @@ export async function sendCode(clientId: string, rawPhone: unknown) {
      */
     forgetLink(clientId);
     console.warn('[online-shop] a code could not be sent:', (e as Error)?.message);
-    throw new OnlineShopRuleError(
-      'That code could not be sent just now. Place your order and the shop will ring you to confirm it.'
-    );
+    throw new OnlineShopRuleError(forTryOn
+      ? 'That code could not be sent just now. Check the number is on WhatsApp and try again.'
+      : 'That code could not be sent just now. Place your order and the shop will ring you to confirm it.');
   }
 
   await prisma.onlineShopPhoneCode.upsert({

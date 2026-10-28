@@ -627,7 +627,7 @@ export default function ProductPage({ slug, shop }) {
 
       {trying ? (
         <Suspense fallback={null}>
-          <TryOn slug={slug} product={p} chosen={chosen} onClose={() => setTrying(false)} />
+          <TryOn slug={slug} product={p} chosen={chosen} asksForNumber={!!shop?.canVerifyPhone} onClose={() => setTrying(false)} />
         </Suspense>
       ) : null}
     </>

@@ -3,6 +3,10 @@ import rateLimit from 'express-rate-limit';
 import { shopperTryOnGatewayService, shopperTryOnProductService } from '../services/shopper-tryon';
 import { tryOnUsageService } from '../services/tryon';
 import { garmentTryOns } from '../services/garment-tryons';
+import { shopperFor, asksForNumber, NumberNeededError } from '../services/shopper-tryon/who.service';
+import { sendCode, checkCode } from '../services/online-shop/otp';
+import { OnlineShopRuleError } from '../services/online-shop/rules';
+import * as shopViews from '../services/shop-views';
 
 /**
  * Try-On, as a shopper reaches it: scan the QR code on a garment, upload a photograph of
@@ -103,6 +107,9 @@ router.get('/:clientId/:productCode', lookupLimiter, async (req, res, next) => {
         // One entry per colour, with a picture. Empty for a garment that has no variants at all,
         // which the page reads as "nothing to choose" rather than "something went wrong".
         colours,
+        // The shopper proves their WhatsApp number before trying on (28 Oct), when this shop can send
+        // a code. False for a shop whose WhatsApp is not linked: its try-ons stay anonymous, as before.
+        needsNumber: await asksForNumber(String(req.params.clientId)),
         // So the page can say which colour it is showing, rather than leaving a shopper to
         // wonder whether the tag they scanned was the one they are holding.
         ...(garment.variantCode ? { variantCode: garment.variantCode, colourName: garment.colourName ?? null } : {})
@@ -111,6 +118,39 @@ router.get('/:clientId/:productCode', lookupLimiter, async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+/*
+ * Proving the shopper's number, before a try-on: the same codes the online shop's checkout uses
+ * (services/online-shop/otp), sent on WhatsApp from the shop's own number. Counted tightly per
+ * caller, and per number inside sendCode: a code goes to somebody's phone.
+ */
+const codeLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts just now. Wait a few minutes and try again.' }
+});
+
+const refusal = (res: any, error: any) => {
+  if (error instanceof OnlineShopRuleError) {
+    return res.status(400).json({ success: false, message: error.message, ...(error instanceof NumberNeededError ? { needsNumber: true } : {}) });
+  }
+  return null;
+};
+
+router.post('/:clientId/verify/send', codeLimiter, async (req, res, next) => {
+  try {
+    res.json({ success: true, data: await sendCode(String(req.params.clientId), req.body?.phone, 'TRYON') });
+  } catch (error) { if (!refusal(res, error)) next(error); }
+});
+
+router.post('/:clientId/verify/check', codeLimiter, async (req, res, next) => {
+  try {
+    // { verified, token }: the page keeps the token and sends it with each try-on.
+    res.json({ success: true, data: await checkCode(String(req.params.clientId), req.body?.phone, req.body?.code) });
+  } catch (error) { if (!refusal(res, error)) next(error); }
 });
 
 /**
@@ -162,6 +202,9 @@ router.post('/:clientId/:productCode/generate', generateLimiter, async (req, res
       });
     }
 
+    // Who, before anything is spent: a proved number when the shop can send codes, else anonymous.
+    const shopper = await shopperFor(clientId, req.body?.token);
+
     // Checked before anything is started, so a shop out of allowance costs nothing and the
     // shopper is told rather than left waiting.
     await tryOnUsageService.assertWithinLimit(clientId, 'SHOPPER_TRYON');
@@ -180,12 +223,20 @@ router.post('/:clientId/:productCode/generate', generateLimiter, async (req, res
       clientId, { started: true, completed: true, viewsGenerated: 1 }, 'SHOPPER_TRYON'
     );
     void garmentTryOns.record(clientId, started, 'TAG', true);
+    // Against their number too, for their Customer card and CRM. Never fails the try-on.
+    if (shopper) {
+      void shopViews.seen(clientId, req.body?.token, productCode, 'TRYON', req.body?.variant)
+        .catch(e => console.error('[tryon] a try-on was not recorded for the shopper:', (e as Error)?.message));
+    }
 
     res.json({
       success: true,
       data: { resultImageUrl: result.resultImageUrl, title: garment.title }
     });
   } catch (error: any) {
+    // No proved number yet (or a code-refusal): the page shows the number step. Nothing was started.
+    if (refusal(res, error)) return;
+
     // Checked BEFORE recording a failure, for the same reason as the catalog flow: a refusal
     // at the limit was never started, and counting it would push a shop further past a ceiling
     // it cannot get back under.
