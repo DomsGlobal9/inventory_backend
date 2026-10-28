@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import * as logisticsProducts from '../services/logistics/products';
+import * as logisticsParcels from '../services/logistics/parcels';
 import { respondWithError } from '../utils/respondWithError';
 
 /**
@@ -10,6 +11,7 @@ import { respondWithError } from '../utils/respondWithError';
  *   GET /shops/:clientId/products/:sku             one product by SKU (404 when there is none)
  *   GET /shops/:clientId/products?skus=A,B,C       several: { products, not_found }
  *   GET /shops/:clientId/products/search?q=saree   autocomplete: sku, name, price, picture
+ *   POST /shops/:clientId/parcels/:parcelId/updates  booking, label and statuses of a packed parcel
  *
  * ?location_id= on the first two counts stock in that store only. Only for a shop that has switched
  * Logistics on (PUT /internal/modules/logistics/shops/:clientId), and a token made for one shop may
@@ -54,6 +56,15 @@ router.get('/shops/:clientId/products', shop, async (req, res) => {
     if (typeof req.query.skus !== 'string' || !req.query.skus.trim()) return fail(res, 400, 'Say which SKUs: ?skus=A,B,C (up to 50).');
     res.json({ success: true, data: await logisticsProducts.many(clientIdOf(req), req.query.skus, locationOf(req)) });
   } catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+
+/**
+ * Logistics telling us what happened to a parcel: booked (courier, AWB, label), picked up, delivered,
+ * returned, COD collected. Repeats are harmless; an update older than the last one changes nothing.
+ */
+router.post('/shops/:clientId/parcels/:parcelId/updates', shop, async (req, res) => {
+  try { res.json({ success: true, data: await logisticsParcels.fromLogistics(clientIdOf(req), String(req.params.parcelId), req.body) }); }
+  catch (error) { return respondWithError(res, error, { status: 400 }); }
 });
 
 export default router;

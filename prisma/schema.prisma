@@ -5115,3 +5115,54 @@ model CounterLookup {
   @@index([clientId, customerId, createdAt])
   @@map("counter_lookups")
 }
+
+/// A shop's box sizes for packing parcels (Small / Medium / Large by default), in cm. 28 Oct.
+model ShippingBox {
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  name      String
+  lengthCm  Decimal  @map("length_cm") @db.Decimal(6, 1)
+  breadthCm Decimal  @map("breadth_cm") @db.Decimal(6, 1)
+  heightCm  Decimal  @map("height_cm") @db.Decimal(6, 1)
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([clientId, name])
+  @@map("shipping_boxes")
+}
+
+/// A parcel packed and weighed in Inventory for ScaleEzy Logistics (28 Oct). Made with its dispatch, in
+/// one transaction; a trigger puts `payload` in the module outbox as parcel.ready for Logistics. Logistics
+/// sends back the booking, label and statuses (services/logistics/parcels).
+model LogisticsParcel {
+  id           String    @id @default(uuid())
+  clientId     String    @map("client_id")
+  salesOrderId String    @map("sales_order_id")
+  dispatchId   String    @unique @map("dispatch_id")
+  locationId   String    @map("location_id")
+  boxName      String?   @map("box_name")
+  lengthCm     Decimal   @map("length_cm") @db.Decimal(6, 1)
+  breadthCm    Decimal   @map("breadth_cm") @db.Decimal(6, 1)
+  heightCm     Decimal   @map("height_cm") @db.Decimal(6, 1)
+  weightGrams  Int       @map("weight_grams")
+  packedById   String?   @map("packed_by_id")
+  packedByName String?   @map("packed_by_name")
+  packedAt     DateTime  @default(now()) @map("packed_at")
+  /// What Logistics was sent: order, customer, address, payment, items, package.
+  payload      Json
+  /// READY until Logistics answers; then its own status (BOOKED, DELIVERED, RTO_DELIVERED, ...). Text, not an enum (shared DB).
+  status       String    @default("READY")
+  courierName  String?   @map("courier_name")
+  awb          String?
+  trackingUrl  String?   @map("tracking_url")
+  labelUrl     String?   @map("label_url")
+  codCollected Decimal?  @map("cod_collected") @db.Decimal(10, 2)
+  lastStatusAt DateTime? @map("last_status_at")
+  /// Every update Logistics sent, oldest first: [{ status, at, courier?, awb?, note? }].
+  history      Json      @default("[]")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@index([clientId, salesOrderId])
+  @@index([clientId, status])
+  @@map("logistics_parcels")
+}

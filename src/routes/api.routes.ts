@@ -27,6 +27,7 @@ import offerRoutes from './offer.routes';
 import pricingRoutes from './pricing.routes';
 import dispatchRoutes from './dispatch.routes';
 import shippingRoutes from './shipping.routes';
+import logisticsRoutes from './logistics.routes';
 import roleRoutes from './role.routes';
 import brandingRoutes from './branding.routes';
 import productImportRoutes from './product-import.routes';
@@ -194,6 +195,7 @@ router.use('/pricing', pricingRoutes);
 router.use('/dispatches', hideCost, dispatchRoutes);
 // Couriers, and who carried each dispatch (Settings → Couriers; the order page's Parcels).
 router.use('/shipping', shippingRoutes);
+router.use('/logistics', logisticsRoutes);
 // Roles: what a job is allowed to do, composed by the shop from the platform's catalogue.
 router.use('/roles', roleRoutes);
 router.use('/returns', hideCost, returnsRoutes);
