@@ -3,6 +3,8 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { MODULES, ModuleName, moduleSubscriptions, eventsAfter } from '../services/module-outbox';
 import { sessionForToken } from '../controllers/auth.controller';
+import { cleanMoved } from '../services/crm-handover';
+import internalCrm from './internal-crm.routes';
 
 /**
  * What other ScaleEzy modules (CRM first) ask Inventory, service to service.
@@ -66,7 +68,8 @@ router.delete('/modules/:module/shops/:clientId', ownModule, async (req, res) =>
 router.get('/modules/:module/shops', ownModule, async (req, res) => {
   const module = moduleParam(req, res); if (!module) return;
   const rows = await moduleSubscriptions.list(module);
-  res.json({ success: true, data: rows.map(r => ({ clientId: r.clientId, enabledAt: r.enabledAt })) });
+  // For CRM, what each shop has handed over to it so far (services/crm-handover).
+  res.json({ success: true, data: rows.map(r => ({ clientId: r.clientId, enabledAt: r.enabledAt, ...(module === 'crm' ? { movedToCrm: cleanMoved(r.moved) } : {}) })) });
 });
 
 const afterSchema = z.object({ after: z.string().regex(/^\d{1,19}$/).default('0'), limit: z.coerce.number().int().min(1).max(500).default(200) });
@@ -76,5 +79,8 @@ router.get('/modules/:module/shops/:clientId/events', ownModule, async (req, res
   if (!q.success) return res.status(400).json({ success: false, message: 'after must be a sequence number and limit 1 to 500.' });
   res.json({ success: true, data: await eventsAfter(module, String(req.params.clientId), BigInt(q.data.after), q.data.limit) });
 });
+
+// CRM's own questions for one shop: suggestions, locations, customer groups, the hand-over switch.
+router.use('/modules/crm', internalCrm);
 
 export default router;

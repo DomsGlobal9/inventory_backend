@@ -34,6 +34,7 @@ import { markStopped } from './consent';
 import { recentlyOffered } from './audience';
 import { quietGroupOf } from '../customer-groups';
 import { links } from '../links';
+import { shopsWithCampaignsMoved } from '../crm-handover';
 import type { Snapshot } from './campaign.service';
 
 export const IN_FLIGHT = 3;
@@ -76,15 +77,19 @@ export async function runCampaignTick(now = new Date(), opts: { onlyClients?: st
     data: { state: 'WAITING', handedAt: null }
   });
 
-  const sending = await prisma.campaign.findMany({
+  const found = await prisma.campaign.findMany({
     where: {
       status: 'SENDING',
       OR: [{ startAt: null }, { startAt: { lte: now } }],
       ...(opts.onlyClients ? { clientId: { in: opts.onlyClients } } : {})
     },
     orderBy: { startedAt: 'asc' },
-    select: { id: true, clientId: true }
+    select: { id: true, clientId: true, source: true }
   });
+  // A shop whose own campaigns ScaleEzy CRM sends now (crm-handover): leave those alone. Its automatic
+  // messages (wishes until they move too, the points-lapsing reminder) are still Inventory's to send.
+  const moved = await shopsWithCampaignsMoved([...new Set(found.map(c => c.clientId))]);
+  const sending = found.filter(c => !(moved.has(c.clientId) && c.source === 'MANUAL'));
   const shops = [...new Set(sending.map(c => c.clientId))];
   const results: ShopResult[] = [];
   for (const clientId of shops) {

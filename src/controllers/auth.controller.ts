@@ -262,6 +262,12 @@ export const session = async (req: Request, res: Response) => {
  * The answer to "who is this?", built once: the app's /auth/session and the service route other
  * modules ask (CRM, /api/v1/internal/session) give exactly the same shape from the same checks.
  */
+async function modulesOf(clientId: string): Promise<string[]> {
+  const subs = await prisma.moduleSubscription.findMany({ where: { clientId }, select: { module: true }, orderBy: { module: 'asc' } })
+    .catch(() => []);   // a database without the outbox tables yet: Inventory only, as before
+  return ['inventory', ...subs.map(s => s.module).filter(m => m !== 'inventory')];
+}
+
 async function sessionBody(user: UserWithRoles) {
     const own = await prisma.user
       .findUnique({ where: { id: user.id }, select: { tourSeenAt: true } })
@@ -288,7 +294,9 @@ async function sessionBody(user: UserWithRoles) {
       client: {
         id: user.clientId
       },
-      modules: ['inventory'] // Mocked entitlement. In Phase 4, Gateway or Super Admin sets this.
+      // Inventory always; 'crm' when the shop has switched ScaleEzy CRM on (module_subscriptions), so
+      // the app shows "Open in CRM" where a feature has moved. Later modules join the same way.
+      modules: await modulesOf(user.clientId)
     };
 }
 

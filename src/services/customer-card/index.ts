@@ -67,7 +67,7 @@ export const customerCard = {
   async lookup(clientId: string, rawPhone: unknown, locationId?: string) {
     const phone = normalisePhone(rawPhone);
     if (!phone.ok) throw badRequest(phone.reason);
-    const select = { id: true, name: true, customerCode: true, phone: true, email: true, notes: true, tags: true, loyaltyPoints: true, storeCreditPaise: true, birthday: true, anniversary: true } as const;
+    const select = CARD_SELECT;
     let customer = await prisma.customer.findFirst({ where: { clientId, phone: phone.value, deletedAt: null }, orderBy: { createdAt: 'asc' }, select });
     // Bought online and never proved the number: the order carries it, the customer row does not
     // (on purpose -- see phoneForOutsideCustomer). They are still that person's purchases.
@@ -79,79 +79,19 @@ export const customerCard = {
       if (online) customer = await prisma.customer.findUnique({ where: { id: online.customerId }, select });
     }
     if (!customer) return { phone: phone.value, customer: null };
+    return { phone: phone.value, ...(await cardOf(clientId, customer, phone.value, locationId)) };
+  },
 
-    /*
-     * Everything this person bought, at the till AND online: their own record, any order where this
-     * number was typed at checkout (an online order the shop kept on a separate record because the
-     * number was not proved), and a Shopify record with the same email. All of it -- but what came
-     * back does not count, and recent buying counts for more than old (see `weight`).
-     */
-    const same: Prisma.SalesOrderWhereInput[] = [{ customerId: customer.id }, { customerPhone: phone.value }];
-    if (customer.email) same.push({ customer: { email: { equals: literal(customer.email), mode: 'insensitive' }, ...notShared } });
-    const orders = await prisma.salesOrder.findMany({
-      where: { clientId, status: { not: 'CANCELLED' }, deletedAt: null, OR: same },
-      orderBy: { createdAt: 'desc' }, take: MAX_BILLS,
-      select: {
-        createdAt: true, total: true, channel: true,
-        items: { select: { id: true, quantity: true, unitPrice: true, variantId: true, variant: { select: { size: true, colorName: true, product: { select: { id: true, title: true, dressType: true } } } } } },
-        // Goods actually back in the shop; a return only asked for, or turned down, changes nothing.
-        returns: { where: { status: { in: BACK_IN_SHOP } }, select: { refundTotal: true, items: { select: { quantity: true, salesOrderItemId: true, dispatchItem: { select: { salesOrderItemId: true } } } } } }
-      }
-    });
-
-    // Size per kind of garment: a "M" kurti and a "Free Size" saree are both true at once.
-    const sizesByKind = new Map<string, Map<string, number>>();
-    const colourPieces = new Map<string, number>(), colourMoney = new Map<string, number>(), kinds = new Map<string, number>();
-    const bought = new Set<string>(), boughtProducts = new Set<string>();
-    const now = Date.now();
-    for (const o of orders) {
-      const back = new Map<string, number>();
-      for (const r of o.returns) for (const ri of r.items) bump(back, ri.salesOrderItemId ?? ri.dispatchItem.salesOrderItemId, ri.quantity);
-      const w = weight(o.createdAt, now);
-      for (const it of o.items) {
-        // Never offered again, kept or not; but a returned piece says nothing about their size or taste.
-        bought.add(it.variantId); boughtProducts.add(it.variant.product.id);
-        const kept = Math.max(0, it.quantity - (back.get(it.id) ?? 0));
-        if (!kept) continue;
-        const kind = it.variant.product.dressType?.trim() || 'Other';
-        bump(kinds, kind, kept * w);
-        const family = colourFamily(it.variant.colorName);
-        bump(colourPieces, family, kept * w);
-        bump(colourMoney, family, kept * Number(it.unitPrice) * w);
-        if (!sizesByKind.has(kind)) sizesByKind.set(kind, new Map());
-        bump(sizesByKind.get(kind)!, it.variant.size, kept * w);
-      }
-    }
-    // What a bill usually comes to, after anything given back; the last two years when there are enough of those bills.
-    const kept = orders.map(o => ({ at: o.createdAt.getTime(), paid: Number(o.total) - o.returns.reduce((t, r) => t + Number(r.refundTotal), 0) }));
-    const lately = kept.filter(b => now - b.at <= RECENT_SPEND_MS && b.paid > 0);
-    const spend = spendBand((lately.length >= 3 ? lately : kept).map(b => b.paid));
-    const topKinds = top(kinds, 3);
-    const sizes = topKinds.map(kind => ({ kind, size: top(sizesByKind.get(kind) ?? new Map(), 1)[0] ?? null })).filter(s => s.size);
-    const topColours = top(colourScores(colourPieces, colourMoney), 3);
-
-    return {
-      phone: phone.value,
-      customer: {
-        id: customer.id, name: customer.name, customerCode: customer.customerCode,
-        groups: await groupNamesOf(clientId, customer.tags),
-        loyaltyPoints: customer.loyaltyPoints, storeCreditPaise: customer.storeCreditPaise,
-        birthday: customer.birthday, anniversary: customer.anniversary,
-        notes: (customer.notes ?? '').split('\n').map(l => l.trim()).filter(Boolean).slice(-5).reverse()
-      },
-      visits: {
-        bills: orders.length, lastVisit: orders[0]?.createdAt ?? null,
-        // Till and counter-made orders are the shop floor; the online shop and marketplaces are online.
-        inStore: orders.filter(o => o.channel === 'POS' || o.channel === 'MANUAL').length,
-        online: orders.filter(o => o.channel === 'ONLINE' || o.channel === 'MARKETPLACE').length
-      },
-      dna: { sizes, colours: topColours, kinds: topKinds, spend },
-      picks: locationId ? await picksFor(clientId, locationId, { sizes, colours: topColours, kinds: topKinds, bought, boughtProducts, spend }) : [],
-      // What they looked at in the online shop lately (only ever recorded after they proved this number there).
-      lookedOnline: await lookedOnline(clientId, phone.value, locationId, boughtProducts),
-      // What other people who bought what they bought also bought, here and in their size.
-      othersAlsoBought: locationId ? await othersAlsoBought(clientId, locationId, { sizes, bought, boughtProducts }) : []
-    };
+  /**
+   * One customer's suggestions by id, for ScaleEzy CRM's customer page: the SAME rules as the card
+   * (they live only here). Null when the customer is not this shop's.
+   */
+  async suggestionsFor(clientId: string, customerId: string, locationId?: string) {
+    const customer = await prisma.customer.findFirst({ where: { id: customerId, clientId, deletedAt: null }, select: CARD_SELECT });
+    if (!customer) return null;
+    const phone = customer.phone ? normalisePhone(customer.phone) : null;
+    const card = await cardOf(clientId, customer, phone?.ok ? phone.value : null, locationId);
+    return { picks: card.picks, alsoBought: card.othersAlsoBought, lookedAtOnline: card.lookedOnline };
   },
 
   /** One dated line on the customer's notes, newest last, with who wrote it. */
@@ -168,6 +108,87 @@ export const customerCard = {
     return { added: line };
   }
 };
+
+const CARD_SELECT = { id: true, name: true, customerCode: true, phone: true, email: true, notes: true, tags: true, loyaltyPoints: true, storeCreditPaise: true, birthday: true, anniversary: true } as const;
+type CardCustomer = Prisma.CustomerGetPayload<{ select: typeof CARD_SELECT }>;
+
+/**
+ * The card for a known customer. `phone` is their number as the shop has it (typed at the door, or on
+ * their record); null when there is none, and then only their own bills and email count.
+ */
+async function cardOf(clientId: string, customer: CardCustomer, phone: string | null, locationId?: string) {
+  /*
+   * Everything this person bought, at the till AND online: their own record, any order where this
+   * number was typed at checkout (an online order the shop kept on a separate record because the
+   * number was not proved), and a Shopify record with the same email. All of it -- but what came
+   * back does not count, and recent buying counts for more than old (see `weight`).
+   */
+  const same: Prisma.SalesOrderWhereInput[] = [{ customerId: customer.id }, ...(phone ? [{ customerPhone: phone }] : [])];
+  if (customer.email) same.push({ customer: { email: { equals: literal(customer.email), mode: 'insensitive' }, ...notShared } });
+  const orders = await prisma.salesOrder.findMany({
+    where: { clientId, status: { not: 'CANCELLED' }, deletedAt: null, OR: same },
+    orderBy: { createdAt: 'desc' }, take: MAX_BILLS,
+    select: {
+      createdAt: true, total: true, channel: true,
+      items: { select: { id: true, quantity: true, unitPrice: true, variantId: true, variant: { select: { size: true, colorName: true, product: { select: { id: true, title: true, dressType: true } } } } } },
+      // Goods actually back in the shop; a return only asked for, or turned down, changes nothing.
+      returns: { where: { status: { in: BACK_IN_SHOP } }, select: { refundTotal: true, items: { select: { quantity: true, salesOrderItemId: true, dispatchItem: { select: { salesOrderItemId: true } } } } } }
+    }
+  });
+
+  // Size per kind of garment: a "M" kurti and a "Free Size" saree are both true at once.
+  const sizesByKind = new Map<string, Map<string, number>>();
+  const colourPieces = new Map<string, number>(), colourMoney = new Map<string, number>(), kinds = new Map<string, number>();
+  const bought = new Set<string>(), boughtProducts = new Set<string>();
+  const now = Date.now();
+  for (const o of orders) {
+    const back = new Map<string, number>();
+    for (const r of o.returns) for (const ri of r.items) bump(back, ri.salesOrderItemId ?? ri.dispatchItem.salesOrderItemId, ri.quantity);
+    const w = weight(o.createdAt, now);
+    for (const it of o.items) {
+      // Never offered again, kept or not; but a returned piece says nothing about their size or taste.
+      bought.add(it.variantId); boughtProducts.add(it.variant.product.id);
+      const kept = Math.max(0, it.quantity - (back.get(it.id) ?? 0));
+      if (!kept) continue;
+      const kind = it.variant.product.dressType?.trim() || 'Other';
+      bump(kinds, kind, kept * w);
+      const family = colourFamily(it.variant.colorName);
+      bump(colourPieces, family, kept * w);
+      bump(colourMoney, family, kept * Number(it.unitPrice) * w);
+      if (!sizesByKind.has(kind)) sizesByKind.set(kind, new Map());
+      bump(sizesByKind.get(kind)!, it.variant.size, kept * w);
+    }
+  }
+  // What a bill usually comes to, after anything given back; the last two years when there are enough of those bills.
+  const kept = orders.map(o => ({ at: o.createdAt.getTime(), paid: Number(o.total) - o.returns.reduce((t, r) => t + Number(r.refundTotal), 0) }));
+  const lately = kept.filter(b => now - b.at <= RECENT_SPEND_MS && b.paid > 0);
+  const spend = spendBand((lately.length >= 3 ? lately : kept).map(b => b.paid));
+  const topKinds = top(kinds, 3);
+  const sizes = topKinds.map(kind => ({ kind, size: top(sizesByKind.get(kind) ?? new Map(), 1)[0] ?? null })).filter(s => s.size);
+  const topColours = top(colourScores(colourPieces, colourMoney), 3);
+
+  return {
+    customer: {
+      id: customer.id, name: customer.name, customerCode: customer.customerCode,
+      groups: await groupNamesOf(clientId, customer.tags),
+      loyaltyPoints: customer.loyaltyPoints, storeCreditPaise: customer.storeCreditPaise,
+      birthday: customer.birthday, anniversary: customer.anniversary,
+      notes: (customer.notes ?? '').split('\n').map(l => l.trim()).filter(Boolean).slice(-5).reverse()
+    },
+    visits: {
+      bills: orders.length, lastVisit: orders[0]?.createdAt ?? null,
+      // Till and counter-made orders are the shop floor; the online shop and marketplaces are online.
+      inStore: orders.filter(o => o.channel === 'POS' || o.channel === 'MANUAL').length,
+      online: orders.filter(o => o.channel === 'ONLINE' || o.channel === 'MARKETPLACE').length
+    },
+    dna: { sizes, colours: topColours, kinds: topKinds, spend },
+    picks: locationId ? await picksFor(clientId, locationId, { sizes, colours: topColours, kinds: topKinds, bought, boughtProducts, spend }) : [],
+    // What they looked at in the online shop lately (only ever recorded after they proved this number there).
+    lookedOnline: phone ? await lookedOnline(clientId, phone, locationId, boughtProducts) : [],
+    // What other people who bought what they bought also bought, here and in their size.
+    othersAlsoBought: locationId ? await othersAlsoBought(clientId, locationId, { sizes, bought, boughtProducts }) : []
+  };
+}
 
 /**
  * What to show them first: in stock in THIS store, in the size they buy for that kind of garment,

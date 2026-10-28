@@ -160,18 +160,18 @@ async function main() {
 
   console.log('\n4. DELIVERY: SIGNED, IN ORDER, RETRIED');
   inbox.mode = 'fail';
-  const r1 = await ModuleOutboxDispatcher.runOnce();
+  const r1 = await ModuleOutboxDispatcher.runOnce({ onlyClients: [SHOP, OTHER] });
   const afterFail = await eventsOf(SHOP);
   check('CRM down: the batch waits to retry, attempt counted, next try in the future', r1.failed > 0 && afterFail.every(e => e.status === 'RETRYING' && e.attempts === 1 && e.nextAttemptAt && e.nextAttemptAt > new Date()), JSON.stringify(afterFail.map(e => [e.status, e.attempts])));
   check('...and the inbox saw a correctly signed request', inbox.badSignatures === 0 && inbox.deliveryIds.length === 1, `${inbox.badSignatures} bad, ${inbox.deliveryIds.length} sent`);
   const newer = await call('PATCH', `/customers/${customerId}`, asOwner, { name: 'Asha Rao Kumar' });
   inbox.mode = 'ok';
-  const r2 = await ModuleOutboxDispatcher.runOnce();
+  const r2 = await ModuleOutboxDispatcher.runOnce({ onlyClients: [SHOP, OTHER] });
   check('a newer change does not overtake the waiting batch: nothing sent while it is not due', newer.status < 300 && r2.batches === 0 && inbox.batches.length === 0, JSON.stringify(r2));
   await prisma.moduleEvent.updateMany({ where: { clientId: SHOP, status: 'RETRYING' }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
-  const r3 = await ModuleOutboxDispatcher.runOnce();
+  const r3 = await ModuleOutboxDispatcher.runOnce({ onlyClients: [SHOP, OTHER] });
   check('when due, the same batch goes again with the same delivery id', r3.delivered > 0 && inbox.deliveryIds[1] === inbox.deliveryIds[0], JSON.stringify(inbox.deliveryIds));
-  await ModuleOutboxDispatcher.runOnce();
+  await ModuleOutboxDispatcher.runOnce({ onlyClients: [SHOP, OTHER] });
   const sent = inbox.batches.flatMap(b => b.events);
   const seqs = sent.map((e: any) => BigInt(e.sequence));
   check('everything arrived, oldest first, each once', sent.length === (await eventsOf(SHOP)).length && seqs.every((s, i) => i === 0 || s > seqs[i - 1]) && new Set(sent.map((e: any) => e.id)).size === sent.length, `${sent.length} sent`);
@@ -186,7 +186,7 @@ async function main() {
   check('the feed can be read back after any number, oldest first; nothing after the last; bad input 400', all.status === 200 && all.data.data.length === sent.length && tail.data?.data?.length === 0 && bad.status === 400, `${brief(all)} | ${brief(bad)}`);
   delete process.env.CRM_EVENTS_URL;
   await call('PATCH', `/customers/${customerId}`, asOwner, { name: 'Waiting Name' });
-  await ModuleOutboxDispatcher.runOnce();
+  await ModuleOutboxDispatcher.runOnce({ onlyClients: [SHOP, OTHER] });
   const waiting = (await eventsOf(SHOP)).filter(e => e.status !== 'DELIVERED');
   check('with no CRM address configured, events wait and no attempts are spent', waiting.length > 0 && waiting.every(e => e.status === 'PENDING' && e.attempts === 0), JSON.stringify(waiting.map(e => [e.status, e.attempts])));
   const offRes = await call('DELETE', `/internal/modules/crm/shops/${SHOP}`, CRM);

@@ -90,8 +90,11 @@ export class ModuleOutboxDispatcher {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
-  /** One pass. Exported so tests can drive it instead of waiting on the timer. */
-  static async runOnce(): Promise<{ batches: number; delivered: number; failed: number }> {
+  /**
+   * One pass. Exported so tests can drive it instead of waiting on the timer; a test passes
+   * `onlyClients` so it never sends (or fails) another shop's waiting events.
+   */
+  static async runOnce(opts: { onlyClients?: string[] } = {}): Promise<{ batches: number; delivered: number; failed: number }> {
     if (this.running) return { batches: 0, delivered: 0, failed: 0 };
     this.running = true;
     let batches = 0, delivered = 0, failed = 0;
@@ -108,7 +111,8 @@ export class ModuleOutboxDispatcher {
         FROM (SELECT module, client_id, MIN(sequence) AS s FROM module_events
               WHERE status IN ('PENDING', 'RETRYING') GROUP BY module, client_id) w
         JOIN module_events e ON e.sequence = w.s
-        WHERE e.next_attempt_at IS NULL OR e.next_attempt_at <= NOW()
+        WHERE (e.next_attempt_at IS NULL OR e.next_attempt_at <= NOW())
+          ${opts.onlyClients ? Prisma.sql`AND e.client_id IN (${Prisma.join(opts.onlyClients.length ? opts.onlyClients : [''])})` : Prisma.empty}
         ORDER BY e.sequence
         LIMIT ${CLIENTS_PER_PASS}`;
 

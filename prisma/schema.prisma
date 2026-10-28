@@ -5029,6 +5029,10 @@ model ModuleSubscription {
   module    String
   enabledBy String?  @map("enabled_by")
   enabledAt DateTime @default(now()) @map("enabled_at")
+  /// CRM only: which customer features CRM runs for this shop instead of Inventory
+  /// { notes?, onlineViews?, card?, groups?, campaigns?: bool, wishes?: { fromDay } | null }.
+  /// Null = nothing has moved. Written only by services/crm-handover, which keeps the safety rules.
+  moved     Json?
 
   @@id([clientId, module])
   @@map("module_subscriptions")

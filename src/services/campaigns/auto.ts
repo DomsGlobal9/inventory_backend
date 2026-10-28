@@ -20,6 +20,7 @@ import {
 import { reachable, offerReachable } from './audience';
 import { quietFilter } from '../customer-groups';
 import { localHour, SEND_FROM_HOUR } from './sender';
+import { wishesMovedFrom } from '../crm-handover';
 
 const DAY = 86_400_000;
 const shortDate = (dayKey: string) => {
@@ -78,8 +79,12 @@ export async function prepareShopDay(clientId: string, now = new Date(), opts: {
   }
 
   const wishable = await quietFilter(clientId, 'wishes').then(q => q ? { AND: [reachable(clientId), q] } : reachable(clientId));
+  // Handed to ScaleEzy CRM from some day on (crm-handover): from that day CRM sends the wishes, never both.
+  // Read after the claim above, which is what makes the hand-over day exact.
+  const wishesFrom = await wishesMovedFrom(clientId);
+  const wishesHere = !wishesFrom || day < wishesFrom;
 
-  if (s.birthdayWish) {
+  if (s.birthdayWish && wishesHere) {
     const ids = (await prisma.customer.findMany({ where: { AND: [wishable, { birthday: { in: todays } }] }, select: { id: true } })).map(c => c.id);
     const gift = s.enabled && s.birthdayPoints > 0
       ? `\n\nWe have added ${s.birthdayPoints.toLocaleString('en-IN')} points to your account as a gift. You now have {points} points.`
@@ -87,7 +92,7 @@ export async function prepareShopDay(clientId: string, now = new Date(), opts: {
     if (await makeCampaign(clientId, 'BIRTHDAY', `Birthday wishes, ${shortDate(day)}`, (s.birthdayText || DEFAULT_BIRTHDAY_TEXT) + gift, ids, s.birthdayMediaId ?? null)) out.birthdays = ids.length;
   }
 
-  if (s.anniversaryWish) {
+  if (s.anniversaryWish && wishesHere) {
     const ids = (await prisma.customer.findMany({ where: { AND: [wishable, { anniversary: { in: todays } }] }, select: { id: true } })).map(c => c.id);
     if (await makeCampaign(clientId, 'ANNIVERSARY', `Anniversary wishes, ${shortDate(day)}`, s.anniversaryText || DEFAULT_ANNIVERSARY_TEXT, ids, s.anniversaryMediaId ?? null)) out.anniversaries = ids.length;
   }

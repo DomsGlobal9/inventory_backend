@@ -41,6 +41,7 @@ import { checkCaption, checkLinkPlacement, checkName, checkText, render } from '
 import { checkCampaignLink, shopPhone, shortLinkLength, storedLink, type CampaignLink } from './link';
 import { fromProductImage, fromUpload, mediaView, ownMedia } from './media';
 import { dailyBudget } from './sender';
+import { refuseIfCampaignsMoved } from '../crm-handover';
 
 export type Actor = { id: string; clientId: string; name?: string | null; permissions?: string[]; roles?: string[] };
 const may = (a: Actor, key: string) => holdsEverything(a.permissions, a.roles) || grants(a.permissions ?? [], key);
@@ -409,6 +410,8 @@ export async function start(actor: Actor, id: string, input: { expected?: unknow
     frozenAt: now.toISOString()
   };
   await prisma.$transaction(async tx => {
+    // Not once this shop's campaigns have moved to ScaleEzy CRM: nothing here would send it.
+    await refuseIfCampaignsMoved(tx, actor.clientId);
     const claimed = await tx.campaign.updateMany({
       where: { id: c.id, clientId: actor.clientId, status: 'DRAFT' },
       data: { status: link ? 'PREPARING' : 'SENDING', startedAt: now, snapshot: snapshot as unknown as Prisma.InputJsonValue, prepareError: null }
