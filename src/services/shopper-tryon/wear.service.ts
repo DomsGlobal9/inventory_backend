@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { supabase } from '../../lib/supabase';
 import { prepareImage } from '../../lib/imagePrep';
 import { tryOnUsageService } from '../tryon';
+import { garmentTryOns } from '../garment-tryons';
 import { shopperTryOnGatewayService, categoryFor } from './gateway.service';
 
 /**
@@ -43,7 +44,8 @@ export class TryOnWearError extends Error {
   }
 }
 
-export type WearGarment = { imageUrl: string; title: string; dressType?: string | null };
+/** productId (and the colour of the photograph worn) only for the try-on counts; never sent anywhere. */
+export type WearGarment = { imageUrl: string; title: string; dressType?: string | null; productId?: string; colour?: string | null };
 
 /** What the shop has left, so a screen can say so before anybody chooses a photograph. */
 export async function allowanceFor(clientId: string) {
@@ -131,10 +133,12 @@ export async function wearIt(params: {
     void tryOnUsageService.record(
       clientId, { started: true, completed: true, viewsGenerated: 1 }, 'SHOPPER_TRYON'
     );
+    if (garment.productId) void garmentTryOns.record(clientId, { productId: garment.productId, colour: garment.colour }, params.from, true);
 
     return { imageUrl: result.resultImageUrl, title: garment.title };
   } catch (e: any) {
     void tryOnUsageService.record(clientId, { started: true, failed: true }, 'SHOPPER_TRYON');
+    if (garment.productId) void garmentTryOns.record(clientId, { productId: garment.productId, colour: garment.colour }, params.from, false);
     // The gateway's own words may name internal services; the caller gets something to act on.
     console.error(`[TryOn] ${params.from} generation failed for ${clientId}:`, e?.message);
     throw new TryOnWearError(

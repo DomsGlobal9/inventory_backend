@@ -11,6 +11,7 @@ import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 import { customerCard } from '../services/customer-card';
 import { doorCheckins } from '../services/door-checkin';
+import { counterLookups } from '../services/counter-lookups';
 import { prisma } from '../lib/prisma';
 import { respondWithError } from '../utils/respondWithError';
 
@@ -26,7 +27,17 @@ router.get('/', requirePermission('customer:view'), getCustomers);
 router.get('/card', requirePermission('customer:view'), async (req, res) => {
   try {
     const locationId = typeof req.query.locationId === 'string' && req.query.locationId ? req.query.locationId : undefined;
-    res.json({ success: true, data: await customerCard.lookup((req as any).clientId, req.query.phone, locationId) });
+    const clientId = (req as any).clientId;
+    const card = await customerCard.lookup(clientId, req.query.phone, locationId);
+    res.json({ success: true, data: card });
+    // The counter history for CRM, after the answer has gone: it must never slow or fail the card.
+    if (card.customer) {
+      const userId = (req as any).user?.id ?? null;
+      void (async () => {
+        const name = userId ? (await prisma.user.findFirst({ where: { id: userId, clientId }, select: { name: true } }).catch(() => null))?.name ?? null : null;
+        await counterLookups.record(clientId, { id: userId, name }, card, locationId);
+      })();
+    }
   } catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
 // Door QR check-in: who is in this store now, "I'll take them", and the QR for the door.

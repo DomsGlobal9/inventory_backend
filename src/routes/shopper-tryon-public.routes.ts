@@ -2,6 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { shopperTryOnGatewayService, shopperTryOnProductService } from '../services/shopper-tryon';
 import { tryOnUsageService } from '../services/tryon';
+import { garmentTryOns } from '../services/garment-tryons';
 
 /**
  * Try-On, as a shopper reaches it: scan the QR code on a garment, upload a photograph of
@@ -123,6 +124,9 @@ router.get('/:clientId/:productCode', lookupLimiter, async (req, res, next) => {
 router.post('/:clientId/:productCode/generate', generateLimiter, async (req, res, next) => {
   const clientId = String(req.params.clientId);
   const productCode = String(req.params.productCode);
+  // Set once the generation is under way, so a refusal before it (no photograph, no garment, at
+  // the limit) is not counted as a try-on of this garment.
+  let started: { productId: string; colour: string | null } | null = null;
 
   try {
     const humanImageUrl = String(req.body?.humanImageUrl ?? '').trim();
@@ -162,6 +166,7 @@ router.post('/:clientId/:productCode/generate', generateLimiter, async (req, res
     // shopper is told rather than left waiting.
     await tryOnUsageService.assertWithinLimit(clientId, 'SHOPPER_TRYON');
 
+    started = { productId: garment.productId, colour: garment.wornColour };
     const result = await shopperTryOnGatewayService.generate({
       clientId,
       garmentImageUrl: garment.imageUrl,
@@ -174,6 +179,7 @@ router.post('/:clientId/:productCode/generate', generateLimiter, async (req, res
     void tryOnUsageService.record(
       clientId, { started: true, completed: true, viewsGenerated: 1 }, 'SHOPPER_TRYON'
     );
+    void garmentTryOns.record(clientId, started, 'TAG', true);
 
     res.json({
       success: true,
@@ -193,6 +199,7 @@ router.post('/:clientId/:productCode/generate', generateLimiter, async (req, res
     // Anything else broke after we committed to it. The GPU time was spent either way, and a
     // shop whose key is wrong must show as failing rather than as unused.
     void tryOnUsageService.record(clientId, { started: true, failed: true }, 'SHOPPER_TRYON');
+    if (started) void garmentTryOns.record(clientId, started, 'TAG', false);
     next(error);
   }
 });

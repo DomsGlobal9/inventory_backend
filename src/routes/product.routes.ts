@@ -5,6 +5,8 @@ import { imageController } from '../controllers/image.controller';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 import { upsertVariantLocationProfile } from '../controllers/variant-location.controller';
+import { garmentTryOns } from '../services/garment-tryons';
+import { respondWithError } from '../utils/respondWithError';
 
 const router = Router();
 
@@ -13,6 +15,15 @@ router.use(tenantMiddleware);
 
 router.post('/', requirePermission('product:create'), productController.create);
 router.get('/', requirePermission('product:view'), productController.getAll);
+// How often shoppers tried garments on (counts only, never who). Before /:id, which would take "try-ons" as an id.
+router.get('/try-ons/most-tried', requirePermission('product:view'), async (req, res) => {
+  try { res.json({ success: true, data: await garmentTryOns.mostTriedLeastBought((req as any).clientId, req.query.days, req.query.limit) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.get('/:id/try-ons', requirePermission('product:view'), async (req, res) => {
+  try { res.json({ success: true, data: await garmentTryOns.forProduct((req as any).clientId, String(req.params.id), req.query.days) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
 router.get('/:id', requirePermission('product:view'), productController.getOne);
 // Asked while the shopkeeper is still typing, so it reads rather than writes.
 router.get('/:id/price-impact', requirePermission('product:update'), productController.priceImpact);

@@ -5077,3 +5077,41 @@ model ModuleEvent {
   @@index([createdAt])
   @@map("module_events")
 }
+
+/// How often each garment, and each colour of it, was tried on by shoppers: one row per shop,
+/// product, colour, day and place. Totals only -- no customer, no photograph, nothing about who.
+/// Written by services/garment-tryons; read on the product page and in "most tried, least bought".
+model GarmentTryOnDay {
+  clientId  String   @map("client_id")
+  productId String   @map("product_id")
+  /// The colour's name ('' when the garment has none or the try-on named none): a colour spans sizes.
+  colour    String   @default("")
+  day       DateTime @db.Date
+  /// TAG (the QR on the garment), SHOP_PAGE (online shop) or COUNTER. Text, not an enum (shared DB).
+  place     String
+  completed Int      @default(0)
+  failed    Int      @default(0)
+
+  @@id([clientId, productId, colour, day, place])
+  @@index([clientId, day])
+  @@map("garment_tryon_days")
+}
+
+/// One Customer card look-up at the counter: who looked whom up, in which store, and what the card
+/// suggested. Kept so CRM gets the counter history (outbox kind counter_lookup.created).
+model CounterLookup {
+  id           String   @id @default(uuid())
+  clientId     String   @map("client_id")
+  locationId   String?  @map("location_id")
+  customerId   String   @map("customer_id")
+  userId       String?  @map("user_id")
+  userName     String?  @map("user_name")
+  /// [{ productId, variantId?, title, colour?, size? }] as the card showed them.
+  picks        Json     @default("[]")
+  alsoBought   Json     @default("[]") @map("also_bought")
+  lookedOnline Json     @default("[]") @map("looked_online")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, customerId, createdAt])
+  @@map("counter_lookups")
+}

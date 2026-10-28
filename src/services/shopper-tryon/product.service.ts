@@ -33,6 +33,10 @@ export type ScannedGarment = {
   title: string;
   imageUrl: string;
   category: TryOnCategory;
+  /** For the try-on counts only; never sent to the shopper. */
+  productId: string;
+  /** The colour of the photograph used: the tag's colour when it has its own photograph, else unknown. */
+  wornColour: string | null;
   /** Set only when the scan named a colour this product actually has. */
   variantCode?: string;
   colourName?: string | null;
@@ -178,6 +182,7 @@ export class ShopperTryOnProductService {
         status: 'ACTIVE'
       },
       select: {
+        id: true,
         title: true,
         productCode: true,
         dressType: true,
@@ -230,6 +235,8 @@ export class ShopperTryOnProductService {
 
     return {
       clientId,
+      productId: product.id,
+      wornColour: chosen?.images?.[0]?.url ? (chosen.colorName ?? null) : null,
       productCode: product.productCode,
       title: product.title,
       imageUrl,

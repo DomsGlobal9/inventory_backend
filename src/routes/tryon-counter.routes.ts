@@ -64,9 +64,10 @@ router.post('/:productId', requirePermission('product:view'), counterLimiter, ha
     where: { id: String(req.params.productId), clientId: client, trashedAt: null },
     select: {
       title: true, dressType: true,
+      variants: { select: { id: true, colorName: true } },
       images: {
         where: { imageType: { in: ['COVER', 'GALLERY'] } },
-        select: { url: true, isPrimary: true },
+        select: { url: true, isPrimary: true, variantId: true },
         // createdAt breaks the tie: orderIndex counts within a colour, so several colours
         // share the same index and "the first photograph" was whichever one came back first.
         orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }]
@@ -89,9 +90,13 @@ router.post('/:productId', requirePermission('product:view'), counterLimiter, ha
     throw new TryOnWearError('This product has no photograph yet, so there is nothing to try on.');
   }
 
+  // The colour of the photograph worn, for the try-on counts.
+  const wornVariant = product.images.find(i => i.url === garmentImageUrl)?.variantId;
+  const colour = product.variants.find(v => v.id === wornVariant)?.colorName ?? null;
+
   return wearIt({
     clientId: client,
-    garment: { imageUrl: garmentImageUrl, title: product.title, dressType: product.dressType },
+    garment: { imageUrl: garmentImageUrl, title: product.title, dressType: product.dressType, productId: String(req.params.productId), colour },
     photoBase64: req.body?.photo,
     from: 'COUNTER'
   });

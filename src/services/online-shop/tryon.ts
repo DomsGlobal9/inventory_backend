@@ -80,7 +80,7 @@ export async function garmentFor(clientId: string, productCode: string, variantC
   const product = await prisma.product.findFirst({
     where: { clientId, productCode, status: 'ACTIVE', trashedAt: null },
     select: {
-      title: true, dressType: true,
+      id: true, title: true, dressType: true,
       images: {
         where: { imageType: { in: ['COVER', 'GALLERY'] } },
         select: { url: true, isPrimary: true, view: true, variantId: true, generated: true },
@@ -128,5 +128,8 @@ export async function garmentFor(clientId: string, productCode: string, variantC
     ?? product.images[0]?.url;
 
   if (!photo) return null;
-  return { title: product.title, dressType: product.dressType, imageUrl: photo };
+  // The colour of the photograph worn, for the try-on counts: what the shopper actually saw.
+  const wornVariant = product.images.find(i => i.url === photo)?.variantId;
+  const colour = product.variants.find(v => v.id === wornVariant)?.colorName ?? null;
+  return { title: product.title, dressType: product.dressType, imageUrl: photo, productId: product.id, colour };
 }
