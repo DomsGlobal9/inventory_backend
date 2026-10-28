@@ -59,13 +59,41 @@ export async function seen(clientId: string, token: unknown, productCode: unknow
   return kind === 'TRYON' || !sameLook;
 }
 
+/**
+ * A heart on a try-on (TryOn2Buy's list, 28 Oct): this number likes this piece, or no longer does.
+ * The same rule as `seen`: only a proved number (the token), never what the page claims. Returns
+ * whether it was saved -- false for an unproved browser or a piece that is not on sale.
+ */
+export async function like(clientId: string, token: unknown, productCode: unknown, liked: unknown, variantCode?: unknown, now = new Date()): Promise<boolean> {
+  const phone = await whoIs(clientId, token);
+  if (!phone) return false;
+  const code = typeof productCode === 'string' ? productCode.trim() : '';
+  if (!code) return false;
+  const product = await prisma.product.findFirst({ where: { clientId, productCode: code, status: 'ACTIVE', trashedAt: null }, select: { id: true } });
+  if (!product) return false;
+  const vCode = typeof variantCode === 'string' ? variantCode.trim() : '';
+  const variant = vCode
+    ? await prisma.productVariant.findFirst({ where: { clientId, productId: product.id, variantCode: vCode }, select: { id: true } })
+    : null;
+  const likedAt = liked === false ? null : now;
+  await prisma.shopProductView.upsert({
+    where: { clientId_phone_productId: { clientId, phone, productId: product.id } },
+    create: { clientId, phone, productId: product.id, views: 0, tryOns: 0, likedAt, variantId: variant?.id ?? null, firstAt: now, lastAt: now },
+    update: { likedAt, lastAt: now, ...(variant ? { variantId: variant.id } : {}) }
+  }).catch(async (e) => {
+    if ((e as { code?: string })?.code !== 'P2002') throw e;
+    await prisma.shopProductView.update({ where: { clientId_phone_productId: { clientId, phone, productId: product.id } }, data: { likedAt, lastAt: now } });
+  });
+  return true;
+}
+
 /** What this number looked at in the last KEEP_DAYS, most recent first. `phone` as normalisePhone gives it. */
 export async function lookedAt(clientId: string, phone: string, now = new Date()) {
   return prisma.shopProductView.findMany({
     where: { clientId, phone, lastAt: { gte: new Date(now.getTime() - KEEP_MS) } },
     orderBy: { lastAt: 'desc' },
     take: 50,
-    select: { productId: true, variantId: true, views: true, tryOns: true, lastAt: true }
+    select: { productId: true, variantId: true, views: true, tryOns: true, lastAt: true, likedAt: true }
   });
 }
 

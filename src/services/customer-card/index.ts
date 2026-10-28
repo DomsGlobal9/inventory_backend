@@ -78,7 +78,9 @@ export const customerCard = {
       });
       if (online) customer = await prisma.customer.findUnique({ where: { id: online.customerId }, select });
     }
-    if (!customer) return { phone: phone.value, customer: null };
+    // Not a customer yet -- but a proved number may have tried things on (TryOn2Buy, the online shop)
+    // today. Shown, so staff see it straight away and can add them (28 Oct).
+    if (!customer) return { phone: phone.value, customer: null, lookedOnline: await lookedOnline(clientId, phone.value, locationId, new Set()) };
     return { phone: phone.value, ...(await cardOf(clientId, customer, phone.value, locationId)) };
   },
 
@@ -235,7 +237,8 @@ async function picksFor(clientId: string, locationId: string, d: { sizes: { kind
   }));
 }
 
-const LOOKED = 6;
+// Up to a whole TryOn2Buy list (10); hearted pieces first, then the most recent.
+const LOOKED = 10;
 const ALSO = 4;
 
 /** Where a piece is kept in this store, when the store uses shelves. */
@@ -254,7 +257,8 @@ async function shelvesOf(clientId: string, locationId: string, variantIds: strin
  * the colour they looked at (else any colour of it), and its shelf, so staff can fetch it.
  */
 async function lookedOnline(clientId: string, phone: string, locationId: string | undefined, boughtProducts: Set<string>) {
-  const looks = (await lookedAt(clientId, phone)).filter(l => !boughtProducts.has(l.productId)).slice(0, LOOKED);
+  const looks = (await lookedAt(clientId, phone)).filter(l => !boughtProducts.has(l.productId))
+    .sort((a, b) => Number(!!b.likedAt) - Number(!!a.likedAt)).slice(0, LOOKED);
   if (!looks.length) return [];
   const products = await prisma.product.findMany({
     where: { clientId, id: { in: looks.map(l => l.productId) } },
@@ -275,7 +279,7 @@ async function lookedOnline(clientId: string, phone: string, locationId: string 
     return [{
       productId: p.id, title: p.title,
       colour: p.variants.find(v => v.id === l.variantId)?.colorName ?? null,
-      views: l.views, tryOns: l.tryOns, lastAt: l.lastAt,
+      views: l.views, tryOns: l.tryOns, lastAt: l.lastAt, liked: !!l.likedAt,
       inStock: any.reduce((t, s) => t + s.quantity - s.reservedQty, 0),
       shelf: at ? shelf.get(at.variantId) ?? null : null
     }];

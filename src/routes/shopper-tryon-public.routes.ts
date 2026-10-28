@@ -4,7 +4,7 @@ import { shopperTryOnGatewayService, shopperTryOnProductService } from '../servi
 import { tryOnUsageService } from '../services/tryon';
 import { garmentTryOns } from '../services/garment-tryons';
 import { shopperFor, asksForNumber, NumberNeededError } from '../services/shopper-tryon/who.service';
-import { sendCode, checkCode } from '../services/online-shop/otp';
+import { sendCode, checkCode, whoIs } from '../services/online-shop/otp';
 import { OnlineShopRuleError } from '../services/online-shop/rules';
 import * as shopViews from '../services/shop-views';
 
@@ -45,11 +45,40 @@ const lookupLimiter = rateLimit({
   message: { success: false, message: 'Too many requests. Please wait a moment.' }
 });
 
+/*
+ * Whether this request comes from a proved WhatsApp number (the pass from the code). Asked once per
+ * request and kept on it, for the two limits below.
+ */
+const provedNumber = async (req: any): Promise<boolean> => {
+  if (req._provedNumber === undefined) req._provedNumber = !!(await whoIs(String(req.params.clientId ?? ''), req.body?.token).catch(() => null));
+  return req._provedNumber;
+};
+
 const generateLimiter = rateLimit({
+  // Not for a proved number: that shopper is counted by the limit below instead, per number.
+  skip: provedNumber,
   windowMs: 10 * 60 * 1000,
   // Enough for a shopper to try a few photographs and change their mind; not enough for one
   // address to burn a shop's monthly allowance in an afternoon.
   max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'That is a lot of try-ons in a short time. Please wait a few minutes and try again.'
+  }
+});
+
+/*
+ * A shopper who proved their number gets room for a whole TryOn2Buy list (up to 10 pieces) and a
+ * retry or two: 30 in 10 minutes, counted per number rather than per address -- a shop's wifi is one
+ * address for every customer in it. Somebody who has not proved a number stays at the 8 above.
+ */
+const provedLimiter = rateLimit({
+  skip: async (req) => !(await provedNumber(req)),
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  keyGenerator: (req) => `proved:${String(req.params.clientId)}:${String(req.body?.token ?? '')}`,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -154,6 +183,27 @@ router.post('/:clientId/verify/check', codeLimiter, async (req, res, next) => {
 });
 
 /**
+ * A heart on a try-on (TryOn2Buy's list): this proved number likes this piece, or no longer does.
+ * Saved for the shop's Customer card. A shop that does not ask for numbers saves nothing and says so
+ * ({ saved: false }) -- the heart still works on the phone.
+ */
+// Hearts are cheap and tapped often (on, off, on): their own limit, per address.
+const likeLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many taps just now. Wait a moment and try again.' }
+});
+
+router.post('/:clientId/:productCode/liked', likeLimiter, async (req, res, next) => {
+  try {
+    const saved = await shopViews.like(String(req.params.clientId), req.body?.token, String(req.params.productCode), req.body?.liked !== false, req.body?.variant);
+    res.json({ success: true, data: { saved } });
+  } catch (error) { if (!refusal(res, error)) next(error); }
+});
+
+/**
  * One try-on.
  *
  * `humanImageUrl` is a photograph the shopper has already uploaded -- the try-on app owns that
@@ -161,7 +211,7 @@ router.post('/:clientId/verify/check', codeLimiter, async (req, res, next) => {
  * upload endpoint is a bucket anyone can fill, and there is no reason to own that risk to save
  * a hop.
  */
-router.post('/:clientId/:productCode/generate', generateLimiter, async (req, res, next) => {
+router.post('/:clientId/:productCode/generate', generateLimiter, provedLimiter, async (req, res, next) => {
   const clientId = String(req.params.clientId);
   const productCode = String(req.params.productCode);
   // Set once the generation is under way, so a refusal before it (no photograph, no garment, at

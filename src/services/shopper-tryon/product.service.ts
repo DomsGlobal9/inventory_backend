@@ -187,10 +187,10 @@ export class ShopperTryOnProductService {
         productCode: true,
         dressType: true,
         images: {
+          where: { imageType: { in: ['COVER', 'GALLERY'] } },
           // The garment as the merchant chose to lead with, which is the one on the tag.
           orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
-          take: 1,
-          select: { url: true }
+          select: { url: true, view: true, variantId: true, generated: true }
         },
         /*
          * The colour the tag was tied to, if the scan named one.
@@ -202,41 +202,43 @@ export class ShopperTryOnProductService {
          * Matched against this product's own variants, never trusted from the query: otherwise a
          * made-up code would be a way to point one shop's try-on at another shop's photograph.
          */
-        variants: wanted
-          ? {
-              where: { variantCode: wanted },
-              take: 1,
-              select: {
-                variantCode: true, colorName: true,
-                images: {
-                  orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
-                  take: 1,
-                  select: { url: true }
-                }
-              }
-            }
-          : false
+        variants: { select: { id: true, variantCode: true, colorName: true } }
       }
     });
+    if (!product) return null;
 
     /*
-     * The variant's photograph when there is one, the product's otherwise.
-     *
-     * Falling back rather than refusing, because a tag outlives the data behind it: a colour
-     * gets renamed, a photograph is removed, and the tag is still hanging on the garment. A
-     * shopper scanning it should see the saree, not an error about a variant code.
+     * The picture tried on: the FRONT view of the colour asked for, as the online shop does
+     * (online-shop/tryon garmentFor) -- a try-on made from the generated front view comes out far
+     * better than one made from a styled photograph. A colour is several variants (blue S, M, L),
+     * so the search is by colour. Down the list until something is found, because a tag outlives
+     * the data behind it and a shopper should see the saree, not an error:
+     *   1. this colour's front view   2. any generated view of it   3. its own lead photograph
+     *   4. the product's front view   5. the product's lead photograph
      */
-    const chosen = (product as any)?.variants?.[0];
-    const imageUrl = chosen?.images?.[0]?.url ?? product?.images?.[0]?.url;
+    const chosen = wanted ? product.variants.find(v => v.variantCode === wanted) : undefined;
+    const sameColour = new Set(chosen
+      ? product.variants.filter(v => (chosen.colorName ? v.colorName === chosen.colorName : v.id === chosen.id)).map(v => v.id)
+      : []);
+    const ofThisColour = product.images.filter(i => i.variantId && sameColour.has(i.variantId));
+    const own = product.images.filter(i => !i.variantId);
+    const picked = ofThisColour.find(i => i.view === 'front')
+      ?? ofThisColour.find(i => i.generated)
+      ?? ofThisColour[0]
+      ?? own.find(i => i.view === 'front')
+      ?? product.images[0];
+    const imageUrl = picked?.url;
     // No photograph means no try-on. Saying so here is honest; letting it through means the
     // shopper uploads a selfie, waits twenty seconds and then meets a failure.
-    if (!product || !imageUrl) return null;
+    if (!imageUrl) return null;
     if (!/^https:\/\//i.test(imageUrl)) return null;
+    // The colour of the picture actually worn, for the try-on counts.
+    const wornColour = picked?.variantId ? (product.variants.find(v => v.id === picked.variantId)?.colorName ?? null) : null;
 
     return {
       clientId,
       productId: product.id,
-      wornColour: chosen?.images?.[0]?.url ? (chosen.colorName ?? null) : null,
+      wornColour,
       productCode: product.productCode,
       title: product.title,
       imageUrl,

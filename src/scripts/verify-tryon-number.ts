@@ -61,7 +61,8 @@ const serve = (handler: (req: http.IncomingMessage, body: any) => [number, unkno
     return [404, { message: 'not in the stand-in' }];
   });
   let gatewayCalls = 0;
-  const gw = await serve(() => { gatewayCalls++; return [200, { success: true, resultImageUrl: 'https://cdn.example/result.jpg' }]; });
+  const garmentsSent: string[] = [];
+  const gw = await serve((_req, body) => { gatewayCalls++; garmentsSent.push(String(body?.garmentImageUrl ?? body?.garment_image_url ?? body?.garmentImage ?? JSON.stringify(body))); return [200, { success: true, resultImageUrl: 'https://cdn.example/result.jpg' }]; });
   process.env.WHATSAPP_SERVICE_URL = wa.url;
   process.env.WHATSAPP_SERVICE_KEY = 'local-stand-in-key';
   process.env.SHOPPER_TRYON_GATEWAY_URL = gw.url;
@@ -189,6 +190,53 @@ const serve = (handler: (req: http.IncomingMessage, body: any) => [number, unkno
     eq('checkout: a number proved minutes ago is not sent another code (unchanged)', r.body?.data?.alreadyVerified, true);
 
     eq('the gateway was reached only by try-ons that were allowed', gatewayCalls, 5);
+
+    console.log('\n5. A TRYON2BUY LIST: MANY AT ONCE, HEARTS, THE CUSTOMER CARD, THE FRONT VIEW');
+    // A saree in three colours: Maroon has a generated FRONT view and a styled photo; Gold has only a
+    // styled photo; Rani has nothing of its own.
+    const list = await product(A);
+    const maroonS = await prisma.productVariant.create({ data: { productId: list.id, clientId: A, colorName: 'Maroon', size: 'S', variantCode: `LM${STAMP}-s`, sku: `LMS${STAMP}`, sellingPrice: 1000 } });
+    const maroonM = await prisma.productVariant.create({ data: { productId: list.id, clientId: A, colorName: 'Maroon', size: 'M', variantCode: `LM${STAMP}-m`, sku: `LMM${STAMP}`, sellingPrice: 1000 } });
+    const gold = await prisma.productVariant.create({ data: { productId: list.id, clientId: A, colorName: 'Gold', size: 'Free', variantCode: `LG${STAMP}`, sku: `LGS${STAMP}`, sellingPrice: 1000 } });
+    const rani = await prisma.productVariant.create({ data: { productId: list.id, clientId: A, colorName: 'Rani', size: 'Free', variantCode: `LR${STAMP}`, sku: `LRS${STAMP}`, sellingPrice: 1000 } });
+    const img = (url: string, extra: any) => prisma.productImage.create({ data: { productId: list.id, url, imageType: 'GALLERY' as any, ...extra } as any });
+    await img('https://cdn.example/list-cover.jpg', { isPrimary: true });
+    await img('https://cdn.example/list-maroon-styled.jpg', { variantId: maroonS.id, orderIndex: 0 });
+    await img('https://cdn.example/list-maroon-front.jpg', { variantId: maroonS.id, view: 'front', generated: true, orderIndex: 5 });
+    await img('https://cdn.example/list-gold-styled.jpg', { variantId: gold.id });
+    // (the code sent directly: section 3 already used this address's code requests on purpose)
+    await otp.sendCode(A, '9000077777', 'TRYON');
+    const proof = (await otp.checkCode(A, '9000077777', lastCode())).token;
+    const sentBefore = garmentsSent.length;
+    for (const [v, want] of [[maroonM, 'https://cdn.example/list-maroon-front.jpg'], [gold, 'https://cdn.example/list-gold-styled.jpg'], [rani, 'https://cdn.example/list-cover.jpg']] as const) {
+      r = await tagGen(A, list.productCode, { token: proof, variant: v.variantCode });
+      eq(`tag ${v.colorName} ${v.size}: tried on`, r.status, 200);
+      eq(`...wearing ${want.split('/').pop()}`, garmentsSent[garmentsSent.length - 1], want);
+    }
+    check('Maroon in size M uses the front view filed under size S (a colour spans sizes)', garmentsSent.slice(sentBefore)[0] === 'https://cdn.example/list-maroon-front.jpg');
+    // A whole list from one proved number: 9 more on top (12 in all) -- the old limit of 8 would stop it.
+    let okCount = 0;
+    for (let i = 0; i < 9; i++) okCount += (await tagGen(A, list.productCode, { token: proof, variant: gold.variantCode })).status === 200 ? 1 : 0;
+    eq('a proved number tries on a whole list in one go (12 in all)', okCount, 9);
+    // Without a proved number, the old limit still holds: shop B (asks nobody) on the same address.
+    let lastStatus = 0, anon = 0;
+    for (let i = 0; i < 9; i++) { lastStatus = (await tagGen(B, b.p.productCode)).status; if (lastStatus === 200) anon++; }
+    check('a phone without a proved number is still stopped after 8 in 10 minutes', lastStatus === 429 && anon <= 8, { anon, lastStatus });
+    // Hearts.
+    r = await call('POST', `/t/${A}/${list.productCode}/liked`, { token: proof, variant: gold.variantCode });
+    eq('a heart from a proved number: saved', [r.status, r.body?.data?.saved], [200, true]);
+    r = await call('POST', `/t/${A}/${list.productCode}/liked`, { variant: gold.variantCode });
+    eq('a heart with no pass: not saved', r.body?.data?.saved, false);
+    r = await call('POST', `/t/${B}/${b.p.productCode}/liked`, { token: proof });
+    eq('a heart at a shop that asks nobody (and with another shop\'s pass): not saved', r.body?.data?.saved, false);
+    r = await call('POST', `/t/${A}/${a.p.productCode}/liked`, { token: proof });
+    r = await call('POST', `/t/${A}/${a.p.productCode}/liked`, { token: proof, liked: false });
+    eq('a heart taken back: saved as not liked', r.body?.data?.saved, true);
+    const { customerCard } = await import('../services/customer-card');
+    const card: any = await customerCard.lookup(A, '9000077777');
+    eq('the Customer card for a number that is not a customer yet: no customer, but what they tried on, hearted first',
+      [card.customer, card.lookedOnline?.map((x: any) => [x.title, x.colour, x.liked, x.tryOns > 0])],
+      [null, [['Kanchi Saree', 'Gold', true, true], ['Kanchi Saree', null, false, false]]]);
   } catch (e: any) {
     console.error(e);
     check(`the suite reached the end (stopped at: ${String(e?.message ?? e).trim().split('\n')[0]})`, false);

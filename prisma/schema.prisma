@@ -4762,6 +4762,8 @@ model ShopProductView {
 
   views     Int      @default(0)
   tryOns    Int      @default(0) @map("try_ons")
+  /// Hearted after a try-on (TryOn2Buy list, 28 Oct): shown on the Customer card; null when not.
+  likedAt   DateTime? @map("liked_at")
   /// The colour last looked at, for the card to show; not a relation, a variant can be deleted.
   variantId String?  @map("variant_id")
   firstAt   DateTime @default(now()) @map("first_at")
