@@ -21,6 +21,7 @@ import { prisma } from '../../lib/prisma';
 import { park, isOrderWaiting, refundTopic } from './parking';
 import { returnService } from '../return.service';
 import { toMinor, fromMinor, portionOf } from '../pricing';
+import { methodForGateways } from './mapping';
 
 /** Shopify's restock_type values that mean the goods are back on the shelf. */
 const RESTOCKED = new Set(['return', 'cancel', 'legacy_restock']);
@@ -52,14 +53,6 @@ export class ShopifyRefundService {
     }
     const clientId = installation.clientId;
 
-    // Redelivered. Shopify sends the same refund more than once by design, and a second run
-    // would put the goods back on the shelf twice.
-    const already = await prisma.salesReturn.findFirst({
-      where: { clientId, externalRefundId: refundId },
-      select: { returnNumber: true }
-    });
-    if (already) return 'DUPLICATE';
-
     const order = await prisma.salesOrder.findFirst({
       where: { clientId, externalOrderId: shopifyOrderId, sourceSystem: 'SHOPIFY', deletedAt: null },
       include: { items: { orderBy: { createdAt: 'asc' } } }
@@ -80,6 +73,22 @@ export class ShopifyRefundService {
       return 'IGNORED';
     }
 
+    /*
+     * The money first, and whatever happens to the goods. Money back with no goods (a delivery
+     * charge, a goodwill amount) and money back on goods that never shipped are still money that
+     * left the shop -- until 28 Oct 2026 neither was written down anywhere, so the order kept
+     * saying "paid" after the customer had their money back. One row per Shopify refund id.
+     */
+    const money = await this.recordRefundMoney(clientId, order, payload, refundId);
+
+    // Redelivered. Shopify sends the same refund more than once by design, and a second run
+    // would put the goods back on the shelf twice.
+    const already = await prisma.salesReturn.findFirst({
+      where: { clientId, externalRefundId: refundId },
+      select: { returnNumber: true }
+    });
+    if (already) return money === 'RECORDED' ? 'APPLIED' : 'DUPLICATE';
+
     const refundLines: any[] = Array.isArray(payload.refund_line_items) ? payload.refund_line_items : [];
     if (refundLines.length === 0) {
       /*
@@ -89,7 +98,7 @@ export class ShopifyRefundService {
        * happen. Recorded in the log and acknowledged.
        */
       console.log(`[Shopify] refund ${refundId} on ${order.orderNumber} covers no goods -- nothing to return.`);
-      return 'IGNORED';
+      return money === 'RECORDED' ? 'APPLIED' : money === 'ALREADY' ? 'DUPLICATE' : 'IGNORED';
     }
 
     // Shopify line -> our variant.
@@ -178,7 +187,7 @@ export class ShopifyRefundService {
         `[Shopify] refund ${refundId} on ${order.orderNumber} covers goods that never shipped -- ` +
         `it will be handled as a cancellation.`
       );
-      return 'IGNORED';
+      return money === 'RECORDED' ? 'APPLIED' : money === 'ALREADY' ? 'DUPLICATE' : 'IGNORED';
     }
 
     if (unmatched.length > 0) {
@@ -224,6 +233,11 @@ export class ShopifyRefundService {
     await returnService.completeReturn(clientId, salesReturn.id);
 
     await this.recordMoney(salesReturn.id, toReturn, refunded, rowsById, payload);
+    // The money row names the return it paid back, now that there is one.
+    await prisma.salesOrderPayment.updateMany({
+      where: { onceKey: refundKey(clientId, refundId), salesReturnId: null },
+      data: { salesReturnId: salesReturn.id }
+    });
 
     const units = toReturn.reduce((s, r) => s + r.quantity, 0);
     console.log(
@@ -231,6 +245,56 @@ export class ShopifyRefundService {
       `${units} unit(s) off ${order.orderNumber}`
     );
     return 'APPLIED';
+  }
+
+  /**
+   * The money Shopify paid back on this refund, as a REFUND row on the order -- once.
+   *
+   * The amount is what Shopify's refund transactions actually moved (successful "refund" ones);
+   * a payload without them falls back to the refunded lines' subtotals. The way it went back is
+   * the way it came in: the gateway's name when Shopify gives one, else the order's own payment.
+   */
+  private async recordRefundMoney(
+    clientId: string,
+    order: { id: string; locationId: string },
+    payload: any,
+    refundId: string
+  ): Promise<'RECORDED' | 'ALREADY' | 'NONE'> {
+    const txns: any[] = Array.isArray(payload?.transactions) ? payload.transactions : [];
+    const moved = txns.filter(t =>
+      String(t?.kind ?? '').toLowerCase() === 'refund' && ['success', ''].includes(String(t?.status ?? 'success').toLowerCase()));
+    let amountMinor = moved.reduce((s, t) => s + toMinor(t?.amount ?? 0), 0);
+    if (moved.length === 0) {
+      const lines: any[] = Array.isArray(payload?.refund_line_items) ? payload.refund_line_items : [];
+      amountMinor = lines.reduce((s, rl) => s + toMinor(rl?.subtotal ?? rl?.subtotal_set?.shop_money?.amount ?? 0), 0);
+    }
+    if (amountMinor <= 0) return 'NONE';
+
+    const onceKey = refundKey(clientId, refundId);
+    if (await prisma.salesOrderPayment.findUnique({ where: { onceKey }, select: { id: true } })) return 'ALREADY';
+
+    const gateways = moved.map(t => String(t?.gateway ?? '')).filter(Boolean);
+    const paidWith = await prisma.salesOrderPayment.findFirst({
+      where: { salesOrderId: order.id, kind: 'PAYMENT' }, orderBy: { receivedAt: 'asc' }, select: { method: true }
+    });
+    const method = gateways.length ? methodForGateways(gateways) : (paidWith?.method ?? 'CASH');
+
+    try {
+      await prisma.salesOrderPayment.create({
+        data: {
+          clientId, salesOrderId: order.id, locationId: order.locationId,
+          kind: 'REFUND', method: method as any,
+          amount: fromMinor(amountMinor),
+          reference: `Shopify refund ${refundId}`.slice(0, 120),
+          receivedAt: payload?.processed_at ? new Date(payload.processed_at) : (payload?.created_at ? new Date(payload.created_at) : new Date()),
+          onceKey
+        }
+      });
+      return 'RECORDED';
+    } catch (error: any) {
+      if (error?.code === 'P2002') return 'ALREADY'; // the other delivery of this refund got there first
+      throw error;
+    }
   }
 
   /**
@@ -294,5 +358,8 @@ export class ShopifyRefundService {
     void rowsById;
   }
 }
+
+/** One refund row per Shopify refund, whichever webhook delivery or replay writes it. */
+export const refundKey = (clientId: string, refundId: string) => `SHOPIFY:${clientId}:REFUND:${refundId}`;
 
 export const shopifyRefundService = new ShopifyRefundService();

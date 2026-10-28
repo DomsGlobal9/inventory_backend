@@ -39,7 +39,7 @@ const rupees = (minor: number) => `₹${(minor / 100).toLocaleString('en-IN', { 
 export function whyNotCollect(o: { sourceSystem: string | null; status: string; deletedAt?: Date | null }, dueMinor: number): string | null {
   if (o.deletedAt) return 'This order was deleted.';
   if (o.sourceSystem === 'SCALEEZY_POS') return 'This bill was made on the POS till. Take the balance on the till, so the till and Inventory both know.';
-  if (o.sourceSystem === 'SHOPIFY') return 'This order was paid on Shopify.';
+  if (o.sourceSystem === 'SHOPIFY') return 'Shopify orders are paid on Shopify, and the payment shows here once Shopify marks the order paid.';
   if (o.status === 'CANCELLED') return 'This order was cancelled, so nothing is owed.';
   if (o.status === 'DRAFT') return 'Confirm the order before taking money for it.';
   if (dueMinor <= 0) return 'Nothing is due on this order.';

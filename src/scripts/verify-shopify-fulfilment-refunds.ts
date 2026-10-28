@@ -263,11 +263,18 @@ async function main() {
 
   const unshipped = order({ id: 22000 });
   await shopifyOrderIngestService.ingest(SHOP, unshipped, 'orders/create');
-  check('refunding an order that never shipped is left to the cancellation',
-    (await shopifyRefundService.apply(SHOP, {
-      id: 77004, order_id: 22000,
-      refund_line_items: [{ quantity: 1, subtotal: '100.00', restock_type: 'return', line_item: { variant_id: Number(SV.saree) } }]
-    })) === 'IGNORED');
+  // The goods are left to the cancellation; the MONEY is written down (28 Oct 2026: a refund on
+  // goods that never shipped used to leave the order saying "paid" after the money went back).
+  const unshippedOutcome = await shopifyRefundService.apply(SHOP, {
+    id: 77004, order_id: 22000,
+    refund_line_items: [{ quantity: 1, subtotal: '100.00', restock_type: 'return', line_item: { variant_id: Number(SV.saree) } }]
+  });
+  const unshippedOrder = await prisma.salesOrder.findFirstOrThrow({ where: { clientId: CLIENT, externalOrderId: '22000' }, include: { payments: true, returns: true } });
+  const unshippedRefunds = unshippedOrder.payments.filter(p => p.kind === 'REFUND');
+  check('refunding an order that never shipped: no goods come back (left to the cancellation)',
+    unshippedOutcome === 'APPLIED' && unshippedOrder.returns.length === 0, `${unshippedOutcome}, ${unshippedOrder.returns.length} returns`);
+  check('  ...but the Rs 100.00 that went back is ONE refund row',
+    unshippedRefunds.length === 1 && money(unshippedRefunds[0].amount) === 10000, JSON.stringify(unshippedRefunds.map(p => p.amount)));
 
   check('a refund for an order we do not have is harmless',
     (await shopifyRefundService.apply(SHOP, { id: 77005, order_id: 999999, refund_line_items: [] })) === 'IGNORED');
@@ -297,6 +304,7 @@ async function main() {
 main()
   .catch(e => { console.error('\nSUITE CRASHED:', e); failed++; failures.push('suite crashed'); })
   .finally(async () => {
+    await prisma.salesOrderPayment.deleteMany({ where: { clientId: CLIENT } });
     await prisma.salesReturnItem.deleteMany({ where: { salesReturn: { clientId: CLIENT } } });
     await prisma.salesReturn.deleteMany({ where: { clientId: CLIENT } });
     await prisma.salesLedger.deleteMany({ where: { clientId: CLIENT } });

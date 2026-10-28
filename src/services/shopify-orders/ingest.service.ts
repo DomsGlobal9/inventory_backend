@@ -17,8 +17,12 @@ import { phoneForOutsideCustomer } from '../customer.service';
 import { normalisePhone } from '../../lib/phone';
 import { reservationService } from '../reservation.service';
 import { fromMinor, toMinor } from '../pricing';
+import { registrationInForce } from '../pricing/tax';
+import { allocateInvoiceNumber, SERIES } from '../invoicing/invoiceNumber';
 import { mapShopifyOrder, MappedOrder, ParkReason } from './mapping';
+import { gstForShopifyOrder, OrderGst, LineStanding } from './gst';
 import { park, ORDER_TOPICS } from './parking';
+import { tellShopGstWorthChecking } from './notices';
 
 export type IngestOutcome =
   /** created: placed just now, rather than an order already here being brought up to date. */
@@ -208,9 +212,19 @@ export class ShopifyOrderIngestService {
     const variantIds = idMaps.map(m => m.variantId);
     const costs = await prisma.productVariant.findMany({
       where: { id: { in: variantIds } },
-      select: { id: true, averageCost: true }
+      select: {
+        id: true, averageCost: true, sku: true, hsnCode: true, taxRateBps: true,
+        product: { select: { title: true, hsnCode: true, taxRateBps: true, taxSlabbed: true } }
+      }
     });
     const costById = new Map(costs.map(c => [c.id, toMinor(c.averageCost)]));
+    // The tax standing of each of our variants -- the variant's own code wins, as on the till.
+    const standingById = new Map<string, LineStanding>(costs.map(c => [c.id, {
+      label: `${c.product.title} (${c.sku})`,
+      hsnCode: c.hsnCode ?? c.product.hsnCode ?? null,
+      taxRateBps: c.taxRateBps ?? c.product.taxRateBps ?? null,
+      taxSlabbed: Boolean(c.product.taxSlabbed)
+    }]));
 
     const variants = new Map(idMaps.map(m => [
       m.shopifyVariantId,
@@ -224,8 +238,19 @@ export class ShopifyOrderIngestService {
       return park(shopDomain, clientId, shopifyOrderId, topic, payload, mapped.reason, mapped.detail);
     }
 
+    // ScaleEzy's own GST on it -- never Shopify's (owner's rule, 26 Oct 2026).
+    const gstSettings = await prisma.clientSettings.findUnique({
+      where: { clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true }
+    });
+    const gst = gstForShopifyOrder(
+      mapped.order,
+      mapped.order.lines.map(l => standingById.get(l.variantId) ?? { label: 'An item', hsnCode: null, taxRateBps: null, taxSlabbed: false }),
+      { registration: registrationInForce(gstSettings?.gstRegistration, gstSettings?.gstNumber), stateCode: gstSettings?.gstStateCode ?? null }
+    );
+    if (gst.crossCheck) console.log(`[Shopify] order ${shopifyOrderId}: ${gst.crossCheck}`);
+
     try {
-      const result = await this.write(clientId, shopDomain, mapped.order, shopifyOrderId);
+      const result = await this.write(clientId, shopDomain, mapped.order, shopifyOrderId, gst);
       if (result.status === 'APPLIED') {
         /*
          * The ORDER rows waiting for this order are now settled -- and only those.
@@ -248,7 +273,7 @@ export class ShopifyOrderIngestService {
   }
 
   /** The writes. Separate so `ingest` reads as the decisions and this as the consequences. */
-  private async write(clientId: string, shopDomain: string, order: MappedOrder, shopifyOrderId: string): Promise<IngestOutcome> {
+  private async write(clientId: string, shopDomain: string, order: MappedOrder, shopifyOrderId: string, gst: OrderGst): Promise<IngestOutcome> {
     const existing = await prisma.salesOrder.findFirst({
       where: { clientId, externalOrderId: order.externalOrderId, sourceSystem: 'SHOPIFY' },
       select: { id: true, orderNumber: true, externalUpdatedAt: true, status: true }
@@ -269,7 +294,8 @@ export class ShopifyOrderIngestService {
     const customerId = await resolveCustomer(clientId, shopDomain, order.customer);
 
     if (existing) {
-      await this.replaceLines(clientId, existing.id, order);
+      await this.bringUpToDate(clientId, existing.id, order, gst);
+      await this.afterwards(clientId, existing.id, order, shopifyOrderId);
       return { status: 'APPLIED', salesOrderId: existing.id, orderNumber: existing.orderNumber };
     }
 
@@ -277,7 +303,7 @@ export class ShopifyOrderIngestService {
 
     let created;
     try {
-      created = await this.createOrder(clientId, shopDomain, orderNumber, customerId, order);
+      created = await this.createOrder(clientId, shopDomain, orderNumber, customerId, order, gst);
     } catch (error: any) {
       /*
        * Somebody else placed it first.
@@ -299,12 +325,14 @@ export class ShopifyOrderIngestService {
     }
 
     await this.settleStatus(clientId, created.id, order);
+    await this.afterwards(clientId, created.id, order, shopifyOrderId);
+    if (gst.warnings.length) await tellShopGstWorthChecking(clientId, created.id, gst.warnings);
 
     console.log(`[Shopify] order ${shopifyOrderId} ingested as ${orderNumber} (${order.status})`);
     return { status: 'APPLIED', salesOrderId: created.id, orderNumber, created: true };
   }
 
-  private async createOrder(clientId: string, shopDomain: string, orderNumber: string, customerId: string, order: MappedOrder) {
+  private async createOrder(clientId: string, shopDomain: string, orderNumber: string, customerId: string, order: MappedOrder, gst: OrderGst) {
     return prisma.$transaction(async (tx) => {
       const so = await tx.salesOrder.create({
         data: {
@@ -327,22 +355,29 @@ export class ShopifyOrderIngestService {
           status: 'DRAFT',
           subtotal: fromMinor(order.subtotalMinor),
           discountAmount: fromMinor(order.discountMinor),
-          taxAmount: fromMinor(order.taxMinor),
+          // OUR GST, inside the total like the till's -- never added to it. The total is what
+          // Shopify charged.
+          taxAmount: fromMinor(gst.taxMinor),
           shippingAmount: fromMinor(order.shippingMinor),
-          total: fromMinor(order.totalMinor)
+          total: fromMinor(order.totalMinor),
+          // Fixed at sale time: a bill keeps the kind it was issued under.
+          documentKind: gst.documentKind,
+          placeOfSupplyStateCode: gst.placeOfSupplyStateCode,
+          interState: gst.interState
         }
       });
 
-      await this.writeLinesAndDiscounts(tx, so.id, order);
+      await this.writeLinesAndDiscounts(tx, so.id, order, gst);
       return so;
     }, { timeout: 30000 });
   }
 
   /** Lines, the discounts that produced them, and how each was divided. */
-  private async writeLinesAndDiscounts(tx: any, salesOrderId: string, order: MappedOrder) {
+  private async writeLinesAndDiscounts(tx: any, salesOrderId: string, order: MappedOrder, gst: OrderGst) {
     const itemIds: string[] = [];
 
-    for (const line of order.lines) {
+    for (let li = 0; li < order.lines.length; li++) {
+      const line = order.lines[li];
       const totalCostMinor = line.unitCostMinor * line.quantity;
       const item = await tx.salesOrderItem.create({
         data: {
@@ -359,7 +394,9 @@ export class ShopifyOrderIngestService {
           // From the NET, like every other road into this table.
           grossProfit: fromMinor(line.totalPriceMinor - totalCostMinor),
           // Shopify charged the customer. We are writing down what they paid, not deciding it.
-          priceSource: 'EXTERNAL'
+          priceSource: 'EXTERNAL',
+          // ...but the GST on it is ours, frozen now and never looked up again.
+          ...lineTaxColumns(gst.lines[li])
         }
       });
       itemIds.push(item.id);
@@ -394,33 +431,153 @@ export class ShopifyOrderIngestService {
     }
   }
 
-  /** An order that already exists and has genuinely changed. */
-  private async replaceLines(clientId: string, salesOrderId: string, order: MappedOrder) {
-    await prisma.$transaction(async (tx) => {
-      // Allocations and discounts cascade from the rows they hang off, so removing the lines
-      // removes them too.
-      await tx.salesOrderItemDiscount.deleteMany({ where: { salesOrderItem: { salesOrderId } } });
-      await tx.salesOrderDiscount.deleteMany({ where: { salesOrderId } });
-      await tx.salesOrderItem.deleteMany({ where: { salesOrderId } });
+  /**
+   * An order that already exists and has genuinely changed.
+   *
+   * Usually only its state has: paid at last (cash on delivery), shipped, an address corrected.
+   * Then the lines are left exactly where they are -- deleting them used to delete their stock
+   * reservations with them (the rows cascade) while the shop's reserved count stayed up, so a COD
+   * order marked paid would have locked its pieces away for good, and a shipped one could not be
+   * updated at all (its dispatch rows hold on to the lines). Only the money columns and the GST
+   * are refreshed in place.
+   *
+   * When Shopify's lines really did change (an order edit), they are rewritten -- with the stock
+   * released first and held again after, so the reserved count follows the new lines.
+   */
+  private async bringUpToDate(clientId: string, salesOrderId: string, order: MappedOrder, gst: OrderGst) {
+    const current = await prisma.salesOrder.findUniqueOrThrow({
+      where: { id: salesOrderId },
+      select: { status: true, documentKind: true, locationId: true, items: { orderBy: { createdAt: 'asc' }, select: { id: true, variantId: true, quantity: true, listUnitPrice: true, totalPrice: true } } }
+    });
 
-      await tx.salesOrder.update({
-        where: { id: salesOrderId },
-        data: {
-          externalUpdatedAt: order.externalUpdatedAt,
-          subtotal: fromMinor(order.subtotalMinor),
-          discountAmount: fromMinor(order.discountMinor),
-          taxAmount: fromMinor(order.taxMinor),
-          shippingAmount: fromMinor(order.shippingMinor),
-          total: fromMinor(order.totalMinor),
-          shippingAddress: order.customer.shippingAddress,
-          billingAddress: order.customer.billingAddress
+    const header = {
+      externalUpdatedAt: order.externalUpdatedAt,
+      subtotal: fromMinor(order.subtotalMinor),
+      discountAmount: fromMinor(order.discountMinor),
+      taxAmount: fromMinor(gst.taxMinor),
+      shippingAmount: fromMinor(order.shippingMinor),
+      total: fromMinor(order.totalMinor),
+      shippingAddress: order.customer.shippingAddress,
+      billingAddress: order.customer.billingAddress,
+      placeOfSupplyStateCode: gst.placeOfSupplyStateCode,
+      interState: gst.interState,
+      // An order placed before kinds were stored takes one now; one that has a kind keeps it.
+      ...(current.documentKind ? {} : { documentKind: gst.documentKind })
+    };
+
+    const same = current.items.length === order.lines.length && order.lines.every((l, i) => {
+      const it = current.items[i];
+      return it.variantId === l.variantId && it.quantity === l.quantity
+        && toMinor(it.listUnitPrice) === l.listUnitPriceMinor && toMinor(it.totalPrice) === l.totalPriceMinor;
+    });
+
+    if (same) {
+      await prisma.$transaction(async (tx) => {
+        await tx.salesOrder.update({ where: { id: salesOrderId }, data: header });
+        for (let i = 0; i < current.items.length; i++) {
+          await tx.salesOrderItem.update({ where: { id: current.items[i].id }, data: lineTaxColumns(gst.lines[i]) });
         }
-      });
+      }, { timeout: 30000 });
+    } else {
+      const held = current.status === 'CONFIRMED';
+      await prisma.$transaction(async (tx) => {
+        if (held) {
+          for (const it of current.items) await reservationService.releaseReservation(clientId, it.id, tx);
+        }
+        // Allocations and discounts cascade from the rows they hang off, so removing the lines
+        // removes them too.
+        await tx.salesOrderItemDiscount.deleteMany({ where: { salesOrderItem: { salesOrderId } } });
+        await tx.salesOrderDiscount.deleteMany({ where: { salesOrderId } });
+        await tx.salesOrderItem.deleteMany({ where: { salesOrderId } });
 
-      await this.writeLinesAndDiscounts(tx, salesOrderId, order);
-    }, { timeout: 30000 });
+        await tx.salesOrder.update({ where: { id: salesOrderId }, data: header });
+
+        await this.writeLinesAndDiscounts(tx, salesOrderId, order, gst);
+
+        if (held) {
+          const items = await tx.salesOrderItem.findMany({ where: { salesOrderId }, select: { id: true, variantId: true, quantity: true } });
+          await reservationService.reserveStock(
+            clientId, current.locationId,
+            items.map(i => ({ variantId: i.variantId, salesOrderItemId: i.id, quantity: i.quantity })),
+            tx, { allowOversell: true }
+          );
+        }
+      }, { timeout: 30000 });
+    }
 
     await this.settleStatus(clientId, salesOrderId, order);
+  }
+
+  /** Once the order stands: its invoice number, and the money Shopify says has come in. */
+  private async afterwards(clientId: string, salesOrderId: string, order: MappedOrder, shopifyOrderId: string) {
+    await this.issueInvoiceNumber(clientId, salesOrderId);
+    await this.recordPayment(clientId, salesOrderId, order, shopifyOrderId);
+  }
+
+  /**
+   * The shop's own number for the bill, from its Shopify series (SHP/2026-27/00001).
+   *
+   * Only for a shop that issues a numbered GST document -- a tax invoice (REGULAR) or a bill of
+   * supply (COMPOSITION); an unregistered shop's plain receipt needs none. Taken once the order is
+   * real (held or further), never for a draft that may never be paid, and taken inside the same
+   * transaction that writes it onto the order, so the series has no holes.
+   */
+  private async issueInvoiceNumber(clientId: string, salesOrderId: string) {
+    await prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<{ status: string; document_kind: string | null; invoice_number: number | null }[]>`
+        SELECT status::text AS status, document_kind, invoice_number FROM sales_orders WHERE id = ${salesOrderId} FOR UPDATE`;
+      const o = rows[0];
+      if (!o || o.invoice_number != null) return;
+      if (o.document_kind !== 'TAX_INVOICE' && o.document_kind !== 'BILL_OF_SUPPLY') return;
+      if (o.status === 'DRAFT' || o.status === 'CANCELLED') return;
+      const n = await allocateInvoiceNumber(tx as any, clientId, SERIES.SHOPIFY);
+      await tx.salesOrder.update({
+        where: { id: salesOrderId },
+        data: { invoiceSeries: n.series, invoiceNumber: n.number, invoiceFinancialYear: n.financialYear }
+      });
+    }, { timeout: 30000 });
+  }
+
+  /**
+   * The money, as Shopify reports it: what has been paid so far, recorded once.
+   *
+   * Shopify sends the absolute figure ("paid 4,200 of 4,200"), so only the part not yet recorded
+   * is written, keyed by that figure: a redelivered webhook, or orders/create and orders/updated
+   * arriving together, hit the same key and the database lets one through. The order row is
+   * locked while it is worked out, so two different figures arriving at once cannot each add
+   * their own share on top of nothing.
+   *
+   * Cash on delivery records nothing until Shopify says the cash was collected; then one CASH row.
+   */
+  private async recordPayment(clientId: string, salesOrderId: string, order: MappedOrder, shopifyOrderId: string) {
+    const received = order.payment.receivedMinor;
+    if (received <= 0) return;
+    const prefix = shopifyPaidKeyPrefix(clientId, shopifyOrderId);
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${salesOrderId} FOR UPDATE`;
+        const before = await tx.salesOrderPayment.findMany({
+          where: { salesOrderId, kind: 'PAYMENT', onceKey: { startsWith: prefix } }, select: { amount: true }
+        });
+        const recorded = before.reduce((s, p) => s + toMinor(p.amount), 0);
+        if (received <= recorded) return;
+        const so = await tx.salesOrder.findUniqueOrThrow({ where: { id: salesOrderId }, select: { locationId: true } });
+        await tx.salesOrderPayment.create({
+          data: {
+            clientId, salesOrderId, locationId: so.locationId,
+            kind: 'PAYMENT', method: order.payment.method,
+            amount: fromMinor(received - recorded),
+            reference: order.payment.gateway ? `Shopify: ${order.payment.gateway}`.slice(0, 120) : 'Shopify',
+            receivedAt: order.externalUpdatedAt ?? new Date(),
+            onceKey: `${prefix}${received}`
+          }
+        });
+      }, { timeout: 30000 });
+    } catch (error: any) {
+      if (error?.code === 'P2002') return; // the same figure, recorded by the other delivery
+      throw error;
+    }
   }
 
   /**
@@ -461,3 +618,19 @@ export class ShopifyOrderIngestService {
 }
 
 export const shopifyOrderIngestService = new ShopifyOrderIngestService();
+
+/** The onceKey prefix of every payment row a Shopify order's money made. */
+export const shopifyPaidKeyPrefix = (clientId: string, shopifyOrderId: string) => `SHOPIFY:${clientId}:${shopifyOrderId}:PAID:`;
+
+/** One line's frozen GST as the sales_order_items columns hold it (rupees, Decimal). */
+function lineTaxColumns(l: OrderGst['lines'][number] | undefined) {
+  const d = (v: number | null | undefined) => (v == null ? null : fromMinor(v));
+  return {
+    hsnCode: l?.hsnCode ?? null,
+    taxRateBps: l?.taxRateBps ?? null,
+    taxableValue: d(l?.taxableMinor),
+    cgst: d(l?.cgstMinor),
+    sgst: d(l?.sgstMinor),
+    igst: d(l?.igstMinor)
+  };
+}

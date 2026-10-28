@@ -10,6 +10,10 @@
  * The rule throughout: **record what Shopify says happened.** Do not re-price it, do not
  * re-decide it, and do not quietly correct it. Shopify ran the checkout and took the money; we
  * are writing down the result.
+ *
+ * ONE EXCEPTION, the owner's (26 Oct 2026): GST. ScaleEzy alone decides the GST on a sale, on
+ * every channel, so a Shopify order's tax is worked out by our own engine (gst.ts) from what the
+ * customer paid. Shopify's tax figures are carried here only as a cross-check.
  */
 
 import { toMinor, netUnitPrice, allocate } from '../pricing';
@@ -46,6 +50,12 @@ export interface MappedLine {
   unitCostMinor: number;
   /** Which Shopify discount_applications indexes touched this line, and for how much. */
   allocations: { applicationIndex: number; amountMinor: number }[];
+  /**
+   * The tax SHOPIFY put on this line (its tax_lines added up). A cross-check only: ScaleEzy works
+   * out GST itself (see gst.ts) -- the owner's rule of 26 Oct 2026. Used for money only when
+   * Shopify added it ON TOP of the price, because then the customer really paid it.
+   */
+  shopifyTaxMinor: number;
 }
 
 export interface MappedDiscount {
@@ -73,6 +83,7 @@ export interface MappedOrder {
   discounts: MappedDiscount[];
   subtotalMinor: number;
   discountMinor: number;
+  /** The tax SHOPIFY reported (total_tax). A cross-check; the GST we record comes from gst.ts. */
   taxMinor: number;
   shippingMinor: number;
   totalMinor: number;
@@ -80,6 +91,15 @@ export interface MappedOrder {
   shopifyTotalMinor: number;
   /** Set when our arithmetic and Shopify's disagree. The order is still ingested. */
   reconcileWarning: string | null;
+  /**
+   * The money side. `receivedMinor` is what the customer has paid so far, by Shopify's own
+   * account (total less what is still outstanding); 0 for cash on delivery until it is collected.
+   */
+  payment: { receivedMinor: number; method: 'CASH' | 'ONLINE' | 'BANK_TRANSFER'; gateway: string | null; cod: boolean };
+  /** Shopify's "prices include tax" setting for this order. */
+  taxesIncluded: boolean;
+  /** Where the goods are going (shipping address, else billing), for CGST+SGST against IGST. */
+  deliveredTo: { countryCode: string | null; provinceCode: string | null; province: string | null } | null;
 }
 
 export type MappingResult =
@@ -92,14 +112,17 @@ export type MappingResult =
  * `restocked` is checked before anything else: Shopify uses it for an order whose goods have
  * been put back, which is a cancellation whatever the money says.
  */
-export function statusFor(financial: string | null, fulfilment: string | null): MappedOrder['status'] {
+export function statusFor(financial: string | null, fulfilment: string | null, cashOnDelivery = false): MappedOrder['status'] {
   const f = (financial ?? '').toLowerCase();
   const l = (fulfilment ?? '').toLowerCase();
 
   if (l === 'restocked') return 'CANCELLED';
   if (f === 'refunded' || f === 'voided') return 'CANCELLED';
 
-  if (f === 'paid' || f === 'partially_paid') {
+  // Cash on delivery is a real order that is simply not paid YET: Shopify says "pending" until the
+  // cash is collected. As a draft it held no stock (26 Oct, SO-000074), so the saree could be sold
+  // at the counter before it was shipped.
+  if (f === 'paid' || f === 'partially_paid' || (cashOnDelivery && f === 'pending')) {
     if (l === 'fulfilled') return 'DISPATCHED';
     if (l === 'partial') return 'PARTIALLY_DISPATCHED';
     return 'CONFIRMED';
@@ -219,7 +242,8 @@ export function mapShopifyOrder(payload: any, ctx: MappingContext): MappingResul
       totalPriceMinor,
       unitPriceMinor: netUnitPrice(totalPriceMinor, quantity),
       unitCostMinor: known.averageCostMinor,
-      allocations
+      allocations,
+      shopifyTaxMinor: shopifyTaxOf(raw)
     });
   }
 
@@ -291,7 +315,7 @@ export function mapShopifyOrder(payload: any, ctx: MappingContext): MappingResul
     order: {
       externalOrderId,
       externalUpdatedAt: payload.updated_at ? new Date(payload.updated_at) : null,
-      status: statusFor(payload.financial_status ?? null, payload.fulfillment_status ?? null),
+      status: statusFor(payload.financial_status ?? null, payload.fulfillment_status ?? null, isCashOnDelivery(payload)),
       locationId: ctx.locationId,
       customer: {
         shopifyCustomerId,
@@ -310,9 +334,75 @@ export function mapShopifyOrder(payload: any, ctx: MappingContext): MappingResul
       shippingMinor,
       totalMinor,
       shopifyTotalMinor,
-      reconcileWarning
+      reconcileWarning,
+      payment: paymentOf(payload),
+      taxesIncluded,
+      deliveredTo: deliveredToOf(payload)
     }
   };
+}
+
+/** "Cash on Delivery (COD)" and the like; a whole word, so "Barcode Pay" is not cash on delivery. */
+const COD = /cash on delivery|\bcod\b/i;
+
+/** The names Shopify gives the payment ways; only these three matter to us. */
+const gatewayNames = (payload: any): string[] =>
+  (Array.isArray(payload?.payment_gateway_names) ? payload.payment_gateway_names : [payload?.gateway])
+    .filter(Boolean).map((g: any) => String(g));
+
+export function isCashOnDelivery(payload: any): boolean {
+  return gatewayNames(payload).some(g => COD.test(g));
+}
+
+/**
+ * How the customer paid, as one of ours, from Shopify's payment way names.
+ *
+ * A payment company (Razorpay, PayU, Cashfree, PhonePe, Shopify Payments...) is ONLINE: it reaches
+ * the bank days later and is reconciled against the gateway, like the online shop's. Cash on
+ * delivery and "marked as paid" by hand ("manual") are CASH -- the shop has the money in hand. A
+ * bank deposit is a transfer.
+ */
+export function methodForGateways(names: string[]): 'CASH' | 'ONLINE' | 'BANK_TRANSFER' {
+  if (names.some(g => COD.test(g)) || names.length === 0 || names.every(g => /^manual$|cash/i.test(g))) return 'CASH';
+  if (names.some(g => /bank|deposit|neft|transfer/i.test(g))) return 'BANK_TRANSFER';
+  return 'ONLINE';
+}
+
+/**
+ * What the customer has paid so far, by Shopify's own account: the order total less what is still
+ * outstanding. Nothing for an order that is only pending or authorised -- cash on delivery stays at
+ * nothing until Shopify is told the cash was collected.
+ */
+export function paymentOf(payload: any): MappedOrder['payment'] {
+  const names = gatewayNames(payload);
+  const cod = names.some(g => COD.test(g));
+  const gateway = names[0] ?? null;
+  const method = methodForGateways(names);
+
+  const f = String(payload?.financial_status ?? '').toLowerCase();
+  const total = toMinor(payload?.total_price);
+  const outstanding = payload?.total_outstanding != null ? toMinor(payload.total_outstanding) : (f === 'paid' ? 0 : total);
+  const received = ['paid', 'partially_paid', 'partially_refunded', 'refunded'].includes(f)
+    ? Math.max(0, total - outstanding)
+    : 0;
+  return { receivedMinor: received, method, gateway, cod };
+}
+
+/** The tax Shopify itself put on one line, added up. Never the truth for GST; a cross-check. */
+function shopifyTaxOf(raw: any): number {
+  const taxLines: any[] = Array.isArray(raw?.tax_lines) ? raw.tax_lines : [];
+  return taxLines.reduce((s, t) => {
+    const amount = toMinor(t?.price ?? t?.price_set?.shop_money?.amount ?? 0);
+    return s + (amount > 0 ? amount : 0);
+  }, 0);
+}
+
+/** Where the goods go: the shipping address, else the billing one. Null when there is neither. */
+function deliveredToOf(payload: any): MappedOrder['deliveredTo'] {
+  const a = payload?.shipping_address ?? payload?.billing_address ?? null;
+  if (!a) return null;
+  const str = (v: any) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return { countryCode: str(a.country_code), provinceCode: str(a.province_code), province: str(a.province) };
 }
 
 /**
