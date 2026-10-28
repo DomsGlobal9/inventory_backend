@@ -21,6 +21,7 @@ import { ShopifyProductWorker } from './services/shopify-products';
 import { StorefrontDispatcherService } from './services/storefront-dispatcher.service';
 
 import cookieParser from 'cookie-parser';
+import { sameSiteWrites } from './middleware/same-site-writes.middleware';
 import helmet from 'helmet';
 
 const app = express();
@@ -93,6 +94,8 @@ app.use((req, res, next) => {
   return appCors(req, res, next);
 });
 app.use(cookieParser());
+// A change made with the login cookie must come from our own app (see the middleware).
+app.use(sameSiteWrites);
 // Base64-encoded garment photos (up to 3-4 per generate-catalog call) comfortably
 // exceed the default 100kb JSON limit -- raise it only for this path, ahead of the
 // global parser below, so every other endpoint keeps the smaller DoS-safe default.
