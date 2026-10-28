@@ -14,6 +14,8 @@ import { doorCheckins } from '../services/door-checkin';
 import { counterLookups } from '../services/counter-lookups';
 import { prisma } from '../lib/prisma';
 import { respondWithError } from '../utils/respondWithError';
+import { holdsEverything } from '../config/permissions';
+import * as customerDelete from '../services/customer-delete';
 
 const router = Router();
 
@@ -56,6 +58,26 @@ router.get('/door-qr', requirePermission('customer:view'), async (req, res) => {
   try { res.json({ success: true, data: await doorCheckins.doorQr((req as any).clientId, req.query.locationId) }); }
   catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
+/*
+ * Deleting a customer: the shop owner only (services/customer-delete). Removed for good when they have no
+ * money history; their personal details erased, bills kept, when they do.
+ */
+const ownerOnly = (req: any, res: any, next: any) => holdsEverything(req.user?.permissions, req.user?.roles)
+  ? next()
+  : res.status(403).json({ success: false, message: 'Only the shop owner can delete a customer.' });
+router.get('/:id/delete-preview', ownerOnly, async (req, res) => {
+  try { res.json({ success: true, data: await customerDelete.preview((req as any).clientId, String(req.params.id)) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.delete('/:id', ownerOnly, async (req, res) => {
+  try {
+    const result = await customerDelete.deleteCustomer((req as any).clientId, String(req.params.id), req.body?.confirm);
+    res.locals.auditAction = result.mode === 'REMOVE' ? 'CUSTOMER_DELETED' : 'CUSTOMER_ERASED';
+    res.locals.auditEntityId = String(req.params.id);
+    res.json({ success: true, data: result });
+  } catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+
 router.post('/:id/notes', requirePermission('customer:update'), async (req, res) => {
   try {
     res.status(201).json({ success: true, data: await customerCard.addNote((req as any).clientId, String(req.params.id),req.body?.note, (req as any).user?.id ?? null) });

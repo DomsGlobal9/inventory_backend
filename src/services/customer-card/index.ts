@@ -233,8 +233,10 @@ async function picksFor(clientId: string, locationId: string, d: { sizes: { kind
     where: { clientId, locationId, variantId: { in: chosen.map(c => c.variant.id) }, quantity: { gt: 0 } },
     select: { variantId: true, spot: { select: { address: true } } }
   });
+  const picture = await picturesOf(clientId, chosen.map(c => ({ productId: c.variant.product.id, variantId: c.variant.id })));
   return chosen.map(s => ({
     variantId: s.variant.id, productId: s.variant.product.id, title: s.variant.product.title, kind: s.variant.product.dressType,
+    imageUrl: picture(s.variant.product.id, s.variant.id),
     colour: s.variant.colorName, size: s.variant.size, price: priceOf(s),   // a colour with no price of its own sells at the product's
     inStock: s.quantity - s.reservedQty, yourColour: colourRank(s.variant.colorName) < 99, inBudget: inBudget(s),
     shelf: shelves.find(x => x.variantId === s.variant.id)?.spot.address ?? null
@@ -244,6 +246,25 @@ async function picksFor(clientId: string, locationId: string, d: { sizes: { kind
 // Up to a whole TryOn2Buy list (10); hearted pieces first, then the most recent.
 const LOOKED = 10;
 const ALSO = 4;
+
+/**
+ * A picture for each piece on the card (29 Oct redesign): the photo of that colour when there is one,
+ * else the product's lead photo. Keyed by productId + variantId (variantId may be null).
+ */
+async function picturesOf(clientId: string, pieces: { productId: string; variantId?: string | null }[]) {
+  const ids = [...new Set(pieces.map(p => p.productId))];
+  if (!ids.length) return (_p: string, _v?: string | null) => null as string | null;
+  const images = await prisma.productImage.findMany({
+    where: { productId: { in: ids }, imageType: { in: ['COVER', 'GALLERY'] }, url: { startsWith: 'https://' }, product: { clientId } },
+    orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
+    select: { productId: true, variantId: true, url: true }
+  });
+  return (productId: string, variantId?: string | null) =>
+    (variantId ? images.find(i => i.productId === productId && i.variantId === variantId)?.url : null)
+    ?? images.find(i => i.productId === productId && !i.variantId)?.url
+    ?? images.find(i => i.productId === productId)?.url
+    ?? null;
+}
 
 /** Where a piece is kept in this store, when the store uses shelves. */
 async function shelvesOf(clientId: string, locationId: string, variantIds: string[]) {
@@ -280,6 +301,7 @@ async function lookedOnline(clientId: string, phone: string, locationId: string 
   }) : [];
   const here = stock.filter(s => s.quantity - s.reservedQty > 0);
   const shelf = locationId ? await shelvesOf(clientId, locationId, here.map(s => s.variantId)) : new Map<string, string>();
+  const picture = await picturesOf(clientId, looks.map(l => ({ productId: l.productId, variantId: l.variantId })));
   return looks.flatMap(l => {
     const p = products.find(x => x.id === l.productId);
     if (!p) return [];
@@ -287,7 +309,7 @@ async function lookedOnline(clientId: string, phone: string, locationId: string 
     const any = theirs.length ? theirs : here.filter(s => s.variant.productId === l.productId);
     const at = any.find(s => shelf.has(s.variantId)) ?? any[0];
     return [{
-      productId: p.id, title: p.title,
+      productId: p.id, title: p.title, imageUrl: picture(p.id, l.variantId),
       colour: p.variants.find(v => v.id === l.variantId)?.colorName ?? null,
       views: l.views, tryOns: l.tryOns, lastAt: l.lastAt, liked: !!l.likedAt,
       inStock: any.reduce((t, s) => t + s.quantity - s.reservedQty, 0),
@@ -325,8 +347,10 @@ async function othersAlsoBought(clientId: string, locationId: string, d: { sizes
     if (chosen.length === ALSO) break;
   }
   const shelf = await shelvesOf(clientId, locationId, chosen.map(c => c.s.variant.id));
+  const picture = await picturesOf(clientId, chosen.map(c => ({ productId: c.s.variant.product.id, variantId: c.s.variant.id })));
   return chosen.map(({ s, buyers }) => ({
     variantId: s.variant.id, productId: s.variant.product.id, title: s.variant.product.title, kind: s.variant.product.dressType,
+    imageUrl: picture(s.variant.product.id, s.variant.id),
     colour: s.variant.colorName, size: s.variant.size, price: Number(s.variant.sellingPrice ?? s.variant.product.basePrice) || null,
     buyers, inStock: s.quantity - s.reservedQty, shelf: shelf.get(s.variant.id) ?? null
   }));
