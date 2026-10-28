@@ -86,6 +86,8 @@ const internal = (method: string, path: string, body?: unknown, claims: Record<s
     console.log('\n1. BOX SIZES');
     await prisma.shippingBox.deleteMany({ where: { clientId: C } });
     await prisma.moduleSubscription.deleteMany({ where: { clientId: C, module: 'logistics' } });
+    // Parcel events an earlier, interrupted run left behind (this local test shop only).
+    await prisma.moduleEvent.deleteMany({ where: { clientId: C, module: 'logistics' } });
     let r = await call('SUPER_ADMIN', 'GET', '/logistics');
     eq('a shop not on Logistics: off, with the three default boxes', [r.status, r.body?.data?.on, r.body?.data?.boxes?.map((b: any) => [b.name, b.lengthCm, b.breadthCm, b.heightCm])], [200, false, [['Small', 25, 20, 4], ['Medium', 35, 30, 6], ['Large', 45, 35, 10]]]);
     for (const [why, boxes, want] of [
@@ -191,6 +193,24 @@ const internal = (method: string, path: string, body?: unknown, claims: Record<s
     eq('a parcel that is not this shop\'s: 404', [r.status, r.body?.message], [404, 'No such parcel in this shop.']);
     r = await up(p1.id, { status: 'BOOKED' }, { clientId: 'some-other-shop' });
     eq('a token made for another shop: 403', r.status, 403);
+
+    console.log('\n4b. ONE WAY TO SHIP: COURIERS ARE CHOSEN BY LOGISTICS (28 Oct)');
+    const o3 = await order('7 Main Road, Guntur 522001');
+    r = await call('SUPER_ADMIN', 'POST', '/dispatches', { salesOrderId: o3.id, items: [{ salesOrderItemId: o3.itemId, quantity: 1 }] });
+    eq('a shop on Logistics cannot send an order out directly: 409, pointing to pick and pack', [r.status, r.body?.message], [409, 'This shop ships with ScaleEzy Logistics. Pick and pack the order (Shelves → Pick) so Logistics books the courier.']);
+    eq('...and nothing left the shelf', (await orderState(o3.id))._count.dispatches, 0);
+    for (const [method, path] of [['GET', '/shipping/couriers'], ['POST', '/shipping/labels'], ['POST', '/shipping/delivered'], ['PUT', `/shipping/dispatches/${p1.dispatchId}`], ['POST', `/shipping/dispatches/${p1.dispatchId}/delivered`], ['GET', `/shipping/dispatches/${p1.dispatchId}/label`]] as const) {
+      r = await call('SUPER_ADMIN', method, path, method === 'GET' ? undefined : {});
+      eq(`removed: ${method} ${path.replace(p1.dispatchId, ':id')}`, r.status, 404);
+    }
+    r = await call('SUPER_ADMIN', 'GET', `/sales-orders/${o1.id}`);
+    const shown = (r.body?.data?.parcels ?? r.body?.parcels ?? []).map((x: any) => [x.dispatchNumber, x.courierName, x.logistics?.status, x.logistics?.labelUrl, x.logistics?.box, x.logistics?.weightKg]);
+    eq('the order page shows each parcel with Logistics\' status, label, box and weight', shown, [[pay.dispatch_number, 'Delhivery', 'DELIVERED', 'https://labels.example/1.pdf', 'Medium', 0.72], [(ev2?.payload as any)?.dispatch_number, null, 'READY', null, null, 0.65]]);
+    await prisma.moduleSubscription.deleteMany({ where: { clientId: C, module: 'logistics' } });
+    r = await call('SUPER_ADMIN', 'POST', '/dispatches', { salesOrderId: o3.id, items: [{ salesOrderItemId: o3.itemId, quantity: 1 }], courier: { courierId: 'anything', trackingNumber: 'X1' } });
+    const d3 = r.status === 201 ? await prisma.dispatch.findFirst({ where: { salesOrderId: o3.id } }) : null;
+    eq('a shop not on Logistics still sends out (stock leaves), and no courier is recorded even if one is sent', [r.status, d3?.courierName ?? null, d3?.trackingNumber ?? null], [201, null, null]);
+    await internal('PUT', `/shops/${C}`);
 
     console.log('\n5. THE SENDER');
     const got: { headers: http.IncomingHttpHeaders; body: string }[] = [];

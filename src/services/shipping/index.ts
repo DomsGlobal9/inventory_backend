@@ -1,10 +1,6 @@
 /**
- * Shipping: the shop's couriers, and which courier carried each dispatch. Names and tracking
- * numbers only -- no booking with any courier's systems (decided 24 Oct 2026).
+ * Shipping, read side only (28 Oct 2026): how a parcel is shown, and Shopify's own fulfilment details.
+ * Couriers are chosen, labels printed and deliveries reported by ScaleEzy Logistics (services/logistics).
  */
-import * as couriers from './couriers';
-import * as parcels from './parcels';
-
-export { couriers, parcels };
-export { parcelView, PARCEL_SELECT, shippingFor, shippingFromShopify } from './parcels';
-export { trackingFor, COMMON_COURIERS } from './couriers';
+export { parcelView, PARCEL_SELECT, shippingFromShopify } from './parcels';
+export { trackingFor } from './couriers';

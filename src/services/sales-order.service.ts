@@ -901,9 +901,19 @@ export class SalesOrderService {
       undoable: isCollected({ kind: p.kind, onceKey }) && !undoneIds.has(p.id) && !refunded
     }));
     const { dispatches, ...rest } = order;
+    // Parcels packed for ScaleEzy Logistics: its status and label, beside the dispatch they belong to.
+    const logistics = dispatches.length
+      ? await prisma.logisticsParcel.findMany({
+          where: { clientId, dispatchId: { in: dispatches.map((d: any) => d.id) } },
+          select: { dispatchId: true, status: true, labelUrl: true, awb: true, boxName: true, weightGrams: true }
+        })
+      : [];
     return {
       ...rest,
-      parcels: dispatches.map(parcelView),
+      parcels: dispatches.map((d: any) => {
+        const l = logistics.find(x => x.dispatchId === d.id);
+        return { ...parcelView(d), logistics: l ? { status: l.status, labelUrl: l.labelUrl, awb: l.awb, box: l.boxName, weightKg: l.weightGrams / 1000 } : null };
+      }),
       payments,
       items,
       atCounter: order.sourceSystem === COUNTER_SOURCE,

@@ -125,13 +125,13 @@ export async function filterOrders(clientId: string, query: OrderFilterQuery) {
       : 'WAITING';
     /*
      * Parcels with a courier (services/shipping). Only those: a till bill or a counter hand-over is a
-     * dispatch too, and would otherwise sit "on the way" for ever. The worst state wins: a parcel still
-     * waiting for its tracking number, then one on its way, then all delivered.
+     * dispatch too, and would otherwise sit "on the way" for ever. The worst state wins: one on its way,
+     * then all delivered. (No "tracking number missing" since 28 Oct: Logistics books every parcel and
+     * writes its number; Inventory no longer types numbers.)
      */
     const parcels = o.dispatches.filter(d => d.courierName && d.status !== 'CANCELLED');
     const courier = parcels.length ? parcels[parcels.length - 1].courierName : null;
     const delivery = !parcels.length ? null
-      : parcels.some(d => d.status !== 'DELIVERED' && !d.trackingNumber && d.courier?.needsNumber !== false) ? 'NO_NUMBER'
       : parcels.some(d => d.status !== 'DELIVERED') ? 'ON_THE_WAY'
       : 'DELIVERED';
     return { o, payable: payableMinor / 100, pay, kept, source: sourceOf(o.sourceSystem), parcels, courier, delivery };
