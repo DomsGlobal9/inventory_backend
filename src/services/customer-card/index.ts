@@ -80,7 +80,7 @@ export const customerCard = {
     }
     // Not a customer yet -- but a proved number may have tried things on (TryOn2Buy, the online shop)
     // today. Shown, so staff see it straight away and can add them (28 Oct).
-    if (!customer) return { phone: phone.value, customer: null, lookedOnline: await lookedOnline(clientId, phone.value, locationId, new Set()) };
+    if (!customer) return { phone: phone.value, customer: null, lookedOnline: await lookedOnline(clientId, phone.value, locationId, new Map()) };
     return { phone: phone.value, ...(await cardOf(clientId, customer, phone.value, locationId)) };
   },
 
@@ -142,6 +142,8 @@ async function cardOf(clientId: string, customer: CardCustomer, phone: string | 
   const sizesByKind = new Map<string, Map<string, number>>();
   const colourPieces = new Map<string, number>(), colourMoney = new Map<string, number>(), kinds = new Map<string, number>();
   const bought = new Set<string>(), boughtProducts = new Set<string>();
+  // When each product was last bought: a look or try-on is hidden only if they bought it AFTER it.
+  const lastBought = new Map<string, Date>();
   const now = Date.now();
   for (const o of orders) {
     const back = new Map<string, number>();
@@ -150,6 +152,8 @@ async function cardOf(clientId: string, customer: CardCustomer, phone: string | 
     for (const it of o.items) {
       // Never offered again, kept or not; but a returned piece says nothing about their size or taste.
       bought.add(it.variantId); boughtProducts.add(it.variant.product.id);
+      const was = lastBought.get(it.variant.product.id);
+      if (!was || o.createdAt > was) lastBought.set(it.variant.product.id, o.createdAt);
       const kept = Math.max(0, it.quantity - (back.get(it.id) ?? 0));
       if (!kept) continue;
       const kind = it.variant.product.dressType?.trim() || 'Other';
@@ -186,7 +190,7 @@ async function cardOf(clientId: string, customer: CardCustomer, phone: string | 
     dna: { sizes, colours: topColours, kinds: topKinds, spend },
     picks: locationId ? await picksFor(clientId, locationId, { sizes, colours: topColours, kinds: topKinds, bought, boughtProducts, spend }) : [],
     // What they looked at in the online shop lately (only ever recorded after they proved this number there).
-    lookedOnline: phone ? await lookedOnline(clientId, phone, locationId, boughtProducts) : [],
+    lookedOnline: phone ? await lookedOnline(clientId, phone, locationId, lastBought) : [],
     // What other people who bought what they bought also bought, here and in their size.
     othersAlsoBought: locationId ? await othersAlsoBought(clientId, locationId, { sizes, bought, boughtProducts }) : []
   };
@@ -256,8 +260,14 @@ async function shelvesOf(clientId: string, locationId: string, variantIds: strin
  * 30 days, most recent first, minus anything they have bought since. With what this store holds of
  * the colour they looked at (else any colour of it), and its shelf, so staff can fetch it.
  */
-async function lookedOnline(clientId: string, phone: string, locationId: string | undefined, boughtProducts: Set<string>) {
-  const looks = (await lookedAt(clientId, phone)).filter(l => !boughtProducts.has(l.productId))
+/**
+ * `lastBought`: when they last bought each product. A piece is left out only when that purchase came
+ * AFTER they last looked at it or tried it on -- the look led to the sale. Buying a saree last month
+ * must not hide trying on it (or another colour of it) today (28 Oct: a customer's try-on of a saree
+ * they had bought before vanished from the card).
+ */
+async function lookedOnline(clientId: string, phone: string, locationId: string | undefined, lastBought: Map<string, Date>) {
+  const looks = (await lookedAt(clientId, phone)).filter(l => { const b = lastBought.get(l.productId); return !b || b <= l.lastAt; })
     .sort((a, b) => Number(!!b.likedAt) - Number(!!a.likedAt)).slice(0, LOOKED);
   if (!looks.length) return [];
   const products = await prisma.product.findMany({

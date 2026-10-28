@@ -135,13 +135,19 @@ async function main() {
   check('stored against the proved number in the shop\'s own format, not anything the page said', row?.phone === '+919000000106');
   // A look 31 days ago, at the jewellery.
   await prisma.shopProductView.create({ data: { clientId: C, phone: '+919000000106', productId: jewel.id, views: 4, lastAt: new Date(now.getTime() - 31 * DAY), firstAt: new Date(now.getTime() - 40 * DAY) } });
-  // And the saree, which she has since bought.
-  await prisma.shopProductView.create({ data: { clientId: C, phone: '+919000000106', productId: saree.id, views: 1 } });
+  // And the saree, which she looked at a week ago and has since bought (her bill is 3 days old).
+  await prisma.shopProductView.create({ data: { clientId: C, phone: '+919000000106', productId: saree.id, views: 1, lastAt: new Date(now.getTime() - 7 * DAY), firstAt: new Date(now.getTime() - 7 * DAY) } });
 
   const card: any = await customerCard.lookup(C, '9000000106', store.id);
   const looked = (card.lookedOnline ?? []).map((l: any) => `${l.title}:${l.views}v:${l.tryOns}t:${l.colour}:${l.inStock}`);
   check('the card: the blouse, Gold, viewed 2, tried on 1, 4 here', JSON.stringify(looked) === JSON.stringify(['Zari Blouse:2v:1t:Gold:4']), looked);
   check('...not the jewellery looked at 31 days ago, not the saree she has since bought', !looked.some((x: string) => /Temple|Kanchi/.test(x)));
+  // 28 Oct: she comes back and tries the saree on again, AFTER buying it. That must show -- a past
+  // purchase does not hide a new try-on (a real customer's try-on vanished from the card this way).
+  await prisma.shopProductView.update({ where: { clientId_phone_productId: { clientId: C, phone: '+919000000106', productId: saree.id } }, data: { tryOns: 1, lastAt: new Date(now.getTime() + 30 * 60_000) } });
+  const again: any = await customerCard.lookup(C, '9000000106', store.id);
+  check('bought before, tried on again today: shown on the card', (again.lookedOnline ?? []).some((l: any) => l.productId === saree.id && l.tryOns === 1), (again.lookedOnline ?? []).map((l: any) => l.title));
+  await prisma.shopProductView.update({ where: { clientId_phone_productId: { clientId: C, phone: '+919000000106', productId: saree.id } }, data: { tryOns: 0, lastAt: new Date(now.getTime() - 7 * DAY) } });
   check('lookedAt reads only the last 30 days', (await lookedAt(C, '+919000000106')).every(l => l.productId !== jewel.id));
   const gone = await forgetOldViews(now);
   check('housekeeping forgets the 31-day-old look and keeps the rest', gone >= 1 && !(await prisma.shopProductView.findFirst({ where: { clientId: C, productId: jewel.id } })) && !!(await prisma.shopProductView.findFirst({ where: { clientId: C, productId: blouse.id } })), gone);
