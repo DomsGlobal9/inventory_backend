@@ -5,6 +5,7 @@ import { MODULES, ModuleName, moduleSubscriptions, eventsAfter } from '../servic
 import { sessionForToken } from '../controllers/auth.controller';
 import { cleanMoved } from '../services/crm-handover';
 import internalCrm from './internal-crm.routes';
+import internalLogistics from './internal-logistics.routes';
 
 /**
  * What other ScaleEzy modules (CRM first) ask Inventory, service to service.
@@ -82,5 +83,7 @@ router.get('/modules/:module/shops/:clientId/events', ownModule, async (req, res
 
 // CRM's own questions for one shop: suggestions, locations, customer groups, the hand-over switch.
 router.use('/modules/crm', internalCrm);
+// Logistics' own questions for one shop: products by SKU (services/logistics).
+router.use('/modules/logistics', internalLogistics);
 
 export default router;

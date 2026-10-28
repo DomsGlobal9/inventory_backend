@@ -24,7 +24,9 @@ import { sign, SIGNATURE_HEADER, TIMESTAMP_HEADER, DELIVERY_HEADER } from '../..
  * so the receiver stores first, ignores an id it has seen, and applies by sequence.
  */
 
-export const MODULES = ['crm'] as const;
+/** Logistics (28 Oct): switched on per shop like CRM, but it is NOT sent the general change feed --
+ * only its own parcel events (migration 20261028230000). */
+export const MODULES = ['crm', 'logistics'] as const;
 export type ModuleName = typeof MODULES[number];
 
 type Destination = { url: string; secret: string };
