@@ -5017,3 +5017,43 @@ model GiftVoucherSettings {
 
   @@map("gift_voucher_settings")
 }
+
+/// Which shop is switched on for which module ("crm", later "finance"). The outbox triggers write
+/// events only for shops listed here. Set by the module itself through /api/v1/internal.
+model ModuleSubscription {
+  clientId  String   @map("client_id")
+  module    String
+  enabledBy String?  @map("enabled_by")
+  enabledAt DateTime @default(now()) @map("enabled_at")
+
+  @@id([clientId, module])
+  @@map("module_subscriptions")
+}
+
+/// The module outbox: one row per change per subscribed module, written by database triggers in the
+/// same transaction as the change (migration 20261028120000_module_outbox). `kind` is plain text
+/// ("customer.updated"), never an enum, so a new kind never needs a shared-DB enum change.
+/// `payload` is the row as it now is (as it was, for a delete).
+model ModuleEvent {
+  id                 String         @id @default(uuid())
+  sequence           BigInt         @unique @default(autoincrement())
+  clientId           String         @map("client_id")
+  module             String
+  kind               String
+  sourceTable        String         @map("source_table")
+  rowId              String         @map("row_id")
+  payload            Json
+  createdAt          DateTime       @default(now()) @map("created_at")
+  status             DeliveryStatus @default(PENDING)
+  attempts           Int            @default(0)
+  nextAttemptAt      DateTime?      @map("next_attempt_at")
+  lockedAt           DateTime?      @map("locked_at")
+  lastResponseStatus Int?           @map("last_response_status")
+  lastError          String?        @map("last_error")
+  deliveredAt        DateTime?      @map("delivered_at")
+
+  @@index([status, nextAttemptAt])
+  @@index([module, clientId, sequence])
+  @@index([createdAt])
+  @@map("module_events")
+}

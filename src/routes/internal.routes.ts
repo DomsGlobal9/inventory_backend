@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { verifyServiceToken } from '../middleware/service.middleware';
+import internalModules from './internal-modules.routes';
 
 const router = Router();
 
@@ -23,5 +24,8 @@ router.get('/test', (req: any, res) => {
 
   res.json({ success: true, service });
 });
+
+// What other ScaleEzy modules ask: who is this, which shops are on, the change feed.
+router.use(internalModules);
 
 export default router;

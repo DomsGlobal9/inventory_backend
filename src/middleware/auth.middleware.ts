@@ -11,6 +11,28 @@ export interface UserWithRoles {
   permissions: string[];
 }
 
+/**
+ * The one check of a login token: signature, issuer and audience, then against stored state on
+ * every call rather than trusted from the token -- a deactivated user with a valid token is still
+ * refused, as is one from another shop or from before the session number moved (password changed,
+ * account switched off, "sign out of other devices"; a token from before session numbers is 0).
+ * The stored state comes from identityCache.ts, which explains what invalidates it.
+ *
+ * Shared by this middleware and by the service route other modules ask "who is this?" (CRM), so the
+ * two can never answer differently.
+ */
+export async function identityFromToken(token: string): Promise<{ ok: true; user: UserWithRoles } | { ok: false; reason: 'token' | 'identity' | 'ended' }> {
+  let decoded: any;
+  try { decoded = AuthService.verifyToken(token); } catch { return { ok: false, reason: 'token' }; }
+  const user = await loadIdentity(decoded.sub);
+  if (!user || user.status !== 'ACTIVE' || user.clientId !== decoded.clientId) return { ok: false, reason: 'identity' };
+  if ((typeof decoded.sv === 'number' ? decoded.sv : 0) !== user.sessionVersion) return { ok: false, reason: 'ended' };
+  return {
+    ok: true,
+    user: { id: user.id, clientId: user.clientId, name: user.name ?? undefined, email: user.email, roles: user.roles, permissions: user.permissions }
+  };
+}
+
 export const verifyLocalAssertion = async (req: Request, res: Response, next: NextFunction) => {
   try {
     // The x-internal-service-key bypass that used to sit here has been removed. It set
@@ -35,38 +57,11 @@ export const verifyLocalAssertion = async (req: Request, res: Response, next: Ne
       return res.status(401).json({ success: false, message: 'Unauthorized: Missing session token' });
     }
 
-    const decoded = AuthService.verifyToken(token);
-
-    // 3. Dynamic Identity Verification & RBAC Loading
-    //
-    // Still verified against stored state on every request rather than trusted from the token
-    // -- a deactivated user with a valid token is still refused here. What changed is that the
-    // answer is not fetched from the database every time: see identityCache.ts, where the
-    // seven round trips this used to cost are explained, along with what invalidates it.
-    const user = await loadIdentity(decoded.sub);
-
-    if (!user || user.status !== 'ACTIVE' || user.clientId !== decoded.clientId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized: Invalid identity or inactive user' });
+    const found = await identityFromToken(token);
+    if (!found.ok) {
+      return res.status(401).json({ success: false, message: found.reason === 'ended' ? 'Unauthorized: This sign-in has ended. Sign in again.' : found.reason === 'token' ? 'Unauthorized: Invalid or expired token' : 'Unauthorized: Invalid identity or inactive user' });
     }
-
-    // Issued before the password changed, the account was switched off, or "sign out of other devices".
-    // A token from before session numbers existed carries none, and is read as 0.
-    if ((typeof decoded.sv === 'number' ? decoded.sv : 0) !== user.sessionVersion) {
-      return res.status(401).json({ success: false, message: 'Unauthorized: This sign-in has ended. Sign in again.' });
-    }
-
-    const { roles, permissions } = user;
-
-    // 4. Strict Normalized Identity Contract
-    const normalizedUser: UserWithRoles = {
-      id: user.id,
-      clientId: user.clientId,
-      name: user.name ?? undefined,
-      email: user.email,
-      roles: roles,
-      permissions: permissions
-    };
-    (req as any).user = normalizedUser;
+    (req as any).user = found.user;
 
     next();
   } catch (error) {

@@ -8,6 +8,7 @@ import { WILDCARD_PERMISSION, expandPermissions, holdsEverything } from '../conf
 import { respondWithError } from '../utils/respondWithError';
 import { forgetIdentity } from '../lib/identityCache';
 import { recordAccountEvent } from '../services/security-log';
+import { identityFromToken, UserWithRoles } from '../middleware/auth.middleware';
 
 const userWithRolesInclude = {
   roles: {
@@ -95,7 +96,9 @@ export const login = async (req: Request, res: Response) => {
           success: false,
           requiresWorkspaceSelection: true,
           message: 'This email is used in more than one workspace. Choose which one to sign into.',
-          workspaces: matches.map(m => ({ clientId: m.clientId }))
+          // The shop's name too: a list of ids means nothing to a shop owner. Only reached after the
+          // password already matched every one of these accounts.
+          workspaces: await workspacesWithNames(matches.map(m => m.clientId))
         });
       }
 
@@ -228,6 +231,12 @@ export const updateMyProfile = async (req: Request, res: Response) => {
   }
 };
 
+async function workspacesWithNames(clientIds: string[]) {
+  const settings = await prisma.clientSettings.findMany({ where: { clientId: { in: clientIds } }, select: { clientId: true, businessName: true } }).catch(() => []);
+  const nameOf = new Map(settings.map(s => [s.clientId, s.businessName]));
+  return clientIds.map(clientId => ({ clientId, businessName: nameOf.get(clientId) || null }));
+}
+
 export const session = async (req: Request, res: Response) => {
   try {
     // Expecting requireAuth middleware to have populated req.user
@@ -243,11 +252,22 @@ export const session = async (req: Request, res: Response) => {
     // Never at the cost of signing in: between a deploy and its migration the column may not be
     // there yet, and "could not check the tour" must not become "could not sign in". Unknown is
     // treated as "already seen", because showing a tour twice is worse than not showing it.
+    res.json(await sessionBody(user));
+  } catch (error: any) {
+    res.status(500).json({ success: false, authenticated: false });
+  }
+};
+
+/**
+ * The answer to "who is this?", built once: the app's /auth/session and the service route other
+ * modules ask (CRM, /api/v1/internal/session) give exactly the same shape from the same checks.
+ */
+async function sessionBody(user: UserWithRoles) {
     const own = await prisma.user
       .findUnique({ where: { id: user.id }, select: { tourSeenAt: true } })
       .catch(() => ({ tourSeenAt: new Date(0) }));
 
-    res.json({
+    return {
       success: true,
       authenticated: true,
       user: {
@@ -269,11 +289,14 @@ export const session = async (req: Request, res: Response) => {
         id: user.clientId
       },
       modules: ['inventory'] // Mocked entitlement. In Phase 4, Gateway or Super Admin sets this.
-    });
-  } catch (error: any) {
-    res.status(500).json({ success: false, authenticated: false });
-  }
-};
+    };
+}
+
+/** For another module's server: the same session answer from the user's token, or null if it is not a live sign-in. */
+export async function sessionForToken(token: string) {
+  const found = await identityFromToken(token);
+  return found.ok ? sessionBody(found.user) : null;
+}
 
 /**
  * Lets a Super Admin change their OWN password.
