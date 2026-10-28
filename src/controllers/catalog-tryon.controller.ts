@@ -6,6 +6,20 @@ import { tryOnUsageService } from '../services/tryon';
 import { jobKeyFor, recordTryOnFailure } from '../services/tryon';
 import { respondWithError } from '../utils/respondWithError';
 
+/**
+ * Whether a direct request asks for a colour variant. The catalog service takes `color` as
+ * { name, hex } (what the photo-job worker sends); a plain non-empty string is accepted too, so
+ * an older caller sending just a name is not counted as a four-view catalog by mistake.
+ */
+export function isColourRequest(color: unknown): boolean {
+  if (typeof color === 'string') return color.trim().length > 0;
+  if (color && typeof color === 'object') {
+    const { name, hex } = color as { name?: unknown; hex?: unknown };
+    return (typeof name === 'string' && name.trim().length > 0) || (typeof hex === 'string' && hex.trim().length > 0);
+  }
+  return false;
+}
+
 export class CatalogTryOnController {
 
   async generateCatalog(req: Request, res: Response, next: NextFunction) {
@@ -15,6 +29,8 @@ export class CatalogTryOnController {
     // Whether the browser went away rather than the work finishing. Read after the loop, where
     // "the stream ended" alone cannot tell the two apart.
     let clientDisconnected = false;
+    // Set once the body is read; every outcome is recorded with it.
+    let colour = false;
 
     // If the browser disconnects (user navigates away / hits Stop without waiting
     // for cancel-job to round-trip), stop the upstream fetch immediately instead of
@@ -40,6 +56,9 @@ export class CatalogTryOnController {
 
       // `jobId` is ours, not the far end's -- it names the job and is not forwarded as a field.
       const { jobId, ...body } = (req.body ?? {}) as Record<string, unknown>;
+      // A request that carries a colour is a colour variant (the same field the photo-job worker
+      // sends for a COLOUR job). Read once, before anything is recorded.
+      colour = isColourRequest(body.color);
 
       const upstream = await catalogTryOnService.streamGenerateCatalog(
         // `clientId` here is the JOB name. Whatever the browser put in this field is discarded:
@@ -56,7 +75,7 @@ export class CatalogTryOnController {
         // Started and refused. Recorded as a failure rather than ignored, because a client
         // whose key is wrong would otherwise show zero usage while nothing works for them --
         // and "no usage" and "broken" look identical in that case.
-        void tryOnUsageService.record(clientId, { started: true, failed: true });
+        void tryOnUsageService.record(clientId, { started: true, failed: true, colour });
         // The upstream's own body used to be forwarded verbatim, so whatever the far end
         // happened to say -- a vendor's API error, a proxy's HTML page, a stack trace --
         // was printed in the shop's browser. It is kept here, where we can read it, and
@@ -73,7 +92,7 @@ export class CatalogTryOnController {
         return;
       }
 
-      void tryOnUsageService.record(clientId, { started: true });
+      void tryOnUsageService.record(clientId, { started: true, colour });
 
       res.status(200);
       res.setHeader('Content-Type', 'text/event-stream');
@@ -119,15 +138,15 @@ export class CatalogTryOnController {
       // completed generation -- and the difference is the one the merchant would argue about.
       // Likewise a stream that ended on an ERROR event was not a completed generation.
       void tryOnUsageService.record(clientId, clientDisconnected || upstreamEnded === 'cancelled'
-        ? { cancelled: true }
+        ? { cancelled: true, colour }
         : upstreamEnded === 'failed'
-          ? { failed: true }
-          : { completed: true, viewsGenerated: views });
+          ? { failed: true, colour }
+          : { completed: true, viewsGenerated: views, colour });
 
       res.end();
     } catch (error: any) {
       if (error?.name === 'AbortError') {
-        void tryOnUsageService.record(clientId, { cancelled: true });
+        void tryOnUsageService.record(clientId, { cancelled: true, colour });
         res.end();
         return;
       }
@@ -143,7 +162,7 @@ export class CatalogTryOnController {
 
       // Anything else broke partway. Recorded, because the GPU time was spent whether or not
       // anything usable came out of it.
-      void tryOnUsageService.record(clientId, { failed: true });
+      void tryOnUsageService.record(clientId, { failed: true, colour });
       next(error);
     }
   }

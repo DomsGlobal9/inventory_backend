@@ -3195,6 +3195,18 @@ model TryOnUsage {
   /// up to a full generation's worth.
   viewsGenerated Int @default(0)
 
+  /// The same four outcomes again, for COLOUR-VARIANT runs only (a photo job of kind COLOUR, or
+  /// a direct request that carried a `color`). A SUBSET of the counters above, never in
+  /// addition to them: `completed` still counts every completed run, colour or not, so every
+  /// figure already on a screen keeps its meaning. Four-view catalogs are
+  /// `completed - colourCompleted`. A colour run is completed under exactly the same rule as
+  /// any run (see TryOnUsageService.record), so the subtraction can never go negative.
+  /// Rows written before these columns existed read 0 -- their colour runs sit in the totals.
+  colourStarted   Int @default(0) @map("colour_started")
+  colourCompleted Int @default(0) @map("colour_completed")
+  colourFailed    Int @default(0) @map("colour_failed")
+  colourCancelled Int @default(0) @map("colour_cancelled")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

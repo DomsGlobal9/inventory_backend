@@ -7,6 +7,7 @@
  *   gateway.service     talks to the platform gateway -- the outbound call and nothing else
  *   credential.service  which key we present for a client, and who may see it
  *   usage.service       what was used, and whether they are still within their allowance
+ *   charges.service     what a shop's own key has cost this month, read from the Gateway
  *   jobKey              what the far end calls one generation, so it can be cancelled
  *
  * Importers take this folder, not the files inside it, so the split above can change without
@@ -17,6 +18,8 @@ export { serviceCredentialService } from './credential.service';
 export type { CredentialSummary } from './credential.service';
 export { tryOnUsageService } from './usage.service';
 export type { UsageSummary } from './usage.service';
+export { catalogChargesFor } from './charges.service';
+export type { ChargesState } from './charges.service';
 export { jobKeyFor } from './jobKey';
 export { recordTryOnFailure, listTryOnFailures } from './failures';
 export type { TryOnFailureService, TryOnFailurePlace } from './failures';

@@ -7,6 +7,7 @@ import { AuthService } from '../services/auth.service';
 import { platformAdminService } from '../services/platform-admin.service';
 import { serviceCredentialService } from '../services/tryon';
 import { tryOnUsageService } from '../services/tryon';
+import { catalogChargesFor } from '../services/tryon';
 import { authCookieOptions, platformAdminCookieOptions, clearCookieOptions } from '../lib/cookies';
 import { respondWithError } from '../utils/respondWithError';
 
@@ -534,7 +535,12 @@ export const getClientTryOnUsage = async (req: Request, res: Response) => {
       tryOnUsageService.summary(clientId, undefined, service),
       tryOnUsageService.daily(clientId, 30, service)
     ]);
-    res.json({ success: true, data: { summary, daily } });
+    // Money only for the catalog service, and only from the shop's OWN key (charges.service).
+    // Never fails the counts: it settles to a plain state on any trouble.
+    const charges = service === 'CATALOG_TRYON'
+      ? await catalogChargesFor(clientId, summary.month).catch(() => ({ state: 'NOT_ON' as const }))
+      : null;
+    res.json({ success: true, data: { summary, daily, charges } });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Failed to read usage' });
   }

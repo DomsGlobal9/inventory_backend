@@ -88,6 +88,24 @@ export class ServiceCredentialService {
   }
 
   /**
+   * The shop's OWN active key, or null -- never the shared one.
+   *
+   * The second place that decrypts, and the reason it exists: the console reads a shop's charges
+   * from the Gateway's GET /api/v1/usage, which answers for whoever's key is presented. Sending
+   * the SHARED key there would show ScaleEzy's whole bill as this shop's, so keyFor (which falls
+   * back to it) is the wrong tool. It also leaves lastUsedAt alone -- reading a bill is not using
+   * the service. The value goes only to the Gateway (charges.service) and is never returned.
+   */
+  async ownKeyFor(clientId: string, service: ClientService): Promise<{ key: string; keyPrefix: string } | null> {
+    const row = await prisma.clientServiceCredential.findUnique({
+      where: { uq_client_service_key: { clientId, service } },
+      select: { keyEncrypted: true, keyPrefix: true, status: true }
+    });
+    if (!row || row.status !== 'ACTIVE') return null;
+    return { key: decryptCredential(row.keyEncrypted), keyPrefix: row.keyPrefix };
+  }
+
+  /**
    * What a screen may show. Never the key.
    *
    * Returns a summary even when nothing is configured, so the caller does not have to

@@ -298,6 +298,10 @@ export class PhotoJobRunner {
       return;
     }
 
+    // A COLOUR job is a colour variant; a VIEWS job is a four-view catalog. Every outcome below is
+    // recorded with it, so the console can show the two apart (usage.service, record()).
+    const isColour = job.kind === 'COLOUR';
+
     const abort = new AbortController();
     let stopped = false;            // the shop pressed stop
     let stalled = false;            // the stream went quiet and we gave up on it
@@ -361,7 +365,7 @@ export class PhotoJobRunner {
 
       if (!upstream.ok || !upstream.body) {
         const text = await upstream.text().catch(() => '');
-        void tryOnUsageService.record(job.clientId, { started: true, failed: true });
+        void tryOnUsageService.record(job.clientId, { started: true, failed: true, colour: isColour });
         // Kept where we can read it; the shop is told the one thing they can act on. The far
         // end's own words go in the log, never on a shop owner's screen.
         console.error(`[photo-jobs] ${job.id}: upstream refused (${upstream.status}):`, text.slice(0, 500));
@@ -370,7 +374,7 @@ export class PhotoJobRunner {
         return;
       }
 
-      void tryOnUsageService.record(job.clientId, { started: true });
+      void tryOnUsageService.record(job.clientId, { started: true, colour: isColour });
 
       const reader = upstream.body.getReader();
       const decoder = new TextDecoder('utf-8');
@@ -428,20 +432,20 @@ export class PhotoJobRunner {
       }
 
       if (stopped) {
-        void tryOnUsageService.record(job.clientId, { cancelled: true });
+        void tryOnUsageService.record(job.clientId, { cancelled: true, colour: isColour });
         await finish(job.id, 'CANCELLED', stoppedMessage(viewsSaved));
         return;
       }
 
       if (stalled) {
-        void tryOnUsageService.record(job.clientId, { failed: true });
+        void tryOnUsageService.record(job.clientId, { failed: true, colour: isColour });
         await fail('The photo studio stopped responding. Please try this one again.',
           `No frame for ${STALL_AFTER_MS / 60000} minutes; the stream was given up (${viewsSaved} view(s) saved).`, { code: 'STALLED' });
         return;
       }
 
       if (upstreamError) {
-        void tryOnUsageService.record(job.clientId, { failed: true, viewsGenerated: viewsSaved });
+        void tryOnUsageService.record(job.clientId, { failed: true, viewsGenerated: viewsSaved, colour: isColour });
         // Partial work is kept and SAID. Three of four is a real outcome, and a shop that is
         // told "it failed" when three photographs are sitting there will not go and look.
         await fail(viewsSaved > 0
@@ -451,25 +455,25 @@ export class PhotoJobRunner {
       }
 
       if (viewsSaved === 0) {
-        void tryOnUsageService.record(job.clientId, { failed: true });
+        void tryOnUsageService.record(job.clientId, { failed: true, colour: isColour });
         await fail('The photo studio finished without sending any photographs. Please try again.',
           'The stream ended without a single VIEW_READY.', { code: 'NO_IMAGE' });
         return;
       }
 
-      void tryOnUsageService.record(job.clientId, { completed: true, viewsGenerated: viewsSaved });
+      void tryOnUsageService.record(job.clientId, { completed: true, viewsGenerated: viewsSaved, colour: isColour });
       await finish(job.id, 'DONE', viewsSaved < job.viewsTotal
         ? `${viewsSaved} of ${job.viewsTotal} views were made. Run it again if you want the rest.`
         : null);
 
     } catch (err: any) {
       if (stopped) {
-        void tryOnUsageService.record(job.clientId, { cancelled: true });
+        void tryOnUsageService.record(job.clientId, { cancelled: true, colour: isColour });
         await finish(job.id, 'CANCELLED', stoppedMessage(viewsSaved));
         return;
       }
       console.error(`[photo-jobs] ${job.id} failed:`, err?.message);
-      void tryOnUsageService.record(job.clientId, { failed: true, viewsGenerated: viewsSaved });
+      void tryOnUsageService.record(job.clientId, { failed: true, viewsGenerated: viewsSaved, colour: isColour });
       await fail(safeMessage(
         err?.message,
         'Something went wrong while making these photographs. Please try again.'

@@ -42,6 +42,21 @@ export interface UsageSummary {
   failed: number;
   cancelled: number;
   viewsGenerated: number;
+  /**
+   * The split the owner asked for (28 Oct). `completed` above stays the total of both.
+   *
+   *   catalogs        completed four-view runs  = completed - colourCompleted
+   *   colourVariants  completed colour runs     = colourCompleted
+   *   notCharged      failed + cancelled, colour or not
+   *
+   * "Not charged" is what the Gateway does with them (it bills per fully delivered run). It is
+   * NOT what this allowance does: `generations` below still counts failures, as it always has.
+   */
+  catalogs: number;
+  colourVariants: number;
+  colourFailed: number;
+  colourCancelled: number;
+  notCharged: number;
   monthlyLimit: number | null;
   remaining: number | null;
   /** True once usage is close enough that the merchant should be told before it bites. */
@@ -92,15 +107,34 @@ export class TryOnUsageService {
     failed?: boolean;
     cancelled?: boolean;
     viewsGenerated?: number;
+    /**
+     * This run was a COLOUR VARIANT (a photo job of kind COLOUR, or a direct request carrying a
+     * `color`). The same outcome is then counted twice: once in the total, as always, and once
+     * in the colour counter -- so the totals keep meaning what they meant, and four-view
+     * catalogs are the total minus the colour part.
+     *
+     * "Completed" for a colour run means exactly what it means for any run: the stream reached
+     * its end without an error and (for a photo job) at least one view was saved. It is NOT
+     * "all four views arrived" -- a run that gave three of four is completed here, the same as
+     * it always was, with viewsGenerated recording the three. Keeping one rule is what lets the
+     * subtraction above stay honest; the Gateway's own count (fully delivered runs) is the
+     * billing figure and can be lower by the number of partial runs.
+     */
+    colour?: boolean;
   }, service: TryOnService = 'CATALOG_TRYON') {
     try {
       const day = await this.dayKeyFor(clientId);
+      const c = outcome.colour ? 1 : 0;
       const inc = {
         started: outcome.started ? 1 : 0,
         completed: outcome.completed ? 1 : 0,
         failed: outcome.failed ? 1 : 0,
         cancelled: outcome.cancelled ? 1 : 0,
-        viewsGenerated: outcome.viewsGenerated ?? 0
+        viewsGenerated: outcome.viewsGenerated ?? 0,
+        colourStarted: outcome.started ? c : 0,
+        colourCompleted: outcome.completed ? c : 0,
+        colourFailed: outcome.failed ? c : 0,
+        colourCancelled: outcome.cancelled ? c : 0
       };
 
       await prisma.tryOnUsage.upsert({
@@ -111,7 +145,11 @@ export class TryOnUsageService {
           completed: { increment: inc.completed },
           failed: { increment: inc.failed },
           cancelled: { increment: inc.cancelled },
-          viewsGenerated: { increment: inc.viewsGenerated }
+          viewsGenerated: { increment: inc.viewsGenerated },
+          colourStarted: { increment: inc.colourStarted },
+          colourCompleted: { increment: inc.colourCompleted },
+          colourFailed: { increment: inc.colourFailed },
+          colourCancelled: { increment: inc.colourCancelled }
         }
       });
     } catch (error) {
@@ -134,7 +172,10 @@ export class TryOnUsageService {
     const [rows, limitRow] = await Promise.all([
       prisma.tryOnUsage.findMany({
         where: { clientId, service, day: { startsWith: currentMonth } },
-        select: { completed: true, failed: true, cancelled: true, viewsGenerated: true }
+        select: {
+          completed: true, failed: true, cancelled: true, viewsGenerated: true,
+          colourCompleted: true, colourFailed: true, colourCancelled: true
+        }
       }),
       prisma.clientServiceLimit.findUnique({
         where: { uq_client_service_limit: { clientId, service } },
@@ -146,6 +187,9 @@ export class TryOnUsageService {
     const failed = rows.reduce((a, r) => a + r.failed, 0);
     const cancelled = rows.reduce((a, r) => a + r.cancelled, 0);
     const viewsGenerated = rows.reduce((a, r) => a + r.viewsGenerated, 0);
+    const colourVariants = rows.reduce((a, r) => a + r.colourCompleted, 0);
+    const colourFailed = rows.reduce((a, r) => a + r.colourFailed, 0);
+    const colourCancelled = rows.reduce((a, r) => a + r.colourCancelled, 0);
 
     const generations = completed + failed;
     const monthlyLimit = limitRow?.monthlyLimit ?? null;
@@ -160,6 +204,12 @@ export class TryOnUsageService {
       failed,
       cancelled,
       viewsGenerated,
+      // Never below zero, though it cannot be: colourCompleted only ever moves with completed.
+      catalogs: Math.max(completed - colourVariants, 0),
+      colourVariants,
+      colourFailed,
+      colourCancelled,
+      notCharged: failed + cancelled,
       monthlyLimit,
       remaining,
       approachingLimit:
@@ -196,14 +246,22 @@ export class TryOnUsageService {
     return usage;
   }
 
-  /** Daily usage for a client, for the console's chart. */
+  /** Daily usage for a client, for the console's chart, with the same catalog/colour split. */
   async daily(clientId: string, days = 30, service: TryOnService = 'CATALOG_TRYON') {
-    return prisma.tryOnUsage.findMany({
+    const rows = await prisma.tryOnUsage.findMany({
       where: { clientId, service },
       orderBy: { day: 'desc' },
       take: days,
-      select: { day: true, started: true, completed: true, failed: true, cancelled: true, viewsGenerated: true }
+      select: {
+        day: true, started: true, completed: true, failed: true, cancelled: true, viewsGenerated: true,
+        colourCompleted: true, colourFailed: true, colourCancelled: true
+      }
     });
+    return rows.map(r => ({
+      ...r,
+      catalogs: Math.max(r.completed - r.colourCompleted, 0),
+      colourVariants: r.colourCompleted
+    }));
   }
 
   /** Sets or clears a client's monthly allowance. Null clears it. */
