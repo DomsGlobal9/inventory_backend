@@ -13,8 +13,8 @@
  *
  * Importers take this folder, not the files inside it.
  */
-export { renderProduct, canonicalFromWebhook, hashCanonical, describeEdits, descriptionHtml, wordsOf, scaleezyTag } from './render';
-export type { Rendered, Canonical } from './render';
+export { renderProduct, canonicalFromWebhook, hashCanonical, describeEdits, descriptionHtml, wordsOf, scaleezyTag, withFinalPrices } from './render';
+export type { Rendered, Canonical, VariantTax } from './render';
 
 export { shopifyProductPushService, SHOPIFY_NOTICE } from './push.service';
 export type { ApiFor } from './push.service';

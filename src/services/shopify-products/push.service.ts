@@ -29,8 +29,10 @@ import { backoffMs } from '../../utils/retryBackoff';
 import { ShopifyAdminApi, ShopifyApiError, numericShopifyId } from '../shopify-mapping';
 import { storefrontCatalogueService } from '../storefront-catalogue.service';
 import {
-  renderProduct, canonicalOf, canonicalFromWebhook, hashCanonical, describeEdits, scaleezyTag, gid, Rendered
+  renderProduct, canonicalOf, canonicalFromWebhook, hashCanonical, describeEdits, scaleezyTag, gid, Rendered,
+  withFinalPrices, VariantTax
 } from './render';
+import { mayChargeTax, registrationInForce } from '../pricing/tax';
 
 export type ApiFor = (installation: { id: string; shopDomain: string }) => Promise<ShopifyAdminApi>;
 
@@ -308,7 +310,7 @@ export class ShopifyProductPushService {
     for (const r of rows) {
       if (r.installation.clientId !== r.clientId) continue;
       const scope = await this.scope(r.installationId);
-      const p = await storefrontCatalogueService.getProduct({ clientId: r.clientId, locationIds: scope.ourLocationIds }, r.product.productCode);
+      const p = await this.productForShopify(r.clientId, scope.ourLocationIds, r.product.productCode);
       const rendered = p ? renderProduct(p) : null;
       if (!rendered || rendered.hash !== r.lastHash || rendered.imagesHash !== r.imagesHash) {
         await prisma.shopifyProductMirror.update({ where: { id: r.id }, data: { status: 'PENDING', attempts: 0, nextAttemptAt: null } });
@@ -378,9 +380,7 @@ export class ShopifyProductPushService {
         return 'ARCHIVED';
       }
 
-      const p = await storefrontCatalogueService.getProduct(
-        { clientId: mirror.clientId, locationIds: scope.ourLocationIds }, mirror.product.productCode
-      );
+      const p = await this.productForShopify(mirror.clientId, scope.ourLocationIds, mirror.product.productCode);
       if (!p) throw new Refused('This product could not be read. Check it is active, then try again.');
       const rendered = renderProduct(p);
       if (rendered.refusal) throw new Refused(rendered.refusal);
@@ -390,6 +390,29 @@ export class ShopifyProductPushService {
     } catch (error: any) {
       return this.failed(mirror.id, mirror.attempts + 1, error);
     }
+  }
+
+  /**
+   * The product as Shopify gets it: the shop-front copy, with each price made the FINAL price
+   * (GST added first where it was entered without). Every place that renders a product for
+   * Shopify reads it through here, so the push, the sweep and the echo check agree on the price.
+   */
+  private async productForShopify(clientId: string, locationIds: string[], productCode: string) {
+    const p = await storefrontCatalogueService.getProduct({ clientId, locationIds }, productCode);
+    if (!p) return null;
+    const [settings, variants] = await Promise.all([
+      prisma.clientSettings.findUnique({ where: { clientId }, select: { gstRegistration: true, gstNumber: true } }),
+      prisma.productVariant.findMany({
+        where: { clientId, product: { productCode } },
+        select: { variantCode: true, taxRateBps: true, product: { select: { taxRateBps: true, priceIsExclusive: true } } }
+      })
+    ]);
+    const chargesTax = mayChargeTax(registrationInForce(settings?.gstRegistration, settings?.gstNumber));
+    const taxBy = new Map<string, VariantTax>(variants.map(v => [v.variantCode, {
+      rateBps: v.taxRateBps ?? v.product.taxRateBps ?? null,
+      priceIsExclusive: Boolean(v.product.priceIsExclusive)
+    }]));
+    return withFinalPrices(p, taxBy, chargesTax);
   }
 
   /* ── the Shopify calls ──────────────────────────────────────────────────────────────────── */
@@ -433,6 +456,8 @@ export class ShopifyProductPushService {
           optionValues: v.optionValues,
           price: v.price,
           compareAtPrice: v.compareAtPrice,
+          // Shopify adds no tax of its own: the price already is the final price, GST inside it.
+          taxable: false,
           ...(v.barcode ? { barcode: v.barcode } : {}),
           inventoryPolicy: 'DENY',
           inventoryItem: { sku: v.sku, tracked: true },
@@ -503,9 +528,7 @@ export class ShopifyProductPushService {
   /** Price for a product the shop built in Shopify: only the variants matched to ours. */
   private async sendMatchedPrices(api: ShopifyAdminApi, mirror: any, scope: Scope, eligible: boolean) {
     if (!eligible || !mirror.shopifyProductId) return;
-    const p = await storefrontCatalogueService.getProduct(
-      { clientId: mirror.clientId, locationIds: scope.ourLocationIds }, mirror.product.productCode
-    );
+    const p = await this.productForShopify(mirror.clientId, scope.ourLocationIds, mirror.product.productCode);
     if (!p) return;
     const maps = await prisma.shopifyIdMap.findMany({
       where: { installationId: mirror.installationId, shopifyProductId: mirror.shopifyProductId },
@@ -523,6 +546,9 @@ export class ShopifyProductPushService {
         id: gid('ProductVariant', m.shopifyVariantId),
         price: (Math.round(v.price * 100) / 100).toFixed(2),
         compareAtPrice: v.compareAtPrice !== null && v.compareAtPrice > v.price ? (Math.round(v.compareAtPrice * 100) / 100).toFixed(2) : null,
+        // The price is ours and final, so Shopify must not add tax to it -- even on a product the
+        // shop built there.
+        taxable: false,
         inventoryItem: { tracked: true }
       };
     }).filter(Boolean);
@@ -630,7 +656,7 @@ export class ShopifyProductPushService {
       if (!statusChanged && hashCanonical(theirs) === mirror.lastHash) return 'ECHO';
       // What we would send now, to name what they changed.
       const scope = await this.scope(mirror.installationId);
-      const p = await storefrontCatalogueService.getProduct({ clientId: mirror.clientId, locationIds: scope.ourLocationIds }, mirror.product.productCode);
+      const p = await this.productForShopify(mirror.clientId, scope.ourLocationIds, mirror.product.productCode);
       const ours = p ? canonicalOf(renderProduct(p)) : null;
       edits = ours ? describeEdits(ours, theirs) : [];
       if (statusChanged) edits.push(`its status to ${String(payload.status).toLowerCase()}`);

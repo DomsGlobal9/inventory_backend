@@ -11,6 +11,7 @@
 
 import crypto from 'crypto';
 import type { StorefrontProduct } from '../storefront-catalogue.service';
+import { inclusiveFromTaxable } from '../pricing/tax';
 
 /** Shopify allows three options per product. */
 const MAX_OPTIONS = 3;
@@ -216,6 +217,42 @@ export function renderProduct(p: StorefrontProduct): Rendered {
     hash: hashCanonical(canonical),
     imagesHash: crypto.createHash('sha256').update(JSON.stringify(images.map(i => i.url))).digest('hex').slice(0, 32),
     refusal: null
+  };
+}
+
+/** One variant's GST standing, for the price a Shopify customer pays. */
+export interface VariantTax {
+  rateBps: number | null;
+  priceIsExclusive: boolean;
+}
+
+/**
+ * The FINAL customer price, which is the only price Shopify is given (owner's rule, 26 Oct 2026).
+ *
+ * Shopify products are pushed with tax switched off: ScaleEzy decides GST, and a Shopify that added
+ * its own on top would charge the customer twice and disagree with the shop's returns. So the price
+ * sent must already contain the GST. A product priced INCLUSIVE (the shelf price) goes as it is; one
+ * priced EXCLUSIVE (stitched apparel, "cost + GST = total") has its GST added first, exactly as the
+ * till adds it. A shop that charges no GST (composition, unregistered, no GSTIN) adds nothing --
+ * GST is optional, and its price is simply its price.
+ *
+ * Pure. Keyed by variant code, the same as StorefrontVariant.variantCode.
+ */
+export function withFinalPrices(p: StorefrontProduct, taxByVariantCode: Map<string, VariantTax>, shopChargesTax: boolean): StorefrontProduct {
+  if (!shopChargesTax) return p;
+  const gross = (price: number, rateBps: number) =>
+    inclusiveFromTaxable(Math.round(price * 100), rateBps) / 100;
+  return {
+    ...p,
+    variants: p.variants.map(v => {
+      const t = taxByVariantCode.get(v.variantCode);
+      if (!t || !t.priceIsExclusive || !t.rateBps || t.rateBps <= 0 || !Number.isFinite(v.price)) return v;
+      return {
+        ...v,
+        price: gross(v.price, t.rateBps),
+        compareAtPrice: v.compareAtPrice !== null && Number.isFinite(v.compareAtPrice) ? gross(v.compareAtPrice, t.rateBps) : v.compareAtPrice
+      };
+    })
   };
 }
 
