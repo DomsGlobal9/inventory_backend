@@ -66,6 +66,7 @@ const internal = (method: string, path: string, body?: unknown, claims: Record<s
   const { sign } = await import('../utils/storefrontSignature');
   const parcelIds: string[] = [];
   const started = new Date();
+  let restoreStore: (() => Promise<unknown>) | null = null;
 
   const variant = await prisma.productVariant.findFirstOrThrow({ where: { clientId: C, product: { status: 'ACTIVE', trashedAt: null } }, orderBy: { sku: 'asc' }, select: { id: true, sku: true } });
   const onHand = async () => (await prisma.inventoryStock.findFirst({ where: { clientId: C, variantId: variant.id, locationId: ids.locationId } }))?.quantity ?? 0;
@@ -113,6 +114,16 @@ const internal = (method: string, path: string, body?: unknown, claims: Record<s
     eq('Logistics switches the shop on', r.status, 200);
     r = await call('SUPER_ADMIN', 'GET', '/logistics');
     eq('the shop now says on', r.body?.data?.on, true);
+    // The pickup: a store with no address or phone cannot be collected from.
+    const storeBefore = await prisma.stockLocation.findUniqueOrThrow({ where: { id: ids.locationId }, select: { name: true, address: true, phone: true } });
+    restoreStore = () => prisma.stockLocation.update({ where: { id: ids.locationId }, data: { address: storeBefore.address, phone: storeBefore.phone } });
+    await prisma.stockLocation.update({ where: { id: ids.locationId }, data: { address: null, phone: '9000011111' } });
+    r = await call('SUPER_ADMIN', 'POST', '/logistics/parcels', packBody());
+    eq('refused: the store has no address (nowhere to pick up from)', [r.status, r.body?.message], [400, `${storeBefore.name} has no address saved, so the courier cannot be sent to pick up. Add it in Settings → Stock locations, then pack.`]);
+    await prisma.stockLocation.update({ where: { id: ids.locationId }, data: { address: '22 Market Street, Vijayawada 520002', phone: '  ' } });
+    r = await call('SUPER_ADMIN', 'POST', '/logistics/parcels', packBody());
+    eq('refused: the store has no phone number', [r.status, r.body?.message], [400, `${storeBefore.name} has no phone number saved, so the courier cannot be sent to pick up. Add it in Settings → Stock locations, then pack.`]);
+    await prisma.stockLocation.update({ where: { id: ids.locationId }, data: { address: '22 Market Street, Vijayawada 520002', phone: '9000011111' } });
     for (const [why, extra, want] of [
       ['no weight', { weightKg: undefined }, 'Weigh the parcel and enter its weight in kg.'],
       ['weight 0', { weightKg: 0 }, 'Weigh the parcel and enter its weight in kg.'],
@@ -145,6 +156,7 @@ const internal = (method: string, path: string, body?: unknown, claims: Record<s
     eq('payload: who, where, how much to collect', [pay?.parcel_id, pay?.order_number, pay?.customer?.address, pay?.payment], [p1?.id, o1.number, { text: 'Flat 4, 12-3 Gandhi Road, Vijayawada 520001', pincode: '520001' }, { method: 'COD', cod_amount: total }]);
     eq('payload: the item in THIS parcel (1 of 2) and the package', [pay?.items?.map((i: any) => [i.sku, i.units]), [pay?.package?.box, pay?.package?.length_cm, pay?.package?.breadth_cm, pay?.package?.height_cm, pay?.package?.weight_kg], typeof pay?.packed_by, pay?.pickup?.location_id], [[[variant.sku, 1]], ['Medium', 35, 30, 6, 0.72], 'string', ids.locationId]);
     check('payload: a phone for the courier', typeof pay?.customer?.phone === 'string' && pay.customer.phone.length >= 10, pay?.customer);
+    eq('payload: the pickup store, with its address and phone', [pay?.pickup?.location_id, pay?.pickup?.address, pay?.pickup?.phone], [ids.locationId, '22 Market Street, Vijayawada 520002', '9000011111']);
     r = await call('SUPER_ADMIN', 'POST', '/logistics/parcels', { ...packBody(), box: undefined, lengthCm: 40, breadthCm: 30, heightCm: 3, weightKg: 0.65 });
     const p2 = r.body?.data;
     parcelIds.push(p2?.id);
@@ -229,6 +241,7 @@ const internal = (method: string, path: string, body?: unknown, claims: Record<s
     console.error(e);
     check(`the suite reached the end (stopped at: ${String(e?.message ?? e).trim().split('\n')[0]})`, false);
   } finally {
+    if (restoreStore) await restoreStore().catch(e => console.log('left the store address', e.message));
     await prisma.moduleEvent.deleteMany({ where: { clientId: C, module: 'logistics', createdAt: { gte: started } } }).catch(e => console.log('left events', e.message));
     await prisma.logisticsParcel.deleteMany({ where: { id: { in: parcelIds.filter(Boolean) } } }).catch(e => console.log('left parcels', e.message));
     await prisma.moduleSubscription.deleteMany({ where: { clientId: C, module: 'logistics' } }).catch(e => console.log('left subscription', e.message));

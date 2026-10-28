@@ -107,11 +107,15 @@ export async function pack(clientId: string, by: { id: string | null; name: stri
   // Checked before anything moves: Logistics cannot book a parcel with nowhere to go.
   const order = await prisma.salesOrder.findFirst({
     where: { id: salesOrderId, clientId, deletedAt: null },
-    select: { id: true, shippingAddress: true, customerPhone: true, customer: { select: { phone: true } } }
+    select: { id: true, shippingAddress: true, customerPhone: true, customer: { select: { phone: true } }, location: { select: { name: true, address: true, phone: true } } }
   });
   if (!order) throw notFound('That order was not found.');
   if (!order.shippingAddress?.trim()) throw badRequest('This order has no delivery address. Add it on the order, then pack it.');
   if (!(order.customerPhone || order.customer?.phone)) throw badRequest('This order has no phone number for the courier. Add it on the order, then pack it.');
+  // The pickup: the courier comes to this store, so Logistics needs its address and phone.
+  if (!order.location.address?.trim() || !order.location.phone?.trim()) {
+    throw badRequest(`${order.location.name} has no ${!order.location.address?.trim() ? 'address' : 'phone number'} saved, so the courier cannot be sent to pick up. Add it in Settings → Stock locations, then pack.`);
+  }
 
   return runTransaction(async (tx) => {
     const dispatch = await dispatchService.dispatchInTransaction(tx, clientId, salesOrderId, body?.items ?? [], {});
