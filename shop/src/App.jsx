@@ -126,6 +126,8 @@ function Shop({ page }) {
             : page === 'order' ? <OrderPage shop={shop} />
             : page === 'orders' ? <MyOrdersPage shop={shop} />
             : page === 'account' ? <AccountPage shop={shop} />
+            : page === 'wishlist' ? <AccountPage shop={shop} view="wishlist" />
+            : page === 'addresses' ? <AccountPage shop={shop} view="addresses" />
             : page === 'pay' ? <PaymentPage shop={shop} />
             : <ShopHome slug={slug} shop={shop} />}
         </Suspense>
@@ -156,6 +158,8 @@ export default function App() {
         <Route path="/:slug/checkout" element={<Shop page="checkout" />} />
         <Route path="/:slug/orders" element={<Shop page="orders" />} />
         <Route path="/:slug/account" element={<Shop page="account" />} />
+        <Route path="/:slug/wishlist" element={<Shop page="wishlist" />} />
+        <Route path="/:slug/addresses" element={<Shop page="addresses" />} />
         <Route path="/:slug/order/:token" element={<Shop page="order" />} />
         <Route path="/:slug/pay/:token" element={<Shop page="pay" />} />
         {/* Anything else inside a shop is that shop's front page, not a dead end. */}

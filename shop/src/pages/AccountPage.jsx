@@ -2,8 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { getAccount, sendCode, checkCode, signOutOf, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
 import { becomeSignedIn, remember, forget, noteHeart } from '../account';
-import { ORDER_WORDS } from '../orderWords';
-import { sized, orWhole, THUMB } from '../photo';
+import { sized, orWhole } from '../photo';
 
 /**
  * The shopper's account at this shop (29 Oct): "Sign in with WhatsApp", no password.
@@ -12,14 +11,22 @@ import { sized, orWhole, THUMB } from '../photo';
  * this phone. Signed in: their orders (from any phone), wishlist, saved addresses, and points and
  * store credit where the shop has them -- everything read with the sign-in and nothing else.
  */
-const ORDERS_SHOWN = 5;
-const dayOf = (iso) => new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+const ICONS = {
+  orders: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="M12 2.8 20.5 7.4v9.2L12 21.2l-8.5-4.6V7.4Z" /><path d="M3.8 7.6 12 12l8.2-4.4M12 12v9" /><path d="m7.8 5.1 8.4 4.6" /></svg>,
+  heart: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" /></svg>,
+  pin: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" /><circle cx="12" cy="10" r="2.4" /></svg>
+};
 const shownPhone = (p) => {
   const d = String(p ?? '').replace(/\D/g, '');
   return d.length === 12 && d.startsWith('91') ? `+91 ${d.slice(2, 7)} ${d.slice(7)}` : p;
 };
 
-export default function AccountPage({ shop }) {
+/**
+ * One component, three pages (owner, 29 Oct): view 'profile' (/account) is who they are, their balances
+ * and a short menu; 'wishlist' (/wishlist) the hearted pieces as a grid; 'addresses' (/addresses) the
+ * address book. Orders keep their own page (/orders). Signing in is the same on all three.
+ */
+export default function AccountPage({ shop, view = 'profile' }) {
   const { slug } = useParams();
   const nav = useNavigate();
   const where = useLocation();
@@ -46,12 +53,11 @@ export default function AccountPage({ shop }) {
   }, [slug, shop?.canVerifyPhone]);
 
   useEffect(() => { void load(); }, [load]);
-  // The bar's Wishlist opens this page at #wishlist: brought into view once the account is in.
+  // Links made before the pages were split (/account#wishlist, #addresses) open the page they meant.
   useEffect(() => {
-    // ...and Saved addresses at #addresses, the same way.
-    const id = { '#wishlist': 'wishlist', '#addresses': 'addresses' }[where.hash];
-    if (id && me?.signedIn) document.getElementById(id)?.scrollIntoView({ block: 'start' });
-  }, [where.hash, me?.signedIn]);
+    const to = { '#wishlist': 'wishlist', '#addresses': 'addresses' }[where.hash];
+    if (view === 'profile' && to) nav(`/${slug}/${to}`, { replace: true, state: where.state });
+  }, [view, where.hash, slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (shop?.accounts === false) {
     return (
@@ -64,9 +70,20 @@ export default function AccountPage({ shop }) {
       </div>
     );
   }
+  if (view === 'wishlist' && shop?.wishlist === false) {
+    return (
+      <div className="account">
+        <section className="card asignin">
+          <h1>{shop?.name || 'This shop'} does not keep wishlists</h1>
+          <p>Have a look around: everything the shop has online is on its front page.</p>
+          <Link className="go quiet keepon" to={`/${slug}`}>Continue shopping</Link>
+        </section>
+      </div>
+    );
+  }
   if (me === null) return <div className="bone" style={{ height: 320, borderRadius: 14, margin: '20px 0' }} />;
   if (!me.signedIn) {
-    return <SignIn slug={slug} shop={shop} canSignIn={me.canSignIn} why={where.state?.why}
+    return <SignIn slug={slug} shop={shop} canSignIn={me.canSignIn} why={where.state?.why ?? (view === 'wishlist' ? 'heart' : view === 'addresses' ? 'addresses' : undefined)}
       onDone={async () => {
         const account = await becomeSignedIn(slug);
         // Signed in because of a heart: that piece is saved now, then back to it, saying so.
@@ -105,69 +122,21 @@ export default function AccountPage({ shop }) {
     catch (e) { setSaid(e?.message ?? 'That could not be changed. Try again.'); }
   };
 
-  return (
-    <div className="account">
-      <section className="card awho">
-        <span className="avatar" aria-hidden="true">{(me.name || 'You').trim().charAt(0).toUpperCase()}</span>
-        <div className="awhat">
-          <h1>{me.name ? `Hello, ${String(me.name).trim().split(/\s+/)[0]}` : 'Your account'}</h1>
-          <p>{shownPhone(me.phone)}{me.devices > 1 ? ` · signed in on ${me.devices} phones` : ''}</p>
-        </div>
-        <div className="aout">
-          <button type="button" className="go quiet" onClick={() => out(false)}>Sign out</button>
-          {me.devices > 1 ? <button type="button" className="drop" onClick={() => out(true)}>Sign out on all phones</button> : null}
-        </div>
-      </section>
-
-      {said ? <p className="refused" role="alert">{said}</p> : null}
-
-      {(me.points !== null || me.storeCredit !== null) && (
-        <div className="amoney">
-          {me.points !== null ? (
-            <div className="card"><b>{Number(me.points).toLocaleString('en-IN')}</b><span>points</span><small>Use them at {shop?.name || 'the shop'}.</small></div>
-          ) : null}
-          {me.storeCredit !== null ? (
-            <div className="card"><b>{money(me.storeCredit)}</b><span>store credit</span><small>Use it at {shop?.name || 'the shop'}.</small></div>
-          ) : null}
-        </div>
-      )}
-
-      <section className="card">
-        <h2>Your orders</h2>
-        {me.orders.length === 0 ? (
-          <p className="aempty">No orders on this number yet. <Link to={`/${slug}`}>Have a look around</Link></p>
-        ) : (
-          <ul className="arows">
-            {me.orders.slice(0, ORDERS_SHOWN).map(o => (
-              <li key={o.token}>
-                <Link to={`/${slug}/order/${o.token}`}>
-                  <span className="shot">{o.firstImage ? <img src={sized(o.firstImage, THUMB)} onError={orWhole(o.firstImage)} alt="" loading="lazy" decoding="async" /> : null}</span>
-                  <span className="what">
-                    <b>{o.orderNumber}</b>
-                    <small>{dayOf(o.placedAt)} · {o.pieces === 1 ? '1 piece' : `${o.pieces} pieces`}</small>
-                  </span>
-                  <span className="end">
-                    <b>{money(o.total)}</b>
-                    <small className="state" data-state={o.state}>{ORDER_WORDS[o.state] ?? 'Placed'}</small>
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-        {me.orders.length > ORDERS_SHOWN ? <Link className="go quiet" to={`/${slug}/orders`}>See all {me.orders.length} orders</Link> : null}
-      </section>
-
-      {shop?.wishlist === false ? null : <section className="card" id="wishlist" style={{ scrollMarginTop: 'calc(var(--bar, 64px) + 12px)' }}>
-        <h2>Your wishlist</h2>
+  if (view === 'wishlist') {
+    return (
+      <div className="account apage">
+      <p className="acrumb"><Link to={`/${slug}/account`}>Your account</Link> <span aria-hidden="true">›</span></p>
+        <h1 className="pagetitle">Wishlist{me.hearts.length ? <span className="acount"> · {me.hearts.length} {me.hearts.length === 1 ? 'piece' : 'pieces'}</span> : null}</h1>
+        {said ? <p className="refused" role="alert">{said}</p> : null}
+        <section className="card">
         {me.hearts.length === 0 ? (
-          <p className="aempty">Tap the heart on a piece to save it here.</p>
+          <div className="aemptybig"><p className="aempty">Your wishlist is empty. Tap the heart on a piece to save it here.</p><Link className="go quiet keepon" to={`/${slug}`}>Continue shopping</Link></div>
         ) : (
           <ul className="awish">
             {me.hearts.map(h => (
               <li key={h.productCode}>
                 <Link to={`/${slug}/p/${encodeURIComponent(h.productCode)}`}>
-                  <span className="shot">{h.imageUrl ? <img src={sized(h.imageUrl, THUMB)} onError={orWhole(h.imageUrl)} alt="" loading="lazy" decoding="async" /> : null}
+                  <span className="shot">{h.imageUrl ? <img src={sized(h.imageUrl, 540)} onError={orWhole(h.imageUrl)} alt="" loading="lazy" decoding="async" /> : null}
                     {!h.available ? <span className="gone">Sold out</span> : null}
                   </span>
                   <b>{h.title}</b>
@@ -182,10 +151,18 @@ export default function AccountPage({ shop }) {
             ))}
           </ul>
         )}
-      </section>}
+        </section>
+      </div>
+    );
+  }
 
-      <section className="card" id="addresses" style={{ scrollMarginTop: 'calc(var(--bar, 64px) + 12px)' }}>
-        <h2>Saved addresses</h2>
+  if (view === 'addresses') {
+    return (
+      <div className="account apage">
+      <p className="acrumb"><Link to={`/${slug}/account`}>Your account</Link> <span aria-hidden="true">›</span></p>
+        <h1 className="pagetitle">Saved addresses</h1>
+        {said ? <p className="refused" role="alert">{said}</p> : null}
+        <section className="card" id="addresses">
         {me.addresses.length === 0 && editing !== 'new' ? (
           <p className="aempty">Add an address and it is ready at the checkout. Addresses you order to are saved here too.</p>
         ) : (
@@ -219,7 +196,53 @@ export default function AccountPage({ shop }) {
         ) : (
           <button type="button" className="go quiet aadd" onClick={() => setEditing('new')}>+ Add a new address</button>
         )}
+        </section>
+      </div>
+    );
+  }
+
+  // The profile: who they are, their balances, and a short menu to everything else.
+  const rows = [
+    { to: `/${slug}/orders`, title: 'Orders', sub: me.orders.length ? `${me.orders.length} ${me.orders.length === 1 ? 'order' : 'orders'} · track, cancel or check a delivery` : 'Track, cancel or check a delivery', icon: 'orders' },
+    ...(shop?.wishlist === false ? [] : [{ to: `/${slug}/wishlist`, title: 'Wishlist', sub: me.hearts.length ? `${me.hearts.length} saved ${me.hearts.length === 1 ? 'piece' : 'pieces'}` : 'The pieces you heart', icon: 'heart' }]),
+    { to: `/${slug}/addresses`, title: 'Saved addresses', sub: me.addresses.length ? `${me.addresses.length} saved · used at the checkout` : 'Add one, and it is ready at the checkout', icon: 'pin' }
+  ];
+  return (
+    <div className="account">
+      <section className="card awho">
+        <span className="avatar" aria-hidden="true">{(me.name || 'You').trim().charAt(0).toUpperCase()}</span>
+        <div className="awhat">
+          <h1>{me.name ? `Hello, ${String(me.name).trim().split(/\s+/)[0]}` : 'Your account'}</h1>
+          <p>{shownPhone(me.phone)}{me.devices > 1 ? ` · signed in on ${me.devices} phones` : ''}</p>
+        </div>
+        <div className="aout">
+          <button type="button" className="go quiet" onClick={() => out(false)}>Sign out</button>
+          {me.devices > 1 ? <button type="button" className="drop" onClick={() => out(true)}>Sign out on all phones</button> : null}
+        </div>
       </section>
+
+      {said ? <p className="refused" role="alert">{said}</p> : null}
+
+      {(me.points !== null || me.storeCredit !== null) && (
+        <div className="amoney">
+          {me.points !== null ? (
+            <div className="card"><b>{Number(me.points).toLocaleString('en-IN')}</b><span>points</span><small>Use them at {shop?.name || 'the shop'}.</small></div>
+          ) : null}
+          {me.storeCredit !== null ? (
+            <div className="card"><b>{money(me.storeCredit)}</b><span>store credit</span><small>Use it at {shop?.name || 'the shop'}.</small></div>
+          ) : null}
+        </div>
+      )}
+
+      <nav className="card amenu" aria-label="Your account">
+        {rows.map(r => (
+          <Link key={r.to} to={r.to}>
+            <span className="amenu-ic" aria-hidden="true">{ICONS[r.icon]}</span>
+            <span className="amenu-what"><b>{r.title}</b><small>{r.sub}</small></span>
+            <span className="amenu-go" aria-hidden="true">›</span>
+          </Link>
+        ))}
+      </nav>
     </div>
   );
 }
@@ -310,7 +333,7 @@ function SignIn({ slug, shop, canSignIn, why, onDone }) {
     <div className="account">
       <section className="card asignin">
         <h1>Sign in to {shop?.name || 'the shop'}</h1>
-        <p>{why === 'heart' ? 'Sign in to save pieces you like. ' : ''}No password: we send a 6-digit code to your WhatsApp. You stay signed in on this phone for 90 days.</p>
+        <p>{why === 'heart' ? 'Sign in to save pieces you like. ' : why === 'addresses' ? 'Sign in to keep your addresses for the checkout. ' : ''}No password: we send a 6-digit code to your WhatsApp. You stay signed in on this phone for 90 days.</p>
         {!canSignIn ? (
           <p className="refused">This shop cannot send codes just now. You can still order without signing in.</p>
         ) : step === 'number' ? (

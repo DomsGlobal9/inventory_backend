@@ -104,12 +104,12 @@ function ProfileMenu({ slug, me, firstName, wishlist }) {
           </div>
           {me ? null : <Link role="menuitem" className="pmenu-sign" to={`/${slug}/account`}>Sign in</Link>}
           <Link role="menuitem" to={`/${slug}/orders`}><OrdersGlyph size={18} /> Orders</Link>
-          {wishlist ? <Link role="menuitem" to={`/${slug}/account#wishlist`} state={me ? undefined : { why: 'heart' }}>
+          {wishlist ? <Link role="menuitem" to={`/${slug}/wishlist`} state={me ? undefined : { why: 'heart' }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" />
             </svg> Wishlist</Link> : null}
           {/* Signed in only: the addresses saved at past checkouts (owner, 29 Oct). */}
-          {me ? <Link role="menuitem" to={`/${slug}/account#addresses`}>
+          {me ? <Link role="menuitem" to={`/${slug}/addresses`}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" /><circle cx="12" cy="10" r="2.4" />
             </svg> Saved addresses</Link> : null}
@@ -243,7 +243,7 @@ export default function Nav({ shop, compact = false }) {
             {/* Profile opens a menu with Orders in it, as Myntra's does (owner, 29 Oct). */}
             {shop?.accounts !== false ? <ProfileMenu slug={slug} me={me} firstName={firstName} wishlist={wishlistOn(shop)} /> : null}
             {/* The hearts live with the account; this goes straight to them. */}
-            {wishlistOn(shop) ? <Link to={`/${slug}/account#wishlist`} state={me ? undefined : { why: 'heart' }} className="icon worded" aria-label={hearts ? `Your wishlist, ${hearts} ${hearts === 1 ? 'piece' : 'pieces'}` : 'Your wishlist'} title="Your wishlist">
+            {wishlistOn(shop) ? <Link to={`/${slug}/wishlist`} state={me ? undefined : { why: 'heart' }} className="icon worded" aria-label={hearts ? `Your wishlist, ${hearts} ${hearts === 1 ? 'piece' : 'pieces'}` : 'Your wishlist'} title="Your wishlist">
               {/* How many are hearted, on the icon like the bag's count (owner, 29 Oct): it moves the
                   moment a heart is tapped, since noteHeart tells the bar (onAccountChange). */}
               <span className="bagicon wishicon">

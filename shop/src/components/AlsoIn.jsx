@@ -60,7 +60,7 @@ export default function AlsoIn({ slug, product, shop, onRows }) {
 
   if (rows !== null && rows.length === 0) return null;
 
-  const what = narrow && dressType ? `More ${dressType.toLowerCase()}s` : `More from ${shop?.name ?? 'this shop'}`;
+  const what = narrow && dressType ? `Similar ${dressType.toLowerCase()}s` : `More from ${shop?.name ?? 'this shop'}`;
 
   return (
     <section className="alsoin">
