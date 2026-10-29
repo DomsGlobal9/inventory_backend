@@ -2246,3 +2246,60 @@ body { overflow-x: hidden; }
 .parcel > span { display: grid; gap: 2px; min-width: 0; }
 .parcel .awb { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .parcel .go { flex-shrink: 0; }
+
+/* Orders and Bag: the icon alone on a phone, the icon and its word on a wide screen. */
+.icon .word { display: none; }
+@media (min-width: 880px) {
+  .icon.worded { width: auto; padding: 0 12px; gap: 7px; }
+  .icon .word { display: inline; font-size: 13.5px; font-weight: 550; }
+}
+
+/* ── The order page as one narrow receipt (29 Oct) ───────────────────────────────────────
+ * Status and tracker in one card, then the pieces with what they came to, then where it goes
+ * beside what can be done. Narrow on purpose: a receipt read top to bottom has no empty half.
+ */
+.orderpage { max-width: 760px; margin: 0 auto; padding: 18px 0 44px; display: grid; gap: 14px; }
+.orderpage .card { background: var(--card); }
+.orderpage .ohead {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--card);
+  padding: 20px 18px 18px; text-align: left;
+}
+.orderpage .otop { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; align-items: center; }
+.orderpage .ohead .tick { width: 52px; height: 52px; margin: 0; }
+.orderpage .ohead .tick svg { width: 52px; height: 52px; }
+.orderpage .ohead.sad .tick { width: 46px; height: 46px; }
+.orderpage .ohead.sad .tick svg { width: 24px; height: 24px; }
+.orderpage .osaid h1 { font-size: 20px; margin: 0 0 3px; }
+.orderpage .osaid p { margin: 0; font-size: 13.5px; }
+.orderpage .oref { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.orderpage .oref p { margin: 0; }
+.orderpage .oref .num { margin: 0; font-size: 13px; color: var(--ink); font-weight: 600; }
+.orderpage .oref .when { margin: 0; }
+.orderpage .track { margin: 18px 0 2px; }
+.orderpage .track div { font-size: 12px; }
+.orderpage .parcels { margin: 14px 0 0; }
+.orderpage .obill dl { margin: 0; }
+.orderpage .osub { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  margin: 16px 0 6px; padding-top: 14px; border-top: 1px solid var(--line); font-weight: 600; }
+.orderpage .baglines li:last-child { border-bottom: 0; padding-bottom: 0; }
+.orderpage .bill { position: static; }
+.orderpage .ogrid { display: grid; gap: 14px; }
+.orderpage .goesto { margin: 0; }
+.orderpage .goesto h3 { margin-bottom: 9px; }
+.orderpage .ohelp { display: grid; gap: 8px; align-content: start; }
+.orderpage .ohelp .go { margin: 0; }
+.orderpage .ohelp .drop { justify-self: center; }
+.orderpage .ohelp .tiny { text-align: center; margin: 2px 0 0; }
+@media (min-width: 720px) {
+  .orderpage { padding-top: 26px; }
+  .orderpage .ohead { padding: 24px 26px 22px; }
+  .orderpage .otop { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .orderpage .oref { grid-column: auto; display: grid; justify-items: end; gap: 3px; margin: 0; padding: 0; border: 0; text-align: right; }
+  .orderpage .osaid h1 { font-size: 23px; }
+  .orderpage .card { padding: 20px 24px; }
+  .orderpage .ogrid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+.orderpage .parcel .go { width: auto; flex: 0 0 auto; padding: 0 20px; }
+/* Side by side in a grid: the old "card + card" gap would push the second one down. */
+.orderpage .ogrid > .card + .card { margin-top: 0; }

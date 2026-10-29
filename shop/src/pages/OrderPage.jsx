@@ -107,96 +107,109 @@ export default function OrderPage({ shop }) {
     window.open(p.trackingUrl, '_blank', 'noopener');
   };
 
+  const pieces = o.items.reduce((t, i) => t + i.quantity, 0);
+
+  /*
+   * One narrow receipt, read top to bottom (29 Oct): where the order is, what was bought and what
+   * it came to, then where it goes and what can be done. It was a wide page with a two-column body,
+   * and one bought piece left most of the left side empty beside a tall column holding everything.
+   */
   return (
     <div className="orderpage">
-      <div className={`landed ${o.state === 'CANCELLED' ? 'sad' : ''}`}>
-        <div className="tick">
-          {o.state === 'CANCELLED' ? (
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M8 8l8 8M16 8l-8 8" strokeLinecap="round" />
-            </svg>
-          ) : <Landed />}
+      <section className={`ohead landed ${o.state === 'CANCELLED' ? 'sad' : ''}`}>
+        <div className="otop">
+          <div className="tick">
+            {o.state === 'CANCELLED' ? (
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M8 8l8 8M16 8l-8 8" strokeLinecap="round" />
+              </svg>
+            ) : <Landed />}
+          </div>
+          <div className="osaid">
+            <h1>{said.title}</h1>
+            <p>{said.note}</p>
+          </div>
+          <div className="oref">
+            <p className="num">{o.orderNumber}</p>
+            <p className="when">Placed on {when}</p>
+          </div>
         </div>
-        <h1>{said.title}</h1>
-        <p>{said.note}</p>
-        <p className="num">{o.orderNumber}</p>
-        <p className="when">Placed on {when}</p>
-      </div>
 
-      {o.state !== 'CANCELLED' && (
-        <div className="track" aria-label="Where your order has got to">
-          {steps.map(st => <div key={st.label} data-done={st.done}><i />{st.label}</div>)}
-        </div>
-      )}
+        {o.state !== 'CANCELLED' && (
+          <div className="track" aria-label="Where your order has got to">
+            {steps.map(st => <div key={st.label} data-done={st.done}><i />{st.label}</div>)}
+          </div>
+        )}
 
-      {/* Who is carrying it, and the number to track it by. */}
-      {o.state !== 'CANCELLED' && (o.parcels ?? []).length > 0 && (
-        <div className="parcels" aria-label="Tracking">
-          {o.parcels.map((p, n) => (
-            <div key={n} className="parcel">
-              <span>
-                <b>{p.deliveredAt ? 'Delivered' : 'Sent'} with {p.courier}</b>
-                {p.trackingNumber ? <span className="awb">Tracking number {p.trackingNumber}</span> : null}
-                {copied && copied === p.trackingNumber ? <span className="awb">Copied: paste it on {p.courier}'s page</span> : null}
-              </span>
-              {p.trackingUrl ? <button type="button" className="go quiet" onClick={() => track(p)}>Track</button> : null}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="orderbody">
-        <section className="card">
-          {/* Pieces, not lines. Two of one colour and one of another is three pieces, and
-              counting the lines said "2 pieces" on the confirmation for an order the checkout
-              had just called "3 pieces" -- which reads like something was dropped on the way,
-              at the exact moment a customer is checking that it was not. */}
-          <h2>{(() => { const n = o.items.reduce((t, i) => t + i.quantity, 0); return n === 1 ? '1 piece' : `${n} pieces`; })()}</h2>
-          <ul className="baglines flat">
-            {o.items.map((i, n) => (
-              <li key={`${i.variantCode}-${n}`}>
-                <span className="shot">
-                  {i.imageUrl ? <img src={i.imageUrl} alt="" loading="lazy" decoding="async" /> : null}
+        {/* Who is carrying it, and the number to track it by. */}
+        {o.state !== 'CANCELLED' && (o.parcels ?? []).length > 0 && (
+          <div className="parcels" aria-label="Tracking">
+            {o.parcels.map((p, n) => (
+              <div key={n} className="parcel">
+                <span>
+                  <b>{p.deliveredAt ? 'Delivered' : 'Sent'} with {p.courier}</b>
+                  {p.trackingNumber ? <span className="awb">Tracking number {p.trackingNumber}</span> : null}
+                  {copied && copied === p.trackingNumber ? <span className="awb">Copied: paste it on {p.courier}'s page</span> : null}
                 </span>
-                <div className="what">
-                  <h3>{i.title}</h3>
-                  <p className="of">
-                    {[i.colour, i.size].filter(Boolean).join(' · ')}
-                    {i.colourHex ? <i className="swatch" style={{ background: i.colourHex }} aria-hidden="true" /> : null}
-                  </p>
-                  <p className="of">{i.quantity} × {money(i.unitPrice)}</p>
-                </div>
-                <div className="cash"><b>{money(i.lineTotal)}</b></div>
-              </li>
+                {p.trackingUrl ? <button type="button" className="go quiet" onClick={() => track(p)}>Track</button> : null}
+              </div>
             ))}
-          </ul>
+          </div>
+        )}
+      </section>
+
+      <section className="card obill bill">
+        {/* Pieces, not lines. Two of one colour and one of another is three pieces, and
+            counting the lines said "2 pieces" on the confirmation for an order the checkout
+            had just called "3 pieces" -- which reads like something was dropped on the way,
+            at the exact moment a customer is checking that it was not. */}
+        <h2>{pieces === 1 ? '1 piece' : `${pieces} pieces`}</h2>
+        <ul className="baglines flat">
+          {o.items.map((i, n) => (
+            <li key={`${i.variantCode}-${n}`}>
+              <span className="shot">
+                {i.imageUrl ? <img src={i.imageUrl} alt="" loading="lazy" decoding="async" /> : null}
+              </span>
+              <div className="what">
+                <h3>{i.title}</h3>
+                <p className="of">
+                  {[i.colour, i.size].filter(Boolean).join(' · ')}
+                  {i.colourHex ? <i className="swatch" style={{ background: i.colourHex }} aria-hidden="true" /> : null}
+                </p>
+                <p className="of">{i.quantity} × {money(i.unitPrice)}</p>
+              </div>
+              <div className="cash"><b>{money(i.lineTotal)}</b></div>
+            </li>
+          ))}
+        </ul>
+
+        <h3 className="osub">What it came to</h3>
+        <dl>
+          <div><dt>Pieces</dt><dd>{money(o.goods)}</dd></div>
+          {o.saved > 0 ? <div className="good"><dt>You saved</dt><dd>−{money(o.saved)}</dd></div> : null}
+          <div><dt>Delivery</dt><dd>{o.delivery > 0 ? money(o.delivery) : <span className="good">Free</span>}</dd></div>
+          <div className="sum"><dt>Total</dt><dd>{money(o.total)}</dd></div>
+        </dl>
+
+        {/* The line a customer opens this page to read. */}
+        <div className="due">
+          <span>
+            {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
+            <span>{refunding ? 'Going back to how you paid' : o.paid ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash or UPI when it arrives' : ''}</span>
+          </span>
+          <b>{money(o.total)}</b>
+        </div>
+      </section>
+
+      <div className="ogrid">
+        <section className="card goesto">
+          <h3>Going to</h3>
+          <p><b>{o.name}</b></p>
+          <p>{o.address}</p>
+          {o.phone ? <p>{o.phone}</p> : null}
         </section>
 
-        <aside className="bill">
-          <h2>What it came to</h2>
-          <dl>
-            <div><dt>Pieces</dt><dd>{money(o.goods)}</dd></div>
-            {o.saved > 0 ? <div className="good"><dt>You saved</dt><dd>−{money(o.saved)}</dd></div> : null}
-            <div><dt>Delivery</dt><dd>{o.delivery > 0 ? money(o.delivery) : <span className="good">Free</span>}</dd></div>
-            <div className="sum"><dt>Total</dt><dd>{money(o.total)}</dd></div>
-          </dl>
-
-          {/* The line a customer opens this page to read. */}
-          <div className="due">
-            <span>
-              {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
-              <span>{refunding ? 'Going back to how you paid' : o.paid ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash or UPI when it arrives' : ''}</span>
-            </span>
-            <b>{money(o.total)}</b>
-          </div>
-
-          <div className="goesto">
-            <h3>Going to</h3>
-            <p><b>{o.name}</b></p>
-            <p>{o.address}</p>
-            {o.phone ? <p>{o.phone}</p> : null}
-          </div>
-
+        <section className="card ohelp bill">
           {ask ? (
             <a className="go quiet" href={ask} target="_blank" rel="noopener noreferrer">
               Ask {shop?.name || 'the shop'} about this order
@@ -246,7 +259,7 @@ export default function OrderPage({ shop }) {
           )}
 
           <p className="tiny">Keep this link — it is how you check on your order.</p>
-        </aside>
+        </section>
       </div>
     </div>
   );

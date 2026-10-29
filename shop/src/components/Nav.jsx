@@ -39,9 +39,11 @@ const Bag = ({ n }) => {
 
   return (
   <span className={`bagicon${jolt ? ' jolt' : ''}`}>
+    {/* A shopping bag, not a bin: straight sides, a fold along the top, the handle on its front. */}
     <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-      <path d="M6 7h12l-1 13H7L6 7Z" strokeLinejoin="round" />
-      <path d="M9 7a3 3 0 0 1 6 0" strokeLinecap="round" />
+      <path d="M6 2.5 3.5 6v13.5a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2V6L18 2.5Z" strokeLinejoin="round" />
+      <path d="M3.5 6h17" />
+      <path d="M15.5 10a3.5 3.5 0 0 1-7 0" strokeLinecap="round" />
     </svg>
     {n > 0 ? <i aria-hidden="true">{n > 9 ? '9+' : n}</i> : null}
   </span>
@@ -118,14 +120,18 @@ export default function Nav({ shop, compact = false }) {
               </svg>
             </button>
 
-            <Link to={`/${slug}/orders`} className="icon" aria-label="Your orders" title="Your orders">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                <path d="M5 4h11l3 3v13H5z" strokeLinejoin="round" />
-                <path d="M8.5 11h7M8.5 15h4" strokeLinecap="round" />
+            {/* An order is a parcel on its way: a box. The words show beside both on a wide screen. */}
+            <Link to={`/${slug}/orders`} className="icon worded" aria-label="Your orders" title="Your orders">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 2.8 20.5 7.4v9.2L12 21.2l-8.5-4.6V7.4Z" />
+                <path d="M3.8 7.6 12 12l8.2-4.4M12 12v9" />
+                <path d="m7.8 5.1 8.4 4.6" />
               </svg>
+              <span className="word" aria-hidden="true">Orders</span>
             </Link>
-            <Link to={`/${slug}/bag`} className="icon" aria-label={count ? `Your bag, ${count} pieces` : 'Your bag'}>
+            <Link to={`/${slug}/bag`} className="icon worded" aria-label={count ? `Your bag, ${count} pieces` : 'Your bag'}>
               <Bag n={count} />
+              <span className="word" aria-hidden="true">Bag</span>
             </Link>
           </div>
         </div>
