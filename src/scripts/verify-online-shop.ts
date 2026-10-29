@@ -202,13 +202,35 @@ async function main() {
   // The banners across the top of the shop. A real JPEG is made here rather than kept as a
   // fixture, so the whole path runs: shrink, strip, upload, row, and what a shopper is given.
   console.log('\nN. THE BANNERS ACROSS THE TOP');
-  const picture = async (w = 1400, h = 800) =>
+  // The banner shape (29 Oct): 3 times as wide as tall. orientation: a phone photo stored on its side.
+  const picture = async (w = 1920, h = 640, orientation?: number) =>
     'data:image/jpeg;base64,' + (await sharp({ create: { width: w, height: h, channels: 3, background: '#8b1a2b' } })
-      .jpeg().toBuffer()).toString('base64');
+      .jpeg().withMetadata(orientation ? { orientation } : {}).toBuffer()).toString('base64');
   const jpeg = await picture();
 
   const noPic = await own.post('/online-shop/banners', { heading: 'Nothing to show' });
   check('a banner with no picture is refused', noPic.status === 400 && /picture/i.test(noPic.data.message), noPic.data);
+
+  // One shape (29 Oct). Each wrong one is refused saying the shape wanted AND the shape it is.
+  for (const [w, h, o, why] of [
+    [1080, 1080, 0, 'a square'], [1920, 1080, 0, 'a 16:9 photo'], [1080, 1920, 0, 'a tall one'],
+    [2000, 600, 0, 'just too long (3.33:1)'], [2000, 750, 0, 'just too short (2.67:1)'],
+    [1920, 640, 6, 'a 3:1 picture marked "turn me" (shown 640 × 1920)']
+  ] as Array<[number, number, number, string]>) {
+    const r = await own.post('/online-shop/banners', { base64: await picture(w, h, o || undefined) });
+    const shown = o >= 5 ? `${h} × ${w}` : `${w} × ${h}`;
+    check(`${why} is refused, saying 3:1 (1920 × 640) and ${shown}`, r.status === 400 && /3 times as wide as it is tall, for example 1920 × 640 pixels/.test(r.data.message) && r.data.message.includes(`This picture is ${shown}.`), r.data);
+  }
+  const small = await own.post('/online-shop/banners', { base64: await picture(900, 300) });
+  check('the right shape but small (900 × 300): refused, asking for 1200 wide', small.status === 400 && /at least 1200 pixels wide/.test(small.data.message), small.data);
+  check('none of the refused ones left a banner behind', (await own.get('/online-shop/banners')).data.data.length === 0);
+  // Inside the tenth either way, and a phone photo stored sideways that SHOWS as 3:1, all get in.
+  for (const [w, h, o, why] of [[2000, 711, 0, '2000 × 711 (2.81:1)'], [1980, 600, 0, '1980 × 600 (3.3:1)'], [1200, 400, 0, '1200 × 400, the smallest'], [640, 1920, 6, '640 × 1920 marked "turn me" (shown 1920 × 640)']] as Array<[number, number, number, string]>) {
+    const r = await own.post('/online-shop/banners', { base64: await picture(w, h, o || undefined) });
+    const got = r.data?.data?.at(-1);
+    check(`${why} is taken, stored the way round it is shown`, r.status === 200 && got && got.width > got.height && Math.abs(got.width / got.height - (o >= 5 ? h / w : w / h)) < 0.05, r.data);
+    if (got) await own.delete(`/online-shop/banners/${got.id}`);
+  }
 
   const b1 = await own.post('/online-shop/banners', { base64: jpeg, heading: 'Festival collection', subtext: 'New silks just in' });
   check('a banner is added', b1.status === 200 && b1.data.data.length === 1, b1.data);

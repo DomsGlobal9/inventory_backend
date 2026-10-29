@@ -1,8 +1,9 @@
 import crypto from 'crypto';
+import sharp from 'sharp';
 import type { OnlineShopBannerLink } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { supabase } from '../../lib/supabase';
-import { prepareImage } from '../../lib/imagePrep';
+import { prepareImage, MAX_PIXELS } from '../../lib/imagePrep';
 import { storefrontCatalogueService } from '../storefront-catalogue.service';
 import { OnlineShopRuleError } from './rules';
 import { getShopSettings } from '../../lib/clientSettings';
@@ -35,6 +36,35 @@ const LIMITS = {
 };
 
 export const MAX_BANNERS = 6;
+
+/**
+ * One shape for every banner (29 Oct): three times as wide as it is tall, give or take a tenth, and
+ * at least 1200 pixels across.
+ *
+ * Shops upload finished designs -- their name, a "Shop now", the words drawn in -- and a banner of
+ * any shape had to be cut to fit the strip, which cut exactly those off. With one shape the whole
+ * picture shows on a phone and a laptop alike. The tenth either way lets a 2000 × 711 export through;
+ * 1200 across is what stays sharp on a laptop. The admin screen checks the same before uploading.
+ */
+export const SHAPE = { ratio: 3, give: 0.1, minWidth: 1200, example: '1920 × 640' };
+
+async function checkShape(buf: Buffer) {
+  let meta: sharp.Metadata;
+  // Unreadable: prepareImage says what is wrong with it, in the words it already has.
+  try { meta = await sharp(buf, { limitInputPixels: MAX_PIXELS, failOn: 'error' }).metadata(); } catch { return; }
+  if (!meta.width || !meta.height) return;
+  // A phone photo stored on its side and marked "turn me" is the shape it is shown at, not stored at.
+  const [w, h] = (meta.orientation ?? 1) >= 5 ? [meta.height, meta.width] : [meta.width, meta.height];
+  const r = w / h;
+  if (r < SHAPE.ratio * (1 - SHAPE.give) || r > SHAPE.ratio * (1 + SHAPE.give)) {
+    throw new OnlineShopRuleError(
+      `A banner must be 3 times as wide as it is tall, for example ${SHAPE.example} pixels. This picture is ${w} × ${h}. Crop it to that shape and choose it again.`);
+  }
+  if (w < SHAPE.minWidth) {
+    throw new OnlineShopRuleError(
+      `This picture is ${w} × ${h}, too small to stay sharp on a laptop. Use one at least ${SHAPE.minWidth} pixels wide, for example ${SHAPE.example}.`);
+  }
+}
 
 /**
  * Where a banner can show (24 Oct). One banner may be in several: the festival picture in the home slider
@@ -184,6 +214,7 @@ export async function add(clientId: string, userId: string | null, input: {
   const { timezone } = await getShopSettings(clientId);
   const window = windowFrom(input.showFrom, input.showUntil, timezone);
 
+  await checkShape(buf);
   const prepared = await prepareImage(buf, LIMITS);
 
   // A name nobody can guess, so the address of a shop's banner says nothing about the shop.

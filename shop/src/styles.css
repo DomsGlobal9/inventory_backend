@@ -131,11 +131,13 @@ button { font: inherit; }
 button.slide { cursor: pointer; }
 /* height:auto matters: an <img> with width and height attributes gets them as presentational
    hints, and a fixed height beats aspect-ratio -- which rendered a 1600x1200 banner 1200px tall. */
-/* On a phone the WHOLE banner, at its own shape (29 Oct): cut to 16:9, a wide banner lost its sides
-   and the shop's own words on it ("Kanchi Silk Sarees" came out "Kanch i"). min-height only holds a
-   place while it loads. A wider screen keeps the fixed shape below. */
+/* The WHOLE banner, at its own shape, on every screen (29 Oct). Shops upload finished designs with
+   their name and a "Shop now" drawn in; any fixed shape cut those off -- on a phone the sides, on a
+   laptop the top and bottom. min-height only holds a place while it loads; max-height (wide screens,
+   below) stops a tall upload taking the page, and then it sits whole on the soft background. */
 .slide img { width: 100%; height: auto; aspect-ratio: auto; min-height: 110px; object-fit: contain; background: var(--soft); display: block; }
-@media (min-width: 720px) { .slide img { aspect-ratio: 21 / 7; min-height: 0; object-fit: cover; } }
+/* Two banners of slightly different shapes share one strip: the shorter is centred, not left hanging. */
+.slide { display: flex; align-items: center; background: var(--soft); }
 
 /* Words over a photograph, on a gradient dark enough to read against anything the shop uploads. */
 .slide .over {
@@ -162,7 +164,7 @@ button.slide { cursor: pointer; }
 
 /* Banners inside the page (between the products, on a product page): rounded, a little shorter. */
 .banners.inline { margin: 18px 0; border-radius: var(--r); overflow: hidden; }
-@media (min-width: 720px) { .banners.inline .slide img { aspect-ratio: 4 / 1; max-height: 260px; } }
+@media (min-width: 720px) { .banners.inline .slide img { max-height: 320px; } }
 
 /* The shop's one line across the top of every page, in its own colour. */
 .announce {
@@ -1069,7 +1071,7 @@ a.announce:hover { text-decoration: underline; }
     background: transparent;
   }
   .strip { border-radius: 16px; overflow: hidden; }
-  .slide img { aspect-ratio: 21 / 8; max-height: 400px; }
+  .slide img { min-height: 0; max-height: 460px; }
   .banners .pips { inset: auto 0 14px 0; }
 }
 
@@ -2157,9 +2159,9 @@ body { overflow-x: hidden; }
   border-radius: var(--r); background: var(--soft); box-shadow: var(--lift);
   margin: 6px 0 22px;
 }
-/* Whole on a phone, like the banner at the top (29 Oct); the short shape only where there is room. */
+/* Whole on every screen, like the banner at the top (29 Oct); only its height is capped. */
 .promo img { display: block; width: 100%; height: auto; aspect-ratio: auto; min-height: 90px; object-fit: contain; }
-@media (min-width: 720px) { .promo img { aspect-ratio: 32 / 7; min-height: 0; object-fit: cover; } }
+@media (min-width: 720px) { .promo img { min-height: 0; max-height: 300px; } }
 .promo .over {
   position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end;
   gap: 3px; padding: 16px 18px;

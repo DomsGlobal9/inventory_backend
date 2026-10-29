@@ -40,11 +40,11 @@ const Bag = ({ n }) => {
 
   return (
   <span className={`bagicon${jolt ? ' jolt' : ''}`}>
-    {/* A shopping bag, not a bin: straight sides, a fold along the top, the handle on its front. */}
+    {/* The bag shoppers know from the big fashion apps (29 Oct): a body a touch wider at the foot,
+        the handle arching above it rather than drawn on its front. */}
     <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-      <path d="M6 2.5 3.5 6v13.5a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2V6L18 2.5Z" strokeLinejoin="round" />
-      <path d="M3.5 6h17" />
-      <path d="M15.5 10a3.5 3.5 0 0 1-7 0" strokeLinecap="round" />
+      <path d="M5.3 8.2h13.4l1.2 11.4a1.7 1.7 0 0 1-1.7 1.9H5.8a1.7 1.7 0 0 1-1.7-1.9Z" strokeLinejoin="round" />
+      <path d="M8.7 8.2V6.6a3.3 3.3 0 0 1 6.6 0v1.6" strokeLinecap="round" />
     </svg>
     {n > 0 ? <i aria-hidden="true">{n > 9 ? '9+' : n}</i> : null}
   </span>
