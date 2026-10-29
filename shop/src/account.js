@@ -71,3 +71,10 @@ export const sameNumber = (a, b) => {
   const d = (x) => String(x ?? '').replace(/\D/g, '').slice(-10);
   return d(a).length === 10 && d(a) === d(b);
 };
+
+/**
+ * Whether this shop offers the wishlist at all (29 Oct): its own switch, accounts on (hearts belong to
+ * an account), and WhatsApp sign-in actually available -- without it a heart would lead to a sign-in
+ * that cannot happen. One rule for the bar, the Profile menu and the heart on a piece.
+ */
+export const wishlistOn = (shop) => !!shop?.wishlist && shop?.accounts !== false && !!shop?.canVerifyPhone;

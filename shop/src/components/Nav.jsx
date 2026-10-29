@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { bagCount, useBag } from '../bag';
-import { signedIn, onAccountChange } from '../account';
+import { signedIn, onAccountChange, wishlistOn } from '../account';
 
 /**
  * The bar at the top of every page of a shop.
@@ -199,7 +199,6 @@ export default function Nav({ shop, compact = false }) {
             {shop?.logoUrl ? <img className="mark" src={shop.logoUrl} alt="" /> : null}
             <span className="names">
               <span className="name" ref={nameRef}>{shop?.name}</span>
-              {shop?.facets?.total ? <span className="sub">{shop.facets.total} pieces online</span> : null}
             </span>
           </Link>
 
@@ -227,9 +226,9 @@ export default function Nav({ shop, compact = false }) {
             </button>
 
             {/* Profile opens a menu with Orders in it, as Myntra's does (owner, 29 Oct). */}
-            {shop?.accounts !== false ? <ProfileMenu slug={slug} me={me} firstName={firstName} wishlist={shop?.wishlist !== false} /> : null}
+            {shop?.accounts !== false ? <ProfileMenu slug={slug} me={me} firstName={firstName} wishlist={wishlistOn(shop)} /> : null}
             {/* The hearts live with the account; this goes straight to them. */}
-            {shop?.accounts !== false && shop?.wishlist !== false ? <Link to={`/${slug}/account#wishlist`} state={me ? undefined : { why: 'heart' }} className="icon worded" aria-label="Your wishlist" title="Your wishlist">
+            {wishlistOn(shop) ? <Link to={`/${slug}/account#wishlist`} state={me ? undefined : { why: 'heart' }} className="icon worded" aria-label="Your wishlist" title="Your wishlist">
               <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" />
               </svg>

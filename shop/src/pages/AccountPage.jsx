@@ -62,7 +62,18 @@ export default function AccountPage({ shop }) {
   if (me === null) return <div className="bone" style={{ height: 320, borderRadius: 14, margin: '20px 0' }} />;
   if (!me.signedIn) {
     return <SignIn slug={slug} shop={shop} canSignIn={me.canSignIn} why={where.state?.why}
-      onDone={async () => { const account = await becomeSignedIn(slug); if (account && back) { nav(back, { replace: true }); return; } setMe(account ?? { signedIn: false, canSignIn: true }); }} />;
+      onDone={async () => {
+        const account = await becomeSignedIn(slug);
+        // Signed in because of a heart: that piece is saved now, then back to it, saying so.
+        const heart = where.state?.heart;
+        let hearted = null;
+        if (account && heart?.productCode) {
+          try { await likePiece(slug, heldProof(slug), heart.productCode, true, heart.variantCode ?? undefined); noteHeart(slug, heart.productCode, true); hearted = heart.productCode; }
+          catch { /* not saved: the heart is still there to tap */ }
+        }
+        if (account && back) { nav(back, { replace: true, state: hearted ? { hearted } : null }); return; }
+        setMe(account ?? { signedIn: false, canSignIn: true });
+      }} />;
   }
 
   const token = heldProof(slug);

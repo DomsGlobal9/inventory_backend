@@ -2457,3 +2457,43 @@ body { overflow-x: hidden; }
   .brand .mark { display: none; }
   .brand:has(.mark) .names { padding-left: 0; border-left: 0; }
 }
+
+/* ── No "…" anywhere in the shop (owner, 29 Oct) ──────────────────────────────────────────
+ * Names, addresses and labels were cut short with an ellipsis ("Sea Green Katan Silk Sare…",
+ * "Sw…"). A shopper should always read the whole thing, so text that does not fit wraps onto
+ * another line instead. Placed last so it wins over every rule above that clamped. */
+.brand .name, .book .saved span, .book .saved .pin, .tile h2, .tile .sub, .baglines h2, .baglines h3,
+.mini .t, .small h3, .awish b {
+  display: block; -webkit-line-clamp: unset; overflow: visible; text-overflow: clip; white-space: normal;
+  overflow-wrap: anywhere;
+}
+.mini .t { overflow-wrap: break-word; }
+/* The name itself is fitted by size (Nav.jsx), never broken mid-word. */
+.brand .name { overflow-wrap: normal; }
+
+/* ── The buy bar on a phone: always there, solid, one set of buttons (owner, 29 Oct) ─────────
+ * It used to slide in only once the page's own buttons had scrolled away, and slide out again when
+ * they came back, so Add to bag and Buy now seemed to jump about while scrolling. It was also 94%
+ * opaque, so "More sarees" and the slider's arrows showed through it and sat on top of it.
+ * Now on a phone: the bar is always shown, solid, above everything; the same two buttons are not
+ * repeated in the page; and the page ends above the bar instead of under it. */
+@media (max-width: 879px) {
+  .dock, .dock[data-show='true'], .dock[data-show='false'] {
+    transform: none; transition: none;
+    background: var(--bg); backdrop-filter: none;
+    box-shadow: 0 -6px 20px rgba(0,0,0,.08);
+    z-index: 80;
+  }
+  .buyrow.sells { display: none; }
+  body:has(.dock) { padding-bottom: calc(70px + env(safe-area-inset-bottom)); }
+}
+
+/* ── The footer on a phone (owner, 29 Oct) ─────────────────────────────────────────────────
+ * Two columns put the shop's block (logo, name, address) beside "By fabric", whose small heading then
+ * sat level with nothing in particular next to a 64px logo. On a phone the shop's block takes the
+ * whole width, and the lists (Shop, By fabric, Help) sit side by side under it, starting level. */
+@media (max-width: 639px) {
+  .foot .cols { grid-template-columns: 1fr 1fr; gap: 22px 18px; align-items: start; }
+  .foot .cols > .who { grid-column: 1 / -1; }
+  .foot .cols > section:not(.who) h3 { margin-top: 0; }
+}

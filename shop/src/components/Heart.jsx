@@ -13,14 +13,16 @@ export default function Heart({ slug, productCode, variantCode }) {
   const where = useLocation();
   const [, refresh] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [said, setSaid] = useState(null);
+  // Saved just now by signing in (AccountPage sends it back with hearted): said here, where it was tapped.
+  const [said, setSaid] = useState(where.state?.hearted === productCode ? 'Saved to your wishlist' : null);
   useEffect(() => onAccountChange(() => refresh(n => n + 1)), []);
 
   const me = signedIn(slug);
   const on = !!me?.hearts?.includes(productCode);
 
   const tap = async () => {
-    if (!me) { nav(`/${slug}/account`, { state: { back: where.pathname + where.search, why: 'heart' } }); return; }
+    // Signed out: sign in first, and the piece is saved straight after (AccountPage), not left for a second tap.
+    if (!me) { nav(`/${slug}/account`, { state: { back: where.pathname + where.search, why: 'heart', heart: { productCode, variantCode } } }); return; }
     setBusy(true); setSaid(null);
     try {
       await likePiece(slug, heldProof(slug), productCode, !on, variantCode);
@@ -28,7 +30,7 @@ export default function Heart({ slug, productCode, variantCode }) {
       setSaid(on ? null : 'Saved to your wishlist');
     } catch (e) {
       // Signed out elsewhere ("sign out on all phones"): sign in again.
-      if (e?.kind === 'RULE') { forget(slug); nav(`/${slug}/account`, { state: { back: where.pathname + where.search, why: 'heart' } }); return; }
+      if (e?.kind === 'RULE') { forget(slug); nav(`/${slug}/account`, { state: { back: where.pathname + where.search, why: 'heart', heart: { productCode, variantCode } } }); return; }
       setSaid(e?.message ?? 'That could not be saved.');
     } finally { setBusy(false); }
   };

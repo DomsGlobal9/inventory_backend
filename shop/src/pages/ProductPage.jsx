@@ -1,4 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getProduct, money, askOnWhatsApp, shareThis , offerWords, markSeen } from '../api';
 import DeliveryCheck from '../components/DeliveryCheck';
@@ -13,6 +14,7 @@ import MoreToExplore from '../components/MoreToExplore';
 import Heart from '../components/Heart';
 import Banners, { placed } from '../components/Banners';
 import { sized, widths, orWhole, GALLERY, THUMB } from '../photo';
+import { wishlistOn } from '../account';
 
 /**
  * One piece: its photographs, the colours and sizes it comes in, and the way to buy it.
@@ -368,7 +370,7 @@ export default function ProductPage({ slug, shop }) {
         <div>
           <div className="titlerow">
             <h1>{p.title}</h1>
-            {shop?.wishlist ? <Heart slug={slug} productCode={p.productCode} variantCode={chosen?.variantCode} /> : null}
+            {wishlistOn(shop) ? <Heart slug={slug} productCode={p.productCode} variantCode={chosen?.variantCode} /> : null}
           </div>
           <p className="of">{[p.fabric, p.dressType, p.brand].filter(Boolean).join(' · ') || p.productCode}</p>
 
@@ -476,7 +478,9 @@ export default function ProductPage({ slug, shop }) {
           ) : null}
 
           {/* The buttons where a shop puts them: under the size, not floating over the page. */}
-          <div ref={watch} className={`buyrow${canAdd ? '' : ' one'}`}>
+          {/* On a phone the bar at the bottom carries Add to bag and Buy now (always there, one set of
+              buttons); these show on a wide screen. Sold out and WhatsApp stay here everywhere. */}
+          <div ref={watch} className={`buyrow${canAdd ? ' sells' : ' one'}`}>
             {canAdd ? (
               <>
                 <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)}>
@@ -613,7 +617,9 @@ export default function ProductPage({ slug, shop }) {
             a real Add to bag and Buy now; one that does not gets the WhatsApp chat that Phase 1
             sold with, because for that shop the chat IS the order.
           */}
-          <div className="dock" data-show={dock}>
+          {/* Put on the page itself, not inside .piece: .piece plays an entrance animation, which
+              shut the bar inside its layer, and the "More sarees" tiles below were drawn on top of it. */}
+          {createPortal(<div className="dock" data-show={dock}>
             <div className="in">
               {/*
                 THE PRICE IS NOT REPEATED HERE.
@@ -651,7 +657,7 @@ export default function ProductPage({ slug, shop }) {
                 </p>
               )}
             </div>
-          </div>
+          </div>, document.body)}
         </div>
       </div>
 

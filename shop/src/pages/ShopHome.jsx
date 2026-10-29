@@ -233,10 +233,8 @@ export default function ShopHome({ slug, shop }) {
           )
         ) : (
           <>
-            <p className="count">
-              {total === 1 ? '1 piece' : `${total} pieces`}
-              {shown.length < total ? <span> · showing {shown.length}</span> : null}
-            </p>
+            {/* "59 pieces · showing 24" used to stand here: taken out (owner, 29 Oct) -- counting the stock
+                at a shopper reads like a warehouse, not a shop. */}
             {/* Banners placed "between the products" sit after the first row or two, on the plain home
                 page only: inside a search or filtered results they would interrupt what was asked for. */}
             {middle.length > 0 && !chosen.length && shown.length > SPLIT_AT ? (
