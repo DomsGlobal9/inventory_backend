@@ -5,6 +5,7 @@ import { signedIn } from '../account';
 import { ORDER_WORDS } from '../orderWords';
 import { Say } from '../components/States';
 import { EmptyOrders } from '../components/Motion';
+import { sized, orWhole, THUMB } from '../photo';
 
 /**
  * The orders placed from this phone, at this shop.
@@ -73,7 +74,7 @@ export default function MyOrdersPage({ shop }) {
               <div className="thumbs">
                 {o.items.slice(0, 3).map((i, n) => (
                   <span key={n} className="shot">
-                    {i.imageUrl ? <img src={i.imageUrl} alt="" loading="lazy" decoding="async" /> : null}
+                    {i.imageUrl ? <img src={sized(i.imageUrl, THUMB)} onError={orWhole(i.imageUrl)} alt="" loading="lazy" decoding="async" /> : null}
                   </span>
                 ))}
                 {o.items.length > 3 ? <span className="more">+{o.items.length - 3}</span> : null}

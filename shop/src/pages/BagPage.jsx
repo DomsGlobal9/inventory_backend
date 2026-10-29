@@ -4,6 +4,7 @@ import { priceBag, money } from '../api';
 import { useBag, setQuantity, removeFromBag } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag, Toward } from '../components/Motion';
+import { sized, orWhole, THUMB } from '../photo';
 
 /**
  * The bag.
@@ -101,7 +102,7 @@ export default function BagPage({ shop }) {
                 <Link to={priced?.productCode ? `/${slug}/p/${encodeURIComponent(priced.productCode)}` : `/${slug}`}
                   className="shot" aria-hidden={!priced}>
                   {priced?.imageUrl
-                    ? <img src={priced.imageUrl} alt="" loading="lazy" decoding="async" />
+                    ? <img src={sized(priced.imageUrl, THUMB)} onError={orWhole(priced.imageUrl)} alt="" loading="lazy" decoding="async" />
                     : <span className="bone" style={{ display: 'block', width: '100%', height: '100%' }} />}
                 </Link>
                 <div className="what">

@@ -131,8 +131,11 @@ button { font: inherit; }
 button.slide { cursor: pointer; }
 /* height:auto matters: an <img> with width and height attributes gets them as presentational
    hints, and a fixed height beats aspect-ratio -- which rendered a 1600x1200 banner 1200px tall. */
-.slide img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); }
-@media (min-width: 720px) { .slide img { aspect-ratio: 21 / 7; } }
+/* On a phone the WHOLE banner, at its own shape (29 Oct): cut to 16:9, a wide banner lost its sides
+   and the shop's own words on it ("Kanchi Silk Sarees" came out "Kanch i"). min-height only holds a
+   place while it loads. A wider screen keeps the fixed shape below. */
+.slide img { width: 100%; height: auto; aspect-ratio: auto; min-height: 110px; object-fit: contain; background: var(--soft); display: block; }
+@media (min-width: 720px) { .slide img { aspect-ratio: 21 / 7; min-height: 0; object-fit: cover; } }
 
 /* Words over a photograph, on a gradient dark enough to read against anything the shop uploads. */
 .slide .over {
@@ -159,7 +162,6 @@ button.slide { cursor: pointer; }
 
 /* Banners inside the page (between the products, on a product page): rounded, a little shorter. */
 .banners.inline { margin: 18px 0; border-radius: var(--r); overflow: hidden; }
-.banners.inline .slide img { aspect-ratio: 2 / 1; }
 @media (min-width: 720px) { .banners.inline .slide img { aspect-ratio: 4 / 1; max-height: 260px; } }
 
 /* The shop's one line across the top of every page, in its own colour. */
@@ -2155,8 +2157,9 @@ body { overflow-x: hidden; }
   border-radius: var(--r); background: var(--soft); box-shadow: var(--lift);
   margin: 6px 0 22px;
 }
-.promo img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 7; object-fit: cover; }
-@media (min-width: 720px) { .promo img { aspect-ratio: 32 / 7; } }
+/* Whole on a phone, like the banner at the top (29 Oct); the short shape only where there is room. */
+.promo img { display: block; width: 100%; height: auto; aspect-ratio: auto; min-height: 90px; object-fit: contain; }
+@media (min-width: 720px) { .promo img { aspect-ratio: 32 / 7; min-height: 0; object-fit: cover; } }
 .promo .over {
   position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end;
   gap: 3px; padding: 16px 18px;
@@ -2247,12 +2250,19 @@ body { overflow-x: hidden; }
 .parcel .awb { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .parcel .go { flex-shrink: 0; }
 
-/* Orders and Bag: the icon alone on a phone, the icon and its word on a wide screen. */
+/* Search, Profile, Wishlist, Orders, Bag: the icon with its word UNDER it, on every screen, as Myntra
+   does (owner, 29 Oct). The bag's count sits on the icon's corner. */
 .icon .word { display: none; }
-@media (min-width: 880px) {
-  .icon.worded { width: auto; padding: 0 12px; gap: 7px; }
-  .icon .word { display: inline; font-size: 13.5px; font-weight: 550; }
+.icon.worded {
+  width: auto; height: auto; min-width: 44px; padding: 4px 5px 3px;
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
 }
+.icon.worded .word { display: block; font-size: 10.5px; font-weight: 650; line-height: 1; letter-spacing: .01em; }
+@media (min-width: 880px) {
+  .icon.worded { min-width: 56px; padding: 5px 8px 4px; gap: 4px; }
+  .icon.worded .word { font-size: 12px; }
+}
+@media (max-width: 380px) { .icon.worded { min-width: 40px; padding-inline: 3px; } .icon.worded .word { font-size: 10px; } }
 
 /* ── The order page as one narrow receipt (29 Oct) ───────────────────────────────────────
  * Status and tracker in one card, then the pieces with what they came to, then where it goes
@@ -2384,3 +2394,66 @@ body { overflow-x: hidden; }
   background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; z-index: 2; }
 /* The shop's logo in the footer (29 Oct, owner: "a little big"): taller, kept whole whatever its shape. */
 .foot .who .mark { width: auto; height: 64px; max-width: 200px; object-fit: contain; border-radius: 10px; margin-bottom: 10px; }
+
+/* ── Wide cloth photographs, turned to fill the tall frame (29 Oct) ─────────────────────── */
+/*
+ * The frame and the thumbnails are 3:4. A wide photo turned by 90deg needs a box as wide as the frame
+ * is tall (4/3 of its width = 133.33%) and as tall as the frame is wide (3/4 of its height = 75%),
+ * centred, then turned. Percentages, so it works without container queries on older phones.
+ */
+.swipe > figure[data-wide], .rolls button[data-wide] { position: relative; overflow: hidden; }
+.swipe > figure[data-wide] > img, .rolls button[data-wide] > img {
+  position: absolute; left: 50%; top: 50%;
+  width: 133.333%; height: 75%; max-width: none;
+  object-fit: cover;
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+@media (hover: hover) and (pointer: fine) {
+  .swipe > figure[data-wide] > img { cursor: default; transition: none; }
+  .swipe > figure[data-wide][data-zoom='on'] > img { transform: translate(-50%, -50%) rotate(90deg); }
+}
+
+/* ── The shop's name, whole, on a phone (29 Oct) ──────────────────────────────────────
+ * The name was cut to "Sw…" beside the icons. On a phone the icons go without their words (as the big
+ * shops' phone sites do; the words stay on a laptop), and the name has the room: up to two lines, made
+ * a little smaller by Nav.jsx when it is long, and never cut off with dots. The "59 pieces online"
+ * line gives way to it. */
+@media (max-width: 719px) {
+  .brand { gap: 8px; }
+  .brand:has(.mark) .names { padding-left: 8px; }
+  .brand .name {
+    font-size: 17px; line-height: 1.1; white-space: normal; overflow: visible; text-overflow: clip;
+    overflow-wrap: normal; word-break: normal; display: block;
+  }
+  .brand .sub { display: none; }
+  .brand .mark { height: 32px; max-width: 64px; }
+  .icon.worded { min-width: 38px; padding: 6px 4px; gap: 0; }
+  .icon.worded .word { display: none; }
+}
+
+/* ── Profile's menu (29 Oct): who is signed in, Orders, Wishlist, the account ────────────── */
+.pmenu { position: relative; }
+.pmenu-list {
+  position: absolute; right: -6px; top: calc(100% + 8px); z-index: 60; width: 236px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 6px;
+  box-shadow: 0 14px 40px rgba(0,0,0,.14); display: flex; flex-direction: column;
+  animation: pmenu-in .15s ease-out;
+}
+@keyframes pmenu-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.pmenu-who { padding: 10px 12px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; display: grid; gap: 2px; }
+.pmenu-who b { font-size: 14px; }
+.pmenu-who span { font-size: 12px; color: var(--muted); line-height: 1.35; }
+.pmenu-list a {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px;
+  font-size: 14px; font-weight: 550; color: var(--ink); text-decoration: none;
+}
+.pmenu-list a:hover, .pmenu-list a:focus-visible { background: var(--soft); }
+.pmenu-list a.pmenu-sign {
+  justify-content: center; margin: 4px 6px 6px; background: var(--accent); color: var(--accent-ink); font-weight: 650;
+}
+@media (prefers-reduced-motion: reduce) { .pmenu-list { animation: none; } }
+/* The smallest phones (about 320px): the logo makes way, so the name still reads in two lines. */
+@media (max-width: 340px) {
+  .brand .mark { display: none; }
+  .brand:has(.mark) .names { padding-left: 0; border-left: 0; }
+}

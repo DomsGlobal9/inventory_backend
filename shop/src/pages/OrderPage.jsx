@@ -4,6 +4,7 @@ import { getOrder, cancelOrder, money, askOnWhatsApp } from '../api';
 import { Problem, Say } from '../components/States';
 import { Landed } from '../components/Motion';
 import { becomeSignedIn } from '../account';
+import { sized, orWhole, THUMB } from '../photo';
 
 /**
  * The customer's own order.
@@ -222,7 +223,7 @@ export default function OrderPage({ shop }) {
           {o.items.map((i, n) => (
             <li key={`${i.variantCode}-${n}`}>
               <span className="shot">
-                {i.imageUrl ? <img src={i.imageUrl} alt="" loading="lazy" decoding="async" /> : null}
+                {i.imageUrl ? <img src={sized(i.imageUrl, THUMB)} onError={orWhole(i.imageUrl)} alt="" loading="lazy" decoding="async" /> : null}
               </span>
               <div className="what">
                 <h3>{i.title}</h3>

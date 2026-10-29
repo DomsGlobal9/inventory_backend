@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { getAccount, sendCode, checkCode, signOutOf, likePiece, removeAddress, heldProof, holdProof, money } from '../api';
 import { becomeSignedIn, remember, forget, noteHeart } from '../account';
 import { ORDER_WORDS } from '../orderWords';
+import { sized, orWhole, THUMB } from '../photo';
 
 /**
  * The shopper's account at this shop (29 Oct): "Sign in with WhatsApp", no password.
@@ -42,6 +43,10 @@ export default function AccountPage({ shop }) {
   }, [slug, shop?.canVerifyPhone]);
 
   useEffect(() => { void load(); }, [load]);
+  // The bar's Wishlist opens this page at #wishlist: brought into view once the account is in.
+  useEffect(() => {
+    if (where.hash === '#wishlist' && me?.signedIn) document.getElementById('wishlist')?.scrollIntoView({ block: 'start' });
+  }, [where.hash, me?.signedIn]);
 
   if (shop?.accounts === false) {
     return (
@@ -115,7 +120,7 @@ export default function AccountPage({ shop }) {
             {me.orders.slice(0, ORDERS_SHOWN).map(o => (
               <li key={o.token}>
                 <Link to={`/${slug}/order/${o.token}`}>
-                  <span className="shot">{o.firstImage ? <img src={o.firstImage} alt="" loading="lazy" decoding="async" /> : null}</span>
+                  <span className="shot">{o.firstImage ? <img src={sized(o.firstImage, THUMB)} onError={orWhole(o.firstImage)} alt="" loading="lazy" decoding="async" /> : null}</span>
                   <span className="what">
                     <b>{o.orderNumber}</b>
                     <small>{dayOf(o.placedAt)} · {o.pieces === 1 ? '1 piece' : `${o.pieces} pieces`}</small>
@@ -132,7 +137,7 @@ export default function AccountPage({ shop }) {
         {me.orders.length > ORDERS_SHOWN ? <Link className="go quiet" to={`/${slug}/orders`}>See all {me.orders.length} orders</Link> : null}
       </section>
 
-      {shop?.wishlist === false ? null : <section className="card">
+      {shop?.wishlist === false ? null : <section className="card" id="wishlist" style={{ scrollMarginTop: 'calc(var(--bar, 64px) + 12px)' }}>
         <h2>Your wishlist</h2>
         {me.hearts.length === 0 ? (
           <p className="aempty">Tap the heart on a piece to save it here.</p>
@@ -141,7 +146,7 @@ export default function AccountPage({ shop }) {
             {me.hearts.map(h => (
               <li key={h.productCode}>
                 <Link to={`/${slug}/p/${encodeURIComponent(h.productCode)}`}>
-                  <span className="shot">{h.imageUrl ? <img src={h.imageUrl} alt="" loading="lazy" decoding="async" /> : null}
+                  <span className="shot">{h.imageUrl ? <img src={sized(h.imageUrl, THUMB)} onError={orWhole(h.imageUrl)} alt="" loading="lazy" decoding="async" /> : null}
                     {!h.available ? <span className="gone">Sold out</span> : null}
                   </span>
                   <b>{h.title}</b>

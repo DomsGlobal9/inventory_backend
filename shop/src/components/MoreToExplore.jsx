@@ -5,6 +5,7 @@ import AlsoIn from './AlsoIn';
 import AlsoBought from './AlsoBought';
 import Tile from './Tile';
 import Shot from './Shot';
+import { sized, widths, orWhole, BANNER } from '../photo';
 
 /**
  * Everything under a product, so the page carries on being a shop.
@@ -15,11 +16,11 @@ import Shot from './Shot';
  *
  *   1. the shop's own offer, the banner it already made for its home page
  *   2. more of the same kind (AlsoIn, as before)
- *   3. a different fabric, or a different budget
+ *   (a "Shop by fabric and price" section stood here; removed, owner, 29 Oct)
  *   4. the ones they were already looking at
  *   5. and then simply more of the shop, loading as they scroll
  *
- * Nothing here needs the shop to set anything up. Banners, fabrics and price range are all already
+ * Nothing here needs the shop to set anything up. Banners are already
  * in the shop's own data; "recently viewed" lives on the shopper's phone and nowhere else.
  */
 
@@ -80,7 +81,7 @@ function Promo({ slug, banner, inline = false }) {
   const to = bannerTo(slug, banner);
   const inner = (
     <>
-      <img src={banner.imageUrl} alt={banner.heading || ''} loading="lazy" decoding="async"
+      <img src={sized(banner.imageUrl, 1080)} srcSet={widths(banner.imageUrl, BANNER, 78)} sizes="(min-width: 1200px) 1152px, 100vw" onError={orWhole(banner.imageUrl)} alt={banner.heading || ''} loading="lazy" decoding="async"
         onLoad={() => setReady(true)} onError={() => setReady(true)} />
       {banner.heading || banner.subtext ? (
         <span className="over">
@@ -93,118 +94,6 @@ function Promo({ slug, banner, inline = false }) {
   );
   const cls = `promo${inline ? ' inline' : ''}${ready ? '' : ' waiting'}`;
   return to ? <Link className={cls} to={to}>{inner}</Link> : <div className={cls}>{inner}</div>;
-}
-
-/* ── 3. A different fabric, or a different budget ─────────────────────────────────────── */
-
-function ShopBy({ slug, shop }) {
-  const fabrics = useMemo(
-    () => (shop?.facets?.fabrics ?? []).filter(f => f.value && f.count > 0).slice(0, 8),
-    [shop]
-  );
-  /* One photograph per fabric, from the shop's own pieces -- a circle of silk says "silk" faster
-     than the word does. A fabric with no photographed piece keeps its initial instead. */
-  const [spot, near] = useNear();
-  /* undefined = still asking, null = this fabric has no photograph, else the picture's address. */
-  const [faces, setFaces] = useState({});
-  /* Which faces have finished drawing, so each circle breathes until its own photo is in. */
-  const [drawn, setDrawn] = useState({});
-  useEffect(() => {
-    if (!near) return undefined;
-    const ac = new AbortController();
-    fabrics.forEach(f => {
-      getProducts(slug, { fabric: f.value, limit: 1, sort: 'NEW' }, { signal: ac.signal })
-        .then(page => {
-          const p = page.products?.[0];
-          const url = (p?.images?.find(i => i.isPrimary) ?? p?.images?.[0])?.url ?? null;
-          setFaces(was => ({ ...was, [f.value]: url }));
-        })
-        .catch(e => { if (e?.name !== 'AbortError') setFaces(was => ({ ...was, [f.value]: null })); });
-    });
-    return () => ac.abort();
-  }, [slug, fabrics, near]);
-
-  /* Round figures a shopper thinks in, from the range this shop's prices actually cover. */
-  const price = shop?.facets?.price;
-  const bands = useMemo(() => {
-    if (!price || !(price.max > price.min)) return [];
-    const [a, b] = [0.33, 0.66]
-      .map(f => Math.round((price.min + (price.max - price.min) * f) / 500) * 500);
-    if (!(a > price.min) || !(b > a) || !(b < price.max)) return [];
-    const cur = shop?.currency ?? 'INR';
-    return [
-      // "Under" and "Above" mean strictly: a ₹19,500 saree belongs to "₹9,500 – ₹19,500" only, not
-      // also to "Above ₹19,500". The filter is inclusive both ends, hence the rupee either side.
-      { label: `Under ${money(a, cur)}`, to: `/${slug}?maxPrice=${a - 1}` },
-      { label: `${money(a, cur)} – ${money(b, cur)}`, to: `/${slug}?minPrice=${a}&maxPrice=${b}` },
-      { label: `Above ${money(b, cur)}`, to: `/${slug}?minPrice=${b + 1}` }
-    ];
-  }, [price, slug, shop?.currency]);
-
-  /*
-   * Only the chips that lead somewhere. The shop's price range counts pieces a shopper cannot see
-   * (hidden, sold out), so "Above ₹51,000" could open an empty page -- a dead end dressed as an
-   * invitation. Each band is asked how many it holds, and the empty ones are dropped.
-   */
-  const [live, setLive] = useState(null);
-  useEffect(() => {
-    if (!near) return undefined;
-    if (!bands.length) { setLive([]); return undefined; }
-    const ac = new AbortController();
-    Promise.all(bands.map(b => {
-      const q = Object.fromEntries(new URLSearchParams(b.to.split('?')[1]));
-      return getProducts(slug, { ...q, limit: 1 }, { signal: ac.signal })
-        .then(page => (page.total > 0 ? b : null))
-        .catch(() => null);
-    })).then(kept => { if (!ac.signal.aborted) setLive(kept.filter(Boolean)); });
-    return () => ac.abort();
-  }, [slug, bands, near]);
-  const chips = live ?? [];
-
-  // Nothing this shop could ever show here: no section, and no placeholder promising one.
-  if (fabrics.length < 2 && bands.length === 0) return null;
-  // Asked, and nothing came of it.
-  if (near && live !== null && fabrics.length < 2 && chips.length === 0) return null;
-
-  if (!near) {
-    return <section ref={spot} className="alsoin shopby"><Waiting tall={110} /></section>;
-  }
-
-  return (
-    <section ref={spot} className="alsoin shopby">
-      <div className="head"><h2>Shop by fabric and price</h2></div>
-      {fabrics.length >= 2 ? (
-        <div className="fabrics">
-          {fabrics.map(f => {
-            const url = faces[f.value];
-            const waiting = url === undefined || (url && !drawn[f.value]);
-            return (
-              <Link key={f.value} to={`/${slug}?fabric=${encodeURIComponent(f.value)}`}>
-                <span className={`face${waiting ? ' bone' : ''}`}>
-                  {url
-                    ? <img src={url} alt="" loading="lazy" decoding="async" data-in={drawn[f.value] ? 'true' : undefined}
-                      onLoad={() => setDrawn(d => ({ ...d, [f.value]: true }))}
-                      onError={() => setFaces(was => ({ ...was, [f.value]: null }))} />
-                    : url === null ? <b aria-hidden="true">{f.value.charAt(0)}</b> : null}
-                </span>
-                <span className="name">{f.value}</span>
-              </Link>
-            );
-          })}
-        </div>
-      ) : null}
-      {live === null && bands.length ? (
-        /* The chips' shapes while each one is asked whether it leads anywhere. */
-        <div className="bands" aria-hidden="true">
-          {bands.map(b => <span key={b.to} className="bone chipbone" />)}
-        </div>
-      ) : chips.length ? (
-        <div className="bands">
-          {chips.map(b => <Link key={b.to} to={b.to}>{b.label}</Link>)}
-        </div>
-      ) : null}
-    </section>
-  );
 }
 
 /* ── 4. Recently viewed, on this phone only ───────────────────────────────────────────── */
@@ -424,7 +313,6 @@ export default function MoreToExplore({ slug, product, shop }) {
       {/* What people actually bought with this, first: it is the one row that is about this piece. */}
       <AlsoBought slug={slug} product={product} onRows={rows => setTogether(rows.map(p => p.productCode))} />
       <AlsoIn slug={slug} product={product} shop={shop} onRows={rows => setReel(rows.map(p => p.productCode))} />
-      <ShopBy slug={slug} shop={shop} />
       <Recent slug={slug} product={product} />
       <Endless slug={slug} product={product} skip={[...reel, ...together]} banner={mid} />
     </>

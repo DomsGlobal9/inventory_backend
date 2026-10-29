@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { canResize, sized, widths, TILE } from '../photo';
 
 /**
  * A product photograph that arrives rather than appears.
@@ -20,21 +21,26 @@ import React, { useState } from 'react';
  * A photograph that fails -- a deleted file, a blocked host -- leaves the quiet box rather than a
  * broken-image icon, because a shop with one broken icon looks like a shop that is broken.
  */
-export default function Shot({ src, alt = '', ratio = '3 / 4', eager = false, className = '', children }) {
+export default function Shot({ src, alt = '', ratio = '3 / 4', eager = false, className = '', sizes = '(min-width: 880px) 280px, 50vw', children }) {
   const [state, setState] = useState(src ? 'waiting' : 'none');
+  // The small copy first (photo.js); if the storage cannot make one, the original instead.
+  const [whole, setWhole] = useState(false);
+  const small = !whole && canResize(src);
 
   return (
     <div className={`shot ${className}`.trim()} style={{ aspectRatio: ratio }} data-state={state}>
       {children}
       {src && state !== 'failed' ? (
         <img
-          src={src}
+          src={small ? sized(src, 540) : src}
+          srcSet={small ? widths(src, TILE) : undefined}
+          sizes={small ? sizes : undefined}
           alt={alt}
           loading={eager ? 'eager' : 'lazy'}
           fetchPriority={eager ? 'high' : 'auto'}
           decoding="async"
           onLoad={() => setState('here')}
-          onError={() => setState('failed')}
+          onError={() => (small ? setWhole(true) : setState('failed'))}
         />
       ) : null}
     </div>

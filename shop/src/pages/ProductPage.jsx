@@ -12,6 +12,7 @@ import { Ticked } from '../components/Motion';
 import MoreToExplore from '../components/MoreToExplore';
 import Heart from '../components/Heart';
 import Banners, { placed } from '../components/Banners';
+import { sized, widths, orWhole, GALLERY, THUMB } from '../photo';
 
 /**
  * One piece: its photographs, the colours and sizes it comes in, and the way to buy it.
@@ -53,6 +54,17 @@ function Gallery({ photos, title }) {
   const strip = useRef(null);
   const rail = useRef(null);
   const [at, setAt] = useState(0);
+  /*
+   * Photographs that are wider than they are tall (29 Oct): the flat cloth shots. In the tall frame
+   * they sat as a strip with empty space above and below, so they are turned on their side to fill
+   * it, here and in the thumbnails. Known only once each has loaded; a model photo is tall already
+   * and is never turned.
+   */
+  const [wide, setWide] = useState({});
+  const measure = (url) => (e) => {
+    const t = e.currentTarget;
+    if (t.naturalWidth > t.naturalHeight * 1.1 && !wide[url]) setWide(w => ({ ...w, [url]: true }));
+  };
 
   // Back to the first photograph whenever the set changes -- choosing green should show the green
   // one, not photograph four of the red.
@@ -113,6 +125,8 @@ function Gallery({ photos, title }) {
   const zoomFollow = (e) => {
     if (e.pointerType !== 'mouse') return;
     const fig = e.currentTarget;
+    // A turned cloth photo is not zoomed: the magnifier would follow the pointer sideways.
+    if (fig.dataset.wide) return;
     const r = fig.getBoundingClientRect();
     fig.style.setProperty('--zx', `${((e.clientX - r.left) / r.width) * 100}%`);
     fig.style.setProperty('--zy', `${((e.clientY - r.top) / r.height) * 100}%`);
@@ -126,9 +140,10 @@ function Gallery({ photos, title }) {
         <div className="swipe" ref={strip}
           onScroll={e => setAt(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}>
           {photos.map((img, i) => (
-            <figure key={img.url} onPointerMove={zoomFollow} onPointerLeave={zoomOut}>
-              <img src={img.url} alt={i === 0 ? title : ''}
-                loading={i === 0 ? 'eager' : 'lazy'} decoding="async" />
+            <figure key={img.url} onPointerMove={zoomFollow} onPointerLeave={zoomOut} data-wide={wide[img.url] ? 'true' : undefined}>
+              <img src={sized(img.url, 960)} srcSet={widths(img.url, GALLERY)} sizes="(min-width: 880px) 560px, 100vw"
+                alt={i === 0 ? title : ''} onLoad={measure(img.url)} onError={orWhole(img.url)}
+                loading={i === 0 ? 'eager' : 'lazy'} fetchPriority={i === 0 ? 'high' : 'auto'} decoding="async" />
             </figure>
           ))}
         </div>
@@ -155,8 +170,8 @@ function Gallery({ photos, title }) {
           {photos.map((img, i) => (
             <button key={img.url} type="button" role="tab" aria-selected={i === at}
               aria-label={i === at ? `Photograph ${i + 1}, showing now` : `Photograph ${i + 1}`}
-              onClick={() => show(i)}>
-              <img src={img.url} alt="" loading="lazy" decoding="async" />
+              onClick={() => show(i)} data-wide={wide[img.url] ? 'true' : undefined}>
+              <img src={sized(img.url, THUMB)} alt="" loading="lazy" decoding="async" onLoad={measure(img.url)} onError={orWhole(img.url)} />
             </button>
           ))}
         </div>

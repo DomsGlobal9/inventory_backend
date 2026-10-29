@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { bagCount, useBag } from '../bag';
 import { signedIn, onAccountChange } from '../account';
 
@@ -51,7 +51,103 @@ const Bag = ({ n }) => {
   );
 };
 
+/** An order is a parcel on its way: a box. */
+const OrdersGlyph = ({ size = 21 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 2.8 20.5 7.4v9.2L12 21.2l-8.5-4.6V7.4Z" />
+    <path d="M3.8 7.6 12 12l8.2-4.4M12 12v9" />
+    <path d="m7.8 5.1 8.4 4.6" />
+  </svg>
+);
+
+/**
+ * Profile, opening a short menu: who is signed in, their orders, the wishlist, and the account (or
+ * Sign in). Closes on a tap outside, on Escape, and when a page is chosen.
+ */
+function ProfileMenu({ slug, me, firstName, wishlist }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
+  const where = useLocation();
+  useEffect(() => { setOpen(false); }, [where.pathname, where.hash]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (e) => { if (!box.current?.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', away);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('pointerdown', away); document.removeEventListener('keydown', esc); };
+  }, [open]);
+
+  return (
+    <div className="pmenu" ref={box}>
+      <button type="button" className="icon worded" aria-haspopup="menu" aria-expanded={open}
+        aria-label={me ? `Your profile${firstName ? `, ${firstName}` : ''}` : 'Profile'} onClick={() => setOpen(o => !o)}>
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+          <circle cx="12" cy="8.5" r="3.8" />
+          <path d="M4.5 20.2c1.2-3.6 4.1-5.4 7.5-5.4s6.3 1.8 7.5 5.4" />
+        </svg>
+        <span className="word" aria-hidden="true">Profile</span>
+      </button>
+      {open && (
+        <div className="pmenu-list" role="menu">
+          <div className="pmenu-who">
+            {me ? <><b>Hello{firstName ? ` ${firstName}` : ''}</b><span>{me.phone ? `Signed in with ••${String(me.phone).slice(-4)}` : 'Signed in'}</span></>
+              : <><b>Welcome</b><span>Sign in to see your orders from any phone</span></>}
+          </div>
+          {me ? null : <Link role="menuitem" className="pmenu-sign" to={`/${slug}/account`}>Sign in</Link>}
+          <Link role="menuitem" to={`/${slug}/orders`}><OrdersGlyph size={18} /> Orders</Link>
+          {wishlist ? <Link role="menuitem" to={`/${slug}/account#wishlist`} state={me ? undefined : { why: 'heart' }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" />
+            </svg> Wishlist</Link> : null}
+          {me ? <Link role="menuitem" to={`/${slug}/account`}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+              <circle cx="12" cy="8.5" r="3.8" /><path d="M4.5 20.2c1.2-3.6 4.1-5.4 7.5-5.4s6.3 1.8 7.5 5.4" />
+            </svg> Your account</Link> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The shop's name, whole, on a phone: two lines at most, a size smaller at a time until it fits, never
+ * cut off with dots (29 Oct, "Sw…"). Wider screens keep the stylesheet's size.
+ */
+function useFitName(name) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const fit = () => {
+      el.style.fontSize = '';
+      if (window.innerWidth >= 720) return;
+      let size = parseFloat(getComputedStyle(el).fontSize) || 17;
+      // More than two lines (with room for a tall serif's line boxes), or a single word wider than the space.
+      const tooBig = () => el.scrollHeight > parseFloat(getComputedStyle(el).lineHeight) * 2.5 || el.scrollWidth > el.clientWidth + 1;
+      while (tooBig() && size > 11) { size -= 1; el.style.fontSize = `${size}px`; }
+    };
+    fit();
+    // Fonts arrive late and change the width of the words; phones turn sideways.
+    document.fonts?.ready?.then(fit).catch(() => null);
+    window.addEventListener('resize', fit);
+    // The room changes after the first look too: the logo arrives and takes its width. Refitted when
+    // the bar's own width for the brand changes -- never because of the size this sets.
+    const brand = el.closest('.brand');
+    let room = brand?.clientWidth ?? 0;
+    const watch = typeof ResizeObserver === 'function' && brand
+      ? new ResizeObserver(() => { const now = brand.clientWidth; if (Math.abs(now - room) > 1) { room = now; fit(); } })
+      : null;
+    watch?.observe(brand);
+    const logo = brand?.querySelector('.mark');
+    logo?.addEventListener('load', fit);
+    return () => { window.removeEventListener('resize', fit); watch?.disconnect(); logo?.removeEventListener('load', fit); };
+  }, [name]);
+  return ref;
+}
+
 export default function Nav({ shop, compact = false }) {
+  const nameRef = useFitName(shop?.name);
   const { slug } = useParams();
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -102,7 +198,7 @@ export default function Nav({ shop, compact = false }) {
           <Link to={`/${slug}`} className="brand" aria-label={`${shop?.name ?? 'Shop'}, front page`}>
             {shop?.logoUrl ? <img className="mark" src={shop.logoUrl} alt="" /> : null}
             <span className="names">
-              <span className="name">{shop?.name}</span>
+              <span className="name" ref={nameRef}>{shop?.name}</span>
               {shop?.facets?.total ? <span className="sub">{shop.facets.total} pieces online</span> : null}
             </span>
           </Link>
@@ -116,32 +212,34 @@ export default function Nav({ shop, compact = false }) {
               placeholder={`Search ${shop?.name ?? 'the shop'}`} aria-label="Search this shop" />
           </form>
 
-          {/* Grouped, so they sit together at the right rather than trailing the search box. */}
+          {/*
+            Grouped at the right, each icon with its word under it, as Myntra does (owner, 29 Oct):
+            Search, Profile (its menu holds Orders), Wishlist and Bag. A word under each says what it is
+            without a tap to find out.
+          */}
           <div className="tools">
-            <button type="button" className="icon only-phone" aria-label="Search"
+            <button type="button" className="icon worded only-phone" aria-label="Search"
               onClick={() => setSeeking(s => !s)} aria-expanded={seeking}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
                 <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" strokeLinecap="round" />
               </svg>
+              <span className="word" aria-hidden="true">Search</span>
             </button>
 
-            {/* Signed in: their first name (or "Account"); signed out: "Sign in". Only where the shop offers accounts. */}
-            {shop?.accounts !== false ? <Link to={`/${slug}/account`} className="icon worded" aria-label={me ? 'Your account' : 'Sign in'} title={me ? 'Your account' : 'Sign in'}>
-              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
-                <circle cx="12" cy="8.5" r="3.8" />
-                <path d="M4.5 20.2c1.2-3.6 4.1-5.4 7.5-5.4s6.3 1.8 7.5 5.4" />
-              </svg>
-              <span className="word" aria-hidden="true">{me ? (firstName && firstName.length <= 12 ? firstName : 'Account') : 'Sign in'}</span>
-            </Link> : null}
-            {/* An order is a parcel on its way: a box. The words show beside both on a wide screen. */}
-            <Link to={`/${slug}/orders`} className="icon worded" aria-label="Your orders" title="Your orders">
+            {/* Profile opens a menu with Orders in it, as Myntra's does (owner, 29 Oct). */}
+            {shop?.accounts !== false ? <ProfileMenu slug={slug} me={me} firstName={firstName} wishlist={shop?.wishlist !== false} /> : null}
+            {/* The hearts live with the account; this goes straight to them. */}
+            {shop?.accounts !== false && shop?.wishlist !== false ? <Link to={`/${slug}/account#wishlist`} state={me ? undefined : { why: 'heart' }} className="icon worded" aria-label="Your wishlist" title="Your wishlist">
               <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
-                <path d="M12 2.8 20.5 7.4v9.2L12 21.2l-8.5-4.6V7.4Z" />
-                <path d="M3.8 7.6 12 12l8.2-4.4M12 12v9" />
-                <path d="m7.8 5.1 8.4 4.6" />
+                <path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" />
               </svg>
+              <span className="word" aria-hidden="true">Wishlist</span>
+            </Link> : null}
+            {/* With no accounts there is no Profile to hold it, so Orders keeps its own place. */}
+            {shop?.accounts === false ? <Link to={`/${slug}/orders`} className="icon worded" aria-label="Your orders" title="Your orders">
+              <OrdersGlyph />
               <span className="word" aria-hidden="true">Orders</span>
-            </Link>
+            </Link> : null}
             <Link to={`/${slug}/bag`} className="icon worded" aria-label={count ? `Your bag, ${count} pieces` : 'Your bag'}>
               <Bag n={count} />
               <span className="word" aria-hidden="true">Bag</span>

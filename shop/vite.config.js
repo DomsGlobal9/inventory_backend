@@ -26,8 +26,20 @@ export default defineConfig(({ mode }) => {
   const url = new URL(target);
   const local = /(^|\.)localhost$/.test(url.hostname) || url.hostname === '127.0.0.1';
 
+  // The same hop for `vite preview` (the built bundle, as it ships), so a production build can be
+  // measured against a real shop too. Without it preview answered /_api with the page itself.
+  const apiProxy = {
+    '/_api': {
+      target: local ? `${url.protocol}//127.0.0.1:${url.port || 80}` : target,
+      changeOrigin: !local,
+      ...(local ? { headers: { host: url.host } } : {}),
+      secure: true
+    }
+  };
+
   return {
   plugins: [react()],
+  preview: { proxy: apiProxy },
   server: {
     port: 5174,
     strictPort: true,
