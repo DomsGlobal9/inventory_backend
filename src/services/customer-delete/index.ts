@@ -6,7 +6,7 @@ import { badRequest, conflict, notFound } from '../../utils/httpError';
  *
  * A customer with NO money history -- no bill, no points or credit movement, no offer used -- is
  * REMOVED for good: the row, their addresses, and everything tied to their number (try-ons, hearts,
- * door check-ins, counter look-ups, phone codes, campaign sends).
+ * door check-ins, counter look-ups, phone codes, online shop sign-ins, campaign sends).
  *
  * A customer WITH bills cannot be removed: the bills point at them, and GST law keeps invoices for
  * eight years. They are ERASED instead: the personal details on the customer go (name -> "Removed
@@ -64,6 +64,8 @@ export async function deleteCustomer(clientId: string, id: string, confirmRaw: u
     if (phone) {
       await tx.shopProductView.deleteMany({ where: { clientId, phone } });
       await tx.onlineShopPhoneCode.deleteMany({ where: { clientId, phone } });
+      // Signed in to the online shop on any phone: signed out, and the sign-ins gone with the number.
+      await tx.onlineShopSession.deleteMany({ where: { clientId, phone } });
     }
     // By customer, and by number: a check-in from before they were a customer carries only the number.
     await tx.storeCheckin.deleteMany({ where: { clientId, OR: [{ customerId: id }, ...(phone ? [{ phone }] : [])] } });

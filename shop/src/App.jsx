@@ -15,6 +15,7 @@ const BagPage = lazy(() => import('./pages/BagPage'));
 const CheckoutPage = lazy(() => import('./pages/CheckoutPage'));
 const OrderPage = lazy(() => import('./pages/OrderPage'));
 const MyOrdersPage = lazy(() => import('./pages/MyOrdersPage'));
+const AccountPage = lazy(() => import('./pages/AccountPage'));
 const PaymentPage = lazy(() => import('./pages/PaymentPage'));
 import Nav from './components/Nav';
 import Footer from './components/Footer';
@@ -124,6 +125,7 @@ function Shop({ page }) {
             : page === 'checkout' ? <CheckoutPage shop={shop} />
             : page === 'order' ? <OrderPage shop={shop} />
             : page === 'orders' ? <MyOrdersPage shop={shop} />
+            : page === 'account' ? <AccountPage shop={shop} />
             : page === 'pay' ? <PaymentPage shop={shop} />
             : <ShopHome slug={slug} shop={shop} />}
         </Suspense>
@@ -153,6 +155,7 @@ export default function App() {
         <Route path="/:slug/bag" element={<Shop page="bag" />} />
         <Route path="/:slug/checkout" element={<Shop page="checkout" />} />
         <Route path="/:slug/orders" element={<Shop page="orders" />} />
+        <Route path="/:slug/account" element={<Shop page="account" />} />
         <Route path="/:slug/order/:token" element={<Shop page="order" />} />
         <Route path="/:slug/pay/:token" element={<Shop page="pay" />} />
         {/* Anything else inside a shop is that shop's front page, not a dead end. */}

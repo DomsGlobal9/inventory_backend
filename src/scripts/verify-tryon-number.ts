@@ -184,10 +184,13 @@ const serve = (handler: (req: http.IncomingMessage, body: any) => [number, unkno
     check('online, purpose TRYON: the try-on wording', r.status === 200 && /to try on clothes at/.test(messages[messages.length - 1]?.text ?? ''), r.body);
     r = await call('POST', `/shop/${a.slug}/verify/send`, { phone: '9000067890' });
     check('the checkout\'s code is unchanged: "confirm your order"', r.status === 200 && /to confirm your order with/.test(messages[messages.length - 1]?.text ?? ''), messages[messages.length - 1]);
-    // A checkout number proved minutes ago still skips the code at the checkout (unchanged).
-    await otp.checkCode(A, '9000067890', lastCode());
+    // A checkout number proved minutes ago skips the code -- in the browser that proved it (its pass),
+    // and only there (29 Oct: per browser, so another browser typing the number is sent a code).
+    const ownPass = (await otp.checkCode(A, '9000067890', lastCode())).token;
+    r = await call('POST', `/shop/${a.slug}/verify/send`, { phone: '9000067890', token: ownPass });
+    eq('checkout: the browser that proved the number minutes ago is not sent another code', r.body?.data?.alreadyVerified, true);
     r = await call('POST', `/shop/${a.slug}/verify/send`, { phone: '9000067890' });
-    eq('checkout: a number proved minutes ago is not sent another code (unchanged)', r.body?.data?.alreadyVerified, true);
+    eq('...another browser typing the same number is sent one', [r.body?.data?.alreadyVerified, r.body?.data?.sent], [false, true]);
 
     eq('the gateway was reached only by try-ons that were allowed', gatewayCalls, 5);
 

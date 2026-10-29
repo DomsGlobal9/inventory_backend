@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { getOrder, money } from '../api';
+import { getOrder, getAccount, heldProof, money } from '../api';
+import { signedIn } from '../account';
+import { ORDER_WORDS } from '../orderWords';
 import { Say } from '../components/States';
 import { EmptyOrders } from '../components/Motion';
 
@@ -16,12 +18,8 @@ import { EmptyOrders } from '../components/Motion';
  * has already sent it or the customer has called it off.
  */
 
-// The same states as the order page (services/online-shop/tracking).
-const SAID = {
-  PLACED: 'Being got ready', PACKED: 'Packed', PART_PACKED: 'Partly packed', PART_SENT: 'Partly on its way',
-  SENT: 'On its way', OUT_FOR_DELIVERY: 'Arriving today', DELIVERED: 'Delivered',
-  TROUBLE: 'A problem with delivery', CANCELLED: 'Cancelled'
-};
+// The same states as the order page (services/online-shop/tracking), worded once in orderWords.js.
+const SAID = ORDER_WORDS;
 
 function kept(slug) {
   try { return JSON.parse(window.localStorage.getItem(`scaleezy.orders.${slug}`) ?? '[]'); }
@@ -33,16 +31,21 @@ export default function MyOrdersPage({ shop }) {
   const [rows, setRows] = useState(null);
 
   useEffect(() => {
-    const held = kept(slug);
-    if (!held.length) { setRows([]); return; }
     let alive = true;
-    Promise.all(held.map(o =>
-      getOrder(slug, o.token).catch(() => null)
-    )).then(list => {
+    (async () => {
+      // Signed in: every order this number placed here (from any phone), as well as this phone's links.
+      const fromAccount = signedIn(slug)
+        ? ((await getAccount(slug, heldProof(slug)).catch(() => null))?.orders ?? []).map(o => ({ token: o.token }))
+        : [];
+      const seen = new Set();
+      const held = [...fromAccount, ...kept(slug)].filter(o => o?.token && !seen.has(o.token) && seen.add(o.token));
+      if (!held.length) return [];
+      return Promise.all(held.map(o => getOrder(slug, o.token).catch(() => null)));
+    })().then(list => {
       if (!alive) return;
       // An order the shop can no longer find (a shop that deleted it, a link from another shop)
       // is dropped rather than shown as a broken row.
-      setRows(list.filter(Boolean));
+      setRows(list.filter(Boolean).sort((a, b) => String(b.placedAt).localeCompare(String(a.placedAt))));
     });
     return () => { alive = false; };
   }, [slug]);
@@ -53,8 +56,9 @@ export default function MyOrdersPage({ shop }) {
     return (
       <Say title="No orders from this phone yet" art={<EmptyOrders />}
         action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
-        Orders you place here are kept on this phone. If you ordered from another phone, open the
-        link {shop?.name || 'the shop'} sent you on WhatsApp.
+        {signedIn(slug)
+          ? <>Orders you place with your number appear here, from any phone.</>
+          : <>Orders you place here are kept on this phone. <Link to={`/${slug}/account`}>Sign in</Link> to see orders from every phone, or open the link {shop?.name || 'the shop'} sent you on WhatsApp.</>}
       </Say>
     );
   }

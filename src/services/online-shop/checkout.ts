@@ -10,7 +10,7 @@ import { afterCommit } from '../../lib/afterCommit';
 import { OnlineShopRuleError } from './rules';
 import { sendOrderPlacedNotice, emailOrderPlaced, tellTheShop, orderCancelled } from './notices';
 import { rememberFromOrder as rememberAddress } from './addresses';
-import { isVerified } from './otp';
+import { whoIs } from './otp';
 import { paymentAccounts } from '../payments/account.service';
 import { paymentSummary } from '../payments/payment-rules';
 import { customerParcels, orderStateOf, progressOf } from './tracking';
@@ -346,6 +346,8 @@ export type PlaceInput = {
   address?: unknown;
   pincode?: unknown;
   payWay?: unknown;
+  /** The browser's own pass (a sign-in, or a code check's): proof for THIS number only, if it is its. */
+  token?: unknown;
 };
 
 /** A PIN code as India writes them: six digits, and never starting at zero. */
@@ -490,7 +492,13 @@ export async function prepareCheckout(
    * typed back -- never from a flag the browser sends. A page claiming "verified: true" would
    * otherwise undo the whole point of asking.
    */
-  const proved = await isVerified(clientId, phone.value);
+  /*
+   * Proved by THIS browser: it holds a pass for this very number -- from typing the code back here, or
+   * a sign-in. Not "somebody proved this number lately" (isVerified): with accounts, that let an order
+   * typed by anybody within the hour count as the number's own, and show in its owner's order list.
+   * A pass for another number proves nothing about this one.
+   */
+  const proved = (await whoIs(clientId, input.token)) === phone.value;
   /*
    * The PIN code goes on the address only when the customer has not already written it there.
    * Asking for it separately is right -- it is the one part of an address a shop can check -- but

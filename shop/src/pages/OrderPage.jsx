@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { getOrder, cancelOrder, money, askOnWhatsApp } from '../api';
 import { Problem, Say } from '../components/States';
 import { Landed } from '../components/Motion';
+import { becomeSignedIn } from '../account';
 
 /**
  * The customer's own order.
@@ -84,6 +85,13 @@ export default function OrderPage({ shop }) {
     load(ac.signal);
     return () => ac.abort();
   }, [load]);
+
+  /*
+   * A guest who proved their number at the checkout lands here holding that proof: it becomes a
+   * sign-in (90 days), so their orders, addresses and hearts are there next time without asking.
+   * Quiet either way; nothing on this page waits for it.
+   */
+  useEffect(() => { void becomeSignedIn(slug); }, [slug]);
 
   if (state.loading) return <div className="bone" style={{ height: 260, borderRadius: 14, margin: '20px 0' }} />;
 

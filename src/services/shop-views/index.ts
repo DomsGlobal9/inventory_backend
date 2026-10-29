@@ -9,7 +9,8 @@ import { whoIs } from '../online-shop/otp';
  * anonymous is tracked, and no address, name or photo is kept -- a product, two counts and dates.
  *
  * One row per person per product. A row is forgotten KEEP_DAYS after they last looked (housekeeping),
- * which is also all the card ever reads.
+ * which is also all the card ever reads -- unless it carries a heart: a piece somebody saved stays on
+ * their wishlist until they take the heart off (29 Oct). The card still reads only the last KEEP_DAYS.
  */
 export const KEEP_DAYS = 30;
 const KEEP_MS = KEEP_DAYS * 86_400_000;
@@ -97,8 +98,27 @@ export async function lookedAt(clientId: string, phone: string, now = new Date()
   });
 }
 
-/** Looks nobody will read again. Called by housekeeping. */
+/**
+ * What this number has hearted, newest first: the shopper's wishlist (online shop account, 29 Oct).
+ * Product and colour by their codes, for the storefront catalogue to show. Pieces taken off sale are
+ * left out; the heart stays, and the piece comes back if the shop puts it on sale again.
+ */
+export async function liked(clientId: string, phone: string, max = 60) {
+  const rows = await prisma.shopProductView.findMany({
+    where: { clientId, phone, likedAt: { not: null }, product: { status: 'ACTIVE', trashedAt: null } },
+    orderBy: { likedAt: 'desc' }, take: max,
+    select: { likedAt: true, variantId: true, product: { select: { productCode: true } } }
+  });
+  const variantIds = rows.map(r => r.variantId).filter((v): v is string => !!v);
+  const variants = variantIds.length
+    ? await prisma.productVariant.findMany({ where: { clientId, id: { in: variantIds } }, select: { id: true, variantCode: true } })
+    : [];
+  const codeOf = new Map(variants.map(v => [v.id, v.variantCode]));
+  return rows.map(r => ({ productCode: r.product.productCode, variantCode: r.variantId ? codeOf.get(r.variantId) ?? null : null, likedAt: r.likedAt as Date }));
+}
+
+/** Looks nobody will read again. Called by housekeeping. A hearted piece is kept: it is on a wishlist. */
 export async function forgetOldViews(now = new Date()) {
-  const { count } = await prisma.shopProductView.deleteMany({ where: { lastAt: { lt: new Date(now.getTime() - KEEP_MS) } } });
+  const { count } = await prisma.shopProductView.deleteMany({ where: { lastAt: { lt: new Date(now.getTime() - KEEP_MS) }, likedAt: null } });
   return count;
 }

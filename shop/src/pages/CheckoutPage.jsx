@@ -6,6 +6,7 @@ import {
   startPayment, confirmPayment
 } from '../api';
 import { openCheckout } from '../razorpay';
+import { signedIn, sameNumber } from '../account';
 import { useBag, emptyBag, placementKey, clearPlacementKey } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag } from '../components/Motion';
@@ -94,6 +95,9 @@ export default function CheckoutPage({ shop }) {
       const held = JSON.parse(window.localStorage.getItem(`scaleezy.you.${slug}`) ?? 'null');
       if (held) setForm(f => ({ ...f, ...held, payWay: f.payWay }));
     } catch { /* a browser that will not store: they type it once */ }
+    // Signed in: their number and name, where nothing else has filled them.
+    const me = signedIn(slug);
+    if (me) setForm(f => ({ ...f, phone: f.phone || me.phone || '', name: f.name || me.name || '' }));
   }, [slug]);
 
   /*
@@ -186,7 +190,8 @@ export default function CheckoutPage({ shop }) {
     if (wrong) { setRefused(wrong); return; }
     setProof(p => ({ ...p, busy: true, said: null }));
     try {
-      const out = await sendCode(slug, form.phone);
+      // This browser's pass, if it has one: a number it already proved is not sent another code.
+      const out = await sendCode(slug, form.phone, undefined, undefined, heldProof(slug) ?? undefined);
       setProof({
         state: out.alreadyVerified ? 'done' : 'sent',
         code: '', busy: false, forPhone: form.phone,
@@ -224,7 +229,14 @@ export default function CheckoutPage({ shop }) {
     }));
   };
 
-  const proved = proof.state === 'done' && proof.forPhone === form.phone;
+  /*
+   * Signed in as this very number: no code to ask for. The page only skips the step; the shop decides
+   * again from the sign-in itself when the order is placed (checkout.prepareCheckout), so typing
+   * another number here asks for that number's code as before.
+   */
+  const account = signedIn(slug);
+  const signedInHere = !!account && sameNumber(account.phone, form.phone);
+  const proved = signedInHere || (proof.state === 'done' && proof.forPhone === form.phone);
 
   /*
    * PAYING ONLINE.
@@ -284,7 +296,9 @@ export default function CheckoutPage({ shop }) {
         lines: lines.map(l => ({ variantCode: l.variantCode, quantity: l.quantity })),
         couponCodes: codes,
         name: form.name, phone: form.phone, email: form.email,
-        address: form.address, pincode: form.pincode, payWay: form.payWay
+        address: form.address, pincode: form.pincode, payWay: form.payWay,
+        // This browser's own pass: the shop treats it as proof only for the number it belongs to.
+        token: heldProof(slug) ?? undefined
       };
 
       if (form.payWay === 'ONLINE') {
@@ -346,7 +360,9 @@ export default function CheckoutPage({ shop }) {
             comment described something that was never true: the block rendered for every shop, and
             a shop with no linked number answered every press with "Something went wrong".
           */}
-          {!shop?.canVerifyPhone ? null : proved ? (
+          {!shop?.canVerifyPhone ? null : signedInHere ? (
+            <p className="proved">✓ Signed in as {form.phone}. No code needed.</p>
+          ) : proved ? (
             <p className="proved">✓ {form.phone} confirmed</p>
           ) : (
             <div className="verify">

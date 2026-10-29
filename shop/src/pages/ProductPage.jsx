@@ -10,6 +10,7 @@ import { Problem, Say } from '../components/States';
 const TryOn = lazy(() => import('../components/TryOn'));
 import { Ticked } from '../components/Motion';
 import MoreToExplore from '../components/MoreToExplore';
+import Heart from '../components/Heart';
 import Banners, { placed } from '../components/Banners';
 
 /**
@@ -332,7 +333,10 @@ export default function ProductPage({ slug, shop }) {
         <Gallery photos={photos} title={p.title} />
 
         <div>
-          <h1>{p.title}</h1>
+          <div className="titlerow">
+            <h1>{p.title}</h1>
+            <Heart slug={slug} productCode={p.productCode} variantCode={chosen?.variantCode} />
+          </div>
           <p className="of">{[p.fabric, p.dressType, p.brand].filter(Boolean).join(' · ') || p.productCode}</p>
 
           {chosen && (

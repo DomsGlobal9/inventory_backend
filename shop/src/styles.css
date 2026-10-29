@@ -2310,3 +2310,75 @@ body { overflow-x: hidden; }
   font: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px;
 }
 .parcel[data-stage='RETURNING'] b, .parcel[data-stage='PROBLEM'] b, .parcel[data-stage='MISSED'] b { color: #b45309; }
+
+/* ── The shopper's account (29 Oct): signing in, orders, wishlist, addresses, points ───────── */
+.account { max-width: 760px; margin: 0 auto; padding: 18px 0 44px; display: grid; gap: 14px; }
+.account .card { background: var(--card); padding: 18px; }
+.account .card h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.account .aempty { margin: 0; font-size: 13.5px; color: var(--muted); }
+.account .aempty a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.awho { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px 14px; align-items: center; }
+.awho .avatar { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--soft); color: var(--ink); font-weight: 700; font-size: 19px; }
+.awho h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: -.02em; }
+.awho p { margin: 0; font-size: 13px; color: var(--muted); }
+.awho .aout { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.awho .aout .go { padding: 0 18px; }
+@media (min-width: 720px) {
+  .account { padding-top: 26px; }
+  .account .card { padding: 20px 24px; }
+  .awho { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .awho .aout { grid-column: auto; justify-content: flex-end; }
+}
+.amoney { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; }
+.amoney .card { display: grid; gap: 2px; }
+.amoney b { font-size: 22px; letter-spacing: -.02em; }
+.amoney span { font-size: 13px; color: var(--muted); }
+.amoney small { font-size: 12px; color: var(--faint); margin-top: 4px; }
+.arows { list-style: none; margin: 0 0 4px; padding: 0; }
+.arows li + li { border-top: 1px solid var(--line); }
+.arows a { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; }
+.arows .shot { width: 44px; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; background: var(--soft); display: block; }
+.arows .shot img, .awish .shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.arows .what, .arows .end { display: grid; gap: 2px; min-width: 0; }
+.arows .end { text-align: right; }
+.arows b { font-size: 14px; }
+.arows small { font-size: 12px; color: var(--muted); }
+.arows .state[data-state='DELIVERED'] { color: var(--save); }
+.arows .state[data-state='TROUBLE'], .arows .state[data-state='CANCELLED'] { color: #b45309; }
+.account .card > .go { width: 100%; margin-top: 10px; }
+.awish { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (min-width: 720px) { .awish { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.awish li { position: relative; }
+.awish a { display: grid; gap: 4px; }
+.awish .shot { position: relative; aspect-ratio: 3 / 4; border-radius: 10px; overflow: hidden; background: var(--soft); display: block; }
+.awish .gone { position: absolute; left: 8px; bottom: 8px; background: var(--card); color: var(--ink);
+  font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; }
+.awish b { font-size: 13px; font-weight: 600; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.awish small { font-size: 12px; color: var(--muted); }
+.awish .unheart { position: absolute; top: 8px; right: 8px; width: 34px; height: 34px; border-radius: 50%;
+  border: 0; background: var(--card); color: var(--accent); display: grid; place-items: center; cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+.aaddr { list-style: none; margin: 0; padding: 0; }
+.aaddr li { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding: 10px 0; }
+.aaddr li + li { border-top: 1px solid var(--line); }
+.aaddr li > span { display: grid; gap: 2px; font-size: 13.5px; white-space: pre-wrap; min-width: 0; }
+.aaddr small { color: var(--muted); font-size: 12px; }
+.asignin h1 { font-size: 21px; margin: 0 0 6px; letter-spacing: -.02em; }
+.asignin > p { margin: 0 0 14px; font-size: 13.5px; color: var(--muted); line-height: 1.55; }
+.asignin .verify { margin: 0 0 10px; }
+.asignin .verify input { width: 100%; box-sizing: border-box; font: inherit; font-size: 16px; padding: 11px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: inherit; }
+.asignin .verify > .go { width: 100%; }
+.asignin .drop { display: inline-block; margin-top: 8px; }
+/* The heart beside a piece's title. */
+.titlerow { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.titlerow h1 { flex: 1; min-width: 0; }
+.heartwrap { position: relative; flex: 0 0 auto; }
+.heart { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: var(--card);
+  color: var(--ink); display: grid; place-items: center; cursor: pointer; }
+.heart.on { color: var(--accent); border-color: var(--accent); }
+.heart:disabled { opacity: .6; }
+.heartsaid { position: absolute; right: 0; top: 50px; white-space: nowrap; font-size: 12px; color: var(--save);
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; z-index: 2; }

@@ -7,6 +7,7 @@ import { links } from '../services/links';
 import { purgeUnusedCampaignMedia } from '../services/campaigns';
 import { shopCheckout, shopOtp } from '../services/online-shop';
 import { forgetOldViews } from '../services/shop-views';
+import { forgetOldSessions } from '../services/online-shop/sessions';
 
 /**
  * Throwing away what has stopped meaning anything.
@@ -101,12 +102,16 @@ export class HousekeepingScheduler {
     const phoneCodes = await shopOtp.forgetOldCodes(new Date(now.getTime() - this.PHONE_CODE_RETENTION_MS), now)
       .catch(error => { console.error('[Housekeeping] phone code clean-up failed:', (error as Error)?.message); return 0; });
 
-    // What known shoppers looked at online: kept 30 days after their last look, then gone.
+    // What known shoppers looked at online: kept 30 days after their last look, then gone (hearts stay).
     const shopViews = await forgetOldViews(now)
       .catch(error => { console.error('[Housekeeping] shop views clean-up failed:', (error as Error)?.message); return 0; });
 
+    // Online shop sign-ins that ran out, or were signed out over a month ago.
+    const shopSignIns = await forgetOldSessions(now)
+      .catch(error => { console.error('[Housekeeping] shop sign-in clean-up failed:', (error as Error)?.message); return 0; });
+
     return {
-      unusedCampaignPictures: campaignPictures,
+      unusedCampaignPictures: campaignPictures, shopSignIns,
       unusedQuotes: quotes.count, oauthStates, privacyRequestsRetried,
       whatsappEvents: whatsappEvents.count, firstFillsReminded: shelfFills.reminded,
       shelfSaveKeys: shelfSaveKeys.count, shortLinkTaps: shortLinks.taps, testShortLinks: shortLinks.testLinks,

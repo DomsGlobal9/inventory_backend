@@ -4,6 +4,7 @@ import { getShopSettings } from '../../lib/clientSettings';
 import { whatsappClient, whatsappConfigured } from '../whatsapp/client';
 import { normalisePhone } from '../../lib/phone';
 import { OnlineShopRuleError } from './rules';
+import { isSignIn, phoneFor } from './sessions';
 
 /**
  * Proving that the phone number typed at a checkout belongs to whoever typed it.
@@ -107,10 +108,12 @@ const forgetLink = (clientId: string) => { linkSeen.delete(clientId); };
  * What the code is for. ORDER is the checkout; TRYON is the number asked before a try-on (28 Oct), on
  * the tag's QR page and in the online shop -- same code, same table, its own words.
  */
-export type CodePurpose = 'ORDER' | 'TRYON';
+export type CodePurpose = 'ORDER' | 'TRYON' | 'SIGNIN';
 
-export async function sendCode(clientId: string, rawPhone: unknown, purpose: CodePurpose = 'ORDER') {
-  const forTryOn = purpose === 'TRYON';
+export async function sendCode(clientId: string, rawPhone: unknown, purpose: CodePurpose = 'ORDER', browserToken?: unknown) {
+  // A try-on and a sign-in both need THIS browser's pass, so neither takes the "already proved" shortcut.
+  const forTryOn = purpose === 'TRYON' || purpose === 'SIGNIN';
+  const forSignIn = purpose === 'SIGNIN';
   if (!(await canVerify(clientId))) {
     throw new OnlineShopRuleError(forTryOn
       ? 'This shop cannot send a code just now. Try again in a little while.'
@@ -123,10 +126,16 @@ export async function sendCode(clientId: string, rawPhone: unknown, purpose: Cod
     where: { clientId_phone: { clientId, phone } }
   });
 
-  // Already proved, and the proof has not run out: nothing to send. Not for a try-on: that needs THIS
-  // browser's pass (the token from typing the code back), and a number proved elsewhere gives none --
-  // anybody who knows a number would otherwise get past.
-  if (!forTryOn && held?.verifiedAt && now.getTime() - held.verifiedAt.getTime() < PROOF_LASTS_MS) {
+  /*
+   * Already proved BY THIS BROWSER (it holds a live pass for this very number): nothing to send.
+   *
+   * It used to be "this number was proved in the last hour", by anybody, anywhere -- so a second
+   * browser typing the same number was told "already confirmed" and its order counted as proved. Once
+   * shoppers had accounts (29 Oct) that put a stranger's order, and their address, in the real owner's
+   * order list. A try-on and a sign-in never took the shortcut; the checkout now takes it only with
+   * the browser's own pass.
+   */
+  if (!forTryOn && held?.verifiedAt && (await whoIs(clientId, browserToken)) === phone) {
     return { sent: false, alreadyVerified: true, expiresInSeconds: 0 };
   }
 
@@ -166,7 +175,9 @@ export async function sendCode(clientId: string, rawPhone: unknown, purpose: Cod
        * every scam message these customers are warned about; naming the shop and the reason is what
        * makes it believable, and the warning not to pass it on is the one line that matters.
        */
-      text: forTryOn
+      text: forSignIn
+        ? `${code} is your code to sign in to ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`
+        : forTryOn
         ? `${code} is your code to try on clothes at ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`
         : `${code} is your code to confirm your order with ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`,
       kind: 'ORDER_UPDATE',
@@ -267,6 +278,12 @@ const SESSION_LASTS_MS = 30 * 24 * 60 * 60 * 1000;
 export async function whoIs(clientId: string, rawToken: unknown): Promise<string | null> {
   const token = typeof rawToken === 'string' ? rawToken.trim() : '';
   if (token.length < 20) return null;
+  // A signed-in device (sessions.ts, 90 days). Its secrets start "ss_"; one not found there falls
+  // through, because a code check's pass is random base64url and could, rarely, start the same way.
+  if (isSignIn(token)) {
+    const signedIn = await phoneFor(clientId, token);
+    if (signedIn) return signedIn;
+  }
   const row = await prisma.onlineShopPhoneCode.findUnique({
     where: { sessionToken: token },
     select: { clientId: true, phone: true, sessionExpiresAt: true }

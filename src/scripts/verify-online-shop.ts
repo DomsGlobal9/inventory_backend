@@ -627,13 +627,15 @@ async function main() {
   check('a code of the wrong length is refused before anything is looked up', /6 digits/i.test(tooShort), tooShort);
   const guess = await refusalAsync(shopOtp.checkCode(SHOP, proofPhone, '111111'));
   check('a wrong code says how many tries are left', /tries left|try left/i.test(guess), guess);
-  await shopOtp.checkCode(SHOP, proofPhone, proofCode);
+  // The browser's pass from typing the code back: the checkout page sends it with the order (29 Oct:
+  // an order is proved by the browser that proved the number, not by the number having been proved).
+  const proofPass = (await shopOtp.checkCode(SHOP, proofPhone, proofCode)).token;
   check('the right code proves the number', (await shopOtp.isVerified(SHOP, proofPhone)) === true);
 
   // A proved order is the shop's real customer, and holds stock with no expiry.
   const provedKey = key();
   const provedOrder = await post('/shop/lakshmi-silks/orders', {
-    ...details, phone: proofPhone, placementKey: provedKey, pincode: '500029',
+    ...details, phone: proofPhone, placementKey: provedKey, pincode: '500029', token: proofPass,
     lines: [{ variantCode: sareeCode, quantity: 1 }]
   });
   check('an order with a proved number is placed', provedOrder.status === 200, provedOrder.data);
@@ -647,7 +649,7 @@ async function main() {
   // A second order from the same proved number is the SAME customer, not a new one.
   const againKey = key();
   await post('/shop/lakshmi-silks/orders', {
-    ...details, phone: proofPhone, placementKey: againKey, pincode: '500029',
+    ...details, phone: proofPhone, placementKey: againKey, pincode: '500029', token: proofPass,
     lines: [{ variantCode: sareeCode, quantity: 1 }]
   });
   const theirOrders = await prisma.salesOrder.findMany({

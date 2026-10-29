@@ -1,6 +1,6 @@
 import express, { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
-import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, shopInterest, OnlineShopRuleError } from '../services/online-shop';
+import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, shopInterest, shopAccount, OnlineShopRuleError } from '../services/online-shop';
 import * as onlinePayments from '../services/payments/online-payment.service';
 import { prisma } from '../lib/prisma';
 import * as shopViews from '../services/shop-views';
@@ -348,8 +348,10 @@ const codeLimiter = rateLimit({
 router.post('/:slug/verify/send', codeLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
-  // purpose TRYON: the number asked before a try-on, with its own message wording.
-  return shopOtp.sendCode(shop.clientId, req.body?.phone, req.body?.purpose === 'TRYON' ? 'TRYON' : 'ORDER');
+  // purpose TRYON: the number asked before a try-on; SIGNIN: signing in to the shop. Each its own words.
+  const purpose = req.body?.purpose === 'TRYON' ? 'TRYON' : req.body?.purpose === 'SIGNIN' ? 'SIGNIN' : 'ORDER';
+  // The browser's own pass, so a number it already proved is not sent another code (and only then).
+  return shopOtp.sendCode(shop.clientId, req.body?.phone, purpose, req.body?.token);
 }));
 
 router.post('/:slug/verify/check', codeLimiter, buying(async (req) => {
@@ -399,6 +401,37 @@ router.post('/:slug/addresses/remove', priceLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   return shopAddresses.remove(shop.clientId, req.body?.token, req.body?.id);
+}));
+
+/*
+ * The shopper's account (29 Oct): "Sign in with WhatsApp". start turns this browser's proof into a
+ * 90-day sign-in; the account and sign-out are read with that secret and nothing else.
+ */
+router.post('/:slug/account/start', codeLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopAccount.start(shop.clientId, req.body?.token, req.get('user-agent'));
+}));
+
+router.post('/:slug/account', priceLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopAccount.me(shop, req.body?.token);
+}));
+
+router.post('/:slug/account/signout', buyLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  return shopAccount.signOut(shop.clientId, req.body?.token, req.body?.everywhere === true);
+}));
+
+/** A heart on a piece: saved for a proved or signed-in number only (shop-views like), never for a stranger. */
+router.post('/:slug/products/:productCode/like', priceLimiter, buying(async (req) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  const saved = await shopViews.like(shop.clientId, req.body?.token, String(req.params.productCode), req.body?.liked !== false, req.body?.variantCode);
+  if (!saved) throw new OnlineShopRuleError('Sign in to save pieces you like.');
+  return { saved, liked: req.body?.liked !== false };
 }));
 
 export default router;

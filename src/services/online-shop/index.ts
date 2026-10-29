@@ -16,6 +16,8 @@ export * as shopOtp from './otp';
 /** Addresses a shopper has saved, read only with the secret their browser earned by proving a number. */
 export * as shopAddresses from './addresses';
 export * as shopTryOn from './tryon';
+/** The shopper's account: "Sign in with WhatsApp", their orders, wishlist, addresses, points and credit. */
+export * as shopAccount from './account';
 /** Who is waiting for a piece that was sold out when they wanted it. */
 export * as shopInterest from './interest';
 export { OnlineShopRuleError } from './rules';

@@ -171,8 +171,8 @@ export const tryOn = (slug, productCode, photo, variantCode, opts) =>
     { ...opts, send: { photo, variantCode, token: heldProof(slug) || undefined } });
 
 // purpose 'TRYON' for the number asked before a try-on: its own WhatsApp wording, and always a fresh code.
-export const sendCode = (slug, phone, opts, purpose) =>
-  get(`/shop/${encodeURIComponent(slug)}/verify/send`, { ...opts, send: { phone, ...(purpose ? { purpose } : {}) } });
+export const sendCode = (slug, phone, opts, purpose, token) =>
+  get(`/shop/${encodeURIComponent(slug)}/verify/send`, { ...opts, send: { phone, ...(purpose ? { purpose } : {}), ...(token ? { token } : {}) } });
 
 export const checkCode = (slug, phone, code, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/verify/check`, { ...opts, send: { phone, code } });
@@ -192,6 +192,19 @@ export const saveAddress = (slug, token, address, opts) =>
 
 export const removeAddress = (slug, token, id, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/addresses/remove`, { ...opts, send: { token, id } });
+
+/*
+ * The shopper's account (29 Oct): start turns this browser's pass into a 90-day sign-in; the account
+ * and signing out are read with that secret. A heart is saved only for a proved or signed-in number.
+ */
+export const startAccount = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/account/start`, { ...opts, send: { token } });
+export const getAccount = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/account`, { ...opts, send: { token } });
+export const signOutOf = (slug, token, everywhere, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/account/signout`, { ...opts, send: { token, everywhere: everywhere === true } });
+export const likePiece = (slug, token, productCode, liked, variantCode, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(productCode)}/like`, { ...opts, send: { token, liked, variantCode } });
 
 /*
  * The secret the browser earned by proving its number, kept on the device that earned it.
