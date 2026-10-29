@@ -280,7 +280,7 @@ async function main() {
   const amberJob = remember(await photoJobQueue.enqueue({
     clientId: SHOP, productId: product.id, kind: 'VIEWS', colours: ['Amber']
   }));
-  check('a colour stopped at 2 of 4 can be run again', amberJob.made.length === 1,
+  check('a colour stopped at 2 of 3 can be run again', amberJob.made.length === 1,
     JSON.stringify(amberJob.refused));
   check('  ...from the shop\'s own photograph, never from a view we made',
     amberJob.made[0]?.sourceImageId === amber.own!.id,

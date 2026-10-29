@@ -30,8 +30,8 @@ router.use(tenantMiddleware);
 const SERVICES = [
   {
     id: 'CATALOG_TRYON' as const,
-    name: '4-View Catalog Try-On',
-    description: 'Turns one garment photograph into four catalogue views, from inside the app.'
+    name: 'Catalog Try-On',
+    description: 'Turns one garment photograph into three catalogue views, from inside the app.'
   },
   {
     id: 'SHOPPER_TRYON' as const,

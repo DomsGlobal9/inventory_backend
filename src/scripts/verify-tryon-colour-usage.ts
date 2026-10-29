@@ -63,7 +63,9 @@ function sse(frames: object[]): Response {
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 const TINY_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==';
-const views = (n: number) => ['FRONT', 'BACK', 'LEFT', 'RIGHT'].slice(0, n).map(v => ({ type: 'VIEW_READY', view: v, image: TINY_JPEG }));
+// The names the studio really sends. No back since 29 Oct; OLD_STUDIO is one not yet redeployed.
+const views = (n: number) => ['front', 'side', 'sitting'].slice(0, n).map(v => ({ type: 'VIEW_READY', view: v, image: TINY_JPEG }));
+const OLD_STUDIO = ['front', 'back', 'side', 'sitting'].map(v => ({ type: 'VIEW_READY', view: v, image: TINY_JPEG }));
 
 async function serviceLevel() {
   console.log('\n1. RECORD AND SUMMARY: TOTALS STAY TOTALS, COLOUR COUNTED BESIDE THEM');
@@ -150,23 +152,30 @@ async function realPaths() {
       return prisma.photoJob.findUnique({ where: { id: row.id }, select: { status: true, viewsDone: true } });
     };
 
-    const a = await job('VIEWS', 'Green', () => sse([...views(4), { type: 'COMPLETE' }]));
-    eq('a VIEWS job with four views finishes DONE', a, { status: 'DONE', viewsDone: 4 });
-    const b = await job('COLOUR', 'Red', () => sse([...views(4), { type: 'COMPLETE' }]));
-    eq('a COLOUR job with four views finishes DONE', b, { status: 'DONE', viewsDone: 4 });
+    const a = await job('VIEWS', 'Green', () => sse([...views(3), { type: 'COMPLETE' }]));
+    eq('a VIEWS job with three views finishes DONE', a, { status: 'DONE', viewsDone: 3 });
+    const b = await job('COLOUR', 'Red', () => sse([...views(3), { type: 'COMPLETE' }]));
+    eq('a COLOUR job with three views finishes DONE', b, { status: 'DONE', viewsDone: 3 });
     eq('...and the far end was asked for that colour', sent[sent.length - 1]?.color, { name: 'Red', hex: '#aa0000' });
-    const d = await job('COLOUR', 'Blue', () => sse([...views(3), { type: 'COMPLETE' }]));
-    eq('a COLOUR job that got three of four finishes DONE (completed, as any run would be)', d, { status: 'DONE', viewsDone: 3 });
+    const d = await job('COLOUR', 'Blue', () => sse([...views(2), { type: 'COMPLETE' }]));
+    eq('a COLOUR job that got two of three finishes DONE (completed, as any run would be)', d, { status: 'DONE', viewsDone: 2 });
+    // A studio not yet redeployed still sends a back view: not saved, not counted (29 Oct).
+    const g = await job('VIEWS', 'Teal', () => sse([...OLD_STUDIO, { type: 'COMPLETE' }]));
+    eq('a back view from an old studio is skipped: DONE with three', g, { status: 'DONE', viewsDone: 3 });
+    const tealViews = (await prisma.productImage.findMany({ where: { productId: product.id, variant: { colorName: 'Teal' } }, select: { view: true } })).map(i => i.view).sort();
+    eq('...its photos are front, left (sitting) and right (side) -- no back', tealViews, ['front', 'left', 'right']);
+    const gRow = await prisma.photoJob.findFirst({ where: { clientId: c, colourName: 'Teal' }, select: { message: true } }) as any;
+    check('...and it does not say "3 of 4 views were made"', !/of 4 views/.test(String(gRow?.message ?? '')), gRow);
     const e = await job('COLOUR', 'Pink', () => sse([{ type: 'ERROR', error: 'boom' }]));
     eq('a COLOUR job that broke finishes FAILED', e?.status, 'FAILED');
     const f = await job('VIEWS', 'Gold', () => new Response('nope', { status: 500 }));
     eq('a VIEWS job the far end refused finishes FAILED', f?.status, 'FAILED');
 
-    const s = await settle(c, x => x.completed + x.failed >= 5);
-    eq('photo jobs: completed 3, failed 2', [s.completed, s.failed], [3, 2]);
-    eq('photo jobs: catalogs 1 (Green), colour variants 2 (Red, Blue)', [s.catalogs, s.colourVariants], [1, 2]);
+    const s = await settle(c, x => x.completed + x.failed >= 6);
+    eq('photo jobs: completed 4, failed 2', [s.completed, s.failed], [4, 2]);
+    eq('photo jobs: catalogs 2 (Green, Teal), colour variants 2 (Red, Blue)', [s.catalogs, s.colourVariants], [2, 2]);
     eq('photo jobs: colour failed 1 (Pink), not charged 2', [s.colourFailed, s.notCharged], [1, 2]);
-    eq('photo jobs: views 4 + 4 + 3', s.viewsGenerated, 11);
+    eq('photo jobs: views 3 + 3 + 2 + 3 (the back not counted)', s.viewsGenerated, 11);
 
     console.log('\n   The direct generate-catalog route');
     const controller = new CatalogTryOnController();
@@ -187,9 +196,9 @@ async function realPaths() {
     await call({ modelId: 'saree1', category: 'SAREE', saree: 'https://local.invalid/s.jpg', color: 'Teal' }, () => sse([{ type: 'ERROR', error: { code: 'CANCELLED' }, code: 'CANCELLED' }]));
     await call({ modelId: 'saree1', category: 'SAREE', saree: 'https://local.invalid/s.jpg', color: { name: '', hex: '' } }, () => sse([...views(2), { type: 'COMPLETE' }]));
 
-    const t = await settle(c, x => x.completed + x.failed + x.cancelled >= 9);
-    eq('direct: completed 3 + 3 = 6 (plain, Maroon, empty colour)', t.completed, 6);
-    eq('direct: catalogs 1 + 2 = 3 (an empty colour is not a colour)', t.catalogs, 3);
+    const t = await settle(c, x => x.completed + x.failed + x.cancelled >= 10);
+    eq('direct: completed 4 + 3 = 7 (plain, Maroon, empty colour)', t.completed, 7);
+    eq('direct: catalogs 2 + 2 = 4 (an empty colour is not a colour)', t.catalogs, 4);
     eq('direct: colour variants 2 + 1 = 3 (Maroon)', t.colourVariants, 3);
     eq('direct: the Teal run cancelled, counted as a colour cancellation', [t.cancelled, t.colourCancelled], [1, 1]);
     eq('direct: not charged = 2 failed + 1 cancelled', t.notCharged, 3);

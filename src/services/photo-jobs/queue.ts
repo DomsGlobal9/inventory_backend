@@ -1,5 +1,5 @@
 import { prisma } from '../../lib/prisma';
-import { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER } from './catalog';
+import { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER, isWanted } from './catalog';
 
 /**
  * Making, listing, stopping and clearing photo jobs.
@@ -73,12 +73,13 @@ async function coloursOf(productId: string, clientId: string): Promise<ColourGro
   return [...byColour.values()];
 }
 
-/** Which of the four views have actually been made for a colour. */
+/** Which of the views have actually been made for a colour. */
 function viewsMadeFor(colour: ColourGroup) {
-  return new Set(colour.images.filter(i => i.generated && i.view).map(i => i.view as string));
+  // Only the views a set has: an old back view is not counted as one of the three.
+  return new Set(colour.images.filter(i => i.generated && isWanted(i.view ?? '')).map(i => i.view as string));
 }
 
-/** A finished set: all four. */
+/** A finished set: all three (no back view since 29 Oct). */
 function hasWholeSet(colour: ColourGroup) {
   const made = viewsMadeFor(colour);
   return VIEW_ORDER.every(v => made.has(v));
@@ -272,6 +273,8 @@ export class PhotoJobQueue {
             jobKey: `${req.kind === 'COLOUR' ? 'colour' : 'views'}-${colour.name}`,
             category,
             modelId: pickRandomModelId(category),
+            // Said, not left to the column's default of 4 from when a set had a back view.
+            viewsTotal: VIEW_ORDER.length,
             requestedBy: req.requestedBy ?? null
           }
         });

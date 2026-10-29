@@ -14,4 +14,4 @@
 export { photoJobQueue } from './queue';
 export type { EnqueueRequest, Refusal } from './queue';
 export { PhotoJobRunner, MAX_ATTEMPTS } from './runner';
-export { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER, API_VIEW_TO_LOCAL } from './catalog';
+export { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER, API_VIEW_TO_LOCAL, isWanted } from './catalog';

@@ -32,7 +32,8 @@ export const createImageSchema = z.object({
    * A fixed list, so try-on can ask for "the front one" and get an answer rather than a guess.
    * Absent for a photograph the shop took itself -- those are not a view of anything.
    */
-  view: z.enum(['front', 'left', 'right', 'back']).optional(),
+  // No back view since 29 Oct; one sent is refused rather than stored where nothing shows it.
+  view: z.enum(['front', 'left', 'right']).optional(),
   /**
    * Which garment piece this photograph is, from the slot it was uploaded into.
    *

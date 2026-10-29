@@ -10,15 +10,23 @@
  * a job resumed after a redeploy has nobody to ask. Where they must agree, they are marked.
  */
 
-/** The order a set of photographs is shown in. Must match VIEW_ORDER in the browser. */
-export const VIEW_ORDER = ['front', 'left', 'right', 'back'];
+/**
+ * The order a set of photographs is shown in. Must match VIEW_ORDER in the browser.
+ *
+ * No back view since 29 Oct: shops did not want it, and the photo studio no longer makes one. A
+ * set is three. A back that still arrives (a studio not yet redeployed) is not saved -- see
+ * isWanted.
+ */
+export const VIEW_ORDER = ['front', 'left', 'right'];
+
+/** Whether a view the studio sent belongs in a set. */
+export const isWanted = (view: string) => VIEW_ORDER.includes(view);
 
 /** The far end's view names are not ours 1:1. Must match API_VIEW_TO_LOCAL in the browser. */
 export const API_VIEW_TO_LOCAL: Record<string, string> = {
   front: 'front',
   sitting: 'left',
-  side: 'right',
-  back: 'back'
+  side: 'right'
 };
 
 /**

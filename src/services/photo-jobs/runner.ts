@@ -5,7 +5,7 @@ import { env } from '../../config/env';
 import { safeMessage } from '../../lib/safeMessage';
 import { catalogTryOnService, tryOnUsageService, jobKeyFor, recordTryOnFailure } from '../tryon';
 import { imageService } from '../image.service';
-import { VIEW_ORDER, API_VIEW_TO_LOCAL } from './catalog';
+import { VIEW_ORDER, API_VIEW_TO_LOCAL, isWanted } from './catalog';
 
 /**
  * Doing the work the browser used to do.
@@ -134,7 +134,7 @@ async function saveView(job: Job, view: string, image: string, superseded: Set<s
 
   for (const variantId of job.variantIds) {
     /*
-     * Replacing, not adding. A job retried after a redeploy generates all four views again, and
+     * Replacing, not adding. A job retried after a redeploy generates all the views again, and
      * appending them would leave the colour with eight photographs: two fronts, two backs, and
      * no way for the shop to tell which is which.
      *
@@ -280,6 +280,12 @@ export class PhotoJobRunner {
    * writing a status is a shop watching "being made" forever.
    */
   static async runJob(job: Job): Promise<void> {
+    // A job queued before the back view was dropped (29 Oct) still carries the old total of 4. Put
+    // right before it runs, so the screen counts to 3 and a whole set is not called "3 of 4".
+    if (job.viewsTotal !== VIEW_ORDER.length) {
+      job = await prisma.photoJob.update({ where: { id: job.id }, data: { viewsTotal: VIEW_ORDER.length } });
+    }
+
     // Every FAILED ending: what the shop is told, and the far end's own words for the console.
     const fail = async (shown: string, error: unknown, more: { httpStatus?: number; code?: string } = {}) => {
       recordTryOnFailure({
@@ -402,7 +408,10 @@ export class PhotoJobRunner {
             try { data = JSON.parse(line.slice(6)); } catch { continue; }
 
             if (data.type === 'VIEW_READY') {
-              const view = API_VIEW_TO_LOCAL[data.view] || data.view;
+              const name = String(data.view ?? '').toLowerCase();
+              const view = API_VIEW_TO_LOCAL[name] || name;
+              // A back view from a studio not yet redeployed: not kept, not counted (29 Oct).
+              if (!isWanted(view)) continue;
               const saved = await saveView(job, view, data.image, superseded);
               if (saved === 0) {
                 // Every size of this colour has gone. There is nowhere left to put the
