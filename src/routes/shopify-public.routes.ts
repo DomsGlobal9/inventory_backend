@@ -14,7 +14,8 @@ import {
   shopifyFulfilmentService,
   shopifyRefundService,
   shopifyInboxService,
-  tellShopOfShopifyOrder
+  tellShopOfShopifyOrder,
+  shopifyOrderUpdates
 } from '../services/shopify-orders';
 import { offerMirrorService, discountGidFromWebhook } from '../services/shopify-discounts';
 import { shopifyPrivacyService } from '../services/shopify-privacy';
@@ -297,6 +298,20 @@ async function handleWebhook(topic: string, shopDomain: string, webhookId: strin
     case 'inventory_levels/update': {
       const payload = JSON.parse(raw.toString('utf8'));
       return shopifyProductPushService.onInventoryChanged(shopDomain, payload);
+    }
+
+    case 'app/scopes_update': {
+      // The store approved (or withdrew) permissions inside Shopify, after it connected. The granted list
+      // was only ever saved at connect time, so without this an approval would never be seen here and
+      // Shopify order updates would wait for permission for ever (services/shopify-orders/updates).
+      const payload = JSON.parse(raw.toString('utf8'));
+      const current = Array.isArray(payload?.current) ? payload.current.map((s: unknown) => String(s)).filter(Boolean) : null;
+      if (!current) return 'IGNORED';
+      const found = await prisma.shopifyInstallation.findUnique({ where: { shopDomain }, select: { id: true, clientId: true } });
+      if (!found) return 'IGNORED';
+      await prisma.shopifyInstallation.update({ where: { id: found.id }, data: { scopes: current.join(',') } });
+      if (found.clientId) await shopifyOrderUpdates.permissionsChanged(found.clientId);
+      return 'APPLIED';
     }
 
     case 'app/uninstalled': {

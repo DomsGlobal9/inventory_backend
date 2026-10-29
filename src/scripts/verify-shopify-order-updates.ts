@@ -37,6 +37,8 @@ class StandInShopify {
   orders = new Map<string, { financial: string; fos: { id: string; status: string; lines: { id: string; variant: string; remaining: number }[] }[]; fulfillments: any[] }>();
   calls: { op: string; vars: any }[] = [];
   down = false;
+  /** What the store has really approved, as Shopify itself would say. */
+  granted = ALL_SCOPES.split(',');
   private n = 1;
   addOrder(numericId: string, lines: { variant: string; qty: number }[], financial = 'PENDING') {
     this.orders.set(`gid://shopify/Order/${numericId}`, {
@@ -56,11 +58,12 @@ class StandInShopify {
     o.fulfillments.push({ id: `gid://shopify/Fulfillment/${this.n++}`, status: 'SUCCESS', lines: [{ variant: line.variant, quantity: qty }], events: [], byHand: true });
   }
   async graphql(query: string, vars: any = {}): Promise<any> {
-    const op = /(fulfillmentCreate|fulfillmentTrackingInfoUpdate|fulfillmentEventCreate|fulfillmentCancel|orderMarkAsPaid|order\(id)/.exec(query)?.[1] ?? 'unknown';
+    const op = /(fulfillmentCreate|fulfillmentTrackingInfoUpdate|fulfillmentEventCreate|fulfillmentCancel|orderMarkAsPaid|currentAppInstallation|order\(id)/.exec(query)?.[1] ?? 'unknown';
     this.calls.push({ op, vars });
     if (this.down) { const { ShopifyApiError } = await import('../services/shopify-mapping'); throw new ShopifyApiError('Could not reach the store. Try again in a moment.', 504); }
     const fulfilment = (id: string) => [...this.orders.values()].flatMap(o => o.fulfillments).find(f => f.id === id);
     switch (op) {
+      case 'currentAppInstallation': return { currentAppInstallation: { accessScopes: this.granted.map(handle => ({ handle })) } };
       case 'order(id': {
         const o = this.orders.get(vars.id);
         return { order: o ? { id: vars.id, displayFinancialStatus: o.financial, fulfillmentOrders: { nodes: o.fos.map(fo => ({ id: fo.id, status: fo.status, lineItems: { nodes: fo.lines.map(l => ({ id: l.id, remainingQuantity: l.remaining, lineItem: { variant: { id: l.variant } } })) } })) } } : null };
@@ -267,17 +270,49 @@ class StandInShopify {
     eq('"Try again" on one that is done is refused', await shopifyOrderUpdates.retry(C, five.order.id, g.id).then(() => 'ok', (e: any) => e.statusCode), 409);
 
     console.log('\nH. THE STORE HAS NOT APPROVED THE NEW PERMISSIONS');
-    await prisma.shopifyInstallation.update({ where: { id: inst.id }, data: { scopes: 'read_orders,write_products' } });
+    const OLD_SCOPES = 'read_orders,write_products';
+    await prisma.shopifyInstallation.update({ where: { id: inst.id }, data: { scopes: OLD_SCOPES } });
+    shopify.granted = OLD_SCOPES.split(',');
     const six = await newOrder();
     const p6: any = await pack(six.order.id);
     await logistics(p6.id, 'BOOKED', { awb: 'H6' }, 1);
-    eq('waits for the permission', await run(), ['WAITING_PERMISSION']);
-    let h = (await rows(six.order.id))[0];
+    eq('waits for the permission (Shopify itself confirms it is not granted)', await run(), ['WAITING_PERMISSION']);
+    const h = (await rows(six.order.id))[0];
     check('... and the order says what to do', /approve the app's new permissions/.test(h.lastError ?? ''), h.lastError);
     eq('nothing reached Shopify', shopify.orders.get(`gid://shopify/Order/${six.id}`)!.fulfillments.length, 0);
-    await prisma.shopifyInstallation.update({ where: { id: inst.id }, data: { scopes: ALL_SCOPES } });
+    check('... and it is looked at again later, not every 15 seconds', h.nextAt.getTime() > Date.now() + 5 * 60_000, h.nextAt);
+    // Approved inside Shopify, and the webhook missed: the worker asks Shopify, and goes.
+    shopify.granted = ALL_SCOPES.split(',');
     await due();
-    eq('approved: it goes', await run(), ['DONE']);
+    eq('approved in Shopify, webhook never came: the worker asks Shopify and it goes', await run(), ['DONE']);
+    eq('... and the saved permissions are brought up to date', (await prisma.shopifyInstallation.findUniqueOrThrow({ where: { id: inst.id } })).scopes, ALL_SCOPES);
+    // The webhook way: Shopify's app/scopes_update, signed, through the local server's real route.
+    await prisma.shopifyInstallation.update({ where: { id: inst.id }, data: { scopes: OLD_SCOPES } });
+    shopify.granted = OLD_SCOPES.split(',');
+    const seven = await newOrder();
+    const p7: any = await pack(seven.order.id);
+    await logistics(p7.id, 'BOOKED', { awb: 'H7' }, 1);
+    await run();
+    const crypto = await import('node:crypto');
+    const hookBody = Buffer.from(JSON.stringify({ id: 1, previous: OLD_SCOPES.split(','), current: ALL_SCOPES.split(','), updated_at: new Date().toISOString() }));
+    const secret = process.env.SHOPIFY_API_SECRET ?? 'verify-local-secret';
+    const send = (sig: string, id: string) => fetch('http://localhost:4016/api/v1/shopify/webhooks', { method: 'POST', body: hookBody, headers: {
+      'Content-Type': 'application/json', 'X-Shopify-Topic': 'app/scopes_update', 'X-Shopify-Shop-Domain': SHOP, 'X-Shopify-Webhook-Id': id, 'X-Shopify-Hmac-Sha256': sig
+    } });
+    eq('a forged app/scopes_update is refused', (await send('not-it', `forged-${STAMP}`)).status, 401);
+    eq('... and changes nothing', (await prisma.shopifyInstallation.findUniqueOrThrow({ where: { id: inst.id } })).scopes, OLD_SCOPES);
+    eq('Shopify\'s signed app/scopes_update is accepted', (await send(crypto.createHmac('sha256', secret).update(hookBody).digest('base64'), `scopes-${STAMP}`)).status, 200);
+    // The route answers Shopify first and handles it straight after: waited for, as Shopify would not.
+    for (let i = 0; i < 40; i++) {
+      const rec = await prisma.shopifyWebhookReceipt.findFirst({ where: { webhookId: `scopes-${STAMP}` }, select: { processedAt: true, outcome: true } });
+      if (rec?.processedAt) { eq('... and handled (APPLIED)', rec.outcome, 'APPLIED'); break; }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    eq('... the store\'s permissions are saved', (await prisma.shopifyInstallation.findUniqueOrThrow({ where: { id: inst.id } })).scopes, ALL_SCOPES);
+    const r7 = (await rows(seven.order.id))[0];
+    check('... and the waiting update is due now, not in 10 minutes', r7.nextAt.getTime() <= Date.now() + 1000, r7.nextAt);
+    shopify.granted = ALL_SCOPES.split(',');
+    eq('... and goes on the next pass', await run(), ['DONE']);
 
     console.log('\nI. CASH ON DELIVERY COLLECTED -> SHOPIFY MARKED PAID -> THE MONEY HERE ONCE');
     const cod = await newOrder({ cod: true });
@@ -437,6 +472,7 @@ async function cleanup(prisma: any) {
   const tables: string[] = (await prisma.$queryRawUnsafe(`SELECT table_name FROM information_schema.columns WHERE column_name='client_id' AND table_schema='public' AND table_name NOT LIKE '%backup%'`)).map((r: any) => r.table_name);
   // Several passes: child rows first, whichever order the foreign keys need.
   for (let pass = 0; pass < 4; pass++) for (const t of tables) await prisma.$executeRawUnsafe(`DELETE FROM "${t}" WHERE client_id = $1`, C).catch(() => null);
+  await q(`DELETE FROM shopify_webhook_receipts WHERE shop_domain = '${SHOP}'`);
   await q(`DELETE FROM shopify_installations WHERE shop_domain = '${SHOP}'`);
   const left = await prisma.$queryRawUnsafe(`SELECT count(*)::int AS n FROM inventory_products WHERE client_id = $1`, C);
   console.log(`cleanup: throwaway shop removed (${left[0].n} products left)`);

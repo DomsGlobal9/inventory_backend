@@ -154,6 +154,7 @@ const Q = {
   tracking: `mutation($id: ID!, $t: FulfillmentTrackingInput!) { fulfillmentTrackingInfoUpdate(fulfillmentId: $id, trackingInfoInput: $t, notifyCustomer: true) { fulfillment { id } userErrors { field message } } }`,
   event: `mutation($e: FulfillmentEventInput!) { fulfillmentEventCreate(fulfillmentEvent: $e) { fulfillmentEvent { id status } userErrors { field message } } }`,
   cancel: `mutation($id: ID!) { fulfillmentCancel(id: $id) { fulfillment { id status } userErrors { field message } } }`,
+  scopes: `query { currentAppInstallation { accessScopes { handle } } }`,
   paid: `mutation($input: OrderMarkAsPaidInput!) { orderMarkAsPaid(input: $input) { order { id displayFinancialStatus } userErrors { field message } } }`
 };
 
@@ -269,6 +270,7 @@ export async function runOnce(apiFor: ApiFor, limit = 25): Promise<string[]> {
   });
   const out: string[] = [];
   const apis = new Map<string, ShopifyAdminApi>();
+  const asked = new Set<string>();
   for (const row of due) {
     const installation = await prisma.shopifyInstallation.findFirst({ where: { clientId: row.clientId, uninstalledAt: null }, select: { id: true, shopDomain: true, scopes: true } });
     if (!installation) {
@@ -276,7 +278,23 @@ export async function runOnce(apiFor: ApiFor, limit = 25): Promise<string[]> {
       out.push('SKIPPED'); continue;
     }
     const needs = row.kind === 'MARK_PAID' ? NEEDED_SCOPES.paid : NEEDED_SCOPES.fulfil;
-    const missing = needs.filter(s => !hasScope(installation.scopes ?? '', s));
+    let missing = needs.filter(s => !hasScope(installation.scopes ?? '', s));
+    // What was saved at connect time may be out of date: a store can approve new permissions inside
+    // Shopify later (app/scopes_update says so, but a webhook can be missed). Asked of Shopify itself,
+    // once per store per pass, before deciding it is still waiting.
+    if (missing.length && !asked.has(installation.id)) {
+      asked.add(installation.id);
+      try {
+        if (!apis.has(installation.id)) apis.set(installation.id, await apiFor(installation));
+        const r: any = await apis.get(installation.id)!.graphql(Q.scopes);
+        const handles = (r?.currentAppInstallation?.accessScopes ?? []).map((a: any) => String(a?.handle ?? '')).filter(Boolean);
+        if (handles.length) {
+          installation.scopes = handles.join(',');
+          await prisma.shopifyInstallation.update({ where: { id: installation.id }, data: { scopes: installation.scopes } });
+          missing = needs.filter(s => !hasScope(installation.scopes ?? '', s));
+        }
+      } catch { /* Shopify not answering: decided on what was saved, and asked again next time */ }
+    }
     if (missing.length) {
       await prisma.shopifyOrderUpdate.update({ where: { id: row.id }, data: {
         state: 'WAITING_PERMISSION', nextAt: new Date(Date.now() + PERMISSION_RECHECK_MS),
@@ -323,6 +341,11 @@ export async function forOrder(clientId: string, salesOrderId: string) {
     id: r.id, kind: r.kind, event: r.event, state: r.state, note: r.lastError, at: (r.doneAt ?? r.createdAt).toISOString(),
     tracking: (r.detail as any)?.number ?? null
   }));
+}
+
+/** The store's permissions changed (app/scopes_update): whatever was waiting for them is looked at now. */
+export async function permissionsChanged(clientId: string) {
+  await prisma.shopifyOrderUpdate.updateMany({ where: { clientId, state: 'WAITING_PERMISSION' }, data: { nextAt: new Date() } });
 }
 
 /** "Try again" on a failed or skipped one (the shop fixed the cause in Shopify). */
