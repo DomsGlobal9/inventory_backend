@@ -228,10 +228,28 @@ export default function ProductPage({ slug, shop }) {
     return { variants, colours, sizes };
   }, [p]);
 
-  // Start on something a customer can actually buy, rather than on a sold-out colour that makes
-  // the shop look empty.
+  /*
+   * Where the page starts.
+   *
+   * A link may ask for one colour (29 Oct: CRM's "your green is back", a banner, a shared piece):
+   * ?v=<variantCode> for that exact colour and size, or ?colour=<name> (any letter case). The page
+   * opens on that colour -- and on a size of it that can be bought, if the one asked for cannot.
+   * A code or name the piece does not have is ignored. Otherwise: start on something a customer can
+   * actually buy, rather than on a sold-out colour that makes the shop look empty.
+   */
   useEffect(() => {
     if (!p) return;
+    const ask = new URLSearchParams(window.location.search);
+    const byCode = ask.get('v') ? p.variants.find(v => v.variantCode === ask.get('v')) : null;
+    const wantColour = byCode?.colour ?? (ask.get('colour')
+      ? p.variants.find(v => (v.colour ?? '').toLowerCase() === ask.get('colour').trim().toLowerCase())?.colour
+      : null);
+    if (wantColour) {
+      const ofColour = p.variants.filter(v => v.colour === wantColour);
+      const start = (byCode?.sellable ? byCode : null) ?? ofColour.find(v => v.sellable) ?? byCode ?? ofColour[0];
+      setColour(wantColour); setSize(start?.size ?? null);
+      return;
+    }
     const first = p.variants.find(v => v.sellable) ?? p.variants[0];
     if (first) { setColour(c => c ?? first.colour ?? null); setSize(s => s ?? first.size ?? null); }
   }, [p]);
