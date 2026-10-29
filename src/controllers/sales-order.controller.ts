@@ -1,3 +1,4 @@
+import { shopifyOrderUpdates } from '../services/shopify-orders';
 import { Request, Response } from 'express';
 import { salesOrderService } from '../services/sales-order.service';
 import { filterOrders, orderFilterQuery } from '../services/order-filters';
@@ -158,7 +159,10 @@ export const undoOrderPayment = async (req: Request, res: Response) => {
 export const getOrderById = async (req: Request, res: Response) => {
   try {
     const clientId = (req as any).clientId as string;
-    const order = await salesOrderService.getOrderById(clientId, req.params.id as string);
+    const order: any = await salesOrderService.getOrderById(clientId, req.params.id as string);
+    // A Shopify order: what Shopify has been told about it (shipped, delivered, paid) and anything to do.
+    const found = order?.data ?? order;
+    if (found?.sourceSystem === 'SHOPIFY') found.shopifyUpdates = await shopifyOrderUpdates.forOrder(clientId, found.id);
     res.json(order);
   } catch (error: any) {
     return respondWithError(res, error, { status: 404 });
@@ -252,5 +256,15 @@ export const cancelOrder = async (req: Request, res: Response) => {
     res.json(refund ? { ...order, onlineRefund: refund } : order);
   } catch (error: any) {
     return respondWithError(res, error, { status: 400 });
+  }
+};
+
+/** "Try again" on a Shopify update that failed or was skipped (the shop fixed the cause in Shopify). */
+export const retryShopifyUpdate = async (req: Request, res: Response) => {
+  try {
+    const clientId = (req as any).clientId as string;
+    res.json({ success: true, data: await shopifyOrderUpdates.retry(clientId, String(req.params.id), String(req.params.updateId)) });
+  } catch (error: any) {
+    return respondWithError(res, error, { status: 500 });
   }
 };

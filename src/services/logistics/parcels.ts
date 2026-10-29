@@ -6,6 +6,7 @@ import { dispatchService } from '../dispatch.service';
 import { paymentSummary } from '../payments/payment-rules';
 import { toMinor } from '../pricing/money';
 import { collectPayment } from '../order-payments';
+import * as shopifyUpdates from '../shopify-orders/updates';
 
 /**
  * Packing for ScaleEzy Logistics (28 Oct).
@@ -264,15 +265,22 @@ export async function fromLogistics(clientId: string, parcelId: string, body: an
     if (Object.keys(dispatchData).length) await prisma.dispatch.update({ where: { id: parcel.dispatchId }, data: dispatchData });
   }
 
+  // A Shopify order: Shopify is told (shipped with tracking, delivery progress, cancelled), by the worker.
+  // Before the cash below, so Shopify hears "delivered" before "paid".
+  await shopifyUpdates.fromParcelUpdate(clientId, parcel.id, status);
+
   // Cash the courier collected and paid over: recorded once on the order, never more than is owed.
   let codRecorded = false;
   if (cod !== null && cod > 0 && parcel.codCollected === null) {
+    let dueRupees = 0;
     try {
-      const due = await prisma.salesOrder.findUnique({ where: { id: parcel.salesOrderId }, select: { total: true, roundOff: true, writtenOff: true, payments: { select: { kind: true, amount: true } } } });
+      const due = await prisma.salesOrder.findUnique({ where: { id: parcel.salesOrderId }, select: { total: true, roundOff: true, writtenOff: true, sourceSystem: true, payments: { select: { kind: true, amount: true } } } });
       // paymentSummary's `due` is in rupees (order-payments converts it with toMinor).
-      const dueRupees = due ? Number(paymentSummary(toMinor(due.total) + toMinor(due.roundOff ?? 0), due.payments, toMinor(due.writtenOff ?? 0)).due) : 0;
+      dueRupees = due ? Number(paymentSummary(toMinor(due.total) + toMinor(due.roundOff ?? 0), due.payments, toMinor(due.writtenOff ?? 0)).due) : 0;
+      // A Shopify order is marked paid ON Shopify, and Shopify's paid webhook records the money here.
+      if (due?.sourceSystem === 'SHOPIFY') await shopifyUpdates.fromCodCollected(clientId, parcel.salesOrderId, cod, dueRupees);
       const amount = Math.min(cod, dueRupees);
-      if (amount > 0) {
+      if (amount > 0 && due?.sourceSystem !== 'SHOPIFY') {
         const r = await collectPayment(clientId, null, parcel.salesOrderId, { method: 'BANK_TRANSFER', amount, reference: `COD ${awb ?? saved.awb ?? ''}`.trim().slice(0, 40), key: `LOGISTICS-COD:${parcel.id}` });
         codRecorded = r.recorded;
       }

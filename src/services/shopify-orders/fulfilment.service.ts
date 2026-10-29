@@ -27,6 +27,8 @@ import { prisma } from '../../lib/prisma';
 import { dispatchService } from '../dispatch.service';
 import { shippingFromShopify } from '../shipping';
 import { park, isOrderWaiting, FULFILMENT_TOPIC } from './parking';
+import { isOn as logisticsIsOn } from '../logistics/parcels';
+import { noteFulfilledInShopify } from './updates';
 
 export class ShopifyFulfilmentService {
   /**
@@ -154,9 +156,12 @@ export class ShopifyFulfilmentService {
     if (toDispatch.length === 0) return 'ECHO';
 
     // Shopify's courier and tracking number, when its fulfilment names them (services/shipping).
-    await dispatchService.createDispatch(clientId, order.id, toDispatch, shippingFromShopify(fulfillments));
+    const made: any = await dispatchService.createDispatch(clientId, order.id, toDispatch, shippingFromShopify(fulfillments));
 
     const units = toDispatch.reduce((s, d) => s + d.quantity, 0);
+    // A shop that ships through Logistics should never see this: our own fulfilments come back as an
+    // ECHO above. So pieces fulfilled in Shopify by hand: recorded (they did go), and said on the order.
+    if (await logisticsIsOn(clientId)) await noteFulfilledInShopify(clientId, order.id, made?.id ?? null, units);
     console.log(
       `[Shopify] order ${shopifyOrderId} -- ${units} unit(s) shipped, recorded against ${order.orderNumber}`
     );

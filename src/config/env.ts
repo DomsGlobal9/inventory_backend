@@ -288,7 +288,11 @@ const envSchema = z.object({
     // write_discounts (which implies read_discounts) is what lets an offer written here be put on
     // the Shopify store, and read back to see whether it was changed there. Same consequence:
     // every connected store must approve again before its offers can be mirrored.
-    'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders,write_discounts'
+    //
+    // write_merchant_managed_fulfillment_orders, write_fulfillments and write_orders (29 Oct): Logistics
+    // ships Shopify orders, so Shopify is told -- fulfilled with tracking, delivery progress, and paid when
+    // the courier collects cash on delivery (services/shopify-orders/updates). Same consequence again.
+    'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders,write_discounts,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,write_fulfillments,write_orders'
   ),
 
   // Submissions allowed per address per hour on the PUBLIC signup form. Deliberately low:

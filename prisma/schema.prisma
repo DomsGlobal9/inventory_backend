@@ -5214,3 +5214,35 @@ model LogisticsParcel {
   @@index([clientId, status])
   @@map("logistics_parcels")
 }
+
+/// What ScaleEzy has to tell Shopify about one of its orders (29 Oct): shipped (with tracking),
+/// how delivery is going, cancelled, paid on delivery -- and, the other way, an order fulfilled by
+/// hand in Shopify on a shop that ships through Logistics (kind FULFILLED_IN_SHOPIFY, state NOTICE).
+/// Sent by ShopifyOrderUpdateWorker, retried with backoff. Text, not enums (shared DB).
+model ShopifyOrderUpdate {
+  id           String    @id @default(uuid())
+  clientId     String    @map("client_id")
+  salesOrderId String    @map("sales_order_id")
+  dispatchId   String?   @map("dispatch_id")
+  /// FULFIL | TRACKING | EVENT | CANCEL | MARK_PAID | FULFILLED_IN_SHOPIFY | COD_SHORT
+  kind         String
+  /// For EVENT: Shopify's FulfillmentEventStatus (IN_TRANSIT, DELIVERED, FAILURE, ...).
+  event        String?
+  /// One row per thing to say: a retry of the same Logistics update never queues it twice.
+  dedupeKey    String    @unique @map("dedupe_key")
+  /// PENDING | DONE | SKIPPED | FAILED | WAITING_PERMISSION | NOTICE
+  state        String    @default("PENDING")
+  attempts     Int       @default(0)
+  nextAt       DateTime  @default(now()) @map("next_at")
+  /// The reason, in the shop's words, when it was skipped or has failed.
+  lastError    String?   @map("last_error")
+  /// What was (or is to be) sent: tracking number and link, the event's message, amounts.
+  detail       Json      @default("{}")
+  shopifyFulfillmentId String? @map("shopify_fulfillment_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  doneAt       DateTime? @map("done_at")
+
+  @@index([state, nextAt])
+  @@index([clientId, salesOrderId])
+  @@map("shopify_order_updates")
+}

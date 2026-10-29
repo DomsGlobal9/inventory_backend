@@ -20,6 +20,8 @@ import { HousekeepingScheduler } from './jobs/housekeeping.scheduler';
 import { WhatsAppDayBookScheduler } from './jobs/whatsapp-daybook.scheduler';
 import { OfferMirrorWorker } from './services/shopify-discounts';
 import { ShopifyProductWorker } from './services/shopify-products';
+import { ShopifyOrderUpdateWorker } from './services/shopify-orders';
+import { adminApiFor } from './services/shopify-mapping';
 import { StorefrontDispatcherService } from './services/storefront-dispatcher.service';
 
 import cookieParser from 'cookie-parser';
@@ -269,6 +271,8 @@ app.listen(PORT, () => {
     CampaignsScheduler.start();
     OfferMirrorWorker.start();
     ShopifyProductWorker.start();
+    // What Shopify must be told about its orders that Logistics ships (fulfilled, tracking, delivered, paid).
+    ShopifyOrderUpdateWorker.start(installation => adminApiFor(installation.id, installation.shopDomain));
   }
 
   /*

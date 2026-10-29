@@ -4,6 +4,7 @@ import {
   createFullOrder,
   getOrders,
   getOrderById,
+  retryShopifyUpdate,
   updateOrder,
   deleteOrder,
   addOrderItem,
@@ -26,6 +27,7 @@ router.post('/full', requirePermission('sales_order:create'), createFullOrder);
 
 router.get('/', requirePermission('sales_order:view'), getOrders);
 router.get('/:id', requirePermission('sales_order:view'), getOrderById);
+router.post('/:id/shopify-updates/:updateId/retry', requirePermission('sales_order:update'), retryShopifyUpdate);
 router.patch('/:id', requirePermission('sales_order:update'), updateOrder);
 router.delete('/:id', requirePermission('sales_order:cancel'), deleteOrder);
 router.post('/:id/items', requirePermission('sales_order:update'), addOrderItem);
