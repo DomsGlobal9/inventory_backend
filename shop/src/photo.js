@@ -23,7 +23,7 @@ export const canResize = (url) => typeof url === 'string' && url.includes(OBJECT
  * its words cut off, and a 896x1200 saree at 540 came back 540x1200, a narrow strip of the saree.
  * contain fits the whole photograph inside that box instead: 1080x360, 540x723.
  */
-export function sized(url, width, quality = 72) {
+export function sized(url, width, quality = 82) {
   if (!canResize(url)) return url;
   return `${url.replace(OBJECT, RENDER)}${url.includes('?') ? '&' : '?'}width=${width}&quality=${quality}&resize=contain`;
 }
@@ -35,10 +35,11 @@ export function widths(url, list, quality) {
 }
 
 /** The usual sets. */
+// Quality 82 rather than 72: at 72 the zari on a tile looked smudged (owner, 29 Oct). The big product
+// photograph is never resized at all (ProductPage), only these smaller places.
 export const TILE = [240, 360, 540, 720];
-export const THUMB = 160;
-export const BANNER = [640, 1080, 1600];
-export const GALLERY = [480, 720, 960];
+export const THUMB = 240;
+export const BANNER = [640, 1080, 1600, 2000];
 
 /** onError for a plain <img> given a small copy: once, back to the original photograph. */
 export const orWhole = (original) => (e) => {

@@ -81,7 +81,7 @@ function Promo({ slug, banner, inline = false }) {
   const to = bannerTo(slug, banner);
   const inner = (
     <>
-      <img src={sized(banner.imageUrl, 1080)} srcSet={widths(banner.imageUrl, BANNER, 78)} sizes="(min-width: 1200px) 1152px, 100vw" onError={orWhole(banner.imageUrl)} alt={banner.heading || ''} loading="lazy" decoding="async"
+      <img src={sized(banner.imageUrl, 1080)} srcSet={widths(banner.imageUrl, BANNER, 85)} sizes="(min-width: 1200px) 1152px, 100vw" onError={orWhole(banner.imageUrl)} alt={banner.heading || ''} loading="lazy" decoding="async"
         onLoad={() => setReady(true)} onError={() => setReady(true)} />
       {banner.heading || banner.subtext ? (
         <span className="over">

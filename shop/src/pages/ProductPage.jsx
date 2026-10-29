@@ -13,7 +13,7 @@ import { Ticked } from '../components/Motion';
 import MoreToExplore from '../components/MoreToExplore';
 import Heart from '../components/Heart';
 import Banners, { placed } from '../components/Banners';
-import { sized, widths, orWhole, GALLERY, THUMB } from '../photo';
+import { sized, orWhole, THUMB } from '../photo';
 import { wishlistOn } from '../account';
 
 /**
@@ -52,6 +52,71 @@ function saving(now, was) {
  * on. Sideways everywhere -- dragged with a finger on a phone or a tablet, with the trackpad or
  * the thumbnails themselves on a laptop.
  */
+/**
+ * Share, as Myntra does it (owner, 29 Oct).
+ *
+ * On a phone: the phone's own share sheet, so the shopper picks WhatsApp, Instagram, Messages, Gmail,
+ * or Copy link -- the name, the shop and the link, and WhatsApp draws the piece's photo from the link
+ * preview the backend serves. Closing the sheet does nothing (it used to fall through to WhatsApp).
+ * Where there is no share sheet (a laptop): a small menu with Copy link, WhatsApp and Email.
+ */
+function ShareButton({ shopName, product }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const box = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (e) => { if (!box.current?.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', away);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('pointerdown', away); document.removeEventListener('keydown', esc); };
+  }, [open]);
+
+  const s = shareThis(shopName, product);
+  // The share sheet on a phone or tablet only: a computer's own (the Windows share window) is clumsy,
+  // and the menu below does the job better there.
+  const sheet = !!navigator.share && !!window.matchMedia?.('(pointer: coarse)')?.matches;
+  const share = async () => {
+    if (sheet) {
+      try { await navigator.share({ title: product.title, text: s.text, url: s.url }); }
+      catch { /* closed the sheet, or the phone refused: nothing to do */ }
+      return;
+    }
+    setOpen(o => !o);
+  };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(s.url); setCopied(true); window.setTimeout(() => { setCopied(false); setOpen(false); }, 1400); }
+    catch { window.prompt('Copy this link', s.url); }
+  };
+  const mail = `mailto:?subject=${encodeURIComponent(`${product.title} from ${shopName}`)}&body=${encodeURIComponent(`${s.text}\n${s.url}`)}`;
+
+  return (
+    <div className="sharewrap" ref={box}>
+      <button type="button" className="sharethis" onClick={share} aria-haspopup={sheet ? undefined : 'menu'} aria-expanded={sheet ? undefined : open}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="18" cy="5" r="2.6" /><circle cx="6" cy="12" r="2.6" /><circle cx="18" cy="19" r="2.6" />
+          <path d="m8.3 10.8 7.4-4.4M8.3 13.2l7.4 4.4" />
+        </svg>
+        Share
+      </button>
+      {open && (
+        <div className="sharemenu" role="menu">
+          <button type="button" role="menuitem" onClick={copy}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" /><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></svg>
+            {copied ? 'Link copied' : 'Copy link'}
+          </button>
+          <a role="menuitem" href={s.whatsapp} target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)}><Wa /> WhatsApp</a>
+          <a role="menuitem" href={mail} onClick={() => setOpen(false)}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3.5 6.5 8.5 6.5 8.5-6.5" /></svg>
+            Email
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Gallery({ photos, title }) {
   const strip = useRef(null);
   const rail = useRef(null);
@@ -143,8 +208,12 @@ function Gallery({ photos, title }) {
           onScroll={e => setAt(Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth))}>
           {photos.map((img, i) => (
             <figure key={img.url} onPointerMove={zoomFollow} onPointerLeave={zoomOut} data-wide={wide[img.url] ? 'true' : undefined}>
-              <img src={sized(img.url, 960)} srcSet={widths(img.url, GALLERY)} sizes="(min-width: 880px) 560px, 100vw"
-                alt={i === 0 ? title : ''} onLoad={measure(img.url)} onError={orWhole(img.url)}
+              {/* The big photograph is the original file, never a smaller copy (owner, 29 Oct): the
+                  four views and the cloth shots are where a shopper looks at the weave and the zari,
+                  and a 960px copy at 72% went soft on a sharp phone -- a turned cloth photo most of all,
+                  since its width becomes the frame's height. Small copies are for tiles and thumbnails. */}
+              <img src={img.url}
+                alt={i === 0 ? title : ''} onLoad={measure(img.url)}
                 loading={i === 0 ? 'eager' : 'lazy'} fetchPriority={i === 0 ? 'high' : 'auto'} decoding="async" />
             </figure>
           ))}
@@ -567,19 +636,7 @@ export default function ProductPage({ slug, shop }) {
               navigator.share where the phone has it -- that is the sheet people already know,
               and it offers WhatsApp among everything else. The plain WhatsApp link is the
               fallback for desktop, where the share sheet does not exist. */}
-          <button
-            type="button"
-            className="sharethis"
-            onClick={async () => {
-              const s = shareThis(shop?.name ?? 'this shop', p);
-              try {
-                if (navigator.share) { await navigator.share({ title: p.title, text: s.text, url: s.url }); return; }
-              } catch { /* they closed the sheet -- not a failure, and not worth a message */ }
-              window.open(s.whatsapp, '_blank', 'noopener,noreferrer');
-            }}
-          >
-            <Wa /> Send this to someone
-          </button>
+          <ShareButton shopName={shop?.name ?? 'this shop'} product={p} />
 
           {/* Asked here rather than at the checkout, where the same refusal already waits after
               a name, a number and a full address have been typed in. Renders nothing at all for

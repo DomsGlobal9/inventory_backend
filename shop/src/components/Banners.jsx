@@ -138,7 +138,7 @@ export default function Banners({ slug, banners, inline = false, label }) {
             <>
               <img
                 src={sized(b.imageUrl, 1080)}
-                srcSet={widths(b.imageUrl, BANNER, 78)}
+                srcSet={widths(b.imageUrl, BANNER, 85)}
                 sizes="(min-width: 1200px) 1152px, 100vw"
                 onError={orWhole(b.imageUrl)}
                 alt={b.heading || ''}

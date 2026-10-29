@@ -2497,3 +2497,18 @@ body { overflow-x: hidden; }
   .foot .cols > .who { grid-column: 1 / -1; }
   .foot .cols > section:not(.who) h3 { margin-top: 0; }
 }
+
+/* ── Share: the phone's share sheet, or a small menu on a laptop (29 Oct) ────────────────── */
+.sharewrap { position: relative; display: inline-block; margin-top: 14px; }
+.sharewrap .sharethis { margin-top: 0; }
+.sharemenu {
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 60; min-width: 190px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 6px;
+  box-shadow: 0 14px 36px rgba(0,0,0,.14); display: flex; flex-direction: column;
+}
+.sharemenu a, .sharemenu button {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
+  font: inherit; font-size: 14px; font-weight: 550; color: var(--ink); text-decoration: none;
+  background: none; border: 0; cursor: pointer; text-align: left; width: 100%;
+}
+.sharemenu a:hover, .sharemenu button:hover, .sharemenu a:focus-visible, .sharemenu button:focus-visible { background: var(--soft); }
