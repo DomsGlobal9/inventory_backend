@@ -135,12 +135,14 @@ export async function save(clientId: string, token: unknown, input: AddressInput
     if (id) {
       // Scoped to this customer, so an id belonging to somebody else edits nothing.
       const held = await tx.customerAddress.findFirst({
-        where: { id, clientId, customerId, deletedAt: null }, select: { id: true }
+        where: { id, clientId, customerId, deletedAt: null }, select: { id: true, isDefault: true }
       });
       if (!held) throw new OnlineShopRuleError('That address could not be found.');
       row = await tx.customerAddress.update({
         where: { id: held.id },
-        data: { label, name, phone: reach.value, line, pincode, isDefault: wantsDefault }
+        // The default stays the default when edited (29 Oct): switching it off would leave the
+        // checkout with nothing chosen. It moves only when another address is made the default.
+        data: { label, name, phone: reach.value, line, pincode, isDefault: wantsDefault || held.isDefault }
       });
     } else {
       const howMany = await tx.customerAddress.count({ where: { clientId, customerId, deletedAt: null } });

@@ -18,7 +18,7 @@ import { platformAdminService } from '../services/platform-admin.service';
 import { AuthService } from '../services/auth.service';
 import { shopOtp, shopAddresses, OnlineShopRuleError } from '../services/online-shop';
 
-const SERVER = 'http://localhost:4006';
+const SERVER = process.env.TEST_SERVER || 'http://localhost:4006';
 const STAMP = Date.now();
 const SHOP = `addr-${STAMP}`;
 const OTHER = `addr-other-${STAMP}`;
@@ -125,6 +125,10 @@ async function main() {
   check('the default can be moved', madeDefault.isDefault === true);
   const after = await shopAddresses.mine(SHOP, token);
   check('...and only one is ever the default', after.addresses.filter(a => a.isDefault).length === 1, after.addresses);
+  // 29 Oct: editing the default with "default" off keeps it the default (the checkout must always
+  // have one chosen); it moves only when another address is made the default.
+  const keptDefault: any = await shopAddresses.save(SHOP, token, { ...amma, id: amma.id, isDefault: false, label: 'Amma (edited)' });
+  check('editing the default cannot switch it off', keptDefault.isDefault === true && keptDefault.label === 'Amma (edited)', keptDefault);
 
   await shopAddresses.remove(SHOP, token, amma.id);
   const left = await shopAddresses.mine(SHOP, token);
@@ -134,7 +138,9 @@ async function main() {
   console.log('\nTHE BOOK FILLS ITSELF');
   const key = `addr-${STAMP}-${Math.random().toString(36).slice(2)}aaaaaaaaaa`;
   const order = await post(`/shop/${SLUG}/orders`, {
-    placementKey: key, lines: [{ variantCode: me.variantCode, quantity: 1 }],
+    // The browser's own sign-in pass, as the checkout sends it: since 29 Oct an order is proved only
+    // with the pass of the browser placing it, and only a proved order's address is remembered.
+    placementKey: key, lines: [{ variantCode: me.variantCode, quantity: 1 }], token,
     name: 'Anita Rao', phone: PHONE,
     address: '9-1-100 Banjara Hills, Hyderabad, Telangana', pincode: '500034',
     payWay: 'ON_DELIVERY'

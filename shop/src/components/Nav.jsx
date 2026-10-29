@@ -68,6 +68,14 @@ function ProfileMenu({ slug, me, firstName, wishlist }) {
   const [open, setOpen] = useState(false);
   const box = useRef(null);
   const where = useLocation();
+  // On a phone the menu hangs from the screen's right edge under the bar (styles.css), not from the
+  // icon -- which is second of four, so the menu opened in the middle of the screen (owner, 29 Oct).
+  const [below, setBelow] = useState(0);
+  const toggle = () => {
+    const bar = box.current?.closest('header');
+    setBelow(Math.round(bar?.getBoundingClientRect().bottom ?? 64));
+    setOpen(o => !o);
+  };
   useEffect(() => { setOpen(false); }, [where.pathname, where.hash]);
   useEffect(() => {
     if (!open) return undefined;
@@ -81,7 +89,7 @@ function ProfileMenu({ slug, me, firstName, wishlist }) {
   return (
     <div className="pmenu" ref={box}>
       <button type="button" className="icon worded" aria-haspopup="menu" aria-expanded={open}
-        aria-label={me ? `Your profile${firstName ? `, ${firstName}` : ''}` : 'Profile'} onClick={() => setOpen(o => !o)}>
+        aria-label={me ? `Your profile${firstName ? `, ${firstName}` : ''}` : 'Profile'} onClick={toggle}>
         <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
           <circle cx="12" cy="8.5" r="3.8" />
           <path d="M4.5 20.2c1.2-3.6 4.1-5.4 7.5-5.4s6.3 1.8 7.5 5.4" />
@@ -89,7 +97,7 @@ function ProfileMenu({ slug, me, firstName, wishlist }) {
         <span className="word" aria-hidden="true">Profile</span>
       </button>
       {open && (
-        <div className="pmenu-list" role="menu">
+        <div className="pmenu-list" role="menu" style={{ '--below': `${below}px` }} onClick={(e) => { if (e.target.closest('a')) setOpen(false); }}>
           <div className="pmenu-who">
             {me ? <><b>Hello{firstName ? ` ${firstName}` : ''}</b><span>{me.phone ? `Signed in with ••${String(me.phone).slice(-4)}` : 'Signed in'}</span></>
               : <><b>Welcome</b><span>Sign in to see your orders from any phone</span></>}
@@ -162,6 +170,8 @@ export default function Nav({ shop, compact = false }) {
   const [me, setMe] = useState(() => signedIn(slug));
   useEffect(() => { setMe(signedIn(slug)); return onAccountChange(() => setMe(signedIn(slug))); }, [slug]);
   const firstName = me?.name ? String(me.name).trim().split(/\s+/)[0] : null;
+  // Hearted pieces, for the count on the Wishlist icon. Kept on this phone by account.js and updated as hearts are tapped.
+  const hearts = me?.hearts?.length ?? 0;
 
   const q = params.get('q') ?? '';
   const category = params.get('category') ?? '';
@@ -233,10 +243,15 @@ export default function Nav({ shop, compact = false }) {
             {/* Profile opens a menu with Orders in it, as Myntra's does (owner, 29 Oct). */}
             {shop?.accounts !== false ? <ProfileMenu slug={slug} me={me} firstName={firstName} wishlist={wishlistOn(shop)} /> : null}
             {/* The hearts live with the account; this goes straight to them. */}
-            {wishlistOn(shop) ? <Link to={`/${slug}/account#wishlist`} state={me ? undefined : { why: 'heart' }} className="icon worded" aria-label="Your wishlist" title="Your wishlist">
-              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
-                <path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" />
-              </svg>
+            {wishlistOn(shop) ? <Link to={`/${slug}/account#wishlist`} state={me ? undefined : { why: 'heart' }} className="icon worded" aria-label={hearts ? `Your wishlist, ${hearts} ${hearts === 1 ? 'piece' : 'pieces'}` : 'Your wishlist'} title="Your wishlist">
+              {/* How many are hearted, on the icon like the bag's count (owner, 29 Oct): it moves the
+                  moment a heart is tapped, since noteHeart tells the bar (onAccountChange). */}
+              <span className="bagicon wishicon">
+                <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" />
+                </svg>
+                {hearts > 0 ? <i aria-hidden="true">{hearts > 9 ? '9+' : hearts}</i> : null}
+              </span>
               <span className="word" aria-hidden="true">Wishlist</span>
             </Link> : null}
             {/* With no accounts there is no Profile to hold it, so Orders keeps its own place. */}

@@ -2515,3 +2515,35 @@ body { overflow-x: hidden; }
 
 /* Continue shopping without signing in: a full button at the bottom of the sign-in card (29 Oct). */
 .asignin .keepon { display: flex; width: 100%; margin-top: 18px; text-decoration: none; min-height: 46px; }
+
+/* ── Saved addresses: add, edit, make default (29 Oct) ───────────────────────────────────── */
+.aaddr li { gap: 12px; }
+.aaddr .atag { display: inline-block; font-style: normal; font-size: 11px; font-weight: 650; letter-spacing: .02em; color: var(--ink); background: var(--soft); border-radius: 6px; padding: 2px 8px; margin-bottom: 4px; }
+.aaddr .aacts { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: 0 0 auto; }
+.aedit { display: block !important; }
+.aadd { display: flex; width: 100%; margin-top: 12px; min-height: 46px; }
+.aform { display: grid; gap: 12px; margin-top: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+.aform h3 { margin: 0; font-size: 15px; }
+.aform label { display: grid; gap: 5px; font-size: 12.5px; color: var(--muted); }
+.aform input:not([type=checkbox]), .aform textarea {
+  font: inherit; font-size: 15px; color: var(--ink); padding: 11px 12px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--bg); width: 100%;
+}
+.aform input:focus, .aform textarea:focus { outline: none; border-color: var(--ink); }
+.aform textarea { resize: vertical; min-height: 76px; }
+.aform .acheck { display: flex; align-items: center; gap: 9px; font-size: 14px; color: var(--ink); }
+.aform .acheck input { width: 18px; height: 18px; }
+.alabels { display: flex; gap: 8px; flex-wrap: wrap; }
+.achip { font: inherit; font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 999px; border: 1.5px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; }
+.achip[aria-checked='true'] { border-color: var(--ink); background: var(--soft); }
+.aformbtns { display: flex; gap: 10px; }
+.aformbtns .go { flex: 1 1 0; }
+
+/* The Profile menu on a phone: from the screen's right edge, just under the bar (29 Oct). Hung from the
+   icon it opened in the middle of the screen, since Profile is the second of four icons. */
+@media (max-width: 719px) {
+  .pmenu-list {
+    position: fixed; top: calc(var(--below, 64px) + 6px); right: 12px; left: auto;
+    width: min(290px, calc(100vw - 24px));
+  }
+}
+.aform .ahint { font-size: 12px; color: var(--muted); margin-top: -6px; }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { getAccount, sendCode, checkCode, signOutOf, likePiece, removeAddress, heldProof, holdProof, money } from '../api';
+import { getAccount, sendCode, checkCode, signOutOf, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
 import { becomeSignedIn, remember, forget, noteHeart } from '../account';
 import { ORDER_WORDS } from '../orderWords';
 import { sized, orWhole, THUMB } from '../photo';
@@ -26,6 +26,9 @@ export default function AccountPage({ shop }) {
   const back = where.state?.back ?? null;
   const [me, setMe] = useState(null);           // null while loading; { signedIn: false } or the account
   const [said, setSaid] = useState(null);
+  // With the other hooks, above the early returns: declared after them, signing in added a hook
+  // between two renders and the page went blank.
+  const [editing, setEditing] = useState(null);   // null, 'new', or the address being changed
 
   const load = useCallback(async () => {
     const token = heldProof(slug);
@@ -95,6 +98,11 @@ export default function AccountPage({ shop }) {
   const dropAddress = async (a) => {
     try { await removeAddress(slug, token, a.id); await refresh(); }
     catch (e) { setSaid(e?.message ?? 'That could not be removed. Try again.'); }
+  };
+  // Adding and editing an address here (owner, 29 Oct); the checkout offers whatever is saved.
+  const useFirst = async (a) => {
+    try { await saveAddress(slug, token, { id: a.id, label: a.label, name: a.name, phone: a.phone, line: a.line, pincode: a.pincode, isDefault: true }); await refresh(); }
+    catch (e) { setSaid(e?.message ?? 'That could not be changed. Try again.'); }
   };
 
   return (
@@ -178,24 +186,95 @@ export default function AccountPage({ shop }) {
 
       <section className="card" id="addresses" style={{ scrollMarginTop: 'calc(var(--bar, 64px) + 12px)' }}>
         <h2>Saved addresses</h2>
-        {me.addresses.length === 0 ? (
-          <p className="aempty">Addresses you order to are saved here for next time.</p>
+        {me.addresses.length === 0 && editing !== 'new' ? (
+          <p className="aempty">Add an address and it is ready at the checkout. Addresses you order to are saved here too.</p>
         ) : (
           <ul className="aaddr">
-            {me.addresses.map(a => (
+            {me.addresses.map(a => editing?.id === a.id ? (
+              <li key={a.id} className="aedit">
+                <AddressForm slug={slug} token={token} me={me} address={a} onDone={async () => { setEditing(null); await refresh(); }} onCancel={() => setEditing(null)} />
+              </li>
+            ) : (
               <li key={a.id}>
                 <span>
+                  {a.label || a.isDefault ? <em className="atag">{a.label || 'Address'}{a.isDefault ? ' · Default' : ''}</em> : null}
                   {a.name ? <b>{a.name}</b> : null}
                   <span>{a.line}</span>
-                  <small>{a.pincode}{a.isDefault ? ' · used first' : ''}</small>
+                  <small>{a.pincode}{a.phone ? ` · ${a.phone}` : ''}</small>
                 </span>
-                <button type="button" className="drop" onClick={() => dropAddress(a)}>Remove</button>
+                <span className="aacts">
+                  <button type="button" className="drop" onClick={() => setEditing(a)}>Edit</button>
+                  {!a.isDefault ? <button type="button" className="drop" onClick={() => useFirst(a)}>Make default</button> : null}
+                  <button type="button" className="drop" onClick={() => dropAddress(a)}>Remove</button>
+                </span>
               </li>
             ))}
           </ul>
         )}
+        {editing === 'new' ? (
+          <div className="aedit"><AddressForm slug={slug} token={token} me={me} address={null} first={me.addresses.length === 0} onDone={async () => { setEditing(null); await refresh(); }} onCancel={() => setEditing(null)} /></div>
+        ) : editing ? null : me.addresses.length >= MOST_ADDRESSES ? (
+          // The limit said before anything is typed, not after a whole address has been written out.
+          <p className="aempty">You can keep {MOST_ADDRESSES} addresses. Remove one to add another.</p>
+        ) : (
+          <button type="button" className="go quiet aadd" onClick={() => setEditing('new')}>+ Add a new address</button>
+        )}
       </section>
     </div>
+  );
+}
+
+/**
+ * One address, new or changed (owner, 29 Oct). Saved through the same rules as the checkout's (who it
+ * is for, a full address, a six-digit PIN), so whatever is saved here is offered there as it is.
+ */
+const LABELS = ['Home', 'Work', 'Other'];
+/** The most a customer may keep (services/online-shop/addresses.ts says the same). */
+const MOST_ADDRESSES = 8;
+function AddressForm({ slug, token, me, address, first = false, onDone, onCancel }) {
+  const [f, setF] = useState(() => ({
+    label: address?.label ?? 'Home',
+    name: address?.name ?? me?.name ?? '',
+    phone: address?.phone ?? me?.phone ?? '',
+    line: address?.line ?? '',
+    pincode: address?.pincode ?? '',
+    isDefault: address ? address.isDefault : first
+  }));
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState(null);
+  const set = (k) => (e) => setF(v => ({ ...v, [k]: e?.target ? (e.target.type === 'checkbox' ? e.target.checked : e.target.value) : e }));
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true); setSaid(null);
+    try {
+      await saveAddress(slug, token, { ...(address ? { id: address.id } : {}), ...f, pincode: f.pincode.replace(/\D/g, '') });
+      await onDone();
+    } catch (err) {
+      setSaid(err?.message ?? 'That address could not be saved. Try again.');
+    } finally { setBusy(false); }
+  };
+  return (
+    <form className="aform" onSubmit={save}>
+      <h3>{address ? 'Change this address' : 'Add a new address'}</h3>
+      <div className="alabels" role="radiogroup" aria-label="Save it as">
+        {LABELS.map(l => (
+          <button key={l} type="button" role="radio" aria-checked={f.label === l} className="achip" onClick={() => set('label')(l)}>{l}</button>
+        ))}
+      </div>
+      <label><span>Full name</span><input value={f.name} onChange={set('name')} autoComplete="name" maxLength={80} required /></label>
+      <label><span>Phone number</span><input type="tel" inputMode="tel" value={f.phone} onChange={set('phone')} autoComplete="tel" maxLength={20} /></label>
+      <label><span>Address (house, street, area, city)</span><textarea rows={3} value={f.line} onChange={set('line')} autoComplete="street-address" maxLength={500} required /></label>
+      <label><span>PIN code</span><input inputMode="numeric" value={f.pincode} onChange={set('pincode')} autoComplete="postal-code" maxLength={6} required /></label>
+      {/* The default cannot simply be switched off: the checkout would then have nothing chosen. It moves
+          when another address is made the default. */}
+      <label className="acheck"><input type="checkbox" checked={f.isDefault} onChange={set('isDefault')} disabled={!!address?.isDefault || first} /> Make this my default address</label>
+      {address?.isDefault ? <small className="ahint">This is your default. To change it, choose Make default on another address.</small> : first ? <small className="ahint">Your first address is your default.</small> : null}
+      {said ? <p className="refused" role="alert">{said}</p> : null}
+      <div className="aformbtns">
+        <button type="submit" className="go" disabled={busy}>{busy ? 'Saving…' : 'Save address'}</button>
+        <button type="button" className="go quiet" disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
