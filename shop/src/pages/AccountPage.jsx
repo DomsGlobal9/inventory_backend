@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { EmptyWishlist } from '../components/Motion';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { getAccount, sendCode, checkCode, signOutOf, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
 import { becomeSignedIn, remember, forget, noteHeart } from '../account';
@@ -131,7 +132,7 @@ export default function AccountPage({ shop, view = 'profile' }) {
         {said ? <p className="refused" role="alert">{said}</p> : null}
         <section className="card">
         {me.hearts.length === 0 ? (
-          <div className="aemptybig"><p className="aempty">Your wishlist is empty. Tap the heart on a piece to save it here.</p><Link className="go quiet keepon" to={`/${slug}`}>Continue shopping</Link></div>
+          <div className="aemptybig"><div className="art"><EmptyWishlist /></div><p className="aempty">Your wishlist is empty. Tap the heart on a piece to save it here.</p><Link className="go quiet keepon" to={`/${slug}`}>Continue shopping</Link></div>
         ) : (
           <ul className="awish">
             {me.hearts.map(h => (

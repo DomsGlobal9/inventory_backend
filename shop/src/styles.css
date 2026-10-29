@@ -1445,7 +1445,7 @@ a.announce:hover { text-decoration: underline; }
 
 /* Everyone who asked their device for less motion gets the drawing, still. */
 @media (prefers-reduced-motion: reduce) {
-  .art-bag *, .art-parcel *, .art-landed *, .art-look *, .art-dressing *, .motion, .motion * {
+  .art-bag *, .art-parcel *, .art-landed *, .art-look *, .art-dressing *, .art-wish *, .motion, .motion * {
     animation: none !important;
   }
   .art-landed .draw { stroke-dashoffset: 0; }
@@ -2624,3 +2624,31 @@ body { overflow-x: hidden; }
 /* A sheet open over the page (Virtual Try-On, 30 Oct): the buy bar steps out of the way. It sat above
    the sheet on a phone and covered the sheet's own buttons; the sheet is what is being used now. */
 body:has([aria-modal="true"]) .dock { display: none; }
+
+/* ── The empty bag's animation (the owner's Lottie, 30 Oct) ────────────────────────────── */
+/* The drawing it replaces holds the place until the player is in, then the animation fades up. */
+.lottieart { position: relative; margin: 0 auto; max-width: 100%; }
+.lottieart .lottiewait, .lottieart .lottiebox { position: absolute; inset: 0; display: grid; place-items: center; }
+.lottieart .lottiebox { opacity: 0; transition: opacity .2s ease-out; }
+.lottieart .lottiebox[data-ready='true'] { opacity: 1; }
+.lottieart .lottiebox svg { width: 100% !important; height: 100% !important; }
+
+/* ── An empty wishlist ─────────────────────────────────────────────────────────────────── */
+/* Drawn, then filled from the bottom in the shop's colour, then a heartbeat with small hearts
+   floating off it. Resting state is the finished heart, which is what "less motion" shows. */
+.aemptybig .art { display: flex; justify-content: center; color: var(--faint); margin-top: 6px; }
+.art-wish { overflow: visible; }
+.art-wish .fill { fill: var(--accent); opacity: .92; }
+.art-wish .line { stroke: var(--accent); stroke-dasharray: 100; stroke-dashoffset: 0; animation: wish-draw 1.1s cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes wish-draw { from { stroke-dashoffset: 100 } to { stroke-dashoffset: 0 } }
+.art-wish .level { animation: wish-rise .9s cubic-bezier(.16, 1, .3, 1) .7s both; }
+@keyframes wish-rise { from { transform: translateY(70px) } to { transform: none } }
+.art-wish .beat { transform-origin: 66px 70px; animation: wish-beat 2.8s ease-in-out 1.7s infinite; }
+@keyframes wish-beat { 0%, 30%, 100% { transform: scale(1) } 10% { transform: scale(1.08) } 20% { transform: scale(.98) } }
+.art-wish .shadow { transform-origin: 66px 112px; animation: wish-shadow 2.8s ease-in-out 1.7s infinite; }
+@keyframes wish-shadow { 0%, 30%, 100% { transform: scaleX(1) } 10% { transform: scaleX(1.12) } }
+.art-wish .float > * { fill: var(--accent); opacity: 0; transform-box: fill-box; transform-origin: center; animation: wish-float 2.8s ease-out infinite; }
+.art-wish .f1 { animation-delay: 1.9s; }
+.art-wish .f2 { animation-delay: 2.3s; }
+.art-wish .f3 { animation-delay: 2.7s; }
+@keyframes wish-float { 0% { opacity: 0; transform: translateY(8px) scale(.6) } 20% { opacity: .75 } 100% { opacity: 0; transform: translateY(-26px) scale(1) } }

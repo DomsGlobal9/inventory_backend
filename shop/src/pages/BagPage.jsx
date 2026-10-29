@@ -4,6 +4,10 @@ import { priceBag, money } from '../api';
 import { useBag, setQuantity, removeFromBag } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag, Toward } from '../components/Motion';
+import LottieArt from '../components/LottieArt';
+
+// The owner's empty-bag animation (lottie.host, 30 Oct), kept in its own chunk with the player.
+const loadEmptyBag = () => import('../art/empty-bag.json');
 import { sized, orWhole, THUMB } from '../photo';
 
 /**
@@ -66,7 +70,7 @@ export default function BagPage({ shop }) {
 
   if (lines.length === 0) {
     return (
-      <Say title="Your bag is empty" art={<EmptyBag />}
+      <Say title="Your bag is empty" art={<LottieArt load={loadEmptyBag} fallback={<EmptyBag />} size={200} />}
         action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
         Anything you add is kept here until you order it, even if you close the page.
       </Say>

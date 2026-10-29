@@ -43,6 +43,36 @@ export const EmptyBag = () => (
 );
 
 /**
+ * An empty wishlist (30 Oct): a heart that draws itself, fills from the bottom in the shop's own
+ * colour, and lets three small hearts float up and away -- "save something you love", not "loading".
+ * One beat every few seconds, the parts staggered; still for anyone who asked for less motion.
+ */
+export const EmptyWishlist = () => (
+  <svg className="art-wish" width="132" height="128" viewBox="0 0 132 128" fill="none" aria-hidden="true">
+    <ellipse className="shadow" cx="66" cy="112" rx="24" ry="4" fill="currentColor" opacity=".16" />
+    <defs>
+      <clipPath id="art-wish-fill">
+        <rect className="level" x="20" y="30" width="92" height="70" />
+      </clipPath>
+    </defs>
+    <g className="beat">
+      {/* The colour, rising inside the outline. */}
+      <path clipPath="url(#art-wish-fill)" className="fill"
+        d="M66 96s-31-19-31-42.2A17.6 17.6 0 0 1 66 42.6a17.6 17.6 0 0 1 31 11.2C97 77 66 96 66 96Z" />
+      <path className="line" pathLength="100"
+        d="M66 96s-31-19-31-42.2A17.6 17.6 0 0 1 66 42.6a17.6 17.6 0 0 1 31 11.2C97 77 66 96 66 96Z"
+        stroke="currentColor" strokeWidth="3" strokeLinejoin="round" />
+    </g>
+    {/* Small hearts, each its own timing. */}
+    <g className="float">
+      <path className="f1" d="M42 40s-6-3.6-6-8a3.4 3.4 0 0 1 6-2.2 3.4 3.4 0 0 1 6 2.2c0 4.4-6 8-6 8Z" />
+      <path className="f2" d="M92 30s-5-3-5-6.6a2.8 2.8 0 0 1 5-1.8 2.8 2.8 0 0 1 5 1.8C97 27 92 30 92 30Z" />
+      <path className="f3" d="M70 24s-4-2.4-4-5.3a2.3 2.3 0 0 1 4-1.5 2.3 2.3 0 0 1 4 1.5c0 2.9-4 5.3-4 5.3Z" />
+    </g>
+  </svg>
+);
+
+/**
  * No orders yet: a parcel that has not gone anywhere, over a route that draws itself and clears.
  * The parcel stays still and the road moves, which is the honest way round.
  */
