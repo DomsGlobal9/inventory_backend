@@ -17,11 +17,38 @@ import { Landed } from '../components/Motion';
 
 const STATES = {
   PLACED: { title: 'Your order is placed', note: 'The shop has it and is getting it ready.' },
+  PACKED: { title: 'Your order is packed', note: 'It leaves the shop with the courier soon.' },
+  PART_PACKED: { title: 'Part of your order is packed', note: 'The rest follows shortly.' },
   PART_SENT: { title: 'Part of your order is on its way', note: 'The rest follows shortly.' },
   SENT: { title: 'Your order is on its way', note: 'The shop has sent it.' },
+  OUT_FOR_DELIVERY: { title: 'Your order arrives today', note: 'It is out for delivery.' },
   DELIVERED: { title: 'Your order was delivered', note: 'We hope you love it.' },
+  TROUBLE: { title: 'There is a problem with your delivery', note: 'The shop will be in touch. You can also ask them below.' },
   CANCELLED: { title: 'This order was cancelled', note: 'Nothing is owed. Ask the shop if this is a surprise.' }
 };
+
+/*
+ * One parcel, in the customer's words (stage from services/online-shop/tracking). The courier's name
+ * is not shown: Logistics chooses it, and the tracking number and page are what a customer can use.
+ */
+const dayOf = (iso) => new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+function parcelWords(p) {
+  switch (p.stage) {
+    case 'PACKED': return { title: 'Packed', note: 'The tracking number shows here once the courier has it.' };
+    case 'BOOKED': return { title: 'Packed', note: 'The courier collects it soon.' };
+    case 'ON_ITS_WAY': return { title: 'On its way' };
+    case 'OUT_FOR_DELIVERY': return { title: 'Out for delivery today' };
+    case 'MISSED': return { title: 'Delivery attempt missed', note: 'The courier will try again. If you will not be in, ask the shop.' };
+    case 'DELIVERED': return { title: p.deliveredAt ? `Delivered on ${dayOf(p.deliveredAt)}` : 'Delivered' };
+    case 'RETURNING': return { title: 'Going back to the shop', note: 'It could not be delivered. The shop will be in touch.' };
+    case 'PROBLEM': return { title: 'A problem with this parcel', note: 'The shop will be in touch.' };
+    case 'REARRANGING': return { title: 'Being booked again', note: 'The shop is arranging the courier again.' };
+    default: return { title: 'On its way' };
+  }
+}
+/** Worth a line of its own: more than one parcel, a number or page to track, or something to say. */
+const worthShowing = (parcels) => parcels.length > 1
+  || parcels.some(p => p.trackingNumber || p.trackingUrl || !['ON_ITS_WAY', 'DELIVERED'].includes(p.stage));
 
 /** The orders this phone has placed at this shop, so somebody can find them again. */
 function remember(slug, token, orderNumber) {
@@ -82,8 +109,8 @@ export default function OrderPage({ shop }) {
   const refunding = o.state === 'CANCELLED' && o.paid && o.payWay === 'ONLINE';
   const said = refunding
     ? { title: 'This order was cancelled', note: 'Your payment is being refunded to how you paid. Banks usually take 5–7 working days to show it.' }
-    : o.delivered ? STATES.DELIVERED
     : (STATES[o.state] ?? STATES.PLACED);
+  const trouble = o.state === 'TROUBLE';
   const ask = askOnWhatsApp(shop?.whatsapp, shop?.name, null);
   const when = new Date(o.placedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -92,12 +119,17 @@ export default function OrderPage({ shop }) {
    * own state rather than kept separately -- the shop dispatching from the Orders screen is what
    * moves this, with nothing else to remember to update.
    */
+  const pr = o.progress ?? { packed: false, moving: false, delivered: !!o.delivered };
   const steps = [
     { label: 'Placed', done: true },
-    { label: 'Packed', done: o.state === 'PART_SENT' || o.state === 'SENT' },
-    { label: 'On its way', done: o.state === 'SENT' },
-    { label: 'Delivered', done: !!o.delivered }
+    { label: 'Packed', done: pr.packed },
+    { label: 'On its way', done: pr.moving },
+    { label: 'Delivered', done: pr.delivered }
   ];
+  const parcels = o.parcels ?? [];
+  const copyNumber = async (n) => {
+    try { await navigator.clipboard.writeText(n); setCopied(n); } catch { /* the number is on screen anyway */ }
+  };
 
   // A courier page that cannot take the number in its link opens with the number already copied.
   const track = async (p) => {
@@ -116,12 +148,16 @@ export default function OrderPage({ shop }) {
    */
   return (
     <div className="orderpage">
-      <section className={`ohead landed ${o.state === 'CANCELLED' ? 'sad' : ''}`}>
+      <section className={`ohead landed ${o.state === 'CANCELLED' || trouble ? 'sad' : ''}`}>
         <div className="otop">
           <div className="tick">
             {o.state === 'CANCELLED' ? (
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <path d="M8 8l8 8M16 8l-8 8" strokeLinecap="round" />
+              </svg>
+            ) : trouble ? (
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M12 7v6" strokeLinecap="round" /><circle cx="12" cy="17" r="1.1" fill="currentColor" stroke="none" />
               </svg>
             ) : <Landed />}
           </div>
@@ -141,19 +177,29 @@ export default function OrderPage({ shop }) {
           </div>
         )}
 
-        {/* Who is carrying it, and the number to track it by. */}
-        {o.state !== 'CANCELLED' && (o.parcels ?? []).length > 0 && (
+        {/* Each parcel: where it is, and its tracking number and page once Logistics has them. */}
+        {o.state !== 'CANCELLED' && parcels.length > 0 && worthShowing(parcels) && (
           <div className="parcels" aria-label="Tracking">
-            {o.parcels.map((p, n) => (
-              <div key={n} className="parcel">
-                <span>
-                  <b>{p.deliveredAt ? 'Delivered' : 'Sent'} with {p.courier}</b>
-                  {p.trackingNumber ? <span className="awb">Tracking number {p.trackingNumber}</span> : null}
-                  {copied && copied === p.trackingNumber ? <span className="awb">Copied: paste it on {p.courier}'s page</span> : null}
-                </span>
-                {p.trackingUrl ? <button type="button" className="go quiet" onClick={() => track(p)}>Track</button> : null}
-              </div>
-            ))}
+            {parcels.map((p, n) => {
+              const w = parcelWords(p);
+              return (
+                <div key={n} className="parcel" data-stage={p.stage}>
+                  <span>
+                    <b>{parcels.length > 1 ? `Parcel ${n + 1} of ${parcels.length}: ` : ''}{w.title}</b>
+                    {w.note ? <span className="awb">{w.note}</span> : null}
+                    {p.trackingNumber ? (
+                      <span className="awb">
+                        Tracking number <span className="awbno">{p.trackingNumber}</span>
+                        <button type="button" className="copyno" onClick={() => copyNumber(p.trackingNumber)}>
+                          {copied === p.trackingNumber ? 'Copied' : 'Copy'}
+                        </button>
+                      </span>
+                    ) : null}
+                  </span>
+                  {p.trackingUrl ? <button type="button" className="go quiet" onClick={() => track(p)}>Track</button> : null}
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
@@ -194,8 +240,8 @@ export default function OrderPage({ shop }) {
         {/* The line a customer opens this page to read. */}
         <div className="due">
           <span>
-            {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
-            <span>{refunding ? 'Going back to how you paid' : o.paid ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash or UPI when it arrives' : ''}</span>
+            {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.paidOnDelivery ? 'Paid on delivery' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
+            <span>{refunding ? 'Going back to how you paid' : (o.paid || o.paidOnDelivery) ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash or UPI when it arrives' : ''}</span>
           </span>
           <b>{money(o.total)}</b>
         </div>

@@ -12,6 +12,8 @@ import { sendOrderPlacedNotice, emailOrderPlaced, tellTheShop, orderCancelled } 
 import { rememberFromOrder as rememberAddress } from './addresses';
 import { isVerified } from './otp';
 import { paymentAccounts } from '../payments/account.service';
+import { paymentSummary } from '../payments/payment-rules';
+import { customerParcels, orderStateOf, progressOf } from './tracking';
 
 /**
  * A customer buying from a shop's own online shop.
@@ -824,7 +826,9 @@ export async function summary(clientId: string, token: unknown) {
           orderNumber: true, status: true, createdAt: true,
           customerName: true, customerPhone: true, shippingAddress: true,
           subtotal: true, discountAmount: true, shippingAmount: true, total: true,
-          // Who is carrying it and the tracking number, for the customer (services/shipping).
+          // What has been paid, so a cash-on-delivery order the courier collected says so.
+          roundOff: true, writtenOff: true, payments: { select: { kind: true, amount: true } },
+          // The parcels and their tracking numbers, for the customer (services/shipping, ./tracking).
           dispatches: { orderBy: { createdAt: 'asc' }, select: PARCEL_SELECT },
           items: {
             select: {
@@ -862,27 +866,32 @@ export async function summary(clientId: string, token: unknown) {
   if (!row || row.clientId !== clientId) throw new OnlineShopRuleError('That order could not be found.');
 
   const o = row.salesOrder;
+  /*
+   * Where it has got to (./tracking). For a shop on Logistics the dispatch is made at packing, so
+   * each Logistics parcel's own status decides, not the dispatch. Stage, tracking number and the
+   * tracking page per parcel -- never the courier's name, ids or dispatch numbers.
+   */
+  const logistics = await prisma.logisticsParcel.findMany({
+    where: { clientId, salesOrderId: row.salesOrderId },
+    select: { dispatchId: true, status: true, awb: true, trackingUrl: true, lastStatusAt: true }
+  });
+  const parcels = customerParcels((o as any).dispatches.map(parcelView), logistics);
+  const state = orderStateOf(o.status, parcels);
+  // Cash on delivery: paid once the courier collected it (recorded from Logistics), or once delivered.
+  const due = paymentSummary(toMinor(o.total) + toMinor((o as any).roundOff ?? 0), (o as any).payments ?? [], toMinor((o as any).writtenOff ?? 0)).due;
+  const paidOnDelivery = row.payWay === 'ON_DELIVERY' && !row.paid && (due <= 0 || state === 'DELIVERED');
   return {
     token: row.token,
     orderNumber: o.orderNumber,
     placedAt: o.createdAt.toISOString(),
-    /** What the customer is waiting for, in their words rather than the warehouse's. */
-    state: o.status === 'CANCELLED' ? 'CANCELLED'
-      : o.status === 'DISPATCHED' ? 'SENT'
-      : o.status === 'PARTIALLY_DISPATCHED' ? 'PART_SENT'
-      : 'PLACED',
+    /** What the customer is waiting for, in their words rather than the warehouse's (./tracking). */
+    state,
+    progress: progressOf(state, parcels),
     payWay: row.payWay,
     paid: row.paid,
-    /*
-     * The parcels that have a courier: name, number and the tracking page. Nothing of the shop's own
-     * (no ids, no dispatch numbers). `delivered` once every one of them has arrived and nothing is left to send.
-     */
-    parcels: (o as any).dispatches.map(parcelView).filter((p: any) => p.courierName && p.status !== 'CANCELLED').map((p: any) => ({
-      courier: p.courierName, trackingNumber: p.trackingNumber, trackingUrl: p.trackingUrl, copyNumber: p.copyNumber,
-      sentAt: p.sentAt, deliveredAt: p.deliveredAt
-    })),
-    delivered: o.status === 'DISPATCHED' && (o as any).dispatches.some((d: any) => d.courierName)
-      && (o as any).dispatches.filter((d: any) => d.courierName).every((d: any) => d.status === 'DELIVERED'),
+    paidOnDelivery,
+    parcels,
+    delivered: state === 'DELIVERED',
     /** Whether the customer can still call it off themselves. */
     mayCancel: o.status === 'CONFIRMED' || o.status === 'DRAFT',
     name: o.customerName,

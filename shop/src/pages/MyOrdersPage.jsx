@@ -16,8 +16,11 @@ import { EmptyOrders } from '../components/Motion';
  * has already sent it or the customer has called it off.
  */
 
+// The same states as the order page (services/online-shop/tracking).
 const SAID = {
-  PLACED: 'Being got ready', PART_SENT: 'Partly on its way', SENT: 'On its way', CANCELLED: 'Cancelled'
+  PLACED: 'Being got ready', PACKED: 'Packed', PART_PACKED: 'Partly packed', PART_SENT: 'Partly on its way',
+  SENT: 'On its way', OUT_FOR_DELIVERY: 'Arriving today', DELIVERED: 'Delivered',
+  TROUBLE: 'A problem with delivery', CANCELLED: 'Cancelled'
 };
 
 function kept(slug) {
