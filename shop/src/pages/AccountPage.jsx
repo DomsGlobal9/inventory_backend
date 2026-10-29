@@ -36,6 +36,7 @@ export default function AccountPage({ shop, view = 'profile' }) {
   // With the other hooks, above the early returns: declared after them, signing in added a hook
   // between two renders and the page went blank.
   const [editing, setEditing] = useState(null);   // null, 'new', or the address being changed
+  const [confirming, setConfirming] = useState(null); // the id of an address whose Remove asked "are you sure"
 
   const load = useCallback(async () => {
     const token = heldProof(slug);
@@ -172,18 +173,42 @@ export default function AccountPage({ shop, view = 'profile' }) {
                 <AddressForm slug={slug} token={token} me={me} address={a} onDone={async () => { setEditing(null); await refresh(); }} onCancel={() => setEditing(null)} />
               </li>
             ) : (
-              <li key={a.id}>
-                <span>
-                  {a.label || a.isDefault ? <em className="atag">{a.label || 'Address'}{a.isDefault ? ' · Default' : ''}</em> : null}
+              <li key={a.id} className="acard">
+                <span className="awhere">
+                  <span className="atags">
+                    {a.label ? <em className="atag">{a.label}</em> : null}
+                    {a.isDefault ? <em className="atag adefault">Default</em> : null}
+                  </span>
                   {a.name ? <b>{a.name}</b> : null}
                   <span>{a.line}</span>
-                  <small>{a.pincode}{a.phone ? ` · ${a.phone}` : ''}</small>
+                  <small>PIN {a.pincode}{a.phone ? ` · ${shownPhone(a.phone)}` : ''}</small>
                 </span>
-                <span className="aacts">
-                  <button type="button" className="drop" onClick={() => setEditing(a)}>Edit</button>
-                  {!a.isDefault ? <button type="button" className="drop" onClick={() => useFirst(a)}>Make default</button> : null}
-                  <button type="button" className="drop" onClick={() => dropAddress(a)}>Remove</button>
-                </span>
+                {/* Proper buttons along the bottom (owner, 29 Oct), and Remove asks first: one slip of a
+                    thumb should not throw away an address somebody typed out. */}
+                {confirming === a.id ? (
+                  <span className="abtns asure" role="group" aria-label="Remove this address?">
+                    <span className="asureq">Remove this address?</span>
+                    <button type="button" className="abtn danger" onClick={async () => { setConfirming(null); await dropAddress(a); }}>Yes, remove</button>
+                    <button type="button" className="abtn" onClick={() => setConfirming(null)}>Keep it</button>
+                  </span>
+                ) : (
+                  <span className="abtns">
+                    <button type="button" className="abtn" onClick={() => setEditing(a)}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" /></svg>
+                      Edit
+                    </button>
+                    {!a.isDefault ? (
+                      <button type="button" className="abtn" onClick={() => useFirst(a)}>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9Z" /></svg>
+                        Set default
+                      </button>
+                    ) : null}
+                    <button type="button" className="abtn danger" aria-label={`Remove ${a.label || 'this'} address`} onClick={() => setConfirming(a.id)}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" /></svg>
+                      Remove
+                    </button>
+                  </span>
+                )}
               </li>
             ))}
           </ul>
