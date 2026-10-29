@@ -525,7 +525,7 @@ export default function ProductPage({ slug, shop }) {
                 </svg>
               </span>
               <span className="words">
-                Try on
+                Virtual Try-On
                 <small>See this piece on your own photo</small>
               </span>
               <em>Free</em>

@@ -160,7 +160,7 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
       aria-label={`See ${product.title} on you`}>
       <div className="sheetin">
         <div className="sheethead">
-          <h2>{result ? product.title : 'Try on'}</h2>
+          <h2>{result ? product.title : 'Virtual Try-On'}</h2>
           <button type="button" className="icon" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
