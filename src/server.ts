@@ -206,8 +206,19 @@ app.use(requestLogger);
 app.get('/health', (req, res) => {
   // Which build answers: Render sets RENDER_GIT_COMMIT. Until now a deploy could only be checked by
   // behaviour, which cost an afternoon of "is it live yet" on 6 Oct 2026.
-  res.status(200).json({ status: 'ok', commit: process.env.RENDER_GIT_COMMIT ?? null });
+  res.status(200).json({ status: 'ok', commit: process.env.RENDER_GIT_COMMIT ?? null, ...devDatabase });
 });
+/*
+ * A copy run on a developer's machine says which database it is on (29 Oct): one local server was
+ * pointed at the live database for a test, and another session's checks signed in through it without
+ * knowing. Only outside production, and only "local" or "hosted" -- never the address.
+ */
+const devDatabase = process.env.NODE_ENV === 'production' ? {} : (() => {
+  try {
+    const host = new URL(String(process.env.DATABASE_URL)).hostname;
+    return { database: ['localhost', '127.0.0.1', '::1'].includes(host) ? 'local' : 'hosted' };
+  } catch { return { database: 'unknown' }; }
+})();
 
 // Readiness Check
 app.get('/ready', async (req, res) => {
