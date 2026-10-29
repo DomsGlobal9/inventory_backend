@@ -93,9 +93,13 @@ export default function MyOrdersPage({ shop }) {
           </li>
         ))}
       </ul>
+      {/* Said for who is looking: signed in, this is every order on their number; signed out, only this phone's. */}
       <p className="tiny" style={{ paddingBottom: 30 }}>
-        These are the orders placed from this phone. Anything ordered elsewhere is in the link the
-        shop sent you.
+        {signedIn(slug)
+          ? <>These are all your orders with this number, from any phone.</>
+          : shop?.accounts !== false
+            ? <>These are the orders placed from this phone. <Link to={`/${slug}/account`}>Sign in</Link> to see your orders from every phone.</>
+            : <>These are the orders placed from this phone. Anything ordered elsewhere is in the link the shop sent you.</>}
       </p>
     </div>
   );
