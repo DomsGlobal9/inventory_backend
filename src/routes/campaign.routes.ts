@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { refuseIfProfileMoved } from '../services/crm-handover';
 import { campaigns, setOffersConsent, markManyAgreed, offersState, listTemplates, saveTemplate, deleteTemplate } from '../services/campaigns';
 import { WhatsAppServiceError } from '../services/whatsapp/client';
 import { requirePermission } from '../middleware/permission.middleware';
@@ -26,8 +27,9 @@ const handle = (fn: (req: Request) => Promise<unknown>, status = 200) =>
 
 // A customer's yes to offers. Changing a customer is enough; marking many at once is a campaign job.
 router.get('/consent/:customerId', requirePermission('customer:view'), handle(req => offersState((req as any).user.clientId, String(req.params.customerId))));
-router.put('/consent/:customerId', requirePermission('customer:update'), handle(req => setOffersConsent(actor(req), String(req.params.customerId), req.body?.agreed)));
-router.post('/consent/bulk', requirePermission('campaign:send'), handle(req => markManyAgreed(actor(req), req.body ?? {})));
+// Once CRM changes customers' offers answers for the shop (moved.profile), they are changed there.
+router.put('/consent/:customerId', requirePermission('customer:update'), handle(async req => { await refuseIfProfileMoved(actor(req).clientId); return setOffersConsent(actor(req), String(req.params.customerId), req.body?.agreed); }));
+router.post('/consent/bulk', requirePermission('campaign:send'), handle(async req => { await refuseIfProfileMoved(actor(req).clientId); return markManyAgreed(actor(req), req.body ?? {}); }));
 
 router.get('/overview', requirePermission('campaign:view'), handle(req => campaigns.overview(actor(req))));
 router.post('/preview', requirePermission('campaign:view'), handle(req => campaigns.preview(actor(req), req.body?.audience)));

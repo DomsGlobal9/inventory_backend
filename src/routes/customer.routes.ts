@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { refuseIfProfileMoved } from '../services/crm-handover';
 import {
   createCustomer,
   getCustomerByPhone,
@@ -66,11 +67,12 @@ const ownerOnly = (req: any, res: any, next: any) => holdsEverything(req.user?.p
   ? next()
   : res.status(403).json({ success: false, message: 'Only the shop owner can delete a customer.' });
 router.get('/:id/delete-preview', ownerOnly, async (req, res) => {
-  try { res.json({ success: true, data: await customerDelete.preview((req as any).clientId, String(req.params.id)) }); }
+  try { await refuseIfProfileMoved((req as any).clientId); res.json({ success: true, data: await customerDelete.preview((req as any).clientId, String(req.params.id)) }); }
   catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
 router.delete('/:id', ownerOnly, async (req, res) => {
   try {
+    await refuseIfProfileMoved((req as any).clientId);
     const result = await customerDelete.deleteCustomer((req as any).clientId, String(req.params.id), req.body?.confirm);
     res.locals.auditAction = result.mode === 'REMOVE' ? 'CUSTOMER_DELETED' : 'CUSTOMER_ERASED';
     res.locals.auditEntityId = String(req.params.id);
@@ -86,6 +88,12 @@ router.post('/:id/notes', requirePermission('customer:update'), async (req, res)
 // Before /:id, which would otherwise take "by-phone" as a customer id.
 router.get('/by-phone/:phone', requirePermission('customer:view'), getCustomerByPhone);
 router.get('/:id', requirePermission('customer:view'), getCustomerById);
-router.patch('/:id', requirePermission('customer:update'), updateCustomer);
+// Birthday and anniversary are CRM's to change once the shop moved them (the rest of the edit is not).
+router.patch('/:id', requirePermission('customer:update'), async (req, res, next) => {
+  try {
+    if (req.body && ('birthday' in req.body || 'anniversary' in req.body)) await refuseIfProfileMoved((req as any).clientId);
+    next();
+  } catch (error) { return respondWithError(res, error, { status: 500 }); }
+}, updateCustomer);
 
 export default router;

@@ -5,9 +5,13 @@ import { grants, holdsEverything } from '../config/permissions';
 import { customerCard } from '../services/customer-card';
 import { customerGroups } from '../services/customer-groups';
 import { crmHandover } from '../services/crm-handover';
+import { offersState, setOffersConsent } from '../services/campaigns';
+import { customerService } from '../services/customer.service';
+import * as customerDelete from '../services/customer-delete';
 import { isAuditNoise } from '../services/audit-feed.service';
 import { pruneAuditLogs } from '../services/security-log';
 import { respondWithError } from '../utils/respondWithError';
+import { badRequest } from '../utils/httpError';
 
 /**
  * What ScaleEzy CRM asks Inventory for one shop, mounted at /api/v1/internal/modules/crm (behind
@@ -58,7 +62,7 @@ const person = (permission: string | null) => async (req: Request, res: Response
     if (permission === null ? !owner : !(owner || grants(u.permissions, permission))) {
       return fail(res, 403, permission === null ? 'Only the shop\'s owner can change this.' : `That person may not do this in Inventory (needs ${permission}).`);
     }
-    (req as any).actor = { id: u.id, name: u.name };
+    (req as any).actor = { id: u.id, name: u.name, clientId: u.clientId, permissions: u.permissions, roles: u.roles };
     next();
   } catch (error) { return respondWithError(res, error, { status: 500 }); }
 };
@@ -73,11 +77,11 @@ function logActivity(req: Request, action: string, entityType: string, entityId:
     .catch(err => console.error('internal-crm: failed to record activity', err));
 }
 
-const act = (fn: (req: Request) => Promise<unknown>, audit?: (req: Request) => [action: string, entityId: string]) =>
+const act = (fn: (req: Request) => Promise<unknown>, audit?: (req: Request, data: any) => [action: string, entityId: string], entityType = 'CUSTOMER_GROUP') =>
   async (req: Request, res: Response) => {
     try {
       const data = await fn(req);
-      if (audit) { const [action, id] = audit(req); logActivity(req, action, 'CUSTOMER_GROUP', id); }
+      if (audit) { const [action, id] = audit(req, data); logActivity(req, action, entityType, id); }
       res.json({ success: true, data });
     } catch (error) { return respondWithError(res, error, { status: 400 }); }
   };
@@ -121,6 +125,35 @@ router.post('/shops/:clientId/groups/:key/rename', shop, person('customer:manage
 router.post('/shops/:clientId/groups/:key/merge', shop, person('customer:manage_groups'), act(req => customerGroups.rename(cid(req), key(req), req.body?.into, { merge: true }), req => ['MERGE', key(req)]));
 router.patch('/shops/:clientId/groups/:key/rules', shop, person('customer:manage_groups'), act(req => customerGroups.setRules(cid(req), key(req), req.body), req => ['RULES', key(req)]));
 router.delete('/shops/:clientId/groups/:key', shop, person('customer:manage_groups'), act(req => customerGroups.remove(cid(req), key(req)), req => ['DELETED', key(req)]));
+
+// ---- A customer's offers answer, birthday and anniversary, and deleting them (moved.profile) --------
+// The same service functions as the app (campaign.routes consent, customer.routes PATCH and DELETE), with
+// the same checks and words. They work whether or not the shop has moved these to CRM, so CRM can build
+// and test its screens first and then turn moved.profile on.
+
+const customerIdOf = (req: Request) => String(req.params.customerId);
+const actorOf = (req: Request) => (req as any).actor as { id: string; clientId: string; permissions?: string[]; roles?: string[] };
+
+router.get('/shops/:clientId/customers/:customerId/offers', shop, readable,
+  act(req => offersState(cid(req), customerIdOf(req))));
+router.put('/shops/:clientId/customers/:customerId/offers', shop, person('customer:update'),
+  act(req => setOffersConsent(actorOf(req), customerIdOf(req), req.body?.agreed), req => ['UPDATED', customerIdOf(req)], 'CUSTOMER'));
+// { birthday?, anniversary? }: "MM-DD" (a year is dropped), or null to clear. Only what is sent changes.
+router.put('/shops/:clientId/customers/:customerId/dates', shop, person('customer:update'), act(async req => {
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const change: { birthday?: unknown; anniversary?: unknown } = {};
+  if ('birthday' in body) change.birthday = body.birthday;
+  if ('anniversary' in body) change.anniversary = body.anniversary;
+  if (!Object.keys(change).length) throw badRequest('Send a birthday or an anniversary to change: month and day, like 08-14, or empty to clear it.');
+  const c = await customerService.updateCustomer(cid(req), customerIdOf(req), change);
+  return { birthday: c.birthday, anniversary: c.anniversary };
+}, req => ['UPDATED', customerIdOf(req)], 'CUSTOMER'));
+// The owner only, as in the app; confirm = the last 4 digits of their number, or their name without one.
+router.get('/shops/:clientId/customers/:customerId/delete-preview', shop, person(null),
+  act(req => customerDelete.preview(cid(req), customerIdOf(req))));
+router.delete('/shops/:clientId/customers/:customerId', shop, person(null),
+  act(req => customerDelete.deleteCustomer(cid(req), customerIdOf(req), req.body?.confirm),
+    (req, data) => [data?.mode === 'REMOVE' ? 'CUSTOMER_DELETED' : 'CUSTOMER_ERASED', customerIdOf(req)], 'CUSTOMER'));
 
 // ---- The hand-over switch ---------------------------------------------------------------------------
 

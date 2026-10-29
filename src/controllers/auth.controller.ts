@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { crmHandover } from '../services/crm-handover';
 import { lockedFor, recordFailure, clearFailures, loginKey, tooManyMessage } from '../lib/loginThrottle';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
@@ -296,7 +297,10 @@ async function sessionBody(user: UserWithRoles) {
       },
       // Inventory always; 'crm' when the shop has switched ScaleEzy CRM on (module_subscriptions), so
       // the app shows "Open in CRM" where a feature has moved. Later modules join the same way.
-      modules: await modulesOf(user.clientId)
+      modules: await modulesOf(user.clientId),
+      // What CRM now does instead of Inventory for this shop (services/crm-handover), null without CRM:
+      // e.g. profile -> the customer page shows offers, dates and delete read only, with a link to CRM.
+      crmMoved: await crmHandover.get(user.clientId).catch(() => null)
     };
 }
 

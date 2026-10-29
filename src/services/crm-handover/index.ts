@@ -3,7 +3,7 @@
  * (PLAN-crm.md §7). Inventory owns it, because Inventory is the one that has to stop doing the work.
  *
  * Stored on the shop's CRM subscription (module_subscriptions.moved, JSONB):
- *   { notes?, onlineViews?, card?, groups?, campaigns?: boolean, wishes?: { fromDay: 'YYYY-MM-DD' } | null }
+ *   { notes?, onlineViews?, card?, groups?, profile?, campaigns?: boolean, wishes?: { fromDay: 'YYYY-MM-DD' } | null }
  *
  * Two of them change what Inventory's background jobs do, so they keep safety rules:
  *
@@ -20,6 +20,12 @@
  *
  * Everything else (notes, onlineViews, card, groups) is a plain flag CRM reads back; Inventory's screens
  * key off "CRM is on" for now (see auth session `modules`).
+ *
+ * profile (29 Oct) -- a customer's WhatsApp offers answer, birthday and anniversary, and deleting a
+ * customer, are changed in CRM (it calls Inventory's internal-crm routes, which work whether or not
+ * this is on). When on, Inventory's own screens show them read only with a link to CRM, and its app
+ * routes refuse to change them (refuseIfProfileMoved), so there is one place to change them. The till's
+ * consent at a sale is not affected. CRM turns it on once its screens can make these changes.
  */
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
@@ -33,6 +39,7 @@ export type Moved = {
   onlineViews?: boolean;
   card?: boolean;
   groups?: boolean;
+  profile?: boolean;
   campaigns?: boolean;
   wishes?: { fromDay: string } | null;
 };
@@ -43,6 +50,7 @@ const changeSchema = z.object({
   onlineViews: z.boolean().optional(),
   card: z.boolean().optional(),
   groups: z.boolean().optional(),
+  profile: z.boolean().optional(),
   campaigns: z.boolean().optional(),
   wishes: z.boolean().nullable().optional()
 }).strict();
@@ -59,7 +67,7 @@ const nextDay = (dayKey: string) => {
 export function cleanMoved(raw: unknown): Moved {
   const r = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw as Record<string, unknown> : {};
   const out: Moved = {};
-  for (const k of ['notes', 'onlineViews', 'card', 'groups', 'campaigns'] as const) if (typeof r[k] === 'boolean') out[k] = r[k] as boolean;
+  for (const k of ['notes', 'onlineViews', 'card', 'groups', 'profile', 'campaigns'] as const) if (typeof r[k] === 'boolean') out[k] = r[k] as boolean;
   const w = r.wishes as any;
   if (w && typeof w === 'object' && typeof w.fromDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(w.fromDay)) out.wishes = { fromDay: w.fromDay };
   else if (w === null) out.wishes = null;
@@ -80,7 +88,7 @@ export const crmHandover = {
    */
   async set(clientId: string, raw: unknown): Promise<Moved> {
     const parsed = changeSchema.safeParse(raw ?? {});
-    if (!parsed.success) throw badRequest('Send only notes, onlineViews, card, groups and campaigns as true or false, and wishes as true (move them) or false (keep them in Inventory).');
+    if (!parsed.success) throw badRequest('Send only notes, onlineViews, card, groups, profile and campaigns as true or false, and wishes as true (move them) or false (keep them in Inventory).');
     const change = parsed.data;
     const { timezone } = await getShopSettings(clientId);
 
@@ -90,7 +98,7 @@ export const crmHandover = {
       if (!rows.length) throw notFound('This shop has not switched CRM on.');
       const now = cleanMoved(rows[0].moved);
       const next: Moved = { ...now };
-      for (const k of ['notes', 'onlineViews', 'card', 'groups'] as const) if (change[k] !== undefined) next[k] = change[k];
+      for (const k of ['notes', 'onlineViews', 'card', 'groups', 'profile'] as const) if (change[k] !== undefined) next[k] = change[k];
 
       if (change.campaigns !== undefined) {
         if (change.campaigns && !now.campaigns) {
@@ -155,4 +163,15 @@ export async function refuseIfCampaignsMoved(tx: Prisma.TransactionClient, clien
 /** The first shop day CRM sends this shop's wishes, or null while Inventory still does. Read after the day's claim. */
 export async function wishesMovedFrom(clientId: string): Promise<string | null> {
   return (await crmHandover.get(clientId))?.wishes?.fromDay ?? null;
+}
+
+/**
+ * For Inventory's own app routes that change a customer's offers answer, birthday, anniversary, or
+ * delete them: refused once CRM does these for this shop (moved.profile). CRM's own calls come in
+ * through internal-crm and never pass here.
+ */
+export async function refuseIfProfileMoved(clientId: string) {
+  if ((await crmHandover.get(clientId))?.profile) {
+    throw conflict('This shop changes WhatsApp offers, birthdays, anniversaries and deletes customers in ScaleEzy CRM now. Open the customer there.');
+  }
 }
