@@ -2512,3 +2512,6 @@ body { overflow-x: hidden; }
   background: none; border: 0; cursor: pointer; text-align: left; width: 100%;
 }
 .sharemenu a:hover, .sharemenu button:hover, .sharemenu a:focus-visible, .sharemenu button:focus-visible { background: var(--soft); }
+
+/* Continue shopping without signing in: a full button at the bottom of the sign-in card (29 Oct). */
+.asignin .keepon { display: flex; width: 100%; margin-top: 18px; text-decoration: none; min-height: 46px; }

@@ -256,8 +256,8 @@ function SignIn({ slug, shop, canSignIn, why, onDone }) {
           </form>
         )}
         {said ? <p className="said" role="status">{said}</p> : null}
-        <p className="said privacy">Once you sign in, {shop?.name || 'the shop'} can see which pieces you look at and try on here for 30 days, so it can help you when you visit. Pieces you heart stay on your wishlist until you remove them.</p>
-        <Link className="drop" to={`/${slug}`}>Keep shopping without signing in</Link>
+        {/* The "once you sign in, the shop can see..." paragraph stood here; taken out (owner, 29 Oct). */}
+        <Link className="go quiet keepon" to={`/${slug}`}>Continue shopping without signing in</Link>
       </section>
     </div>
   );
