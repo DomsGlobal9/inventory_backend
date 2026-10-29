@@ -2599,3 +2599,28 @@ body { overflow-x: hidden; }
 .aaddr .abtn { white-space: nowrap; padding: 0 10px; }
 /* On the narrowest phones the buttons go onto a second row rather than squeezing their words. */
 .aaddr li.acard > span.abtns .abtn { flex: 1 1 auto; min-width: max-content; }
+
+/* ── The heart and Share under the photographs (30 Oct, owner: "like Myntra") ─────────────── */
+/* Equal grey buttons, icon only, the full width of the photograph. The heart fills in the shop's
+   colour once saved; Share opens the phone's own sheet, or a small menu on a computer. */
+.pactions { display: flex; gap: 10px; margin-top: 10px; }
+.pactions > .heartwrap, .pactions > .sharewrap { flex: 1 1 0; min-width: 0; display: block; margin: 0; position: relative; }
+.pact {
+  width: 100%; height: 44px; display: grid; place-items: center;
+  border: 0; border-radius: 10px; background: var(--soft); color: var(--ink);
+  cursor: pointer; font: inherit;
+}
+.pact:hover { background: color-mix(in srgb, var(--soft) 80%, var(--ink) 8%); }
+.pact:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.pact.on { color: var(--accent); }
+.pact:disabled { opacity: .6; }
+/* What the heart says (saved / removed): under its own button, not over the photograph. */
+.heartwrap.inrow .heartsaid { right: auto; left: 50%; transform: translateX(-50%); top: calc(100% + 6px); }
+/* The share menu opens from the right edge, the button being the last one in the row. */
+.pactions .sharemenu { left: auto; right: 0; }
+/* On a laptop the gallery is a column with its own 12px gap; no second margin on top of it. */
+@media (min-width: 880px) { .pactions { margin-top: 0; } }
+
+/* A sheet open over the page (Virtual Try-On, 30 Oct): the buy bar steps out of the way. It sat above
+   the sheet on a phone and covered the sheet's own buttons; the sheet is what is being used now. */
+body:has([aria-modal="true"]) .dock { display: none; }

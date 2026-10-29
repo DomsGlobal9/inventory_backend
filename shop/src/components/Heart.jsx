@@ -8,7 +8,7 @@ import { signedIn, onAccountChange, noteHeart, forget } from '../account';
  * signed-in number -- a stranger's heart is not kept anywhere -- so tapping it signed out goes to
  * signing in, and comes back here after.
  */
-export default function Heart({ slug, productCode, variantCode }) {
+export default function Heart({ slug, productCode, variantCode, inRow = false }) {
   const nav = useNavigate();
   const where = useLocation();
   const [, refresh] = useState(0);
@@ -36,8 +36,8 @@ export default function Heart({ slug, productCode, variantCode }) {
   };
 
   return (
-    <span className="heartwrap">
-      <button type="button" className={`heart${on ? ' on' : ''}`} onClick={tap} disabled={busy}
+    <span className={inRow ? 'heartwrap inrow' : 'heartwrap'}>
+      <button type="button" className={`${inRow ? 'pact' : 'heart'}${on ? ' on' : ''}`} onClick={tap} disabled={busy}
         aria-pressed={on} aria-label={on ? 'Remove from your wishlist' : 'Save to your wishlist'} title={on ? 'In your wishlist' : 'Save to your wishlist'}>
         <svg width="22" height="22" viewBox="0 0 24 24" fill={on ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
           <path d="M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.7c0 5.6-7.5 10.2-7.5 10.2Z" />

@@ -60,7 +60,7 @@ function saving(now, was) {
  * preview the backend serves. Closing the sheet does nothing (it used to fall through to WhatsApp).
  * Where there is no share sheet (a laptop): a small menu with Copy link, WhatsApp and Email.
  */
-function ShareButton({ shopName, product }) {
+function ShareButton({ shopName, product, bare = false }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const box = useRef(null);
@@ -93,12 +93,13 @@ function ShareButton({ shopName, product }) {
 
   return (
     <div className="sharewrap" ref={box}>
-      <button type="button" className="sharethis" onClick={share} aria-haspopup={sheet ? undefined : 'menu'} aria-expanded={sheet ? undefined : open}>
+      <button type="button" className={bare ? 'pact' : 'sharethis'} onClick={share} aria-label={bare ? 'Share' : undefined} title={bare ? 'Share' : undefined}
+        aria-haspopup={sheet ? undefined : 'menu'} aria-expanded={sheet ? undefined : open}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="18" cy="5" r="2.6" /><circle cx="6" cy="12" r="2.6" /><circle cx="18" cy="19" r="2.6" />
           <path d="m8.3 10.8 7.4-4.4M8.3 13.2l7.4 4.4" />
         </svg>
-        Share
+        {bare ? null : 'Share'}
       </button>
       {open && (
         <div className="sharemenu" role="menu">
@@ -117,7 +118,7 @@ function ShareButton({ shopName, product }) {
   );
 }
 
-function Gallery({ photos, title }) {
+function Gallery({ photos, title, actions = null }) {
   const strip = useRef(null);
   const rail = useRef(null);
   const [at, setAt] = useState(0);
@@ -164,6 +165,8 @@ function Gallery({ photos, title }) {
             No photograph of this one yet
           </figure>
         </div>
+        {/* A piece with no photograph can still be saved and sent on. */}
+        {actions ? <div className="pactions">{actions}</div> : null}
       </div>
     );
   }
@@ -247,6 +250,7 @@ function Gallery({ photos, title }) {
           ))}
         </div>
       )}
+      {actions ? <div className="pactions">{actions}</div> : null}
     </div>
   );
 }
@@ -434,12 +438,16 @@ export default function ProductPage({ slug, shop }) {
       </p>
 
       <div className="piece">
-        <Gallery photos={photos} title={p.title} />
+        {/* The heart and Share, a row of equal buttons under the photographs (30 Oct, owner: "like
+            Myntra"). Where a shopper's thumb already is after looking at the pictures. */}
+        <Gallery photos={photos} title={p.title} actions={<>
+          {wishlistOn(shop) ? <Heart slug={slug} productCode={p.productCode} variantCode={chosen?.variantCode} inRow /> : null}
+          <ShareButton shopName={shop?.name ?? 'this shop'} product={p} bare />
+        </>} />
 
         <div>
           <div className="titlerow">
             <h1>{p.title}</h1>
-            {wishlistOn(shop) ? <Heart slug={slug} productCode={p.productCode} variantCode={chosen?.variantCode} /> : null}
           </div>
           <p className="of">{[p.fabric, p.dressType, p.brand].filter(Boolean).join(' · ') || p.productCode}</p>
 
@@ -636,8 +644,6 @@ export default function ProductPage({ slug, shop }) {
               navigator.share where the phone has it -- that is the sheet people already know,
               and it offers WhatsApp among everything else. The plain WhatsApp link is the
               fallback for desktop, where the share sheet does not exist. */}
-          <ShareButton shopName={shop?.name ?? 'this shop'} product={p} />
-
           {/* Asked here rather than at the checkout, where the same refusal already waits after
               a name, a number and a full address have been typed in. Renders nothing at all for
               a shop that delivers everywhere. */}
