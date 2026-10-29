@@ -6,12 +6,19 @@
  * stand-in (SUPABASE_URL=http://127.0.0.1:18200), never the real bucket, and the "website" with photos
  * on it is the stand-in on 18201 (PHOTO_LINKS_TEST_ORIGIN). Start both with scratchpad photo-standins.mjs.
  *
- * LOCAL DATABASE ONLY.
+ * LOCAL DATABASE by default.
  *   DATABASE_URL=… DIRECT_URL=… ROLE_TOKENS=<old scratchpad>/local-tokens.json npx tsx src/scripts/verify-bulk-photos.ts
+ *
+ * LIVE database and the real photo bucket, only when asked by name (owner, 29 Oct): the local server
+ * started on the live database with background jobs, WhatsApp and email off, the test shop
+ * verify-suites-tenant only, and every product, photo row and stored file it made removed at the end.
+ *   LIVE_TEST=verify-suites-tenant ROLE_TOKENS=<scratchpad>/prod-tokens.json npx tsx src/scripts/verify-bulk-photos.ts
+ * The view-only refusal is checked on the local run only (the live test shop has one login).
  */
 const LOCAL = 'localhost:55433';
-if (!String(process.env.DATABASE_URL || '').includes(LOCAL) || !String(process.env.DIRECT_URL || '').includes(LOCAL)) {
-  console.error(`Refusing to run: DATABASE_URL and DIRECT_URL must both point at the local copy (${LOCAL}).`);
+const LIVE = process.env.LIVE_TEST === 'verify-suites-tenant';
+if (!LIVE && (!String(process.env.DATABASE_URL || '').includes(LOCAL) || !String(process.env.DIRECT_URL || '').includes(LOCAL))) {
+  console.error(`Refusing to run: DATABASE_URL and DIRECT_URL must both point at the local copy (${LOCAL}), or set LIVE_TEST=verify-suites-tenant.`);
   process.exit(2);
 }
 import fs from 'node:fs';
@@ -38,12 +45,21 @@ const SITE = 'http://127.0.0.1:18201';
       .then(async r => ({ status: r.status, body: await r.json().catch(() => null) as any }));
   const owner = (method: string, path: string, body?: unknown) => call('SUPER_ADMIN', method, path, body);
   const made: string[] = [];
+  /** Every storage path this run wrote, removed at the end. */
+  const stored = new Set<string>();
   let otherProductId = '';
 
   try {
-    // Health of the stand-ins first: a suite against the real bucket must not even start.
-    const st = await fetch('http://127.0.0.1:18200/storage/v1/object/public/inventory-images/none').then(r => r.status).catch(() => 0);
-    if (st !== 404) throw new Error('The storage stand-in on 18200 is not running (start photo-standins.mjs).');
+    // Health of the stand-ins first: a local run against the real bucket must not even start. The photo
+    // website on 18201 is needed either way (the sheet's links point at it).
+    if (!LIVE) {
+      const st = await fetch('http://127.0.0.1:18200/storage/v1/object/public/inventory-images/none').then(r => r.status).catch(() => 0);
+      if (st !== 404) throw new Error('The storage stand-in on 18200 is not running (start photo-standins.mjs).');
+    }
+    if ((await fetch(`${SITE}/red.jpg`).then(r => r.status).catch(() => 0)) !== 200) throw new Error('The photo website on 18201 is not running.');
+    // The server under test must be the one this suite thinks it is: its test shop, on the same database.
+    const who = await owner('GET', '/auth/session');
+    if (who.body?.client?.id !== C) throw new Error(`The token is not for ${C}: ${JSON.stringify(who.body?.client ?? who.body).slice(0, 120)}`);
 
     console.log('\n1. THE SHEET\'S PHOTOS COLUMN');
     const skuA = (c: string, s: string) => `BP${STAMP}-${c}-${s}`;
@@ -133,17 +149,23 @@ const SITE = 'http://127.0.0.1:18201';
     eq('not a list -> refused', (await owner('POST', '/product-photos/match', { names: 'a.jpg' })).status, 400);
     const many = await owner('POST', '/product-photos/match', { names: Array.from({ length: 1001 }, (_, i) => `${i}.jpg`) });
     check('1,001 names -> refused, saying the limit', many.status === 400 && /1000/.test(many.body?.message), many.body);
-    const sales = await call('SALES', 'POST', '/product-photos/match', { names: ['a.jpg'] });
-    eq('somebody who may not change products cannot use it', sales.status, 403);
+    if (!LIVE) {
+      const sales = await call('SALES', 'POST', '/product-photos/match', { names: ['a.jpg'] });
+      eq('somebody who may not change products cannot use it', sales.status, 403);
+    }
 
     console.log('\n3. UPLOADING A MATCHED PHOTO (THE BROWSER\'S WAY), THEN THE SAME FOLDER AGAIN');
     const name0 = names[0];
     const prep = await owner('POST', `/products/${A.id}/images/upload-url`, { fileName: name0 });
     const { storagePath, signedUrl, publicUrl } = prep.body?.data ?? {};
-    check('storage hands out an upload address (the stand-in, never the real bucket)', String(signedUrl).startsWith('http://127.0.0.1:18200/'), signedUrl);
+    if (LIVE) check('storage hands out an upload address on the real bucket', /^https:\/\/[a-z0-9]+\.supabase\.co\/storage\/v1\/object\/upload\/sign\/inventory-images\//.test(String(signedUrl)), String(signedUrl).slice(0, 60));
+    else check('storage hands out an upload address (the stand-in, never the real bucket)', String(signedUrl).startsWith('http://127.0.0.1:18200/'), signedUrl);
+    stored.add(storagePath);
     const jpeg = await fetch(`${SITE}/red.jpg`).then(r => r.arrayBuffer());
     const put = await fetch(signedUrl, { method: 'PUT', body: Buffer.from(jpeg), headers: { 'content-type': 'image/jpeg' } });
     eq('the bytes go up once', put.status, 200);
+    const back = await fetch(publicUrl).then(async x => ({ status: x.status, size: (await x.arrayBuffer()).byteLength })).catch(() => null);
+    eq('the shop can read the photo back from its public address', back, { status: 200, size: jpeg.byteLength });
     for (const variantId of f[0].variantIds) {
       const reg = await owner('POST', `/products/${A.id}/images`, { url: publicUrl, storagePath, fileName: name0, fileSize: jpeg.byteLength, altText: name0, isPrimary: true, imageType: 'GALLERY', orderIndex: 0, variantId });
       check(`registered for ${A.variants.find(x => x.id === variantId)?.size}`, reg.status === 201 || reg.status === 200, reg.body);
@@ -157,7 +179,13 @@ const SITE = 'http://127.0.0.1:18201';
     const link = (url: string, extra: Record<string, unknown> = {}) => owner('POST', '/product-photos/from-link', { productId: B.id, url, position: 1, ...extra });
     let r = await link(`${SITE}/red.jpg`);
     check('a JPG link is fetched, stored and added', r.status === 200 && r.body?.data?.registered === 1 && r.body?.data?.already === false, r.body);
-    check('it went to the storage stand-in', fs.existsSync(`C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/3a9af89a-c63e-40d7-b55a-2e611cb491cb/scratchpad/storage-standin/inventory-images/${r.body?.data?.storagePath}`), r.body?.data?.storagePath);
+    stored.add(r.body?.data?.storagePath);
+    if (LIVE) {
+      const got = await fetch(r.body?.data?.publicUrl).then(async x => ({ status: x.status, jpeg: Buffer.from(await x.arrayBuffer()).subarray(0, 3).toString('hex') })).catch(() => null);
+      eq('it is in the real bucket, and is the picture', got, { status: 200, jpeg: 'ffd8ff' });
+    } else {
+      check('it went to the storage stand-in', fs.existsSync(`C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/3a9af89a-c63e-40d7-b55a-2e611cb491cb/scratchpad/storage-standin/inventory-images/${r.body?.data?.storagePath}`), r.body?.data?.storagePath);
+    }
     eq('it names the product and that it is a draft, for the publish step', [r.body?.data?.productTitle, r.body?.data?.productStatus], [B.title, 'DRAFT']);
     r = await link(`${SITE}/red.jpg`);
     eq('the same link again adds nothing (a sheet imported twice)', [r.status, r.body?.data?.registered, r.body?.data?.already], [200, 0, true]);
@@ -202,7 +230,7 @@ const SITE = 'http://127.0.0.1:18201';
     eq('another shop\'s product cannot be given a photo', theirsLink.status, 404);
     const noFile = await prisma.productImage.count({ where: { productId: otherProductId } });
     eq('... and nothing was added to it', noFile, 0);
-    eq('somebody who may not change products cannot add links', (await call('SALES', 'POST', '/product-photos/from-link', { productId: B.id, url: `${SITE}/red.jpg` })).status, 403);
+    if (!LIVE) eq('somebody who may not change products cannot add links', (await call('SALES', 'POST', '/product-photos/from-link', { productId: B.id, url: `${SITE}/red.jpg` })).status, 403);
 
     console.log('\n5. THE ADDRESS RULES THEMSELVES');
     for (const [ip, want] of [['127.0.0.1', true], ['10.0.0.1', true], ['172.16.5.4', true], ['172.32.0.1', false], ['192.168.1.1', true], ['169.254.169.254', true], ['100.64.0.1', true],
@@ -232,6 +260,21 @@ const SITE = 'http://127.0.0.1:18201';
   } finally {
     // Removed again: photos, sizes, the products, and the other shop's one.
     const ids = [...made, otherProductId].filter(Boolean);
+    // The stored files too: on a live run they are in the real bucket. Every path any of these photos
+    // used, and only those (all under this shop's own folder for these products).
+    const paths = (await prisma.productImage.findMany({ where: { productId: { in: ids } }, select: { storagePath: true } }).catch(() => []))
+      .map(i => i.storagePath).filter((p): p is string => !!p);
+    for (const p of paths) stored.add(p);
+    const mine = [...stored].filter(p => p && ids.some(id => p.startsWith(`${C}/${id}/`)));
+    if (mine.length) {
+      const { supabase } = await import('../lib/supabase');
+      const { error } = await supabase.storage.from('inventory-images').remove(mine);
+      console.log(error ? `cleanup: stored files could not be removed: ${error.message}` : `cleanup: ${mine.length} stored files removed`);
+      if (LIVE && !error) {
+        const left = await Promise.all(mine.map(p => fetch(supabase.storage.from('inventory-images').getPublicUrl(p).data.publicUrl).then(x => x.status)));
+        console.log(`cleanup: public addresses now answer ${[...new Set(left)].join(', ')}`);
+      }
+    }
     await prisma.productImage.deleteMany({ where: { productId: { in: ids } } }).catch(() => null);
     await prisma.product.deleteMany({ where: { id: { in: ids } } }).catch((e: any) => console.log('cleanup:', e?.message));
     await prisma.$disconnect();
