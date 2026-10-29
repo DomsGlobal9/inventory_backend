@@ -2,6 +2,7 @@ import { CampaignsScheduler } from './jobs/campaigns.scheduler';
 import { PhotoJobsScheduler } from './jobs/photo-jobs.scheduler';
 import { PosQueueScheduler } from './jobs/pos-queue.scheduler';
 import { PaymentsScheduler } from './jobs/payments.scheduler';
+import { DoorWaitScheduler } from './jobs/door-wait.scheduler';
 import express from 'express'; // Restart trigger 2
 import cors from 'cors';
 import { env } from './config/env';
@@ -287,4 +288,5 @@ app.listen(PORT, () => {
   PosQueueScheduler.start();
   // Same shape: safe on two servers, off on a development machine unless asked and scoped.
   PaymentsScheduler.start();
+  DoorWaitScheduler.start();
 });

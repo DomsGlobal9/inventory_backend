@@ -63,14 +63,15 @@ async function main() {
 
   console.log('\nC. IN THE STORE NOW');
   await prisma.storeCheckin.create({ data: { clientId: C, locationId: main.id, phone: '+919848033300', createdAt: new Date(Date.now() - VISIT_MS - 60_000) } });
-  const list = await doorCheckins.list(C, main.id);
-  check('Main Store lists its two arrivals, newest first; the branch and the 2-hour-old one are not there', list.length === 2 && list[0].phone === '+919848033399' && list[1].phone === '+919848033311', list.map(l => l.phone));
-  check('...Meena with her name and VIP badge, the new one with a masked number to read out', list[1].customer?.name === 'Meena Iyer' && JSON.stringify(list[1].customer?.groups) === '["VIP"]' && list[0].customer === null && list[0].maskedPhone.includes('•'), list);
+  // 29 Oct: { arrivals, staff }, and the one who has waited longest first (verify-door-floor has the rest).
+  const list = (await doorCheckins.list(C, main.id)).arrivals;
+  check('Main Store lists its two arrivals, longest waiting first; the branch and the 2-hour-old one are not there', list.length === 2 && list[0].phone === '+919848033311' && list[1].phone === '+919848033399', list.map(l => l.phone));
+  check('...Meena with her name and VIP badge, the new one with a masked number to read out', list[0].customer?.name === 'Meena Iyer' && JSON.stringify(list[0].customer?.groups) === '["VIP"]' && list[1].customer === null && list[1].maskedPhone.includes('•'), list);
   const bad = await doorCheckins.list(C, '').then(() => null, e => e);
   check('no store chosen is refused in words', bad?.statusCode === 400);
 
   console.log('\nD. I\'LL TAKE THEM');
-  const id = list[1].id;
+  const id = list[0].id;
   const took = await doorCheckins.take(C, id, { id: 'u-ravi', name: 'Ravi' });
   check('the first salesperson gets them, with the number to open the card', took.phone === '+919848033311');
   const second = await doorCheckins.take(C, id, { id: 'u-priya', name: 'Priya' }).then(() => null, e => e);
@@ -79,9 +80,9 @@ async function main() {
   check('the same salesperson pressing again is fine', (again as any).phone === '+919848033311', again);
   const wrongShop = await doorCheckins.take(OTHER, id, { id: 'x', name: 'X' }).then(() => null, e => e);
   check('another shop cannot take them', wrongShop?.statusCode === 404);
-  check('the list shows who has them', (await doorCheckins.list(C, main.id)).find(l => l.id === id)?.takenBy === 'Ravi');
+  check('the list shows who has them', (await doorCheckins.list(C, main.id)).arrivals.find(l => l.id === id)?.takenBy === 'Ravi');
   await arrive(C, '919848033311', mainCode);
-  check('scanning again after being helped does not put them back as waiting', !(await doorCheckins.list(C, main.id)).some(l => l.phone === '+919848033311' && !l.takenBy));
+  check('scanning again after being helped does not put them back as waiting', !(await doorCheckins.list(C, main.id)).arrivals.some(l => l.phone === '+919848033311' && !l.takenBy));
 
   console.log('\nE. THE DOOR QR');
   const qr: any = await doorCheckins.doorQr(C, main.id);
@@ -127,7 +128,7 @@ async function main() {
   const winner = (await prisma.storeCheckin.findUnique({ where: { id: fresh.id } }))?.takenByName;
   check('two at the same moment: exactly one gets them, the other is told who', won === 1 && lostWith?.reason?.statusCode === 409 && lostWith.reason.message === `${winner} is already with them.`, { won, winner, msg: lostWith?.reason?.message });
 
-  check('another shop asking for this store\'s list gets nothing', (await doorCheckins.list(OTHER, main.id)).length === 0);
+  check('another shop asking for this store\'s list gets nothing', (await doorCheckins.list(OTHER, main.id)).arrivals.length === 0);
   const nobody = await doorCheckins.take(C, '00000000-0000-0000-0000-000000000000', { id: 'x', name: 'X' }).then(() => null, e => e);
   check('taking an arrival that does not exist is refused in words', nobody?.statusCode === 404);
 }

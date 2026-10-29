@@ -11,7 +11,7 @@ import { tenantMiddleware } from '../middleware/tenant.middleware';
 
 import { requirePermission } from '../middleware/permission.middleware';
 import { customerCard } from '../services/customer-card';
-import { doorCheckins } from '../services/door-checkin';
+import { doorCheckins, AskedForSomeoneElse } from '../services/door-checkin';
 import { counterLookups } from '../services/counter-lookups';
 import { prisma } from '../lib/prisma';
 import { respondWithError } from '../utils/respondWithError';
@@ -48,12 +48,32 @@ router.get('/checkins', requirePermission('customer:view'), async (req, res) => 
   try { res.json({ success: true, data: await doorCheckins.list((req as any).clientId, req.query.locationId) }); }
   catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
+/** The person acting, by name, and whether they are the owner (who may pass on or finish anybody's customer). */
+async function floorActor(req: any) {
+  const user = req.user;
+  const name = user?.id ? (await prisma.user.findFirst({ where: { id: user.id, clientId: req.clientId }, select: { name: true } }))?.name ?? null : null;
+  return { id: user?.id ?? null, name, owner: holdsEverything(user?.permissions, user?.roles) };
+}
 router.post('/checkins/:id/take', requirePermission('customer:view'), async (req, res) => {
   try {
-    const user = (req as any).user;
-    const name = user?.id ? (await prisma.user.findFirst({ where: { id: user.id, clientId: (req as any).clientId }, select: { name: true } }))?.name ?? null : null;
-    res.json({ success: true, data: await doorCheckins.take((req as any).clientId, String(req.params.id), { id: user?.id ?? null, name }) });
-  } catch (error) { return respondWithError(res, error, { status: 500 }); }
+    res.json({ success: true, data: await doorCheckins.take((req as any).clientId, String(req.params.id), await floorActor(req), req.body?.anyway === true) });
+  } catch (error) {
+    // "They asked for Lakshmi": the name goes with the refusal, for "take them anyway?".
+    if (error instanceof AskedForSomeoneElse) return res.status(409).json({ success: false, message: error.message, askedFor: error.askedFor });
+    return respondWithError(res, error, { status: 500 });
+  }
+});
+router.post('/checkins/:id/ask', requirePermission('customer:view'), async (req, res) => {
+  try { res.json({ success: true, data: await doorCheckins.askFor((req as any).clientId, String(req.params.id), req.body?.userId ?? null) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.post('/checkins/:id/pass', requirePermission('customer:view'), async (req, res) => {
+  try { res.json({ success: true, data: await doorCheckins.pass((req as any).clientId, String(req.params.id), req.body?.userId, await floorActor(req)) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.post('/checkins/:id/done', requirePermission('customer:view'), async (req, res) => {
+  try { res.json({ success: true, data: await doorCheckins.done((req as any).clientId, String(req.params.id), await floorActor(req)) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
 router.get('/door-qr', requirePermission('customer:view'), async (req, res) => {
   try { res.json({ success: true, data: await doorCheckins.doorQr((req as any).clientId, req.query.locationId) }); }

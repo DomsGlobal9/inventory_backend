@@ -2087,6 +2087,8 @@ enum InventoryAlertType {
   /// shop already watches, so an order that arrives at nine at night is not found at nine the
   /// next morning.
   ONLINE_ORDER
+  /// A customer has waited at a store's door with nobody taking them (door check-in, 29 Oct).
+  CUSTOMER_WAITING
 }
 
 enum InventoryAlertSeverity {
@@ -4994,6 +4996,18 @@ model StoreCheckin {
   takenByName String?   @map("taken_by_name")
   takenAt     DateTime? @map("taken_at")
   createdAt   DateTime  @default(now()) @map("created_at")
+  /// When they started waiting. A second scan moves createdAt (to the top of the list) but never this.
+  waitingSince DateTime @default(now()) @map("waiting_since")
+  /// Who they asked for (a salesperson of this shop), at the door or from last time.
+  askedForId   String?   @map("asked_for_id")
+  askedForName String?   @map("asked_for_name")
+  /// Every pass from one salesperson to another: [{ fromId, fromName, toId, toName, at }].
+  handoffs     Json      @default("[]")
+  /// Finished with them: "Done", or a bill for them at this store after they were taken.
+  doneAt       DateTime? @map("done_at")
+  /// The 5-minute waiting alert (owner's bell + one "sorry for the wait"), sent once.
+  waitAlertedAt DateTime? @map("wait_alerted_at")
+  waitAlertId   String?   @map("wait_alert_id")
 
   @@index([clientId, locationId, createdAt])
   @@map("store_checkins")

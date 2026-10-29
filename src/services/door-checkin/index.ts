@@ -11,11 +11,32 @@
 import crypto from 'node:crypto';
 import { prisma } from '../../lib/prisma';
 import { normalisePhone } from '../../lib/phone';
-import { badRequest, conflict, notFound } from '../../utils/httpError';
+import { badRequest, conflict, forbidden, notFound, HttpError } from '../../utils/httpError';
 import { groupNamesOf } from '../customer-groups';
 
 /** How long someone counts as "in the store now", and as the same visit if they scan twice. */
 export const VISIT_MS = 2 * 60 * 60 * 1000;
+/** Waiting this long with nobody taking them: the owner's bell, and one "sorry for the wait". */
+export const WAIT_ALERT_MS = 5 * 60 * 1000;
+
+/** "They asked for Lakshmi": a 409 that carries the name, so the screen can ask "take them anyway?". */
+export class AskedForSomeoneElse extends HttpError {
+  askedFor: string;
+  constructor(customer: string, askedFor: string) {
+    super(409, `${customer} asked for ${askedFor}.`);
+    this.askedFor = askedFor;
+  }
+}
+
+type Handoff = { fromId: string | null; fromName: string | null; toId: string; toName: string; at: string };
+const handoffsOf = (raw: unknown): Handoff[] => (Array.isArray(raw) ? raw as Handoff[] : []);
+type Actor = { id: string | null; name: string | null; owner?: boolean };
+
+/** A salesperson of this shop: an active user here. */
+async function personOf(clientId: string, userId: unknown) {
+  if (typeof userId !== 'string' || !userId) return null;
+  return prisma.user.findFirst({ where: { id: userId, clientId, status: 'ACTIVE' }, select: { id: true, name: true } });
+}
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I: read off a printed standee
 
 /**
@@ -54,7 +75,7 @@ export const doorCheckins = {
 
     // Scanning twice, or a friend's phone scanning the same code: one arrival per visit.
     const same = await prisma.storeCheckin.findFirst({
-      where: { clientId, locationId: store.id, phone: phone.value, createdAt: { gte: new Date(now.getTime() - VISIT_MS) } },
+      where: { clientId, locationId: store.id, phone: phone.value, doneAt: null, createdAt: { gte: new Date(now.getTime() - VISIT_MS) } },
       orderBy: { createdAt: 'desc' }
     });
     if (same) {
@@ -65,7 +86,7 @@ export const doorCheckins = {
     const customer = await prisma.customer.findFirst({
       where: { clientId, phone: phone.value, deletedAt: null }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, whatsappStoppedAt: true }
     });
-    const row = await prisma.storeCheckin.create({ data: { clientId, locationId: store.id, phone: phone.value, customerId: customer?.id ?? null, createdAt: now } });
+    const row = await prisma.storeCheckin.create({ data: { clientId, locationId: store.id, phone: phone.value, customerId: customer?.id ?? null, createdAt: now, waitingSince: now } });
 
     const shop = (await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessName: true } }))?.businessName?.trim() || 'the shop';
     const first = customer?.name.trim().split(/\s+/)[0];
@@ -81,35 +102,181 @@ export const doorCheckins = {
     return { id: row.id, fresh: true };
   },
 
-  /** Who is in this store now: arrivals in the last two hours, newest first. */
+  /**
+   * Who is in this store now, and who each salesperson is with.
+   *
+   * Arrivals of the last two hours that are not finished: those nobody has taken first, longest
+   * waiting first, then those somebody is with. A taken customer with a bill at this store since
+   * they were taken is finished by that bill (worked out here, so nothing else has to remember).
+   * `staff` is everybody active in the shop, with how many customers each is with now.
+   */
   async list(clientId: string, locationId: unknown, now = new Date()) {
     if (typeof locationId !== 'string' || !locationId) throw badRequest('Say which store.');
-    const rows = await prisma.storeCheckin.findMany({
-      where: { clientId, locationId, createdAt: { gte: new Date(now.getTime() - VISIT_MS) } },
+    let rows = await prisma.storeCheckin.findMany({
+      where: { clientId, locationId, doneAt: null, createdAt: { gte: new Date(now.getTime() - VISIT_MS) } },
       orderBy: { createdAt: 'desc' }, take: 50
     });
+
+    // Billed since they were taken: done.
+    const billed: string[] = [];
+    for (const r of rows.filter(r => r.takenAt && r.customerId)) {
+      const bill = await prisma.salesOrder.findFirst({
+        where: { clientId, locationId, customerId: r.customerId!, createdAt: { gt: r.takenAt! }, status: { not: 'CANCELLED' } }, select: { id: true }
+      });
+      if (bill) billed.push(r.id);
+    }
+    if (billed.length) {
+      await prisma.storeCheckin.updateMany({ where: { id: { in: billed }, doneAt: null }, data: { doneAt: now } });
+      rows = rows.filter(r => !billed.includes(r.id));
+    }
+
     const ids = [...new Set(rows.map(r => r.customerId).filter((x): x is string => !!x))];
-    const customers = ids.length ? await prisma.customer.findMany({ where: { id: { in: ids }, clientId }, select: { id: true, name: true, tags: true } }) : [];
-    return Promise.all(rows.map(async r => {
+    const [customers, earlier, people] = await Promise.all([
+      ids.length ? prisma.customer.findMany({ where: { id: { in: ids }, clientId }, select: { id: true, name: true, tags: true } }) : [],
+      // Who helped them on an earlier visit, most recent first: "last time: Lakshmi".
+      ids.length ? prisma.storeCheckin.findMany({
+        where: { clientId, customerId: { in: ids }, takenById: { not: null }, id: { notIn: rows.map(r => r.id) } },
+        orderBy: { createdAt: 'desc' }, select: { customerId: true, takenById: true, takenByName: true }
+      }) : [],
+      prisma.user.findMany({ where: { clientId, status: 'ACTIVE' }, select: { id: true, name: true }, orderBy: { name: 'asc' }, take: 40 })
+    ]);
+    const lastHelped = new Map<string, { id: string; name: string }>();
+    for (const e of earlier) if (e.customerId && !lastHelped.has(e.customerId) && e.takenById) lastHelped.set(e.customerId, { id: e.takenById, name: e.takenByName ?? 'them' });
+
+    const order = [...rows].sort((a, b) =>
+      (a.takenAt ? 1 : 0) - (b.takenAt ? 1 : 0)
+      || (a.takenAt ? b.takenAt!.getTime() - a.takenAt.getTime() : a.waitingSince.getTime() - b.waitingSince.getTime()));
+    const arrivals = await Promise.all(order.map(async r => {
       const c = customers.find(x => x.id === r.customerId);
+      const last = handoffsOf(r.handoffs).at(-1);
       return {
-        id: r.id, phone: r.phone, maskedPhone: mask(r.phone), at: r.createdAt,
+        id: r.id, phone: r.phone, maskedPhone: mask(r.phone), at: r.createdAt, waitingSince: r.waitingSince,
         customer: c ? { id: c.id, name: c.name, groups: await groupNamesOf(clientId, c.tags) } : null,
-        takenBy: r.takenByName, takenAt: r.takenAt
+        takenBy: r.takenByName, takenById: r.takenById, takenAt: r.takenAt,
+        askedFor: r.askedForId ? { id: r.askedForId, name: r.askedForName ?? 'them' } : null,
+        lastHelpedBy: c ? lastHelped.get(c.id) ?? null : null,
+        passedBy: last && last.toId === r.takenById ? last.fromName : null,
+        waitAlerted: !!r.waitAlertedAt
       };
     }));
+    const staff = people.map(p => ({ id: p.id, name: p.name, with: rows.filter(r => r.takenById === p.id).length }));
+    return { arrivals, staff };
   },
 
-  /** "I'll take them": first salesperson wins, so two never walk up to the same customer. */
-  async take(clientId: string, id: string, user: { id: string | null; name: string | null }) {
+  /**
+   * "I'll take them": first salesperson wins, so two never walk up to the same customer. If they
+   * asked for somebody else, that is said first (AskedForSomeoneElse); `anyway` takes them all the same.
+   */
+  async take(clientId: string, id: string, user: Actor, anyway = false) {
+    const row = await prisma.storeCheckin.findFirst({ where: { id, clientId } });
+    if (!row) throw notFound('That arrival could not be found.');
+    if (row.doneAt) throw conflict('They have already been helped.');
+    if (!row.takenAt && row.askedForId && row.askedForId !== user.id && !anyway) {
+      const name = row.customerId ? (await prisma.customer.findFirst({ where: { id: row.customerId, clientId }, select: { name: true } }))?.name : null;
+      throw new AskedForSomeoneElse(name || 'They', row.askedForName || 'someone');
+    }
     const took = await prisma.storeCheckin.updateMany({
       where: { id, clientId, takenAt: null },
       data: { takenAt: new Date(), takenById: user.id, takenByName: user.name }
     });
+    const after = await prisma.storeCheckin.findFirstOrThrow({ where: { id, clientId } });
+    if (took.count === 0 && after.takenById !== user.id) throw conflict(`${after.takenByName || 'Someone'} is already with them.`);
+    // Somebody has them now: the waiting alert, if one went up, is settled.
+    if (after.waitAlertId) await prisma.inventoryAlert.updateMany({ where: { id: after.waitAlertId, clientId }, data: { isResolved: true } }).catch(() => null);
+    return { id: after.id, phone: after.phone, takenBy: after.takenByName };
+  },
+
+  /** "They asked for Lakshmi": shown to that person first. null: nobody in particular. */
+  async askFor(clientId: string, id: string, userId: unknown) {
+    const row = await prisma.storeCheckin.findFirst({ where: { id, clientId, doneAt: null } });
+    if (!row) throw notFound('That arrival could not be found.');
+    if (row.takenAt) throw conflict(`${row.takenByName || 'Someone'} is already with them.`);
+    if (userId === null || userId === '') {
+      await prisma.storeCheckin.update({ where: { id }, data: { askedForId: null, askedForName: null } });
+      return { askedFor: null };
+    }
+    const person = await personOf(clientId, userId);
+    if (!person) throw badRequest('Choose somebody who works in this shop.');
+    await prisma.storeCheckin.update({ where: { id }, data: { askedForId: person.id, askedForName: person.name } });
+    return { askedFor: { id: person.id, name: person.name } };
+  },
+
+  /** Pass a customer to another salesperson: by the person with them, or the owner. Kept on the record. */
+  async pass(clientId: string, id: string, toUserId: unknown, actor: Actor) {
+    const row = await prisma.storeCheckin.findFirst({ where: { id, clientId, doneAt: null } });
+    if (!row) throw notFound('That arrival could not be found.');
+    if (!row.takenAt) throw badRequest('Nobody is with them yet. Take them first, or say who they asked for.');
+    if (row.takenById !== actor.id && !actor.owner) throw forbidden('Only the person with them, or the owner, can pass them on.');
+    const to = await personOf(clientId, toUserId);
+    if (!to) throw badRequest('Choose somebody who works in this shop.');
+    if (to.id === row.takenById) throw badRequest(`They are already with ${to.name}.`);
+    const handoffs = [...handoffsOf(row.handoffs), { fromId: row.takenById, fromName: row.takenByName, toId: to.id, toName: to.name, at: new Date().toISOString() }];
+    // Only if they are still where this person saw them: two passes at once cannot both land.
+    const moved = await prisma.storeCheckin.updateMany({
+      where: { id, clientId, takenById: row.takenById, doneAt: null },
+      data: { takenById: to.id, takenByName: to.name, takenAt: new Date(), handoffs: handoffs as any }
+    });
+    if (moved.count === 0) throw conflict('Someone moved them a moment ago. Look again.');
+    return { id, takenBy: to.name, takenById: to.id };
+  },
+
+  /** Finished with them: the person with them, or the owner. */
+  async done(clientId: string, id: string, actor: Actor) {
     const row = await prisma.storeCheckin.findFirst({ where: { id, clientId } });
     if (!row) throw notFound('That arrival could not be found.');
-    if (took.count === 0 && row.takenById !== user.id) throw conflict(`${row.takenByName || 'Someone'} is already with them.`);
-    return { id: row.id, phone: row.phone };
+    if (row.doneAt) return { id, done: true };
+    if (!row.takenAt) throw badRequest('Nobody is with them yet.');
+    if (row.takenById !== actor.id && !actor.owner) throw forbidden('Only the person with them, or the owner, can finish with them.');
+    await prisma.storeCheckin.updateMany({ where: { id, clientId, doneAt: null }, data: { doneAt: new Date() } });
+    return { id, done: true };
+  },
+
+  /**
+   * Customers who have waited WAIT_ALERT_MS with nobody taking them: the owner's bell (CUSTOMER_WAITING)
+   * and one "sorry for the wait" on WhatsApp, which is a reply to the message they sent from the door.
+   * Each arrival once, claimed first, so two servers never both send. `onlyClients` scopes it for tests.
+   */
+  async waitTick(now = new Date(), onlyClients?: string[]) {
+    const due = await prisma.storeCheckin.findMany({
+      where: {
+        takenAt: null, doneAt: null, waitAlertedAt: null,
+        createdAt: { gte: new Date(now.getTime() - VISIT_MS) },
+        waitingSince: { lte: new Date(now.getTime() - WAIT_ALERT_MS) },
+        ...(onlyClients ? { clientId: { in: onlyClients } } : {})
+      },
+      take: 100
+    });
+    let raised = 0;
+    for (const r of due) {
+      const claimed = await prisma.storeCheckin.updateMany({ where: { id: r.id, waitAlertedAt: null, takenAt: null }, data: { waitAlertedAt: now } });
+      if (claimed.count === 0) continue;
+      const [customer, store, settings] = await Promise.all([
+        r.customerId ? prisma.customer.findFirst({ where: { id: r.customerId, clientId: r.clientId }, select: { name: true, whatsappStoppedAt: true } }) : null,
+        prisma.stockLocation.findFirst({ where: { id: r.locationId, clientId: r.clientId }, select: { name: true } }),
+        prisma.clientSettings.findUnique({ where: { clientId: r.clientId }, select: { businessName: true } })
+      ]);
+      const mins = Math.max(1, Math.round((now.getTime() - r.waitingSince.getTime()) / 60000));
+      const who = customer?.name || `A customer (${mask(r.phone)})`;
+      const alert = await prisma.inventoryAlert.create({
+        data: {
+          clientId: r.clientId, type: 'CUSTOMER_WAITING' as any, severity: 'WARNING', locationId: r.locationId,
+          title: `${customer?.name || 'A customer'} is waiting at ${store?.name ?? 'the store'}`,
+          message: `${who} has waited ${mins} minutes at ${store?.name ?? 'the store'} with nobody taking them. Open the Customer card to take them.`
+        }
+      });
+      await prisma.storeCheckin.update({ where: { id: r.id }, data: { waitAlertId: alert.id } });
+      raised++;
+      // Nobody who replied STOP is written to, not even this.
+      if (customer?.whatsappStoppedAt) continue;
+      const shop = settings?.businessName?.trim() || 'the shop';
+      const first = customer?.name.trim().split(/\s+/)[0];
+      const text = first
+        ? `Sorry for the wait, ${first}. Someone from ${shop} will be with you in a few minutes.`
+        : `Sorry for the wait. Someone from ${shop} will be with you in a few minutes.`;
+      await checkinWelcome.send({ clientId: r.clientId, to: r.phone, text, idempotencyKey: `sorry:${r.id}` })
+        .catch(err => console.error('[door-checkin] sorry-for-the-wait not sent:', (err as Error)?.message));
+    }
+    return { raised };
   },
 
   /** What the door QR says and where it points, for printing the standee. */
