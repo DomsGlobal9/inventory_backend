@@ -225,6 +225,20 @@ const serve = (handler: (req: http.IncomingMessage, body: any) => [number, unkno
     m = await me(tP1);
     check('newest first', m.orders[0]?.token === r.body?.data?.token && m.orders.length === 2, m.orders.map((o: any) => o.orderNumber));
 
+    // Paying online goes through the same step (online-payment.service start → prepareCheckout, with
+    // payWay ONLINE) before Razorpay is asked for anything: proved the same way, per browser.
+    const { checkoutGate, prepareCheckout } = await import('../services/online-shop/checkout');
+    const online = async (phone: string, token?: string) => {
+      const input: any = { placementKey: `acct-online-${STAMP}-${++n}`, lines: [{ variantCode: shopA.saree.v.variantCode, quantity: 1 }], name: 'Meena Iyer', phone, email: '', address: 'Flat 4, 12-3 Gandhi Road, Vijayawada', pincode: '520001', token };
+      const { shop, placementKey } = await checkoutGate(A, input);
+      // ONLINE is offered only once the shop's Razorpay account is verified (paymentAccounts.readiness),
+      // which needs real keys; that is not what is checked here, so this test shop is given it.
+      return (await prepareCheckout(A, { ...shop, payWays: [...shop.payWays, 'ONLINE'] } as any, placementKey, { ...input, payWay: 'ONLINE' })).proved;
+    };
+    eq('paying online, signed in as that number: proved, as on delivery', await online(P1, tP1), true);
+    eq('paying online for another number with this sign-in: not proved', await online(P3, tP1), false);
+    eq('paying online with no pass at all: not proved', await online(P1), false);
+
     console.log('\n4. POINTS AND STORE CREDIT');
     m = await me(tP1);
     eq('loyalty off in Inventory: no points shown; store credit held: shown', [m.points, m.storeCredit], [null, 500]);
