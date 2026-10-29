@@ -22,7 +22,7 @@ import { publicProduct } from './shop.service';
  * by the order page, so nobody has to sign in twice.
  */
 
-type Shop = { clientId: string; locationIds: string[]; showFewLeft?: boolean };
+type Shop = { clientId: string; locationIds: string[]; showFewLeft?: boolean; accounts?: boolean; wishlist?: boolean; showBalances?: boolean };
 /** Orders listed on the account page, newest first. */
 const MAX_ORDERS = 30;
 
@@ -50,8 +50,10 @@ export async function signOut(clientId: string, token: unknown, everywhere: unkn
 /** Everything the account page shows, or { signedIn: false } (with whether signing in is possible now). */
 export async function me(shop: Shop, token: unknown) {
   const { clientId } = shop;
+  // The shop switched accounts off: nobody is signed in here (a sign-in still proves its number at the checkout).
+  if (shop.accounts === false) return { signedIn: false as const, canSignIn: false, offered: false };
   const phone = await whoIs(clientId, token);
-  if (!phone) return { signedIn: false as const, canSignIn: await canVerify(clientId) };
+  if (!phone) return { signedIn: false as const, canSignIn: await canVerify(clientId), offered: true };
 
   const [customer, loyalty, orderRows, hearts, devices] = await Promise.all([
     prisma.customer.findFirst({ where: { clientId, phone, deletedAt: null }, select: { name: true, loyaltyPoints: true, storeCreditPaise: true } }),
@@ -60,7 +62,7 @@ export async function me(shop: Shop, token: unknown) {
       where: { clientId, customerPhone: phone, phoneVerified: true },
       orderBy: { createdAt: 'desc' }, take: MAX_ORDERS, select: { token: true }
     }),
-    shopViews.liked(clientId, phone),
+    shop.wishlist === false ? Promise.resolve([]) : shopViews.liked(clientId, phone),
     sessions.devices(clientId, phone)
   ]);
 
@@ -108,8 +110,8 @@ export async function me(shop: Shop, token: unknown) {
     name: customer?.name ?? lastName,
     devices,
     // Shown only where the shop runs them: points while loyalty is on, credit only when some is held.
-    points: loyalty?.enabled && customer ? customer.loyaltyPoints : null,
-    storeCredit: customer && customer.storeCreditPaise > 0 ? customer.storeCreditPaise / 100 : null,
+    points: shop.showBalances !== false && loyalty?.enabled && customer ? customer.loyaltyPoints : null,
+    storeCredit: shop.showBalances !== false && customer && customer.storeCreditPaise > 0 ? customer.storeCreditPaise / 100 : null,
     orders,
     hearts: pieces,
     addresses

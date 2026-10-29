@@ -350,6 +350,7 @@ router.post('/:slug/verify/send', codeLimiter, buying(async (req) => {
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   // purpose TRYON: the number asked before a try-on; SIGNIN: signing in to the shop. Each its own words.
   const purpose = req.body?.purpose === 'TRYON' ? 'TRYON' : req.body?.purpose === 'SIGNIN' ? 'SIGNIN' : 'ORDER';
+  if (purpose === 'SIGNIN' && !shop.accounts) throw new OnlineShopRuleError(NO_ACCOUNTS);
   // The browser's own pass, so a number it already proved is not sent another code (and only then).
   return shopOtp.sendCode(shop.clientId, req.body?.phone, purpose, req.body?.token);
 }));
@@ -403,6 +404,9 @@ router.post('/:slug/addresses/remove', priceLimiter, buying(async (req) => {
   return shopAddresses.remove(shop.clientId, req.body?.token, req.body?.id);
 }));
 
+/** Said when the shop has switched customer accounts off (Settings → Online shop). */
+const NO_ACCOUNTS = 'This shop does not offer signing in. You can still order and track your order from its link.';
+
 /*
  * The shopper's account (29 Oct): "Sign in with WhatsApp". start turns this browser's proof into a
  * 90-day sign-in; the account and sign-out are read with that secret and nothing else.
@@ -410,6 +414,7 @@ router.post('/:slug/addresses/remove', priceLimiter, buying(async (req) => {
 router.post('/:slug/account/start', codeLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  if (!shop.accounts) throw new OnlineShopRuleError(NO_ACCOUNTS);
   return shopAccount.start(shop.clientId, req.body?.token, req.get('user-agent'));
 }));
 
@@ -429,6 +434,7 @@ router.post('/:slug/account/signout', buyLimiter, buying(async (req) => {
 router.post('/:slug/products/:productCode/like', priceLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  if (!shop.wishlist) throw new OnlineShopRuleError('This shop does not keep wishlists.');
   const saved = await shopViews.like(shop.clientId, req.body?.token, String(req.params.productCode), req.body?.liked !== false, req.body?.variantCode);
   if (!saved) throw new OnlineShopRuleError('Sign in to save pieces you like.');
   return { saved, liked: req.body?.liked !== false };

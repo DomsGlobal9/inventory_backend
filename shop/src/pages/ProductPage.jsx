@@ -335,7 +335,7 @@ export default function ProductPage({ slug, shop }) {
         <div>
           <div className="titlerow">
             <h1>{p.title}</h1>
-            <Heart slug={slug} productCode={p.productCode} variantCode={chosen?.variantCode} />
+            {shop?.wishlist ? <Heart slug={slug} productCode={p.productCode} variantCode={chosen?.variantCode} /> : null}
           </div>
           <p className="of">{[p.fabric, p.dressType, p.brand].filter(Boolean).join(' · ') || p.productCode}</p>
 

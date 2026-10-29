@@ -136,7 +136,7 @@ const serve = (handler: (req: http.IncomingMessage, body: any) => [number, unkno
 
     console.log('\n1. SIGNING IN');
     let r = await call(sa('/account'), {});
-    eq('no secret: signed out, and signing in is possible', r.body?.data, { signedIn: false, canSignIn: true });
+    eq('no secret: signed out, and signing in is possible (and offered)', r.body?.data, { signedIn: false, canSignIn: true, offered: true });
     r = await call(sa('/verify/send'), { phone: P1, purpose: 'SIGNIN' });
     check('a sign-in code goes to their WhatsApp, saying what it is for', r.status === 200 && /is your code to sign in to Account Silks/.test(messages.at(-1)?.text ?? '') && messages.at(-1)?.to === `91${P1}`, messages.at(-1));
     r = await call(sa('/verify/check'), { phone: P1, code: lastCode() === '000000' ? '111111' : '000000' });
@@ -280,6 +280,44 @@ const serve = (handler: (req: http.IncomingMessage, body: any) => [number, unkno
     await prisma.salesOrder.updateMany({ where: { clientId: A, customerId: c2.id }, data: { status: 'DISPATCHED' as any } });
     await customerDelete.deleteCustomer(A, c2.id, P2.slice(-4));
     eq('the customer deleted in Inventory: signed out of the shop, their sign-ins gone', [(await me(tP2))?.signedIn, await prisma.onlineShopSession.count({ where: { clientId: A, phone: plus(P2) } })], [false, 0]);
+
+    console.log('\n8. THE SHOP\'S OWN SWITCHES (Settings → Online shop → Customer accounts)');
+    const { onlineShop } = await import('../services/online-shop');
+    const flags = async () => { const s: any = await onlineShop.publicShop(SLUG_A); return [s.accounts, s.wishlist, s.showBalances]; };
+    eq('a shop that never chose: accounts, wishlist and balances all on', [await flags(), ((await onlineShop.settingsFor(A)) as any).accounts], [[true, true, true], true]);
+    await onlineShop.save(A, { accounts: 'yes' as any, wishlist: 1 as any });
+    eq('"yes" or 1 is not true: the switches stay as they were', await flags(), [true, true, true]);
+    await onlineShop.save(A, { accounts: false });
+    eq('accounts off: the shop says so, and the wishlist goes with it', await flags(), [false, false, true]);
+    m = await me(tP1);
+    eq('...nobody is signed in on the account page (and it says it is not offered)', [m?.signedIn, m?.canSignIn, m?.offered], [false, false, false]);
+    const NO = 'This shop does not offer signing in. You can still order and track your order from its link.';
+    r = await call(sa('/verify/send'), { phone: P3, purpose: 'SIGNIN' });
+    const r2 = await call(sa('/account/start'), { token: tP1 });
+    eq('...no sign-in code is sent, no sign-in started', [r.status, r.body?.message, r2.status, r2.body?.message], [400, NO, 400, NO]);
+    await windowPasses(P3);
+    r = await call(sa('/verify/send'), { phone: P3, purpose: 'ORDER' });
+    eq('...the checkout\'s own code still goes', [r.status, r.body?.data?.sent], [200, true]);
+    r = await call(sa(`/products/${encodeURIComponent(shopA.saree.p.productCode)}/like`), { token: tP1, liked: true });
+    eq('...a heart is refused', [r.status, r.body?.message], [400, 'This shop does not keep wishlists.']);
+    r = await order(P1, { token: tP1, placementKey: `acct-${STAMP}-off` });
+    const offOrder = await prisma.onlineShopOrder.findUnique({ where: { token: r.body?.data?.token ?? 'x' }, select: { phoneVerified: true } });
+    eq('...but a sign-in made earlier still proves its own number at the checkout', [r.status, offOrder?.phoneVerified], [200, true]);
+    await onlineShop.save(A, { accounts: true });
+    m = await me(tP1);
+    eq('accounts back on: the same sign-in works again, nothing lost', [m?.signedIn, m?.hearts?.length > 0], [true, true]);
+    await onlineShop.save(A, { wishlist: false });
+    m = await me(tP1);
+    r = await call(sa(`/products/${encodeURIComponent(shopA.saree.p.productCode)}/like`), { token: tP1, liked: true });
+    eq('wishlist off, accounts on: no hearts on the account, a heart refused, still signed in', [m?.signedIn, m?.hearts, r.status, await flags()], [true, [], 400, [true, false, true]]);
+    await onlineShop.save(A, { wishlist: true });
+    await prisma.customer.update({ where: { id: c1.id }, data: { storeCreditPaise: 50000 } });
+    m = await me(tP1);
+    eq('balances on, loyalty on: points and credit shown', [m.points, m.storeCredit], [1240, 500]);
+    await onlineShop.save(A, { showBalances: false });
+    m = await me(tP1);
+    eq('balances off: neither shown, the rest of the account is', [m.points, m.storeCredit, m.signedIn, m.orders.length > 0], [null, null, true, true]);
+    eq('the owner\'s settings read back what was saved', [((await onlineShop.settingsFor(A)) as any).accounts, ((await onlineShop.settingsFor(A)) as any).wishlist, ((await onlineShop.settingsFor(A)) as any).showBalances], [true, true, false]);
   } catch (e: any) {
     console.error(e);
     check(`the suite reached the end (stopped at: ${String(e?.message ?? e).split('\n')[0]})`, false);

@@ -2382,3 +2382,5 @@ body { overflow-x: hidden; }
 .heart:disabled { opacity: .6; }
 .heartsaid { position: absolute; right: 0; top: 50px; white-space: nowrap; font-size: 12px; color: var(--save);
   background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; z-index: 2; }
+/* The shop's logo in the footer (29 Oct, owner: "a little big"): taller, kept whole whatever its shape. */
+.foot .who .mark { width: auto; height: 64px; max-width: 200px; object-fit: contain; border-radius: 10px; margin-bottom: 10px; }

@@ -4269,6 +4269,15 @@ model OnlineShop {
   /// unless it says otherwise, and shown only where the platform has a try-on gateway at all.
   tryOn Boolean @default(false) @map("try_on")
 
+  /// Customer accounts (29 Oct): shoppers may sign in with their WhatsApp number. The shop's choice,
+  /// because every sign-in code is one message from its number's daily allowance. On by default; it
+  /// works only while the shop's WhatsApp is linked (the code needs it).
+  accounts     Boolean @default(true) @map("accounts")
+  /// Signed-in shoppers can heart pieces into a wishlist. Needs accounts.
+  wishlist     Boolean @default(true) @map("wishlist")
+  /// A signed-in shopper sees their points (while loyalty is on) and store credit on their account.
+  showBalances Boolean @default(true) @map("show_balances")
+
   /// The PIN codes this shop delivers to. Empty means everywhere, which is what most shops mean
   /// when they have not thought about it. A shop that lists some is refusing the rest, and the
   /// customer is told before they have typed an address nobody will deliver to.

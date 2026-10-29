@@ -125,14 +125,14 @@ export default function Nav({ shop, compact = false }) {
               </svg>
             </button>
 
-            {/* Signed in: their first name (or "Account"); signed out: "Sign in". */}
-            <Link to={`/${slug}/account`} className="icon worded" aria-label={me ? 'Your account' : 'Sign in'} title={me ? 'Your account' : 'Sign in'}>
+            {/* Signed in: their first name (or "Account"); signed out: "Sign in". Only where the shop offers accounts. */}
+            {shop?.accounts !== false ? <Link to={`/${slug}/account`} className="icon worded" aria-label={me ? 'Your account' : 'Sign in'} title={me ? 'Your account' : 'Sign in'}>
               <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
                 <circle cx="12" cy="8.5" r="3.8" />
                 <path d="M4.5 20.2c1.2-3.6 4.1-5.4 7.5-5.4s6.3 1.8 7.5 5.4" />
               </svg>
               <span className="word" aria-hidden="true">{me ? (firstName && firstName.length <= 12 ? firstName : 'Account') : 'Sign in'}</span>
-            </Link>
+            </Link> : null}
             {/* An order is a parcel on its way: a box. The words show beside both on a wide screen. */}
             <Link to={`/${slug}/orders`} className="icon worded" aria-label="Your orders" title="Your orders">
               <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">

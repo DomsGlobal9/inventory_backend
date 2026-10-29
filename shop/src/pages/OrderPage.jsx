@@ -91,7 +91,7 @@ export default function OrderPage({ shop }) {
    * sign-in (90 days), so their orders, addresses and hearts are there next time without asking.
    * Quiet either way; nothing on this page waits for it.
    */
-  useEffect(() => { void becomeSignedIn(slug); }, [slug]);
+  useEffect(() => { if (shop?.accounts !== false) void becomeSignedIn(slug); }, [slug, shop?.accounts]);
 
   if (state.loading) return <div className="bone" style={{ height: 260, borderRadius: 14, margin: '20px 0' }} />;
 

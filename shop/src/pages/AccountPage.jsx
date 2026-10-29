@@ -43,6 +43,17 @@ export default function AccountPage({ shop }) {
 
   useEffect(() => { void load(); }, [load]);
 
+  if (shop?.accounts === false) {
+    return (
+      <div className="account">
+        <section className="card asignin">
+          <h1>{shop?.name || 'This shop'} does not offer accounts</h1>
+          <p>You can still order without signing in. Your order's link, in the WhatsApp the shop sends, is how you check on it.</p>
+          <Link className="go quiet" to={`/${slug}/orders`}>Orders from this phone</Link>
+        </section>
+      </div>
+    );
+  }
   if (me === null) return <div className="bone" style={{ height: 320, borderRadius: 14, margin: '20px 0' }} />;
   if (!me.signedIn) {
     return <SignIn slug={slug} shop={shop} canSignIn={me.canSignIn} why={where.state?.why}
@@ -121,7 +132,7 @@ export default function AccountPage({ shop }) {
         {me.orders.length > ORDERS_SHOWN ? <Link className="go quiet" to={`/${slug}/orders`}>See all {me.orders.length} orders</Link> : null}
       </section>
 
-      <section className="card">
+      {shop?.wishlist === false ? null : <section className="card">
         <h2>Your wishlist</h2>
         {me.hearts.length === 0 ? (
           <p className="aempty">Tap the heart on a piece to save it here.</p>
@@ -145,7 +156,7 @@ export default function AccountPage({ shop }) {
             ))}
           </ul>
         )}
-      </section>
+      </section>}
 
       <section className="card">
         <h2>Saved addresses</h2>
