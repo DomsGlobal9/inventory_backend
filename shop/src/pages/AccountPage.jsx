@@ -45,7 +45,9 @@ export default function AccountPage({ shop }) {
   useEffect(() => { void load(); }, [load]);
   // The bar's Wishlist opens this page at #wishlist: brought into view once the account is in.
   useEffect(() => {
-    if (where.hash === '#wishlist' && me?.signedIn) document.getElementById('wishlist')?.scrollIntoView({ block: 'start' });
+    // ...and Saved addresses at #addresses, the same way.
+    const id = { '#wishlist': 'wishlist', '#addresses': 'addresses' }[where.hash];
+    if (id && me?.signedIn) document.getElementById(id)?.scrollIntoView({ block: 'start' });
   }, [where.hash, me?.signedIn]);
 
   if (shop?.accounts === false) {
@@ -174,7 +176,7 @@ export default function AccountPage({ shop }) {
         )}
       </section>}
 
-      <section className="card">
+      <section className="card" id="addresses" style={{ scrollMarginTop: 'calc(var(--bar, 64px) + 12px)' }}>
         <h2>Saved addresses</h2>
         {me.addresses.length === 0 ? (
           <p className="aempty">Addresses you order to are saved here for next time.</p>

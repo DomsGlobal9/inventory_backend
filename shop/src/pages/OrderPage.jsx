@@ -250,7 +250,7 @@ export default function OrderPage({ shop }) {
         <div className="due">
           <span>
             {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.paidOnDelivery ? 'Paid on delivery' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
-            <span>{refunding ? 'Going back to how you paid' : (o.paid || o.paidOnDelivery) ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash or UPI when it arrives' : ''}</span>
+            <span>{refunding ? 'Going back to how you paid' : (o.paid || o.paidOnDelivery) ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash on Delivery (COD): cash or UPI' : ''}</span>
           </span>
           <b>{money(o.total)}</b>
         </div>

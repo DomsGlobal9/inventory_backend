@@ -160,7 +160,7 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
       aria-label={`See ${product.title} on you`}>
       <div className="sheetin">
         <div className="sheethead">
-          <h2>{result ? product.title : 'See it on you'}</h2>
+          <h2>{result ? product.title : 'Try on'}</h2>
           <button type="button" className="icon" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
@@ -213,7 +213,7 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
                 {onPhone ? 'Retake' : 'Choose another'}
               </button>
               <button type="button" className="go" disabled={busy} onClick={go}>
-                {busy ? 'Working…' : 'See it on me'}
+                {busy ? 'Working…' : 'Try it on'}
               </button>
             </div>
             {/* role=status so the wait is announced to a screen reader, which cannot see the band

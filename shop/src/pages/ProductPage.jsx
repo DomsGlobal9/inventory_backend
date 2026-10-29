@@ -525,8 +525,8 @@ export default function ProductPage({ slug, shop }) {
                 </svg>
               </span>
               <span className="words">
-                See it on you
-                <small>Put this piece on your own photo</small>
+                Try on
+                <small>See this piece on your own photo</small>
               </span>
               <em>Free</em>
               <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -550,20 +550,13 @@ export default function ProductPage({ slug, shop }) {
                     {shop.buying.deliveryFee > 0 && shop.buying.freeDeliveryAbove
                       ? `Free on orders over ${money(shop.buying.freeDeliveryAbove, currency)}`
                       : 'Delivered to your address'}
-                    {shop.buying.payWays?.includes('ONLINE') && shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Pay online or when it arrives' : shop.buying.payWays?.includes('ONLINE') ? ' · Pay online' : shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Pay when it arrives' : ''}
+                    {shop.buying.payWays?.includes('ONLINE') && shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Online payment or Cash on Delivery (COD)' : shop.buying.payWays?.includes('ONLINE') ? ' · Secure online payment' : shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Cash on Delivery (COD) available' : ''}
                   </span>
                 </div>
               </div>
             ) : null}
-            <div>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                <path d="M12 3l7 3v5.5c0 4-3 7.5-7 8.5-4-1-7-4.5-7-8.5V6l7-3Z" strokeLinejoin="round" />
-              </svg>
-              <div style={{ display: 'block' }}>
-                <b>Sold by {shop?.seller?.name || shop?.name}</b>
-                <span>{shop?.returnPolicy ? 'Returns as set out at the bottom of this page' : 'Ask the shop before you buy'}</span>
-              </div>
-            </div>
+            {/* "Sold by ... / Returns as set out at the bottom of this page" stood here; taken out (owner,
+                29 Oct). The seller's name, address and return policy are in the footer of every page. */}
           </div>
 
           {/* Sending ONE piece to somebody, which is how a great deal of this sells: a customer

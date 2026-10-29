@@ -25,7 +25,7 @@ import { EmptyBag } from '../components/Motion';
  */
 
 const PAY = {
-  ON_DELIVERY: { title: 'Pay when it arrives', note: 'Cash or UPI to the delivery person.' },
+  ON_DELIVERY: { title: 'Cash on Delivery (COD)', note: 'Pay by cash or UPI when your order is delivered.' },
   // UPI first: on a saree it costs the shop a fraction of what a card does (see the payments plan).
   ONLINE: { title: 'Pay now', note: 'UPI, card or net banking — securely through Razorpay.' }
 };
@@ -264,7 +264,7 @@ export default function CheckoutPage({ shop }) {
     } catch (why) {
       setPlacing(false);
       if (why?.unavailable) {
-        setRefused('The payment page could not open on this connection. Nothing was charged. Try again, or choose to pay when it arrives.');
+        setRefused('The payment page could not open on this connection. Nothing was charged. Try again, or choose Cash on Delivery (COD).');
       } else {
         setRefused('Payment not completed. Nothing was charged — your bag is still here when you are ready.');
       }
