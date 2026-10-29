@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { isTestOrigin } from './product-photos';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { readColorMetadata } from '../lib/catalogMetadata';
@@ -51,7 +52,12 @@ export interface ImportRow {
   sellingPrice?: number;
   reorderLevel?: number;
   locationCode?: string;
+  /** Web links to photos the shop already has online (the Photos / Photo1..5 columns). Fetched after the import. */
+  photos?: string[];
 }
+
+/** How many photo links one row may carry. */
+const MAX_PHOTO_LINKS = 5;
 
 export interface ImportIssue {
   rowNumber: number;
@@ -144,6 +150,7 @@ class ProductImportService {
     const touchesPrice = rows.some(r => this.num(r.sellingPrice) !== undefined || this.num(r.basePrice) !== undefined);
     const touchesCost = rows.some(r => this.num(r.costPrice) !== undefined);
     const createsAnything = rows.some(r => !r.productCode);
+    const addsPhotos = rows.some(r => Array.isArray(r.photos) && r.photos.some(u => String(u ?? '').trim()));
 
     if (createsAnything && !grants(heldPermissions, 'product:create')) {
       errors.push({ rowNumber: 0, message: 'This file creates new products. You do not have permission to add products.' });
@@ -153,6 +160,9 @@ class ProductImportService {
     }
     if (touchesCost && !grants(heldPermissions, 'cost:manage')) {
       errors.push({ rowNumber: 0, message: 'This file sets cost prices. You do not have permission to change costs.' });
+    }
+    if (addsPhotos && !grants(heldPermissions, 'product:update')) {
+      errors.push({ rowNumber: 0, message: 'This file adds photos. You do not have permission to change products.' });
     }
     if (errors.length) {
       return {
@@ -422,6 +432,23 @@ class ProductImportService {
           }
         }
 
+        // ── Photo links: checked now, fetched after the import ──────────────
+        //
+        // Only the shape is checked here (a web link, https). Whether the picture is really there is
+        // only known when it is fetched, one by one after the import, each with its own result.
+        if (row.photos !== undefined && row.photos !== null) {
+          const links = Array.isArray(row.photos) ? row.photos.map(u => String(u ?? '').trim()).filter(Boolean) : null;
+          if (!links) errors.push({ rowNumber: row.rowNumber, message: 'Photos must be web links.' });
+          else {
+            if (links.length > MAX_PHOTO_LINKS) errors.push({ rowNumber: row.rowNumber, message: `${links.length} photo links on one row. Keep it to ${MAX_PHOTO_LINKS}.` });
+            for (const link of links) {
+              let ok = false;
+              try { const u = new URL(link); ok = u.protocol === 'https:' || isTestOrigin(u); } catch { /* not a link */ }
+              if (!ok) { errors.push({ rowNumber: row.rowNumber, message: `"${link.slice(0, 60)}" is not an https web link to a photo.` }); break; }
+            }
+          }
+        }
+
         // ── Numbers must be numbers of the right shape ──────────────────────
         //
         // The same rules bulkUpdateVariantSchema enforces, because a file should not be
@@ -482,7 +509,9 @@ class ProductImportService {
     if (newProducts > 0 && errors.length === 0) {
       warnings.push({
         rowNumber: 0,
-        message: `${newProducts} new ${newProducts === 1 ? 'product arrives' : 'products arrive'} as a draft, because a file cannot carry photographs. Add photos, then publish from the product page.`
+        message: addsPhotos
+          ? `${newProducts} new ${newProducts === 1 ? 'product arrives' : 'products arrive'} as a draft. The photo links are added next; then publish the ones with photos.`
+          : `${newProducts} new ${newProducts === 1 ? 'product arrives' : 'products arrive'} as a draft, with no photos yet. Add their photos next (a folder named by SKU works), then publish.`
       });
     }
 
@@ -544,6 +573,13 @@ class ProductImportService {
     }
 
     let createdProducts = 0, createdVariants = 0, updatedVariants = 0, stockMovements = 0;
+    /** Every product this file touched, so the screen can offer "Add their photos". */
+    const productIds = new Set<string>();
+    /**
+     * The sheet's photo links, by product and colour, handed back rather than fetched here: one slow
+     * or dead link must not hold the import's transactions open, and each gets its own result on screen.
+     */
+    const photoLinks = new Map<string, { productId: string; colour: string | null; urls: string[] }>();
     /** Existing items whose reorder level this file sets. */
     const newLevels: string[] = [];
 
@@ -605,7 +641,17 @@ class ProductImportService {
           createdProducts++;
         }
 
+        productIds.add(productId);
         for (const row of group.rows) {
+          // A row with a colour: the photos show that colour (every size of it). Without: the piece.
+          const links = Array.isArray(row.photos) ? row.photos.map(u => String(u ?? '').trim()).filter(Boolean) : [];
+          if (links.length) {
+            const colour = row.color?.trim() || null;
+            const k = `${productId}|${(colour ?? '').toLowerCase()}`;
+            const set = photoLinks.get(k) ?? { productId, colour, urls: [] };
+            for (const u of links) if (!set.urls.includes(u)) set.urls.push(u);
+            photoLinks.set(k, set);
+          }
           const sku = row.sku?.trim() || this.buildSku(productCode, row.color, row.size);
           const existing = await tx.productVariant.findFirst({ where: { clientId, sku }, select: { id: true } });
 
@@ -681,7 +727,11 @@ class ProductImportService {
         .catch(err => console.error('[productImport] stock alerts could not be re-checked', err));
     }
 
-    return { importId, createdProducts, createdVariants, updatedVariants, stockMovements };
+    return {
+      importId, createdProducts, createdVariants, updatedVariants, stockMovements,
+      productIds: [...productIds],
+      photoLinks: [...photoLinks.values()].map(s => ({ ...s, urls: s.urls.slice(0, 20) }))
+    };
   }
 
   /**

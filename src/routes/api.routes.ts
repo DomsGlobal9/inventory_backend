@@ -30,6 +30,7 @@ import logisticsRoutes from './logistics.routes';
 import roleRoutes from './role.routes';
 import brandingRoutes from './branding.routes';
 import productImportRoutes from './product-import.routes';
+import productPhotosRoutes from './product-photos.routes';
 import { returnsRoutes } from './returns.routes';
 import authRoutes from './auth.routes';
 import locationRoutes from './location.routes';
@@ -140,6 +141,8 @@ const hideCost = hideCostUnlessPermitted();
 // Mounted BEFORE /products so that /products/import is not swallowed by /products/:id.
 router.use('/products/import', hideCost, productImportRoutes);
 router.use('/products', hideCost, productRoutes);
+// Photos for many products at once (after a sheet import, or a folder named by SKU).
+router.use('/product-photos', productPhotosRoutes);
 // Except a variant's suppliers: that path falls through to supplierProductRoutes below, and a
 // supplier's agreed price is shown to supplier:view by design.
 router.use('/variants', hideCostUnlessPermitted({ except: /^\/[^/]+\/suppliers\/?$/ }), variantRoutes);
