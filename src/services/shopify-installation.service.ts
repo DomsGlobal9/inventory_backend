@@ -26,6 +26,17 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 /** Renew this far before expiry, so a call in flight does not fail on a boundary. */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Renew a store whose RENEWAL pass runs out within this long (31 Oct).
+ *
+ * The renewal pass lasts 90 days and is only extended by using it, and it is only used when something
+ * needs to call Shopify. A quiet store -- nothing sold, nothing edited -- would reach day 90 and be cut
+ * off without anyone being told. Renewing at 30 days left keeps every connected store alive.
+ */
+export const KEEP_ALIVE_MS = 30 * 24 * 60 * 60 * 1000;
+/** The bell says so at most this often per store when a renewal fails. */
+const RECONNECT_NOTICE_EVERY_MS = 24 * 60 * 60 * 1000;
+export const RECONNECT_NOTICE_TITLE = 'Shopify needs reconnecting';
 
 export class ShopifyConfigurationError extends Error {}
 export class ShopifyInstallError extends Error {}
@@ -280,10 +291,73 @@ export class ShopifyInstallationService {
       && installation.accessTokenExpiresAt.getTime() - REFRESH_MARGIN_MS < Date.now();
 
     if (expiring && installation.refreshTokenEncrypted) {
-      return this.refresh(installation.id, installation.shopDomain, installation.refreshTokenEncrypted);
+      return this.renewOnce(installation.id, installation.shopDomain, installation.refreshTokenEncrypted);
     }
 
     return decryptCredential(installation.accessTokenEncrypted);
+  }
+
+  /**
+   * One renewal per store at a time (31 Oct).
+   *
+   * The renewal pass can be used ONCE. The product worker, the discount worker, the order-update worker
+   * and a webhook can all find the access pass expired in the same second; four renewals with one pass
+   * means three refusals, each failing whatever Shopify work asked for it. So callers in this process
+   * share the renewal already under way, and refresh() recovers when another process won the race.
+   */
+  private renewing = new Map<string, Promise<string>>();
+
+  private renewOnce(id: string, shopDomain: string, refreshTokenEncrypted: string): Promise<string> {
+    const running = this.renewing.get(id);
+    if (running) return running;
+    const p = this.refresh(id, shopDomain, refreshTokenEncrypted).finally(() => this.renewing.delete(id));
+    this.renewing.set(id, p);
+    return p;
+  }
+
+  /**
+   * Renews every connected store whose renewal pass runs out within KEEP_ALIVE_MS (31 Oct). Run on a
+   * schedule. A store that cannot be renewed is told in the bell (once a day) to reconnect, since from
+   * day 90 its orders and stock stop moving.
+   */
+  async keepAlive(now = Date.now()): Promise<{ renewed: string[]; failed: string[] }> {
+    const due = await prisma.shopifyInstallation.findMany({
+      where: { uninstalledAt: null, refreshTokenEncrypted: { not: null }, refreshTokenExpiresAt: { lt: new Date(now + KEEP_ALIVE_MS) } },
+      select: { id: true, shopDomain: true, clientId: true, refreshTokenEncrypted: true }
+    });
+    const renewed: string[] = [];
+    const failed: string[] = [];
+    for (const i of due) {
+      try {
+        await this.renewOnce(i.id, i.shopDomain, i.refreshTokenEncrypted!);
+        renewed.push(i.shopDomain);
+      } catch (error) {
+        // A deployment without the app's keys cannot renew anything; that is not the shop's to fix.
+        if (error instanceof ShopifyConfigurationError) return { renewed, failed };
+        failed.push(i.shopDomain);
+        console.error(`[shopify] could not keep ${i.shopDomain} connected:`, (error as Error)?.message);
+        if (i.clientId) await this.tellReconnect(i.clientId, i.shopDomain, now);
+      }
+    }
+    return { renewed, failed };
+  }
+
+  /** The bell, at most once a day per shop: reconnecting is the shop's to do, and only they can. */
+  private async tellReconnect(clientId: string, shopDomain: string, now: number) {
+    try {
+      const recent = await prisma.inventoryAlert.count({
+        where: { clientId, title: RECONNECT_NOTICE_TITLE, createdAt: { gt: new Date(now - RECONNECT_NOTICE_EVERY_MS) } }
+      });
+      if (recent) return;
+      await prisma.inventoryAlert.create({
+        data: {
+          clientId, type: 'SYSTEM_ERROR', severity: 'CRITICAL', title: RECONNECT_NOTICE_TITLE,
+          message: `ScaleEzy could not renew its access to ${shopDomain}. Open Settings, then Shopify, and connect the store again. Until then Shopify orders and stock stop moving.`
+        }
+      });
+    } catch (error) {
+      console.error('[shopify] could not raise the reconnect notice', error);
+    }
   }
 
   /**
@@ -309,6 +383,15 @@ export class ShopifyInstallationService {
     );
 
     if (response.status < 200 || response.status >= 300 || !response.data?.access_token) {
+      // Lost a race with another process (the pass was spent by it)? Then the row already holds a fresh
+      // pass, and that is the answer -- not a failure that stops the Shopify work that asked for it.
+      const latest = await prisma.shopifyInstallation.findUnique({
+        where: { id }, select: { refreshTokenEncrypted: true, accessTokenEncrypted: true, accessTokenExpiresAt: true }
+      });
+      if (latest && latest.refreshTokenEncrypted !== refreshTokenEncrypted
+        && (!latest.accessTokenExpiresAt || latest.accessTokenExpiresAt.getTime() - REFRESH_MARGIN_MS > Date.now())) {
+        return decryptCredential(latest.accessTokenEncrypted);
+      }
       throw new ShopifyInstallError(
         `Could not renew access to ${shopDomain} (HTTP ${response.status}). The merchant may need to reconnect.`
       );

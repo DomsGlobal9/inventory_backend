@@ -28,7 +28,8 @@ import { shopifyPrivacyService, scrubShopifyPayload, ERASED_NAME } from '../serv
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 const SECRET = process.env.SHOPIFY_API_SECRET || 'verify-local-secret';
-const CLIENT = 'demo-client';
+// The local copy may not have demo-client any more (31 Oct); any test shop with a MAIN-STORE, a product and an ADMIN role will do.
+const CLIENT = process.env.PRIVACY_CLIENT || 'demo-client';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -436,7 +437,7 @@ async function cleanup() {
     users: await prisma.user.count({ where: { id: { in: created.users } } })
   };
   const clean = Object.values(left).every(n => n === 0);
-  check('cleanup left nothing behind on demo-client', clean, JSON.stringify(left));
+  check(`cleanup left nothing behind on ${CLIENT}`, clean, JSON.stringify(left));
 }
 
 main()

@@ -228,10 +228,16 @@ async function main() {
   const missing = shopifyInstallationService.missingScopes('read_products,read_inventory');
   check('a scope the merchant declined is reported', missing.includes('write_inventory'),
     missing.join(',') || 'none reported');
+  // Everything the app asks for, today: since 29 Oct that includes the fulfilment permissions for
+  // telling Shopify about Logistics shipments. The list was typed out here and went stale.
   check('nothing is reported missing when everything was granted',
     shopifyInstallationService.missingScopes(
-      'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders,write_discounts'
+      'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders,write_discounts,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,write_fulfillments,write_orders'
     ).length === 0);
+  check('...and a store that approved only the older permissions is asked for the fulfilment ones',
+    JSON.stringify(shopifyInstallationService.missingScopes(
+      'read_products,write_products,read_inventory,write_inventory,read_locations,read_publications,write_publications,read_orders,write_discounts'
+    ).sort()) === JSON.stringify(['read_merchant_managed_fulfillment_orders', 'write_fulfillments', 'write_merchant_managed_fulfillment_orders', 'write_orders']));
 
   // ─── DISPATCHER ───────────────────────────────────────────────────────────
   console.log('\nA SHOPIFY CONNECTION IS NEVER TREATED AS A GENERIC ONE');
