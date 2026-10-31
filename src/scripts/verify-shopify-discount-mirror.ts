@@ -401,31 +401,19 @@ async function main() {
   theirs.title = 'DEEPAVALI MEGA SALE';
   theirs.customerGets.value = { __typename: 'DiscountPercentage', percentage: 0.3 };
 
+  // ScaleEzy wins, and says so (owner, 31 Oct): the offer's version is put back, the bell is told.
+  const notices = (title: string) => prisma.inventoryAlert.findMany({ where: { clientId: CLIENT, title }, select: { message: true } });
   const drift = await offerMirrorService.reconcile(synced!.id, apiFor);
-  const drifted = await mirrorOf(sale.id);
-  check('reading it back notices', drift === 'DRIFTED' && drifted?.status === 'DRIFTED', drift);
-  check('  ...and names what changed', /the name/.test(drifted?.problem ?? '') && /how much comes off/.test(drifted?.problem ?? ''), drifted?.problem ?? '');
-  check('  ...without overwriting the merchant\'s change on its own', store.discounts.get(synced!.shopifyDiscountId!)!.customerGets.value.percentage === 0.3);
-
-  await offerMirrorService.pushOurs(CLIENT, sale.id);
+  check('reading it back notices, and queues ours to go back', drift === 'RESTORED' && (await mirrorOf(sale.id))?.status === 'PENDING', drift);
+  const changedNote = await notices(`Changed in Shopify: ${sale.name}`);
+  check('  ...the bell says so, naming what changed', changedNote.length === 1 && /the name/.test(changedNote[0].message) && /how much comes off/.test(changedNote[0].message) && /put its own version back/.test(changedNote[0].message), changedNote);
   await settle(sale.id);
-  check('"push ours" puts the offer\'s version back', store.discounts.get(synced!.shopifyDiscountId!)!.customerGets.value.percentage === 0.25 &&
-    (await mirrorOf(sale.id))?.status === 'SYNCED');
-
-  // Fetched again: the push above replaced the stored discount, so the old reference edits nothing.
-  const theirsAgain = store.discounts.get(synced!.shopifyDiscountId!)!;
-  theirsAgain.customerGets.value = { __typename: 'DiscountPercentage', percentage: 0.3 };
-  await offerMirrorService.reconcile(synced!.id, apiFor);
-  const versionsBefore = await prisma.offerVersion.count({ where: { offerId: sale.id } });
-  await offerMirrorService.acceptTheirs(CLIENT, sale.id, USER, apiFor);
-  const acceptedOffer = await prisma.offer.findUniqueOrThrow({ where: { id: sale.id } });
-  check('"accept theirs" changes the offer here to 30%', Number(acceptedOffer.value) === 30, String(acceptedOffer.value));
-  const newest = await prisma.offerVersion.findFirst({ where: { offerId: sale.id }, orderBy: { version: 'desc' } });
-  check('  ...as a new version, saying it came from Shopify', (await prisma.offerVersion.count({ where: { offerId: sale.id } })) === versionsBefore + 1 &&
-    /Shopify/.test(newest?.changeNote ?? ''), newest?.changeNote ?? '');
-  await settle(sale.id);
-  check('  ...and both sides agree afterwards, with no second discount', (await mirrorOf(sale.id))?.status === 'SYNCED' &&
+  check("  ...and the offer's version is back in Shopify: 25%, its own name, one discount",
+    store.discounts.get(synced!.shopifyDiscountId!)!.customerGets.value.percentage === 0.25 &&
+    store.discounts.get(synced!.shopifyDiscountId!)!.title !== 'DEEPAVALI MEGA SALE' &&
+    (await mirrorOf(sale.id))?.status === 'SYNCED' &&
     [...store.discounts.values()].filter(n => n.tags.includes(mirrorTag(sale.id))).length === 1);
+  check('  ...the offer here is untouched (still 25%)', Number((await prisma.offer.findUniqueOrThrow({ where: { id: sale.id } })).value) === 25);
 
   // Nobody touched it; the offer simply reached its end.
   const ending = await liveOffer({ name: 'Ends soon', value: 4, stackable: true, endsAt: new Date(Date.now() + 60 * 60 * 1000) });
@@ -435,18 +423,20 @@ async function main() {
   const past = new Date(Date.now() - 1000).toISOString();
   store.discounts.get(endingMirror!.shopifyDiscountId!)!.endsAt = past;
   await prisma.offer.update({ where: { id: ending.id }, data: { endsAt: new Date(past) } });
-  check('an offer that simply reached its end is in step, not drifted',
-    (await offerMirrorService.reconcile(endingMirror!.id, apiFor)) === 'SYNCED');
+  check('an offer that simply reached its end is in step, not put back',
+    (await offerMirrorService.reconcile(endingMirror!.id, apiFor)) === 'SYNCED' && (await notices(`Changed in Shopify: Ends soon`)).length === 0);
 
-  // Deleted in Shopify.
+  // Deleted in Shopify: made again, as a new discount, and the bell is told.
   const gone = await mirrorOf(timeout.id);
   store.discounts.delete(gone!.shopifyDiscountId!);
-  check('a copy deleted in Shopify is reported as deleted', (await offerMirrorService.reconcile(gone!.id, apiFor)) === 'DELETED' &&
-    /Deleted in Shopify/.test((await mirrorOf(timeout.id))?.problem ?? ''));
-  await offerMirrorService.pushOurs(CLIENT, timeout.id);
+  check('a copy deleted in Shopify is noticed and queued to be made again', (await offerMirrorService.reconcile(gone!.id, apiFor)) === 'RESTORED' &&
+    (await mirrorOf(timeout.id))?.status === 'PENDING');
+  const timeoutOffer = await prisma.offer.findUniqueOrThrow({ where: { id: timeout.id } });
+  check('  ...the bell says it was deleted and is being put back', (await notices(`Deleted in Shopify: ${timeoutOffer.name}`)).some(n => /putting it back/.test(n.message)));
   await settle(timeout.id);
   const recreated = await mirrorOf(timeout.id);
-  check('  ..."push ours" puts it back as a new discount', recreated?.status === 'SYNCED' && recreated.shopifyDiscountId !== gone!.shopifyDiscountId);
+  check('  ...and it is back as a new discount', recreated?.status === 'SYNCED' && !!recreated.shopifyDiscountId && recreated.shopifyDiscountId !== gone!.shopifyDiscountId &&
+    [...store.discounts.values()].filter(n => n.tags.includes(mirrorTag(timeout.id))).length === 1);
 
   // The webhook fast path.
   await prisma.offerExternalMirror.update({ where: { id: recreated!.id }, data: { lastCheckedAt: new Date() } });
@@ -555,6 +545,7 @@ async function main() {
 main()
   .catch(e => { console.error('\nSUITE CRASHED:', e); failed++; failures.push('suite crashed'); })
   .finally(async () => {
+    await prisma.inventoryAlert.deleteMany({ where: { clientId: CLIENT } });
     await prisma.offerExternalMirror.deleteMany({ where: { clientId: CLIENT } });
     await prisma.offerRedemption.deleteMany({ where: { clientId: CLIENT } });
     await prisma.offerVersion.deleteMany({ where: { offer: { clientId: CLIENT } } });

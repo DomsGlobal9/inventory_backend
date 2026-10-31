@@ -685,6 +685,17 @@ export class OfferMirrorService {
    * the offer is unchanged and the mirror's status is still the one it was claimed with. Otherwise
    * what Shopify now holds is still recorded, and the copy is left for the next pass.
    */
+  /**
+   * The bell, worded like the product notices ("Changed in Shopify: ...") so it is labelled SHOPIFY
+   * there. Pinned to the paired store: the bell lists only the store a person has chosen.
+   */
+  private async notice(clientId: string, title: string, message: string) {
+    const pairing = await prisma.shopifyLocationMap.findFirst({ where: { clientId }, select: { locationId: true } }).catch(() => null);
+    await prisma.inventoryAlert.create({
+      data: { clientId, type: 'STOCK_DISCREPANCY', severity: 'WARNING', title: title.slice(0, 200), message, locationId: pairing?.locationId ?? null }
+    }).catch(error => console.error('[offer mirror] could not raise a notice', error));
+  }
+
   private async settle(
     mirror: { id: string; offerId: string; status: string; offer: { updatedAt: Date } },
     data: Record<string, unknown>,
@@ -747,9 +758,16 @@ export class OfferMirrorService {
       const now = new Date();
       const theirs = canonicalFromShopify(data?.discountNode?.discount, now);
 
+      /*
+       * ScaleEzy wins, and says so (owner, 31 Oct: "A") -- the same rule as products. A copy changed or
+       * deleted inside Shopify is put back from the offer here on the next pass, and the shop is told
+       * in the bell. To change a discount, change the offer here.
+       */
       if (!theirs) {
-        await release({ status: 'FAILED', problem: 'Deleted in Shopify. Push ours to put it back, or take it off Shopify here.' });
-        return 'DELETED';
+        await release({ status: 'PENDING', problem: null, shopifyDiscountId: null, kind: null, attempts: 0, nextAttemptAt: null });
+        await this.notice(mirror.clientId, `Deleted in Shopify: ${mirror.offer.name}`,
+          'This discount was deleted in Shopify. ScaleEzy is putting it back, because the offer is on here. To take it off Shopify, change the offer here.');
+        return 'RESTORED';
       }
 
       const remoteHash = hashCanonical(theirs);
@@ -766,11 +784,10 @@ export class OfferMirrorService {
       }
 
       const differences = desired.ok ? describeDifferences(desired.canonical, theirs) : ['the discount'];
-      await release({
-        status: 'DRIFTED', remoteHash,
-        problem: `Changed in Shopify: ${differences.join(', ')}. Push ours to put this offer back, or accept theirs to change the offer here.`
-      });
-      return 'DRIFTED';
+      await release({ status: 'PENDING', remoteHash, problem: null, attempts: 0, nextAttemptAt: null });
+      await this.notice(mirror.clientId, `Changed in Shopify: ${mirror.offer.name}`,
+        `Someone changed ${differences.slice(0, 3).join(', ')} in Shopify. ScaleEzy put its own version back. To change it, edit the offer here.`);
+      return 'RESTORED';
     } catch (error: any) {
       await release({});
       if (!(error instanceof ShopifyApiError)) console.error(`[offer mirror] reconcile ${mirror.id} failed`, error);
