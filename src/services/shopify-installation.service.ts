@@ -346,12 +346,18 @@ export class ShopifyInstallationService {
   private async tellReconnect(clientId: string, shopDomain: string, now: number) {
     try {
       const recent = await prisma.inventoryAlert.count({
-        where: { clientId, title: RECONNECT_NOTICE_TITLE, createdAt: { gt: new Date(now - RECONNECT_NOTICE_EVERY_MS) } }
+        // Per store, not per shop: a shop with two stores must hear about each one that fails.
+        where: { clientId, title: RECONNECT_NOTICE_TITLE, message: { contains: shopDomain }, createdAt: { gt: new Date(now - RECONNECT_NOTICE_EVERY_MS) } }
       });
       if (recent) return;
+      // Pinned to the store paired with this Shopify store: the bell lists only the store a person has
+      // chosen, and a notice with no store was saved and never seen (26 Oct screen test).
+      const pairing = await prisma.shopifyLocationMap.findFirst({
+        where: { clientId, installation: { shopDomain } }, select: { locationId: true }
+      }).catch(() => null);
       await prisma.inventoryAlert.create({
         data: {
-          clientId, type: 'SYSTEM_ERROR', severity: 'CRITICAL', title: RECONNECT_NOTICE_TITLE,
+          clientId, type: 'SYSTEM_ERROR', severity: 'CRITICAL', title: RECONNECT_NOTICE_TITLE, locationId: pairing?.locationId ?? null,
           message: `ScaleEzy could not renew its access to ${shopDomain}. Open Settings, then Shopify, and connect the store again. Until then Shopify orders and stock stop moving.`
         }
       });

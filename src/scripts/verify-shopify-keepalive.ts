@@ -118,6 +118,34 @@ async function main() {
     await shopifyInstallationService.keepAlive();
     check('a second keep-alive the same day does not say it twice', (await notices()).length === 1);
 
+    console.log('\n5b. Worst cases');
+    await prisma.inventoryAlert.deleteMany({ where: { clientId: CLIENT } });
+    // A store installed from Shopify's side and never claimed by a shop: nobody's bell to ring.
+    const orphan = await prisma.shopifyInstallation.create({ data: {
+      shopDomain: `orphan-${STAMP}.myshopify.com`, clientId: null, source: 'SCALEEZY' as any, scopes: 'read_products',
+      accessTokenEncrypted: encryptCredential('old-access-orphan'), refreshTokenEncrypted: encryptCredential('old-refresh-orphan'),
+      accessTokenExpiresAt: new Date(Date.now() + 3600_000), refreshTokenExpiresAt: new Date(Date.now() + 5 * DAY)
+    } as any });
+    refuseShops.add(orphan.shopDomain);
+    // A pass that never runs out (no expiry recorded): nothing to keep alive.
+    const forever = await make('forever', 0, { expired: false });
+    await prisma.shopifyInstallation.update({ where: { id: forever.id }, data: { refreshTokenExpiresAt: null } });
+    // A pass that already ran out: still tried (Shopify decides), and the shop told if refused.
+    const lapsed = await make('lapsed', -2 * DAY, { expired: false });
+    refuseShops.add(lapsed.shopDomain);
+    // A healthy store due for renewal, queued AFTER the failures: one bad store must not stop the rest.
+    const healthy = await make('healthy', 3 * DAY, { expired: false });
+    const r2 = await shopifyInstallationService.keepAlive().catch(e => ({ renewed: [], failed: [`THREW ${e.message}`] }));
+    check('a refusal on one store does not stop the others being renewed', r2.renewed.includes(healthy.shopDomain), r2);
+    check('a never-claimed store that fails: reported, no crash, no notice to anyone', r2.failed.includes(orphan.shopDomain) &&
+      (await prisma.inventoryAlert.count({ where: { title: RECONNECT_NOTICE_TITLE, message: { contains: orphan.shopDomain } } })) === 0, r2);
+    check('a pass that never expires is left alone', !r2.renewed.includes(forever.shopDomain) && !r2.failed.includes(forever.shopDomain));
+    check('a pass that already ran out is tried, and the shop told to reconnect', r2.failed.includes(lapsed.shopDomain) &&
+      (await notices()).some(n => n.message.includes(lapsed.shopDomain)), r2);
+    const after = await prisma.shopifyInstallation.findUniqueOrThrow({ where: { id: lapsed.id } });
+    check('...a refused store keeps its stored passes untouched (nothing half-written)', decryptCredential(after.refreshTokenEncrypted!) === 'old-refresh-lapsed' && decryptCredential(after.accessTokenEncrypted) === 'old-access-lapsed');
+    await prisma.shopifyInstallation.delete({ where: { id: orphan.id } });
+
     console.log('\n6. A deployment without the app keys');
     Object.assign(env as any, { SHOPIFY_API_KEY: undefined });
     await prisma.inventoryAlert.deleteMany({ where: { clientId: CLIENT } });

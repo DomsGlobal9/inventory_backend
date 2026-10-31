@@ -438,6 +438,45 @@ async function main() {
   check('  ...and it is back as a new discount', recreated?.status === 'SYNCED' && !!recreated.shopifyDiscountId && recreated.shopifyDiscountId !== gone!.shopifyDiscountId &&
     [...store.discounts.values()].filter(n => n.tags.includes(mirrorTag(timeout.id))).length === 1);
 
+  // ── Worst cases for "ScaleEzy wins" ────────────────────────────────────
+  // 1. A copy left DRIFTED by the old rule (waiting for "push ours / accept theirs") when this went live.
+  const leftover = await liveOffer({ name: 'Left waiting', value: 6, stackable: true });
+  await offerMirrorService.enable(CLIENT, leftover.id, USER);
+  await settle(leftover.id);
+  const lw = await mirrorOf(leftover.id);
+  store.discounts.get(lw!.shopifyDiscountId!)!.customerGets.value = { __typename: 'DiscountPercentage', percentage: 0.5 };
+  await prisma.offerExternalMirror.update({ where: { id: lw!.id }, data: { status: 'DRIFTED', problem: 'Changed in Shopify: how much comes off. Push ours to put this offer back, or accept theirs to change the offer here.', lastCheckedAt: null } });
+  await offerMirrorService.runOnce(apiFor);
+  await settle(leftover.id);
+  check('a copy left waiting by the old rule is put back on the next pass (50% -> 6%)',
+    store.discounts.get(lw!.shopifyDiscountId!)!.customerGets.value.percentage === 0.06 && (await mirrorOf(leftover.id))?.status === 'SYNCED' && !(await mirrorOf(leftover.id))?.problem);
+
+  // 2. Changed in Shopify again after being put back: put back again, and told again.
+  const twice = await mirrorOf(sale.id);
+  for (const pct of [0.4, 0.45]) {
+    store.discounts.get(twice!.shopifyDiscountId!)!.customerGets.value = { __typename: 'DiscountPercentage', percentage: pct };
+    await offerMirrorService.reconcile(twice!.id, apiFor);
+    await settle(sale.id);
+  }
+  check('changed in Shopify twice: put back both times, still one discount at 25%',
+    store.discounts.get(twice!.shopifyDiscountId!)!.customerGets.value.percentage === 0.25 &&
+    [...store.discounts.values()].filter(n => n.tags.includes(mirrorTag(sale.id))).length === 1 && (await mirrorOf(sale.id))?.status === 'SYNCED');
+  check('  ...and each change is told in the bell', (await notices(`Changed in Shopify: ${sale.name}`)).length === 3);
+
+  // 3. Edited here into something Shopify cannot say, AND changed in Shopify before the push ran:
+  //    no tug of war -- the copy comes off Shopify and the offer says why.
+  const bothSides = await liveOffer({ name: 'Both sides', value: 7, stackable: true });
+  await offerMirrorService.enable(CLIENT, bothSides.id, USER);
+  await settle(bothSides.id);
+  const bm = await mirrorOf(bothSides.id);
+  await prisma.offer.update({ where: { id: bothSides.id }, data: { maxDiscount: 500 } as any });
+  store.discounts.get(bm!.shopifyDiscountId!)!.customerGets.value = { __typename: 'DiscountPercentage', percentage: 0.9 };
+  await offerMirrorService.reconcile(bm!.id, apiFor);
+  await settle(bothSides.id);
+  const bothAfter = await mirrorOf(bothSides.id);
+  check('an offer Shopify can no longer hold, changed there too: taken off Shopify, marked unsupported, no loop',
+    bothAfter?.status === 'UNSUPPORTED' && !store.discounts.has(bm!.shopifyDiscountId!), bothAfter?.status);
+
   // The webhook fast path.
   await prisma.offerExternalMirror.update({ where: { id: recreated!.id }, data: { lastCheckedAt: new Date() } });
   await offerMirrorService.flagChangedInShopify(recreated!.shopifyDiscountId!);
