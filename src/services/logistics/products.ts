@@ -139,6 +139,41 @@ export async function many(clientId: string, rawSkus: unknown, locationId?: stri
   };
 }
 
+/**
+ * Every product of a shop, a page at a time (2 Nov): what Logistics reads when it asks for a shop's
+ * products by shop id alone, with no SKUs. Active, not trashed. In SKU order; `cursor` is the last SKU of
+ * the page before, so a product added mid-way cannot shift a page and make one be skipped or repeated.
+ * `updated_since` (ISO time) gives only what changed after it -- how they keep their copy in step.
+ */
+export const LIST_PAGE = 100;
+export async function list(clientId: string, opts: { cursor?: unknown; limit?: unknown; updatedSince?: unknown; locationId?: string } = {}) {
+  const limit = Math.min(Math.max(Number(opts.limit) || LIST_PAGE, 1), LIST_PAGE);
+  const cursor = typeof opts.cursor === 'string' && opts.cursor.trim() ? opts.cursor.trim().slice(0, 100) : null;
+  let since: Date | null = null;
+  if (opts.updatedSince !== undefined && opts.updatedSince !== '') {
+    since = new Date(String(opts.updatedSince));
+    if (Number.isNaN(since.getTime())) throw Object.assign(new Error('updated_since must be a date and time, for example 2026-11-01T00:00:00Z.'), { statusCode: 400 });
+  }
+  const rows = await prisma.productVariant.findMany({
+    where: {
+      clientId,
+      product: { status: 'ACTIVE', trashedAt: null },
+      ...(cursor ? { sku: { gt: cursor } } : {}),
+      // Either the size or its product changed: a new price on the product is a change to every size.
+      ...(since ? { OR: [{ updatedAt: { gt: since } }, { product: { updatedAt: { gt: since } } }] } : {})
+    },
+    orderBy: { sku: 'asc' },
+    take: limit + 1,
+    select: variantSelect
+  });
+  const page = rows.slice(0, limit);
+  const [chargesTax, stock] = await Promise.all([shopChargesTax(clientId), stockOf(clientId, page.map(r => r.id), opts.locationId)]);
+  return {
+    products: page.map(r => shape(r, chargesTax, stock.get(r.id))),
+    next_cursor: rows.length > limit ? page[page.length - 1].sku : null
+  };
+}
+
 /** For an autocomplete: SKU, name, price, picture. Matches SKU, title, colour or product code. */
 export async function search(clientId: string, rawQ: unknown, rawLimit?: unknown) {
   const typed = typeof rawQ === 'string' ? rawQ.trim().slice(0, 60) : '';

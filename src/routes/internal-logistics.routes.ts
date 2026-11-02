@@ -10,6 +10,8 @@ import { respondWithError } from '../utils/respondWithError';
  *
  *   GET /shops/:clientId/products/:sku             one product by SKU (404 when there is none)
  *   GET /shops/:clientId/products?skus=A,B,C       several: { products, not_found }
+ *   GET /shops/:clientId/products[?cursor=&limit=&updated_since=]  every active product, 100 a page:
+ *                                                  { products, next_cursor } (2 Nov)
  *   GET /shops/:clientId/products/search?q=saree   autocomplete: sku, name, price, picture
  *   POST /shops/:clientId/parcels/:parcelId/updates  booking, label and statuses of a packed parcel
  *
@@ -53,7 +55,13 @@ router.get('/shops/:clientId/products/:sku', shop, async (req, res) => {
 
 router.get('/shops/:clientId/products', shop, async (req, res) => {
   try {
-    if (typeof req.query.skus !== 'string' || !req.query.skus.trim()) return fail(res, 400, 'Say which SKUs: ?skus=A,B,C (up to 50).');
+    // No SKUs: the whole shop, a page at a time (2 Nov) -- what "products by shop id" means.
+    if (req.query.skus === undefined) {
+      return res.json({ success: true, data: await logisticsProducts.list(clientIdOf(req), {
+        cursor: req.query.cursor, limit: req.query.limit, updatedSince: req.query.updated_since, locationId: locationOf(req)
+      }) });
+    }
+    if (typeof req.query.skus !== 'string' || !req.query.skus.trim()) return fail(res, 400, 'Say which SKUs: ?skus=A,B,C (up to 50), or leave skus out for every product a page at a time.');
     res.json({ success: true, data: await logisticsProducts.many(clientIdOf(req), req.query.skus, locationOf(req)) });
   } catch (error) { return respondWithError(res, error, { status: 500 }); }
 });

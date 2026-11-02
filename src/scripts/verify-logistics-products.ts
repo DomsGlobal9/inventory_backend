@@ -127,8 +127,8 @@ const ask = (path: string, opts: { tok?: string | null; method?: string } = {}) 
     eq('order kept, each once, not_found listed', [r.status, r.body?.data?.products?.map((x: any) => x.sku), r.body?.data?.not_found], [200, [kur.sku, sar.sku], [`NOPE-${STAMP}`]]);
     r = await ask(`/modules/logistics/shops/${C}/products?skus=${Array.from({ length: 60 }, (_, i) => `X${i}`).join(',')}`);
     eq('60 asked: the first 50 answered', r.body?.data?.not_found?.length, 50);
-    r = await ask(`/modules/logistics/shops/${C}/products`);
-    eq('no skus: 400 with how to ask', [r.status, r.body?.message], [400, 'Say which SKUs: ?skus=A,B,C (up to 50).']);
+    r = await ask(`/modules/logistics/shops/${C}/products?skus=`);
+    eq('skus= left empty: 400 with how to ask', [r.status, r.body?.message], [400, 'Say which SKUs: ?skus=A,B,C (up to 50), or leave skus out for every product a page at a time.']);
     r = await ask(`/modules/logistics/shops/${C}/products/search?q=silk`);
     eq('search "silk": the saree, short shape', r.body?.data, [{ sku: sar.sku, name: 'Silk Saree - Maroon', selling_price: 2499, image_url: 'https://cdn.example/sar-mar.jpg', variant: { size: 'Free', color: 'Maroon' } }]);
     r = await ask(`/modules/logistics/shops/${C}/products/search?q=indigo`);
@@ -141,6 +141,46 @@ const ask = (path: string, opts: { tok?: string | null; method?: string } = {}) 
     eq('"%_" is matched as text, not as "anything"', [r.status, r.body?.data], [200, []]);
     r = await ask(`/modules/logistics/shops/${C}/products/search?q=a&limit=999`);
     check('a huge limit is harmless', r.status === 200, r.status);
+
+    console.log('\n4b. EVERY PRODUCT OF A SHOP (by shop id alone, 2 Nov)');
+    const trashed = await product(C, 'Trashed Saree', { trashedAt: new Date() });
+    await variant(C, trashed.id, `TRASH-${STAMP}`, { sellingPrice: 100 });
+    const activeSkus = [sar.sku, kur.sku, dup.sku, `ab-${STAMP}`, `AB-${STAMP}`].sort();
+    r = await ask(`/modules/logistics/shops/${C}/products`);
+    eq('no skus: every ACTIVE product, in SKU order, full shape (not archived, not trashed, not the other shop)',
+      [r.status, r.body?.data?.products?.map((x: any) => x.sku), r.body?.data?.next_cursor], [200, activeSkus, null]);
+    eq('...each the same full record as the SKU lookup', r.body?.data?.products?.find((x: any) => x.sku === sar.sku)?.stock_quantity, 7);
+    // Two a page, walked to the end: each product exactly once.
+    const walked: string[] = []; let cur: string | null = null; let pages = 0;
+    do {
+      r = await ask(`/modules/logistics/shops/${C}/products?limit=2${cur ? `&cursor=${encodeURIComponent(cur)}` : ''}`);
+      walked.push(...r.body.data.products.map((x: any) => x.sku)); cur = r.body.data.next_cursor; pages++;
+      // Worst case: a product added while they page, sorting BEFORE where they are -- nothing shifts.
+      if (pages === 1) await variant(C, saree.id, `AAA-NEW-${STAMP}`, { sellingPrice: 10 });
+    } while (cur && pages < 10);
+    eq('2 a page: 3 pages, every product once, none skipped by a product added mid-way', [pages, walked], [3, activeSkus]);
+    r = await ask(`/modules/logistics/shops/${C}/products?limit=0`);
+    check('limit=0 or junk: a normal page, not an error', r.status === 200 && r.body?.data?.products?.length >= 5, r.status);
+    r = await ask(`/modules/logistics/shops/${C}/products?limit=99999`);
+    check('a huge limit: capped at 100, not an error', r.status === 200, r.status);
+    r = await ask(`/modules/logistics/shops/${C}/products?location_id=${main.id}`);
+    eq('?location_id: stock in that store only', r.body?.data?.products?.find((x: any) => x.sku === sar.sku)?.stock_quantity, 3);
+    const since = new Date(Date.now() + 1000);
+    await new Promise(res => setTimeout(res, 1500));
+    await prisma.productVariant.update({ where: { id: kur.id }, data: { sellingPrice: 1500 } });
+    r = await ask(`/modules/logistics/shops/${C}/products?updated_since=${encodeURIComponent(since.toISOString())}`);
+    eq('?updated_since: only what changed after it (the kurti price)', r.body?.data?.products?.map((x: any) => [x.sku, x.selling_price]), [[kur.sku, 1680]]);
+    await prisma.product.update({ where: { id: saree.id }, data: { description: 'changed on the product' } });
+    r = await ask(`/modules/logistics/shops/${C}/products?updated_since=${encodeURIComponent(since.toISOString())}`);
+    check('...a change to the PRODUCT counts for each of its sizes', r.body?.data?.products?.some((x: any) => x.sku === sar.sku), r.body?.data?.products?.map((x: any) => x.sku));
+    r = await ask(`/modules/logistics/shops/${C}/products?updated_since=yesterday`);
+    eq('?updated_since that is not a date: 400 saying how', [r.status, /must be a date and time/.test(r.body?.message ?? '')], [400, true]);
+    r = await ask(`/modules/logistics/shops/${C}/products`, { tok: token({ clientId: D }) });
+    eq('the list with a token made for another shop: 403', r.status, 403);
+    r = await ask(`/modules/logistics/shops/logi-none-${STAMP}/products`);
+    eq('the list for a shop not on Logistics: 404 with the reason', [r.status, r.body?.message], [404, 'This shop has not switched Logistics on.']);
+    r = await ask(`/modules/logistics/shops/${D}/products`);
+    eq("the other shop's list: only its own product", r.body?.data?.products?.map((x: any) => x.sku), [dKur.sku]);
 
     console.log('\n5. THE CHANGE FEED');
     await prisma.moduleSubscription.create({ data: { clientId: C, module: 'crm', enabledBy: 'verify-logistics-products' } });
