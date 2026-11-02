@@ -26,8 +26,12 @@ const getPublicKeyForService = (issuer: string, kid: string): string => {
     throw new Error(`Public key not found for issuer ${issuer} with kid ${kid}`);
   }
 
-  const keyPath = path.resolve(process.cwd(), registry[issuer][kid]);
-  const pubKey = fs.readFileSync(keyPath, 'utf8');
+  // Either the public key itself (2 Nov: a partner's key added by editing this one setting on the
+  // host, no file to upload; line breaks may be written as \n) or, as before, a path to a .pem file.
+  const entry = String(registry[issuer][kid]);
+  const pubKey = entry.includes('-----BEGIN')
+    ? entry.replace(/\\n/g, '\n')
+    : fs.readFileSync(path.resolve(process.cwd(), entry), 'utf8');
   publicKeyCache[cacheKey] = pubKey;
   return pubKey;
 };
