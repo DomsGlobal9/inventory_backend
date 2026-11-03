@@ -218,15 +218,24 @@ export default function OrderPage({ shop }) {
             counting the lines said "2 pieces" on the confirmation for an order the checkout
             had just called "3 pieces" -- which reads like something was dropped on the way,
             at the exact moment a customer is checking that it was not. */}
-        <h2>{pieces === 1 ? '1 piece' : `${pieces} pieces`}</h2>
+        <h2>{pieces === 1 ? '1 item' : `${pieces} items`}</h2>
         <ul className="baglines flat">
-          {o.items.map((i, n) => (
+          {o.items.map((i, n) => {
+            // The item opens its product page on the size and colour that was ordered (3 Nov, as Myntra).
+            const to = i.productCode ? `/${slug}/p/${encodeURIComponent(i.productCode)}${i.variantCode ? `?v=${encodeURIComponent(i.variantCode)}` : ''}` : null;
+            return (
             <li key={`${i.variantCode}-${n}`}>
-              <span className="shot">
-                {i.imageUrl ? <img src={sized(i.imageUrl, THUMB)} onError={orWhole(i.imageUrl)} alt="" loading="lazy" decoding="async" /> : null}
-              </span>
+              {to ? (
+                <Link className="shot" to={to} aria-label={`View ${i.title}`}>
+                  {i.imageUrl ? <img src={sized(i.imageUrl, THUMB)} onError={orWhole(i.imageUrl)} alt="" loading="lazy" decoding="async" /> : null}
+                </Link>
+              ) : (
+                <span className="shot">
+                  {i.imageUrl ? <img src={sized(i.imageUrl, THUMB)} onError={orWhole(i.imageUrl)} alt="" loading="lazy" decoding="async" /> : null}
+                </span>
+              )}
               <div className="what">
-                <h3>{i.title}</h3>
+                <h3>{to ? <Link className="itemlink" to={to}>{i.title}</Link> : i.title}</h3>
                 <p className="of">
                   {[i.colour, i.size].filter(Boolean).join(' · ')}
                   {i.colourHex ? <i className="swatch" style={{ background: i.colourHex }} aria-hidden="true" /> : null}
@@ -235,12 +244,13 @@ export default function OrderPage({ shop }) {
               </div>
               <div className="cash"><b>{money(i.lineTotal)}</b></div>
             </li>
-          ))}
+            );
+          })}
         </ul>
 
         <h3 className="osub">Price details</h3>
         <dl>
-          <div><dt>Pieces</dt><dd>{money(o.goods)}</dd></div>
+          <div><dt>Items</dt><dd>{money(o.goods)}</dd></div>
           {o.saved > 0 ? <div className="good"><dt>You saved</dt><dd>−{money(o.saved)}</dd></div> : null}
           <div><dt>Delivery</dt><dd>{o.delivery > 0 ? money(o.delivery) : <span className="good">Free</span>}</dd></div>
           <div className="sum"><dt>Total</dt><dd>{money(o.total)}</dd></div>

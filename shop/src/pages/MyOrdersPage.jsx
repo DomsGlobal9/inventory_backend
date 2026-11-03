@@ -56,10 +56,10 @@ export default function MyOrdersPage({ shop }) {
   if (!rows.length) {
     return (
       <Say title="No orders from this phone yet" art={<EmptyOrders />}
-        action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
+        action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Start shopping</Link>}>
         {signedIn(slug)
           ? <>Orders placed with your number appear here, on any device.</>
-          : <>Orders placed on this device appear here. <Link to={`/${slug}/account`}>Sign in</Link> to see orders from every phone, or open the link {shop?.name || 'the shop'} sent you on WhatsApp.</>}
+          : <>Orders placed on this device appear here. <Link to={`/${slug}/account`}>Sign in</Link> to see orders from every device, or open the link {shop?.name || 'the shop'} sent you on WhatsApp.</>}
       </Say>
     );
   }
@@ -99,7 +99,7 @@ export default function MyOrdersPage({ shop }) {
         {signedIn(slug)
           ? <>All orders placed with your number.</>
           : shop?.accounts !== false
-            ? <>Orders placed on this device. <Link to={`/${slug}/account`}>Sign in</Link> to see your orders from every phone.</>
+            ? <>Orders placed on this device. <Link to={`/${slug}/account`}>Sign in</Link> to see your orders on any device.</>
             : <>Orders placed on this device. For other orders, use the link in your WhatsApp confirmation.</>}
       </p>
     </div>

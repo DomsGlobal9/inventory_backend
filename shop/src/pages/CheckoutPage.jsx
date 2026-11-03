@@ -465,7 +465,7 @@ export default function CheckoutPage({ shop }) {
         </div>
 
         <aside className="bill">
-          <h2>{(() => { const n = lines.reduce((t, l) => t + l.quantity, 0); return n === 1 ? '1 piece' : `${n} pieces`; })()}</h2>
+          <h2>{(() => { const n = lines.reduce((t, l) => t + l.quantity, 0); return n === 1 ? '1 item' : `${n} items`; })()}</h2>
           {bag ? (
             <>
               <ul className="mini">
@@ -477,7 +477,9 @@ export default function CheckoutPage({ shop }) {
                         same sentence twice -- on the one screen where the customer is about to
                         commit the money and can no longer see the swatches they picked from.
                         The bag and the finished order have always named it; this was the gap. */}
-                    <span className="t">{[l.title, l.colour, l.size].filter(Boolean).join(' · ')}</span>
+                    <span className="t">{l.productCode
+                      ? <Link className="itemlink" to={`/${slug}/p/${encodeURIComponent(l.productCode)}?v=${encodeURIComponent(l.variantCode)}`}>{[l.title, l.colour, l.size].filter(Boolean).join(' · ')}</Link>
+                      : [l.title, l.colour, l.size].filter(Boolean).join(' · ')}</span>
                     <span className="m">{money(l.lineTotal, currency)}</span>
                   </li>
                 ))}

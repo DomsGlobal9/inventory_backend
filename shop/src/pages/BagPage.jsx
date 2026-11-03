@@ -103,7 +103,7 @@ export default function BagPage({ shop }) {
             const priced = bag?.lines?.find(l => l.variantCode === line.variantCode);
             return (
               <li key={line.variantCode} className={leaving === line.variantCode ? 'going' : undefined}>
-                <Link to={priced?.productCode ? `/${slug}/p/${encodeURIComponent(priced.productCode)}` : `/${slug}`}
+                <Link to={priced?.productCode ? `/${slug}/p/${encodeURIComponent(priced.productCode)}?v=${encodeURIComponent(line.variantCode)}` : `/${slug}`}
                   className="shot" aria-hidden={!priced}>
                   {priced?.imageUrl
                     ? <img src={sized(priced.imageUrl, THUMB)} onError={orWhole(priced.imageUrl)} alt="" loading="lazy" decoding="async" />
