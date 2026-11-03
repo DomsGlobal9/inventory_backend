@@ -74,9 +74,7 @@ const sameHash = (a: string, b: string) => {
 const LINK_REMEMBERED_MS = 60_000;
 const linkSeen = new Map<string, { can: boolean; at: number }>();
 
-export async function canVerify(clientId: string): Promise<boolean> {
-  if (!whatsappConfigured()) return false;
-
+async function shopLinked(clientId: string): Promise<boolean> {
   const seen = linkSeen.get(clientId);
   if (seen && Date.now() - seen.at < LINK_REMEMBERED_MS) return seen.can;
 
@@ -94,8 +92,58 @@ export async function canVerify(clientId: string): Promise<boolean> {
   return can;
 }
 
-/** Forget what we believed about a shop's link, so the next ask is a real one. */
-const forgetLink = (clientId: string) => { linkSeen.delete(clientId); };
+/*
+ * ScaleEzy's own number stands in for a shop that has not linked its own (3 Nov, owner: "do second").
+ *
+ * Without it every shop without a linked WhatsApp had no sign-in, no wishlist and no confirmed orders.
+ * The shop's own number is still used whenever it is connected. ScaleEzy's carries every such shop's
+ * codes, so it is capped -- across all shops and per shop, over the last 24 hours -- to keep it clear
+ * of WhatsApp's spam checks. Caps from OTP_FALLBACK_DAILY / OTP_FALLBACK_PER_SHOP_DAILY.
+ */
+const DAY_MS = 24 * 60 * 60 * 1000;
+const fallbackCaps = () => ({
+  total: Number(process.env.OTP_FALLBACK_DAILY) || 200,
+  perShop: Number(process.env.OTP_FALLBACK_PER_SHOP_DAILY) || 50
+});
+let scaleezySeen: { can: boolean; at: number } | null = null;
+
+async function scaleezyLinked(): Promise<boolean> {
+  if (scaleezySeen && Date.now() - scaleezySeen.at < LINK_REMEMBERED_MS) return scaleezySeen.can;
+  let can = false;
+  try {
+    can = (await whatsappClient.platformAccounts()).some(a => a.kind === 'SCALEEZY' && a.status === 'CONNECTED');
+  } catch {
+    can = false;   // not allowed to ask, or the service is down: no fallback, as before
+  }
+  scaleezySeen = { can, at: Date.now() };
+  return can;
+}
+
+async function fallbackRoom(clientId: string): Promise<boolean> {
+  const { OTP_VIA_SCALEEZY } = await import('../whatsapp/service');
+  const since = new Date(Date.now() - DAY_MS);
+  const caps = fallbackCaps();
+  const [all, mine] = await Promise.all([
+    prisma.whatsAppMessage.count({ where: { kind: OTP_VIA_SCALEEZY, createdAt: { gte: since } } }),
+    prisma.whatsAppMessage.count({ where: { kind: OTP_VIA_SCALEEZY, clientId, createdAt: { gte: since } } })
+  ]);
+  return all < caps.total && mine < caps.perShop;
+}
+
+/** Which number a code for this shop goes from: its own, ScaleEzy's, or none at all. */
+export async function senderFor(clientId: string): Promise<'SHOP' | 'SCALEEZY' | null> {
+  if (!whatsappConfigured()) return null;
+  if (await shopLinked(clientId)) return 'SHOP';
+  if ((await scaleezyLinked()) && (await fallbackRoom(clientId))) return 'SCALEEZY';
+  return null;
+}
+
+export async function canVerify(clientId: string): Promise<boolean> {
+  return (await senderFor(clientId)) !== null;
+}
+
+/** Forget what we believed about a shop's link (and ScaleEzy's), so the next ask is a real one. */
+const forgetLink = (clientId: string) => { linkSeen.delete(clientId); scaleezySeen = null; };
 
 /**
  * Send a code to the number, or refuse and say why.
@@ -114,7 +162,8 @@ export async function sendCode(clientId: string, rawPhone: unknown, purpose: Cod
   // A try-on and a sign-in both need THIS browser's pass, so neither takes the "already proved" shortcut.
   const forTryOn = purpose === 'TRYON' || purpose === 'SIGNIN';
   const forSignIn = purpose === 'SIGNIN';
-  if (!(await canVerify(clientId))) {
+  const via = await senderFor(clientId);
+  if (!via) {
     throw new OnlineShopRuleError(forTryOn
       ? 'This shop cannot send a code just now. Try again in a little while.'
       : 'This shop cannot send a code just now. Place your order and it will ring you.');
@@ -165,28 +214,24 @@ export async function sendCode(clientId: string, rawPhone: unknown, purpose: Cod
    * The cap is not weakened by this: only a code that really went out is counted, which is what
    * the cap was always meant to count. The per-caller limiter on the route covers the rest.
    */
-  const { sendShopText } = await import('../whatsapp/service');
+  const { sendShopText, sendScaleezyCode } = await import('../whatsapp/service');
+  /*
+   * Short, and it says what the code is for. A bare number arriving from a shop is the shape of
+   * every scam message these customers are warned about; naming the shop and the reason is what
+   * makes it believable, and the warning not to pass it on is the one line that matters. From
+   * ScaleEzy's number it also says whose code it is, since the shopper does not know that number.
+   */
+  const what = forSignIn ? `sign in to ${name}` : forTryOn ? `try on clothes at ${name}` : `confirm your order with ${name}`;
+  const from = via === 'SCALEEZY' ? `Sent by ScaleEzy for ${name}. ` : '';
+  const text = `${code} is your code to ${what}.\n\n${from}It lasts 10 minutes. Do not share it with anyone.`;
+  // One code, one send, however many times the request is retried.
+  const idempotencyKey = `SHOP:OTP:${clientId}:${phone}:${Math.floor(now.getTime() / 1000)}`;
   try {
-    await sendShopText({
-      clientId,
-      to: digitsOnly(phone),
-      /*
-       * Short, and it says what the code is for. A bare number arriving from a shop is the shape of
-       * every scam message these customers are warned about; naming the shop and the reason is what
-       * makes it believable, and the warning not to pass it on is the one line that matters.
-       */
-      text: forSignIn
-        ? `${code} is your code to sign in to ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`
-        : forTryOn
-        ? `${code} is your code to try on clothes at ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`
-        : `${code} is your code to confirm your order with ${name}.\n\nIt lasts 10 minutes. Do not share it with anyone.`,
-      kind: 'ORDER_UPDATE',
-      referenceId: null,
-      // One code, one send, however many times the request is retried.
-      idempotencyKey: `SHOP:OTP:${clientId}:${phone}:${Math.floor(now.getTime() / 1000)}`,
-      sentBy: null,
-      linkPreview: false
-    });
+    if (via === 'SHOP') {
+      await sendShopText({ clientId, to: digitsOnly(phone), text, kind: 'ORDER_UPDATE', referenceId: null, idempotencyKey, sentBy: null, linkPreview: false });
+    } else {
+      await sendScaleezyCode({ clientId, to: digitsOnly(phone), text, idempotencyKey });
+    }
   } catch (e) {
     /*
      * The service refusing -- the shop logged out on its phone since we last asked, the number is

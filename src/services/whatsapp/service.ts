@@ -345,6 +345,26 @@ export async function sendShopText(input: {
   return record(input.clientId, input.kind, input.referenceId, to, input.sentBy, sent);
 }
 
+/** What a code sent from ScaleEzy's number on a shop's behalf is recorded as -- and counted by, for the daily caps. */
+export const OTP_VIA_SCALEEZY = 'OTP_VIA_SCALEEZY';
+
+/**
+ * A shopper's code from SCALEEZY's own number, for a shop that has not linked its own (3 Nov, owner).
+ * Recorded against the shop, under its own kind, so the online shop's daily caps can count them.
+ */
+export async function sendScaleezyCode(input: { clientId: string; to: string; text: string; idempotencyKey: string }) {
+  const to = whatsappDigits(input.to, 'This customer');
+  const sent = await whatsappClient.send({
+    from: 'scaleezy',
+    to,
+    text: input.text,
+    kind: SERVICE_KIND.ORDER_UPDATE,
+    reference: OTP_VIA_SCALEEZY,
+    idempotencyKey: input.idempotencyKey
+  });
+  return record(input.clientId, OTP_VIA_SCALEEZY, null, to, null, sent);
+}
+
 /** The shop's linked number, in full, for a campaign's "send me a test" -- or null if not linked. */
 export async function shopNumber(clientId: string): Promise<{ digits: string | null; status: string; linkedAt: string | null }> {
   const a = await whatsappClient.account(clientId);
