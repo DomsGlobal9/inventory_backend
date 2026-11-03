@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { EmptyWishlist } from '../components/Motion';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { getAccount, sendCode, checkCode, signOutOf, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
+import { getAccount, getProducts, sendCode, checkCode, signOutOf, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
 import { becomeSignedIn, remember, forget, noteHeart } from '../account';
 import { sized, orWhole } from '../photo';
 
@@ -327,23 +327,56 @@ function AddressForm({ slug, token, me, address, first = false, onDone, onCancel
   );
 }
 
-/** Signing in: the number, then the code from the shop's WhatsApp. */
+/** The four things an account gives a shopper, said once and the same on every shop. */
+const PERKS = [
+  { key: 'wish', title: 'Wishlist', line: 'Keep the pieces you love in one place.', d: 'M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.7c0 5.6-7.5 10.2-7.5 10.2Z' },
+  { key: 'orders', title: 'Order tracking', line: 'Follow every order to your doorstep.', d: 'M12 2.8 20.5 7.4v9.2L12 21.2l-8.5-4.6V7.4ZM3.8 7.6 12 12l8.2-4.4M12 12v9' },
+  { key: 'addr', title: 'Saved addresses', line: 'Ready and waiting at checkout.', d: 'M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11ZM12 12.4a2.4 2.4 0 1 0 0-4.8 2.4 2.4 0 0 0 0 4.8Z' },
+  { key: 'fast', title: 'Faster checkout', line: 'Your details, filled in for you.', d: 'M13 2 4 14h7l-1 8 9-12h-7Z' }
+];
+const WA = 'M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2Zm5.3 14.1c-.2.6-1.3 1.2-1.8 1.2-.5.1-1 .2-3.3-.7-2.8-1.1-4.6-4-4.7-4.2-.1-.2-1.1-1.5-1.1-2.9s.7-2.1 1-2.4c.3-.3.6-.3.8-.3h.6c.2 0 .4 0 .6.5l.9 2.1c.1.2.1.4 0 .6l-.4.6-.4.4c-.1.1-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.3 2.4 1.5.3.1.5.1.6-.1l.9-1.1c.2-.3.4-.2.7-.1l2 1c.3.1.5.2.5.3.1.2.1.6-.1 1.1Z';
+
+/** Ten digits from whatever was typed: "+91 98480 11122", "098480 11122" and "9848011122" are one number. */
+const tenDigits = (typed) => {
+  const d = String(typed ?? '').replace(/\D/g, '');
+  if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+  if (d.length === 11 && d.startsWith('0')) return d.slice(1);
+  return d;
+};
+const spaced = (ten) => (ten.length === 10 ? `${ten.slice(0, 5)} ${ten.slice(5)}` : ten);
+
+/**
+ * Signing in (redesigned 3 Nov, owner's option C): the reasons to have an account and a few of the shop's
+ * own pieces beside a sign-in card. On a phone the card comes straight after the heading, so nobody scrolls
+ * to sign in; the reasons and the pieces follow. The number, then the one-time code on WhatsApp.
+ */
 function SignIn({ slug, shop, canSignIn, why, onDone }) {
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [step, setStep] = useState('number');   // 'number' -> 'code'
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState(null);
+  const [picks, setPicks] = useState([]);
+  const name = shop?.name || 'the shop';
+
+  // A few of the shop's own pieces, newest first. Nothing shown while they load, or if there are none.
+  useEffect(() => {
+    const ac = new AbortController();
+    getProducts(slug, { limit: 8 }, { signal: ac.signal })
+      .then(res => setPicks((res?.products ?? []).filter(p => p.images?.[0]?.url).slice(0, 4)))
+      .catch(() => {});
+    return () => ac.abort();
+  }, [slug]);
 
   const ask = async () => {
     setSaid(null);
-    if (phone.replace(/\D/g, '').length < 10) { setSaid('Type your 10-digit WhatsApp number.'); return; }
+    const ten = tenDigits(phone);
+    if (ten.length !== 10) { setSaid('Enter your 10-digit mobile number.'); return; }
     setBusy(true);
     try {
-      await sendCode(slug, phone, undefined, 'SIGNIN');
-      setStep('code'); setCode('');
-      setSaid('We have sent a code to your WhatsApp.');
-    } catch (e) { setSaid(e?.message ?? 'That code could not be sent. Try again.'); }
+      await sendCode(slug, ten, undefined, 'SIGNIN');
+      setPhone(ten); setStep('code'); setCode('');
+    } catch (e) { setSaid(e?.message ?? 'We could not send the OTP. Please try again.'); }
     finally { setBusy(false); }
   };
   const confirm = async () => {
@@ -352,41 +385,82 @@ function SignIn({ slug, shop, canSignIn, why, onDone }) {
       const out = await checkCode(slug, phone, code);
       holdProof(slug, out?.token);
       await onDone();
-    } catch (e) { setSaid(e?.message ?? 'That code is not right.'); setBusy(false); }
+    } catch (e) { setSaid(e?.message ?? 'That OTP is not correct.'); setBusy(false); }
   };
+  const lede = why === 'heart' ? 'Sign in to save this piece to your wishlist.'
+    : why === 'addresses' ? 'Sign in to keep your addresses ready for checkout.'
+    : 'Your wishlist, orders and saved addresses, together in one place.';
 
   return (
-    <div className="account">
-      <section className="card asignin">
-        <h1>Sign in to {shop?.name || 'the shop'}</h1>
-        <p>{why === 'heart' ? 'Sign in to save pieces you like. ' : why === 'addresses' ? 'Sign in to keep your addresses for the checkout. ' : ''}No password: we send a 6-digit code to your WhatsApp. You stay signed in on this phone for 90 days.</p>
+    <div className="account si">
+      <header className="si-intro">
+        {shop?.logoUrl ? <span className="si-mark"><img src={shop.logoUrl} alt="" /></span> : null}
+        <h1>Sign in to {name}</h1>
+        <p className="si-lede">{lede}</p>
+      </header>
+
+      <section className="si-card asignin" aria-label="Sign in">
         {!canSignIn ? (
-          <p className="refused">This shop cannot send codes just now. You can still order without signing in.</p>
+          <p className="refused">Sign-in is unavailable at the moment. You can still place your order as a guest.</p>
         ) : step === 'number' ? (
           <form className="verify" onSubmit={(e) => { e.preventDefault(); void ask(); }}>
-            <label>
-              <span>Your WhatsApp number</span>
-              <input type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="98480 11122" />
+            <h2>Sign in</h2>
+            <p className="si-sub">Secure, password-free sign-in with a one-time code on WhatsApp.</p>
+            <label className="si-field">
+              <span>Mobile number</span>
+              <span className="si-phone">
+                <b aria-hidden="true">+91</b>
+                <input type="tel" inputMode="tel" autoComplete="tel-national" value={phone} onChange={e => setPhone(e.target.value)} placeholder="98480 11122" aria-label="Mobile number" />
+              </span>
             </label>
-            <button type="submit" className="go" disabled={busy}>{busy ? 'Sending…' : 'Send me a code'}</button>
+            <button type="submit" className="go" disabled={busy}>{busy ? 'Sending OTP…' : 'Get OTP on WhatsApp'}</button>
           </form>
         ) : (
           <form className="verify" onSubmit={(e) => { e.preventDefault(); void confirm(); }}>
-            <label>
-              <span>The code we sent to {phone}</span>
-              <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456" />
+            <h2>Verify your number</h2>
+            <p className="si-sub">Enter the 6-digit OTP sent to WhatsApp on <b>+91 {spaced(phone)}</b>.</p>
+            <label className="si-field">
+              <span>OTP</span>
+              <input className="si-otp" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="• • • • • •" aria-label="OTP" />
             </label>
-            <div className="row">
-              <button type="submit" className="go" disabled={busy || code.replace(/\D/g, '').length !== 6}>{busy ? 'Checking…' : 'Sign in'}</button>
-              <button type="button" className="again" disabled={busy} onClick={ask}>Send it again</button>
+            <button type="submit" className="go" disabled={busy || code.length !== 6}>{busy ? 'Verifying…' : 'Verify and sign in'}</button>
+            <div className="si-links">
+              <button type="button" className="again" disabled={busy} onClick={ask}>Resend OTP</button>
               <button type="button" className="again" disabled={busy} onClick={() => { setStep('number'); setSaid(null); }}>Change number</button>
             </div>
           </form>
         )}
         {said ? <p className="said" role="status">{said}</p> : null}
-        {/* The "once you sign in, the shop can see..." paragraph stood here; taken out (owner, 29 Oct). */}
-        <Link className="go quiet keepon" to={`/${slug}`}>Continue shopping without signing in</Link>
+        <p className="si-note">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="#25D366" aria-hidden="true"><path d={WA} /></svg>
+          You stay signed in on this device for 90 days.
+        </p>
+        <Link className="go quiet keepon" to={`/${slug}`}>Continue as guest</Link>
       </section>
+
+      <ul className="si-perks" aria-label="With an account">
+        {PERKS.map(k => (
+          <li key={k.key}>
+            <span className="si-ico" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round"><path d={k.d} /></svg>
+            </span>
+            <span><b>{k.title}</b>{k.line}</span>
+          </li>
+        ))}
+      </ul>
+
+      {picks.length >= 2 ? (
+        <section className="si-picks" aria-label="Curated for you">
+          <h2>Curated for you</h2>
+          <div className="si-row">
+            {picks.map(p => (
+              <Link key={p.productCode} to={`/${slug}/p/${encodeURIComponent(p.productCode)}`} className="si-pick">
+                <img src={sized(p.images[0].url, 360)} onError={orWhole(p.images[0].url)} alt={p.title} loading="lazy" decoding="async" />
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }
