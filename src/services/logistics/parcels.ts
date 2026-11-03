@@ -7,6 +7,7 @@ import { paymentSummary } from '../payments/payment-rules';
 import { toMinor } from '../pricing/money';
 import { collectPayment } from '../order-payments';
 import * as shopifyUpdates from '../shopify-orders/updates';
+import { moduleSubscriptions } from '../module-outbox';
 
 /**
  * Packing for ScaleEzy Logistics (28 Oct).
@@ -44,6 +45,35 @@ const cm = (v: unknown) => {
 /** Is this shop on Logistics? Packing is offered only then. */
 export async function isOn(clientId: string) {
   return !!(await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId, module: 'logistics' } }, select: { clientId: true } }));
+}
+
+/** A parcel Logistics still has: anything not delivered, returned, cancelled or lost. */
+const FINISHED = ['DELIVERED', 'RTO_DELIVERED', 'CANCELLED', 'LOST'];
+export async function openParcels(clientId: string) {
+  return prisma.logisticsParcel.count({ where: { clientId, status: { notIn: FINISHED } } });
+}
+
+/**
+ * The shop switching Logistics on or off itself (3 Nov). Until now only Logistics could, with
+ * PUT /internal/modules/logistics/shops/:clientId; the shop's own say belongs here, and that call is
+ * now optional for them.
+ *
+ * Off is refused while parcels are still with Logistics: switching off cancels every message not yet
+ * sent to them (a parcel just packed included) and refuses their updates, so a parcel in transit
+ * would be lost to both sides.
+ */
+export async function setOn(clientId: string, on: unknown, by: { id: string | null }) {
+  if (typeof on !== 'boolean') throw badRequest('Say on: true or on: false.');
+  if (on) {
+    await moduleSubscriptions.enable(clientId, 'logistics', by.id ? `user:${by.id}` : 'shop');
+  } else {
+    const open = await openParcels(clientId);
+    if (open > 0) {
+      throw conflict(`${open} parcel${open === 1 ? ' is' : 's are'} still with Logistics. Switch off once ${open === 1 ? 'it has' : 'they have'} been delivered or returned.`);
+    }
+    await moduleSubscriptions.disable(clientId, 'logistics');
+  }
+  return { on: await isOn(clientId), openParcels: await openParcels(clientId) };
 }
 
 /** The shop's box sizes; the three defaults the first time it is asked. */

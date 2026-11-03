@@ -22,7 +22,9 @@ const act = (fn: (req: Request) => Promise<unknown>, status = 200) => async (req
 };
 const cid = (req: Request) => (req as any).clientId as string;
 
-router.get('/', requirePermission('dispatch:create'), act(async req => ({ on: await parcels.isOn(cid(req)), boxes: await parcels.boxes(cid(req)) })));
+router.get('/', requirePermission('dispatch:create'), act(async req => ({ on: await parcels.isOn(cid(req)), boxes: await parcels.boxes(cid(req)), openParcels: await parcels.openParcels(cid(req)) })));
+// The shop's own switch (3 Nov). Whoever manages the stores decides how they ship.
+router.put('/on', requirePermission('admin:locations'), act(req => parcels.setOn(cid(req), req.body?.on, { id: (req as any).user?.id ?? null })));
 router.put('/boxes', requirePermission('dispatch:create'), act(req => parcels.saveBoxes(cid(req), req.body?.boxes)));
 router.get('/parcels', requirePermission('dispatch:create'), act(req => parcels.forOrders(cid(req), typeof req.query.orderIds === 'string' ? req.query.orderIds.split(',') : [])));
 router.post('/parcels', requirePermission('dispatch:create'), act(async req => {
