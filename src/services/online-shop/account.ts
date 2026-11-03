@@ -38,9 +38,12 @@ export async function start(clientId: string, token: unknown, userAgent: unknown
 }
 
 /** Sign this device out, or every device this number is signed in on at this shop. */
-export async function signOut(clientId: string, token: unknown, everywhere: unknown) {
+export async function signOut(clientId: string, token: unknown, everywhere: unknown, others: unknown = false) {
   const phone = await whoIs(clientId, token);
   if (!phone) return { signedOut: true, devices: 0 };   // already out: the same answer, nothing to say
+  // Every other device, this one staying signed in (3 Nov). `everywhere` keeps its old meaning for
+  // pages already open on the old build.
+  if (others === true) return { signedOut: false, devices: await sessions.revokeOthers(clientId, phone, String(token)) };
   if (everywhere === true) return { signedOut: true, devices: await sessions.revokeAll(clientId, phone) };
   if (sessions.isSignIn(token)) await sessions.revoke(clientId, String(token));
   else await prisma.onlineShopPhoneCode.updateMany({ where: { clientId, sessionToken: String(token) }, data: { sessionToken: null, sessionExpiresAt: null } });

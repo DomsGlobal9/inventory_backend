@@ -182,6 +182,22 @@ const serve = (handler: (req: http.IncomingMessage, body: any) => [number, unkno
     const legacy = await prove(P1);
     r = await call(sa('/account/signout'), { token: t3, everywhere: true });
     eq('sign out on all phones: every sign-in, and the code pass too', [r.status, (await me(t2))?.signedIn, (await me(t3))?.signedIn, (await call(sa('/addresses'), { token: legacy })).status], [200, false, false, 400]);
+    // Sign out of OTHER devices (3 Nov): this one stays, the rest and the code passes end.
+    const keep = await signIn(P1), other1 = await signIn(P1), other2 = await signIn(P1);
+    const otherPass = await prove(P1);
+    r = await call(sa('/account/signout'), { token: keep, others: true });
+    eq('sign out of other devices: answers 2 ended, this device still signed in, 1 device left', [r.status, r.body?.data?.devices, (await me(keep))?.signedIn, (await me(keep))?.devices], [200, 2, true, 1]);
+    eq('...the other sign-ins are ended', [(await me(other1))?.signedIn, (await me(other2))?.signedIn], [false, false]);
+    eq('...and another browser\'s code pass no longer opens the address book', (await call(sa('/addresses'), { token: otherPass })).status, 400);
+    eq('...this device still opens the address book', (await call(sa('/addresses'), { token: keep })).status, 200);
+    r = await call(sa('/account/signout'), { token: keep, others: true });
+    eq('asked again with nobody else signed in: 0 ended, still signed in', [r.status, r.body?.data?.devices, (await me(keep))?.signedIn], [200, 0, true]);
+    const elsewhere = await signIn(P1), keepPass = await prove(P1);   // signIn proves a code too, so the pass comes last
+    r = await call(sa('/account/signout'), { token: keepPass, others: true });
+    eq('from a code pass: the pass stays, the sign-ins elsewhere end', [r.status, (await call(sa('/addresses'), { token: keepPass })).status, (await me(elsewhere))?.signedIn, (await me(keep))?.signedIn], [200, 200, false, false]);
+    r = await call(sa('/account/signout'), { token: 'ss_' + 'x'.repeat(40), others: true });
+    eq('a made-up token: the calm signed-out answer, nobody touched', [r.status, r.body?.data?.devices], [200, 0]);
+    await call(sa('/account/signout'), { token: keepPass, everywhere: true });
     const many: string[] = [];
     for (let i = 0; i < 11; i++) { many.push(await signIn(P1)); await new Promise(x => setTimeout(x, 5)); }
     m = await me(many[10]);

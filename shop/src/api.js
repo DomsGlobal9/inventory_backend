@@ -203,6 +203,9 @@ export const getAccount = (slug, token, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/account`, { ...opts, send: { token } });
 export const signOutOf = (slug, token, everywhere, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/account/signout`, { ...opts, send: { token, everywhere: everywhere === true } });
+/** Every other device signed out; this one stays signed in. Answers { devices: how many were ended }. */
+export const signOutOthers = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/account/signout`, { ...opts, send: { token, others: true } });
 export const likePiece = (slug, token, productCode, liked, variantCode, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(productCode)}/like`, { ...opts, send: { token, liked, variantCode } });
 

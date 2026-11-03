@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { bagCount, useBag } from '../bag';
-import { signedIn, onAccountChange, wishlistOn } from '../account';
+import { signedIn, onAccountChange, wishlistOn, forget } from '../account';
+import { signOutOf, heldProof } from '../api';
 
 /**
  * The bar at the top of every page of a shop.
@@ -77,6 +78,17 @@ function ProfileMenu({ slug, me, firstName, wishlist }) {
     setOpen(o => !o);
   };
   useEffect(() => { setOpen(false); }, [where.pathname, where.hash]);
+  // Signed out here whatever the shop answers; pages that only make sense signed in go to the home page.
+  const go = useNavigate();
+  const [leaving, setLeaving] = useState(false);
+  const signOut = async () => {
+    setLeaving(true);
+    try { await signOutOf(slug, heldProof(slug), false); } catch { /* signed out here either way */ }
+    forget(slug);
+    setLeaving(false);
+    setOpen(false);
+    if (/\/(account|addresses|wishlist|orders)\/?$/.test(where.pathname)) go(`/${slug}`, { replace: true });
+  };
   useEffect(() => {
     if (!open) return undefined;
     const away = (e) => { if (!box.current?.contains(e.target)) setOpen(false); };
@@ -117,6 +129,11 @@ function ProfileMenu({ slug, me, firstName, wishlist }) {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
               <circle cx="12" cy="8.5" r="3.8" /><path d="M4.5 20.2c1.2-3.6 4.1-5.4 7.5-5.4s6.3 1.8 7.5 5.4" />
             </svg> Your account</Link> : null}
+          {/* Sign out, last and set apart, as the big fashion apps do (owner, 3 Nov). */}
+          {me ? <button type="button" role="menuitem" className="pmenu-out" disabled={leaving} onClick={signOut}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M14 4.5H7.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2H14" /><path d="M10.5 12h9M16.5 8.5 20 12l-3.5 3.5" />
+            </svg> {leaving ? 'Signing out…' : 'Sign out'}</button> : null}
         </div>
       )}
     </div>

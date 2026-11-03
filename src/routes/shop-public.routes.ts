@@ -427,7 +427,7 @@ router.post('/:slug/account', priceLimiter, buying(async (req) => {
 router.post('/:slug/account/signout', buyLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
-  return shopAccount.signOut(shop.clientId, req.body?.token, req.body?.everywhere === true);
+  return shopAccount.signOut(shop.clientId, req.body?.token, req.body?.everywhere === true, req.body?.others === true);
 }));
 
 /** A heart on a piece: saved for a proved or signed-in number only (shop-views like), never for a stranger. */

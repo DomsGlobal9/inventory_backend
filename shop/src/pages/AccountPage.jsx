@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { EmptyWishlist } from '../components/Motion';
 import { placed } from '../components/Banners';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { getAccount, getProducts, sendCode, checkCode, signOutOf, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
+import { getAccount, getProducts, sendCode, checkCode, signOutOf, signOutOthers, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
 import { becomeSignedIn, remember, forget, noteHeart } from '../account';
 import { sized, orWhole } from '../photo';
 
@@ -35,6 +36,9 @@ export default function AccountPage({ shop, view = 'profile' }) {
   const back = where.state?.back ?? null;
   const [me, setMe] = useState(null);           // null while loading; { signedIn: false } or the account
   const [said, setSaid] = useState(null);
+  const [asking, setAsking] = useState(false);
+  const [ending, setEnding] = useState(false);
+  const [done, setDone] = useState(null);
   // With the other hooks, above the early returns: declared after them, signing in added a hook
   // between two renders and the page went blank.
   const [editing, setEditing] = useState(null);   // null, 'new', or the address being changed
@@ -109,6 +113,21 @@ export default function AccountPage({ shop, view = 'profile' }) {
     try { await signOutOf(slug, token, everywhere); } catch { /* signed out here either way */ }
     forget(slug);
     setMe({ signedIn: false, canSignIn: true });
+  };
+
+  // Every other device signed out, after a warning; this one stays signed in (3 Nov, owner).
+  const outOthers = async () => {
+    setEnding(true); setSaid(null); setDone(null);
+    try {
+      const r = await signOutOthers(slug, token);
+      const n = Number(r?.devices ?? 0);
+      setAsking(false);
+      setDone(n > 0 ? `Signed out of ${n} other ${n === 1 ? 'device' : 'devices'}. You are still signed in here.` : 'No other device was signed in. You are still signed in here.');
+      await refresh();
+    } catch (e) {
+      setAsking(false);
+      setSaid(e?.message ?? 'We could not sign out your other devices. Please try again.');
+    } finally { setEnding(false); }
   };
 
   const unheart = async (h) => {
@@ -240,15 +259,17 @@ export default function AccountPage({ shop, view = 'profile' }) {
         <span className="avatar" aria-hidden="true">{(me.name || 'You').trim().charAt(0).toUpperCase()}</span>
         <div className="awhat">
           <h1>{me.name ? `Hello, ${String(me.name).trim().split(/\s+/)[0]}` : 'Your account'}</h1>
-          <p>{shownPhone(me.phone)}{me.devices > 1 ? ` · signed in on ${me.devices} phones` : ''}</p>
+          <p>{shownPhone(me.phone)}{me.devices > 1 ? ` · signed in on ${me.devices} devices` : ''}</p>
         </div>
         <div className="aout">
           <button type="button" className="go quiet" onClick={() => out(false)}>Sign out</button>
-          {me.devices > 1 ? <button type="button" className="drop" onClick={() => out(true)}>Sign out of all devices</button> : null}
+          {me.devices > 1 ? <button type="button" className="drop" onClick={() => setAsking(true)}>Sign out of other devices</button> : null}
         </div>
       </section>
 
       {said ? <p className="refused" role="alert">{said}</p> : null}
+      {done ? <p className="said" role="status">{done}</p> : null}
+      {asking ? <OthersOut count={me.devices - 1} busy={ending} onCancel={() => setAsking(false)} onConfirm={outOthers} /> : null}
 
       {(me.points !== null || me.storeCredit !== null) && (
         <div className="amoney">
@@ -454,5 +475,36 @@ function SignIn({ slug, shop, canSignIn, why, onDone }) {
         </div>
       </section>
     </div>
+  );
+}
+
+/**
+ * The warning before every other device is signed out (3 Nov, owner: "warn and keep this device").
+ * Says how many, says this one stays signed in, and is easy to back out of: Cancel has the focus,
+ * Escape and a tap outside both cancel.
+ */
+function OthersOut({ count, busy, onCancel, onConfirm }) {
+  const stay = useRef(null);
+  useEffect(() => {
+    stay.current?.focus();
+    const esc = (e) => { if (e.key === 'Escape' && !busy) onCancel(); };
+    document.addEventListener('keydown', esc);
+    return () => document.removeEventListener('keydown', esc);
+  }, [busy, onCancel]);
+  return createPortal(
+    <div className="confirm" onPointerDown={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}>
+      <div className="confirmin" role="alertdialog" aria-modal="true" aria-labelledby="othersout-h" aria-describedby="othersout-p">
+        <h2 id="othersout-h">Sign out of other devices?</h2>
+        <p id="othersout-p">
+          {count === 1 ? 'You will be signed out on 1 other device.' : `You will be signed out on ${count} other devices.`}{' '}
+          You will stay signed in on this device. To sign in again there, you will need a new OTP on WhatsApp.
+        </p>
+        <div className="confirmdo">
+          <button type="button" ref={stay} className="go quiet" disabled={busy} onClick={onCancel}>Cancel</button>
+          <button type="button" className="go" disabled={busy} onClick={onConfirm}>{busy ? 'Signing out…' : 'Sign out other devices'}</button>
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }

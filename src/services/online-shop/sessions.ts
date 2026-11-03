@@ -77,6 +77,21 @@ export async function revokeAll(clientId: string, phone: string, now = new Date(
   return count;
 }
 
+/**
+ * Sign this number out everywhere at this shop EXCEPT the device asking (3 Nov, owner: "keep this
+ * device login"): every other sign-in and every code-check pass but the one this device holds.
+ * Returns how many other sign-ins were ended.
+ */
+export async function revokeOthers(clientId: string, phone: string, keep: string, now = new Date()) {
+  const { count } = await prisma.onlineShopSession.updateMany({
+    where: { clientId, phone, revokedAt: null, tokenHash: { not: hashOf(keep) } }, data: { revokedAt: now }
+  });
+  await prisma.onlineShopPhoneCode.updateMany({
+    where: { clientId, phone, sessionToken: { not: null }, NOT: { sessionToken: keep } }, data: { sessionToken: null, sessionExpiresAt: null }
+  });
+  return count;
+}
+
 /** Devices this number is signed in on now. */
 export async function devices(clientId: string, phone: string, now = new Date()) {
   return prisma.onlineShopSession.count({ where: { clientId, phone, revokedAt: null, expiresAt: { gt: now } } });
