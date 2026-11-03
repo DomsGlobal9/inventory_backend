@@ -2769,3 +2769,11 @@ a.shot { display: block; }
   .confirmdo .go { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .confirm, .confirmin { animation: none; } }
+
+/* ── Banners of the asked-for shape fill their width (3 Nov, owner: "exact size banner, still gaps") ──
+ * The upload asks for 3:1; the height caps in the page (320px between the products, 300px under a
+ * piece, a 4:1 box in the grid) made a 3:1 banner narrower than its box, grey either side. A banner
+ * marked data-fits (photo.js markFits) takes its whole width at its own shape; only an older upload
+ * of another shape keeps the caps above. */
+.banners .slide img[data-fits] { max-height: none; }
+.promo img[data-fits], .grid .promo.inline img[data-fits] { max-height: none; aspect-ratio: auto; }

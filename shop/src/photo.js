@@ -49,3 +49,15 @@ export const orWhole = (original) => (e) => {
   img.removeAttribute('srcset');
   img.src = original;
 };
+
+/**
+ * A banner of the shape the upload asks for (3:1, or wider) is marked when its picture is in, so it
+ * fills its whole width at its own shape -- no grey strips either side (3 Nov). An older upload of
+ * another shape stays unmarked and keeps the height cap, so a square photograph cannot take the page.
+ */
+export const BANNER_MIN_RATIO = 2.7;   // the upload's 3:1 less its 10% give (services/online-shop/banners.ts SHAPE)
+export const markFits = (e) => {
+  const i = e.currentTarget;
+  if (i.naturalWidth && i.naturalHeight && i.naturalWidth / i.naturalHeight >= BANNER_MIN_RATIO) i.dataset.fits = '';
+  else delete i.dataset.fits;
+};

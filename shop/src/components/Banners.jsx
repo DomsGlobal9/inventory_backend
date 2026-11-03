@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { sized, widths, orWhole, BANNER } from '../photo';
+import { sized, widths, orWhole, BANNER, markFits } from '../photo';
 
 /**
  * The banners across the top of a shop, swiped.
@@ -141,6 +141,7 @@ export default function Banners({ slug, banners, inline = false, label }) {
                 srcSet={widths(b.imageUrl, BANNER, 85)}
                 sizes="(min-width: 1200px) 1152px, 100vw"
                 onError={orWhole(b.imageUrl)}
+                onLoad={markFits}
                 alt={b.heading || ''}
                 /* The first one is what a shopper sees immediately; the rest can wait. */
                 loading={i === 0 ? 'eager' : 'lazy'}

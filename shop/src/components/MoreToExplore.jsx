@@ -5,7 +5,7 @@ import AlsoIn from './AlsoIn';
 import AlsoBought from './AlsoBought';
 import Tile from './Tile';
 import Shot from './Shot';
-import { sized, widths, orWhole, BANNER } from '../photo';
+import { sized, widths, orWhole, BANNER, markFits } from '../photo';
 
 /**
  * Everything under a product, so the page carries on being a shop.
@@ -81,8 +81,10 @@ function Promo({ slug, banner, inline = false }) {
   const to = bannerTo(slug, banner);
   const inner = (
     <>
-      <img src={sized(banner.imageUrl, 1080)} srcSet={widths(banner.imageUrl, BANNER, 85)} sizes="(min-width: 1200px) 1152px, 100vw" onError={orWhole(banner.imageUrl)} alt={banner.heading || ''} loading="lazy" decoding="async"
-        onLoad={() => setReady(true)} onError={() => setReady(true)} />
+      <img src={sized(banner.imageUrl, 1080)} srcSet={widths(banner.imageUrl, BANNER, 85)} sizes="(min-width: 1200px) 1152px, 100vw" alt={banner.heading || ''} loading="lazy" decoding="async"
+        onLoad={(e) => { markFits(e); setReady(true); }}
+        // Both, in one handler: two onError props meant the second won and the fallback never ran.
+        onError={(e) => { orWhole(banner.imageUrl)(e); setReady(true); }} />
       {banner.heading || banner.subtext ? (
         <span className="over">
           {banner.heading ? <strong>{banner.heading}</strong> : null}
