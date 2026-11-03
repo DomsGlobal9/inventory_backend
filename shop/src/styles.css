@@ -2723,7 +2723,7 @@ body:has([aria-modal="true"]) .dock { display: none; }
 /* ── Footer, aligned (3 Nov, owner) ─────────────────────────────────────────────────────────
  * The logo on a row of its own, so the store name and the column headings share one top line; the
  * copyright at the left, "Made with ScaleEzy" at the right; no white band under a tinted page. */
-.foot .footmark { display: block; width: auto; height: 56px; max-width: 200px; object-fit: contain; border-radius: 8px; margin: 0 0 18px; }
+.foot .footmark { display: block; width: auto; height: 64px; max-width: 200px; object-fit: contain; border-radius: 8px; margin: 0 0 18px; }
 .foot .who h3 { margin-top: 0; line-height: 1.2; }
 .foot .cols > section > h3 { min-height: 17px; display: flex; align-items: flex-end; }
 .foot .cols > section > ul > li:first-child > a { padding-top: 0; }
