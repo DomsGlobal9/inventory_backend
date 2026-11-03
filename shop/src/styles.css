@@ -2653,72 +2653,51 @@ body:has([aria-modal="true"]) .dock { display: none; }
 .art-wish .f3 { animation-delay: 2.7s; }
 @keyframes wish-float { 0% { opacity: 0; transform: translateY(8px) scale(.6) } 20% { opacity: .75 } 100% { opacity: 0; transform: translateY(-26px) scale(1) } }
 
-/* ── Sign in (redesigned 3 Nov, owner's option C) ───────────────────────────────────────────
- * Why to have an account and a few of the shop's own pieces beside a sign-in card. On a phone the card
- * comes straight after the heading; the reasons and the pieces follow. */
-.account.si { max-width: 1040px; gap: 22px; padding-top: 26px; grid-template-areas: "intro" "card" "perks" "picks"; }
-.si-intro { grid-area: intro; }
-.si-card { grid-area: card; }
-.si-perks { grid-area: perks; }
-.si-picks { grid-area: picks; }
-.si-mark { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 14px;
-  background: color-mix(in srgb, var(--accent) 6%, var(--card)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent); }
-.si-mark img { width: 46px; height: 46px; object-fit: contain; }
-.si-intro h1 { font-family: var(--display); font-weight: 600; font-size: 28px; line-height: 1.15; letter-spacing: -.015em; margin: 0; }
-.si-lede { margin: 8px 0 0; color: var(--muted); font-size: 15px; line-height: 1.55; max-width: 34em; }
-
-.account .si-card { padding: 24px 22px; border-radius: 20px; border: 1px solid var(--line); box-shadow: var(--lift-hi); }
-.si-card h2 { font-family: var(--display); font-size: 21px; font-weight: 600; margin: 0; text-transform: none; letter-spacing: -.01em; color: var(--ink); }
-.account .si-card h2 { font-size: 21px; text-transform: none; letter-spacing: -.01em; color: var(--ink); }
-.si-sub { margin: 6px 0 18px; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
+/* ── Sign in (3 Nov, owner: "see how Myntra works") ─────────────────────────────────────────
+ * One centred card on a softly tinted page: the shop's banner or its pieces across the top, the form, and
+ * the four things an account gives as a compact row. Nothing is left floating in empty space. */
+.account.si { max-width: 460px; padding: 28px 0 48px; display: block;
+  box-shadow: 0 0 0 100vmax color-mix(in srgb, var(--accent) 4%, var(--soft)); clip-path: inset(0 -100vmax); }
+.account .si-card { padding: 0; overflow: hidden; border-radius: 20px; border: 1px solid var(--line); box-shadow: var(--lift-hi); background: var(--card); }
+.si-hero { aspect-ratio: 3 / 1; background: var(--soft); }
+.si-hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.si-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
+.si-strip img { object-position: center 22%; }
+.si-body { padding: 24px 24px 22px; }
+.si-body h1 { font-family: var(--display); font-weight: 600; font-size: 24px; line-height: 1.2; letter-spacing: -.015em; margin: 0; }
+.si-lede { margin: 6px 0 20px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+.si-sub { margin: 0 0 14px; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
 .si-sub b { color: var(--ink); font-weight: 600; white-space: nowrap; }
-.si-field { display: block; }
-.si-field > span:first-child { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink); margin: 0 0 7px; }
-.si-phone { display: flex; height: 52px; border: 1.5px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--card); transition: border-color .15s ease-out, box-shadow .15s ease-out; }
-.si-phone:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
-.si-phone b { display: grid; place-items: center; padding: 0 14px; background: var(--soft); border-right: 1.5px solid var(--line); font-weight: 600; font-size: 15px; }
-.asignin .verify .si-phone input { flex: 1; min-width: 0; border: 0; border-radius: 0; height: 100%; padding: 0 14px; font-size: 17px; letter-spacing: .05em; outline: none; box-shadow: none; }
-.asignin .verify input.si-otp { height: 54px; text-align: center; font-size: 22px; letter-spacing: .5em; font-weight: 600; border-radius: 12px; }
-.si-card .verify > .go { margin-top: 14px; height: 52px; border-radius: 12px; font-size: 15.5px; }
-.si-links { display: flex; justify-content: space-between; margin-top: 12px; }
-.si-links .again { background: none; border: 0; padding: 6px 0; color: var(--accent); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer; }
-.si-links .again:disabled { opacity: .5; cursor: default; }
-.si-note { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; font-size: 12.5px; color: var(--muted); }
-.si-card .keepon { margin-top: 14px; }
-
-.si-perks { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.si-perks li { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); font-size: 13px; line-height: 1.4; color: var(--muted); }
-.si-perks b { display: block; color: var(--ink); font-size: 14px; font-weight: 600; margin-bottom: 2px; }
-.si-ico { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, var(--card)); }
-
-.si-picks h2 { font-family: var(--display); font-size: 19px; font-weight: 600; margin: 4px 0 12px; }
-.account .si-picks h2 { font-size: 19px; text-transform: none; letter-spacing: -.01em; color: var(--ink); }
-.si-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-.si-pick { display: block; border-radius: 12px; overflow: hidden; background: var(--soft); aspect-ratio: 3 / 4; }
-.si-pick img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .2s ease-out; }
-@media (hover: hover) { .si-pick:hover img { transform: scale(1.03); } }
-
-@media (max-width: 420px) {
-  .si-perks li { padding: 12px; gap: 10px; }
-  .si-ico { width: 30px; height: 30px; }
-  .si-intro h1 { font-size: 25px; }
-}
-@media (min-width: 880px) {
-  .account.si { grid-template-columns: minmax(0, 1.2fr) minmax(360px, .8fr); column-gap: 56px; row-gap: 26px; align-items: start;
-    grid-template-areas: "intro card" "perks card" "picks card"; padding-top: 44px; }
-  .si-intro h1 { font-size: 38px; }
-  .si-card { position: sticky; top: calc(var(--bar) + 24px); }
-  .account .si-card { padding: 32px 30px; }
-}
-@media (prefers-reduced-motion: reduce) { .si-pick img, .si-phone { transition: none; } }
-/* The new sign-in overrides the older code-box rules it sits inside (.verify): no dashed box, the +91
-   beside the number, the number left-aligned. */
 .si-card .verify { border: 0; padding: 0; margin: 0; }
-.si-card .verify label.si-field { margin-bottom: 0; }
+.si-card .verify label.si-field { display: block; margin-bottom: 0; }
 .si-card .verify label.si-field > span:first-child { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink); margin: 0 0 7px; }
-.si-card .verify label .si-phone { display: flex; flex-direction: row; margin: 0; font-size: 15px; color: var(--ink); }
-.si-card .verify label .si-phone b { display: grid; }
-.si-card .verify .si-phone input { text-align: left; width: auto; }
-.si-card .si-links .again { text-decoration: none; }
+.si-card .verify label .si-phone { display: flex; flex-direction: row; height: 52px; margin: 0; border: 1.5px solid var(--line); border-radius: 12px; overflow: hidden;
+  background: var(--card); font-size: 15px; color: var(--ink); transition: border-color .15s ease-out, box-shadow .15s ease-out; }
+.si-card .verify label .si-phone:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.si-card .verify label .si-phone b { display: grid; place-items: center; padding: 0 14px; background: var(--soft); border-right: 1.5px solid var(--line); font-weight: 600; }
+.asignin .verify .si-phone input { flex: 1; min-width: 0; width: auto; border: 0; border-radius: 0; height: 100%; padding: 0 14px; font-size: 17px; letter-spacing: .05em; text-align: left; outline: none; box-shadow: none; }
+.asignin .verify input.si-otp { height: 54px; text-align: center; font-size: 22px; letter-spacing: .5em; font-weight: 600; border-radius: 12px; }
+.si-card .verify > .go { width: 100%; margin-top: 14px; height: 52px; border-radius: 12px; font-size: 15.5px; }
+.si-links { display: flex; justify-content: space-between; margin-top: 12px; }
+.si-card .si-links .again { background: none; border: 0; padding: 6px 0; color: var(--accent); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer; text-decoration: none; }
 .si-card .si-links .again:hover { text-decoration: underline; text-underline-offset: 3px; }
+.si-card .si-links .again:disabled { opacity: .5; cursor: default; }
+.si-note { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.si-note svg { flex: 0 0 auto; }
+.si-card .keepon { margin-top: 14px; }
+.si-perks { list-style: none; margin: 20px 0 0; padding: 18px 0 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.si-perks li { display: flex; flex-direction: column; align-items: center; gap: 7px; text-align: center; font-size: 11.5px; line-height: 1.25; color: var(--ink); font-weight: 500; }
+.si-ico { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--card)); }
+@media (max-width: 480px) { .account.si { padding: 14px 0 32px; } .si-body { padding: 20px 18px 18px; } .si-body h1 { font-size: 22px; } }
+@media (prefers-reduced-motion: reduce) { .si-card .verify label .si-phone { transition: none; } }
+
+/* ── Offers and delivery options on the product page (3 Nov, Myntra's way) ───────────────── */
+.offerbox { margin: 16px 0 0; border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: var(--r);
+  padding: 14px 16px; background: color-mix(in srgb, var(--accent) 4%, var(--card)); }
+.offerhead { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; letter-spacing: .02em; color: var(--accent); }
+.offerbox .best { margin: 8px 0 2px; font-size: 15px; }
+.offerbox .best b { font-size: 17px; }
+.offerbox .offerline { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.45; }
+.offerbox .offerline b { color: var(--ink); font-weight: 600; }
+.promisehead { margin: 0 0 12px; font-size: 13px; font-weight: 700; letter-spacing: .02em; }
+.account.si { background: color-mix(in srgb, var(--accent) 4%, var(--soft)); }

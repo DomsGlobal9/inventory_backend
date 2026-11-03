@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { EmptyWishlist } from '../components/Motion';
+import { placed } from '../components/Banners';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { getAccount, getProducts, sendCode, checkCode, signOutOf, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
 import { becomeSignedIn, remember, forget, noteHeart } from '../account';
@@ -387,80 +388,71 @@ function SignIn({ slug, shop, canSignIn, why, onDone }) {
       await onDone();
     } catch (e) { setSaid(e?.message ?? 'That OTP is not correct.'); setBusy(false); }
   };
+  const heroBanner = placed(shop?.banners, 'HOME_TOP')[0]?.imageUrl ?? null;
   const lede = why === 'heart' ? 'Sign in to save this piece to your wishlist.'
     : why === 'addresses' ? 'Sign in to keep your addresses ready for checkout.'
     : 'Your wishlist, orders and saved addresses, together in one place.';
 
   return (
     <div className="account si">
-      <header className="si-intro">
-        {shop?.logoUrl ? <span className="si-mark"><img src={shop.logoUrl} alt="" /></span> : null}
-        <h1>Sign in to {name}</h1>
-        <p className="si-lede">{lede}</p>
-      </header>
-
       <section className="si-card asignin" aria-label="Sign in">
-        {!canSignIn ? (
-          <p className="refused">Sign-in is unavailable at the moment. You can still place your order as a guest.</p>
-        ) : step === 'number' ? (
-          <form className="verify" onSubmit={(e) => { e.preventDefault(); void ask(); }}>
-            <h2>Sign in</h2>
-            <p className="si-sub">Secure, password-free sign-in with a one-time code on WhatsApp.</p>
-            <label className="si-field">
-              <span>Mobile number</span>
-              <span className="si-phone">
-                <b aria-hidden="true">+91</b>
-                <input type="tel" inputMode="tel" autoComplete="tel-national" value={phone} onChange={e => setPhone(e.target.value)} placeholder="98480 11122" aria-label="Mobile number" />
-              </span>
-            </label>
-            <button type="submit" className="go" disabled={busy}>{busy ? 'Sending OTP…' : 'Get OTP on WhatsApp'}</button>
-          </form>
-        ) : (
-          <form className="verify" onSubmit={(e) => { e.preventDefault(); void confirm(); }}>
-            <h2>Verify your number</h2>
-            <p className="si-sub">Enter the 6-digit OTP sent to WhatsApp on <b>+91 {spaced(phone)}</b>.</p>
-            <label className="si-field">
-              <span>OTP</span>
-              <input className="si-otp" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="• • • • • •" aria-label="OTP" />
-            </label>
-            <button type="submit" className="go" disabled={busy || code.length !== 6}>{busy ? 'Verifying…' : 'Verify and sign in'}</button>
-            <div className="si-links">
-              <button type="button" className="again" disabled={busy} onClick={ask}>Resend OTP</button>
-              <button type="button" className="again" disabled={busy} onClick={() => { setStep('number'); setSaid(null); }}>Change number</button>
-            </div>
-          </form>
-        )}
-        {said ? <p className="said" role="status">{said}</p> : null}
-        <p className="si-note">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="#25D366" aria-hidden="true"><path d={WA} /></svg>
-          You stay signed in on this device for 90 days.
-        </p>
-        <Link className="go quiet keepon" to={`/${slug}`}>Continue as guest</Link>
-      </section>
+        {/* The shop's own look across the top: its first home banner, or a strip of its pieces. */}
+        {heroBanner ? (
+          <div className="si-hero"><img src={sized(heroBanner, 900)} onError={orWhole(heroBanner)} alt="" /></div>
+        ) : picks.length >= 3 ? (
+          <div className="si-hero si-strip">{picks.slice(0, 3).map(p => <img key={p.productCode} src={sized(p.images[0].url, 360)} onError={orWhole(p.images[0].url)} alt="" />)}</div>
+        ) : null}
 
-      <ul className="si-perks" aria-label="With an account">
-        {PERKS.map(k => (
-          <li key={k.key}>
-            <span className="si-ico" aria-hidden="true">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round"><path d={k.d} /></svg>
-            </span>
-            <span><b>{k.title}</b>{k.line}</span>
-          </li>
-        ))}
-      </ul>
+        <div className="si-body">
+          <h1>Sign in to {name}</h1>
+          <p className="si-lede">{lede}</p>
 
-      {picks.length >= 2 ? (
-        <section className="si-picks" aria-label="Curated for you">
-          <h2>Curated for you</h2>
-          <div className="si-row">
-            {picks.map(p => (
-              <Link key={p.productCode} to={`/${slug}/p/${encodeURIComponent(p.productCode)}`} className="si-pick">
-                <img src={sized(p.images[0].url, 360)} onError={orWhole(p.images[0].url)} alt={p.title} loading="lazy" decoding="async" />
-              </Link>
+          {!canSignIn ? (
+            <p className="refused">Sign-in is unavailable at the moment. You can still place your order as a guest.</p>
+          ) : step === 'number' ? (
+            <form className="verify" onSubmit={(e) => { e.preventDefault(); void ask(); }}>
+              <label className="si-field">
+                <span>Mobile number</span>
+                <span className="si-phone">
+                  <b aria-hidden="true">+91</b>
+                  <input type="tel" inputMode="tel" autoComplete="tel-national" value={phone} onChange={e => setPhone(e.target.value)} placeholder="98480 11122" aria-label="Mobile number" />
+                </span>
+              </label>
+              <button type="submit" className="go" disabled={busy}>{busy ? 'Sending OTP…' : 'Get OTP on WhatsApp'}</button>
+            </form>
+          ) : (
+            <form className="verify" onSubmit={(e) => { e.preventDefault(); void confirm(); }}>
+              <p className="si-sub">Enter the 6-digit OTP sent to WhatsApp on <b>+91 {spaced(phone)}</b>.</p>
+              <label className="si-field">
+                <span>OTP</span>
+                <input className="si-otp" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="• • • • • •" aria-label="OTP" />
+              </label>
+              <button type="submit" className="go" disabled={busy || code.length !== 6}>{busy ? 'Verifying…' : 'Verify and sign in'}</button>
+              <div className="si-links">
+                <button type="button" className="again" disabled={busy} onClick={ask}>Resend OTP</button>
+                <button type="button" className="again" disabled={busy} onClick={() => { setStep('number'); setSaid(null); }}>Change number</button>
+              </div>
+            </form>
+          )}
+          {said ? <p className="said" role="status">{said}</p> : null}
+          <p className="si-note">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="#25D366" aria-hidden="true"><path d={WA} /></svg>
+            Password-free and secure. You stay signed in on this device for 90 days.
+          </p>
+          <Link className="go quiet keepon" to={`/${slug}`}>Continue as guest</Link>
+
+          <ul className="si-perks" aria-label="With an account">
+            {PERKS.map(k => (
+              <li key={k.key} title={k.line}>
+                <span className="si-ico" aria-hidden="true">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round"><path d={k.d} /></svg>
+                </span>
+                {k.title}
+              </li>
             ))}
-          </div>
-        </section>
-      ) : null}
+          </ul>
+        </div>
+      </section>
     </div>
   );
 }

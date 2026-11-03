@@ -467,10 +467,21 @@ export default function ProductPage({ slug, shop }) {
                 Read from the chosen piece rather than the product, because an offer can cover one
                 size and not another, and this is the moment they are choosing.
               */}
-              {chosen.offer ? (
-                <p className="dealline">{offerWords(chosen.offer, currency)}</p>
-              ) : null}
               <p className="tax">Inclusive of all taxes</p>
+              {/* The offer as Myntra shows one (3 Nov): what it comes to, by name, and that nothing has to
+                  be typed for it. "Best price" is this size's price less what the offer takes off one. */}
+              {chosen.offer ? (
+                <div className="offerbox" data-testid="offerbox">
+                  <div className="offerhead">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z" /><circle cx="7.5" cy="7.5" r="1.5" />
+                    </svg>
+                    Offers
+                  </div>
+                  <p className="best">Best price <b>{money(Math.max(0, chosen.price - (chosen.offer.saves ?? 0)), currency)}</b></p>
+                  <p className="offerline">{chosen.offer.name ? <b>{chosen.offer.name}: </b> : null}{offerWords(chosen.offer, currency)}. Applied automatically, no code needed.</p>
+                </div>
+              ) : null}
             </>
           )}
 
@@ -614,27 +625,40 @@ export default function ProductPage({ slug, shop }) {
 
           {/* What the shop promises about getting it there -- its own terms, read from its own
               settings, so a shop that changes them changes this. */}
+          {/* Delivery options, as Myntra shows them (3 Nov): how it can be paid for and that it comes to the
+              door -- no fee here. The charge and "add more for free delivery" are the bag's and the
+              checkout's to say, where the total is known. */}
+          {/* Only when the shop takes orders here: an empty box under "Ask on WhatsApp" said nothing. */}
+          {buying ? (
           <div className="promise">
             {buying ? (
-              <div>
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                  <path d="M3 7h11v9H3zM14 10h4l3 3v3h-7z" strokeLinejoin="round" />
-                  <circle cx="7" cy="18" r="1.6" /><circle cx="17.5" cy="18" r="1.6" />
-                </svg>
-                <div style={{ display: 'block' }}>
-                  <b>{shop.buying.deliveryFee > 0 ? `Delivery ${money(shop.buying.deliveryFee, currency)}` : 'Free delivery'}</b>
-                  <span>
-                    {shop.buying.deliveryFee > 0 && shop.buying.freeDeliveryAbove
-                      ? `Free on orders over ${money(shop.buying.freeDeliveryAbove, currency)}`
-                      : 'Delivered to your address'}
-                    {shop.buying.payWays?.includes('ONLINE') && shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Online payment or Cash on Delivery (COD)' : shop.buying.payWays?.includes('ONLINE') ? ' · Secure online payment' : shop.buying.payWays?.includes('ON_DELIVERY') ? ' · Cash on Delivery (COD) available' : ''}
-                  </span>
+              <>
+                <h3 className="promisehead">Delivery options</h3>
+                <div>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                    <path d="M3 7h11v9H3zM14 10h4l3 3v3h-7z" strokeLinejoin="round" />
+                    <circle cx="7" cy="18" r="1.6" /><circle cx="17.5" cy="18" r="1.6" />
+                  </svg>
+                  <div style={{ display: 'block' }}><b>Delivered to your door</b><span>Delivery charges, if any, are shown at checkout.</span></div>
                 </div>
-              </div>
+                {shop.buying.payWays?.includes('ON_DELIVERY') ? (
+                  <div>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><circle cx="12" cy="12" r="2.6" /></svg>
+                    <div style={{ display: 'block' }}><b>Cash on Delivery (COD) available</b><span>Pay when it arrives.</span></div>
+                  </div>
+                ) : null}
+                {shop.buying.payWays?.includes('ONLINE') ? (
+                  <div>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2" /><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" /></svg>
+                    <div style={{ display: 'block' }}><b>Secure online payment</b><span>UPI, cards and netbanking.</span></div>
+                  </div>
+                ) : null}
+              </>
             ) : null}
             {/* "Sold by ... / Returns as set out at the bottom of this page" stood here; taken out (owner,
                 29 Oct). The seller's name, address and return policy are in the footer of every page. */}
           </div>
+          ) : null}
 
           {/* Sending ONE piece to somebody, which is how a great deal of this sells: a customer
               forwards a saree to their mother rather than the whole shop. The product page is
