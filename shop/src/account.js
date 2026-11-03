@@ -25,9 +25,28 @@ export const signedIn = (slug) => {
 };
 
 export const onAccountChange = (fn) => {
+  // Another tab of this browser signing in or out changes the same storage (3 Nov): heard here too.
+  const other = (e) => { if (e.key === null || /^scaleezy\.(account|proof)\./.test(e.key)) fn(e); };
   window.addEventListener(EVENT, fn);
-  return () => window.removeEventListener(EVENT, fn);
+  window.addEventListener('storage', other);
+  return () => { window.removeEventListener(EVENT, fn); window.removeEventListener('storage', other); };
 };
+
+/**
+ * Ask the shop whether this browser is still signed in, at most once a minute (3 Nov): a phone
+ * signed out from another device otherwise kept saying "Hello" until something failed. Only a clear
+ * "not signed in" signs it out here; no connection changes nothing.
+ */
+const lastAsked = {};
+export async function stillSignedIn(slug, now = Date.now()) {
+  if (!signedIn(slug)) return;
+  if (now - (lastAsked[slug] ?? 0) < 60_000) return;
+  lastAsked[slug] = now;
+  try {
+    const me = await getAccount(slug, heldProof(slug));
+    if (me && me.signedIn === false) forget(slug);
+  } catch { /* offline or the shop busy: leave them signed in */ }
+}
 
 /** Remember what the shop said about this account (after a sign-in, or reading the account page). */
 export const remember = (slug, me) => {

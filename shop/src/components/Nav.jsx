@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { bagCount, useBag } from '../bag';
-import { signedIn, onAccountChange, wishlistOn, forget } from '../account';
+import { signedIn, onAccountChange, wishlistOn, forget, stillSignedIn } from '../account';
 import { signOutOf, heldProof } from '../api';
 
 /**
@@ -186,6 +186,17 @@ export default function Nav({ shop, compact = false }) {
   // Who is signed in here, kept up to date when they sign in or out on another page.
   const [me, setMe] = useState(() => signedIn(slug));
   useEffect(() => { setMe(signedIn(slug)); return onAccountChange(() => setMe(signedIn(slug))); }, [slug]);
+  // Signed out from another device: found out on opening the shop and on coming back to the tab.
+  // Not where the shop has accounts off: there it answers "not signed in" to everyone, while an earlier
+  // sign-in still proves its number at the checkout (verify-shop-account section 8).
+  const accountsOn = shop?.accounts !== false && !!shop;
+  useEffect(() => {
+    if (!accountsOn) return undefined;
+    void stillSignedIn(slug);
+    const back = () => { if (document.visibilityState === 'visible') void stillSignedIn(slug); };
+    document.addEventListener('visibilitychange', back);
+    return () => document.removeEventListener('visibilitychange', back);
+  }, [slug, accountsOn]);
   const firstName = me?.name ? String(me.name).trim().split(/\s+/)[0] : null;
   // Hearted pieces, for the count on the Wishlist icon. Kept on this phone by account.js and updated as hearts are tapped.
   const hearts = me?.hearts?.length ?? 0;

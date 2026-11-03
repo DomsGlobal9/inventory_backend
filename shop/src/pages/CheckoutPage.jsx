@@ -6,7 +6,7 @@ import {
   startPayment, confirmPayment
 } from '../api';
 import { openCheckout } from '../razorpay';
-import { signedIn, sameNumber } from '../account';
+import { signedIn, sameNumber, onAccountChange } from '../account';
 import { useBag, emptyBag, placementKey, clearPlacementKey } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag } from '../components/Motion';
@@ -124,6 +124,10 @@ export default function CheckoutPage({ shop }) {
   }, [slug]);
 
   useEffect(() => { void loadBook(); }, [loadBook]);
+  // Signed out (from the Profile menu, another tab, or another device): read the sign-in again, so
+  // the page stops saying "No OTP needed" and the saved addresses go with it (3 Nov).
+  const [, seen] = useState(0);
+  useEffect(() => onAccountChange(() => { seen(n => n + 1); void loadBook(); }), [loadBook]);
 
   /*
    * Arriving at a checkout with a book already filled in.

@@ -4,7 +4,7 @@ import { EmptyWishlist } from '../components/Motion';
 import { placed } from '../components/Banners';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { getAccount, getProducts, sendCode, checkCode, signOutOf, signOutOthers, likePiece, removeAddress, saveAddress, heldProof, holdProof, money } from '../api';
-import { becomeSignedIn, remember, forget, noteHeart } from '../account';
+import { becomeSignedIn, remember, forget, noteHeart, signedIn, onAccountChange } from '../account';
 import { sized, orWhole } from '../photo';
 
 /**
@@ -39,6 +39,11 @@ export default function AccountPage({ shop, view = 'profile' }) {
   const [asking, setAsking] = useState(false);
   const [ending, setEnding] = useState(false);
   const [done, setDone] = useState(null);
+  // Signed out in another tab or by the Profile menu: this page follows, instead of showing an
+  // account it can no longer read.
+  useEffect(() => onAccountChange(() => {
+    if (!signedIn(slug)) setMe(m => (m?.signedIn ? { signedIn: false, canSignIn: true } : m));
+  }), [slug]);
   // With the other hooks, above the early returns: declared after them, signing in added a hook
   // between two renders and the page went blank.
   const [editing, setEditing] = useState(null);   // null, 'new', or the address being changed
@@ -120,8 +125,15 @@ export default function AccountPage({ shop, view = 'profile' }) {
     setEnding(true); setSaid(null); setDone(null);
     try {
       const r = await signOutOthers(slug, token);
-      const n = Number(r?.devices ?? 0);
       setAsking(false);
+      // This device's own sign-in had already ended (run out, or ended elsewhere): say so, never
+      // "you are still signed in here".
+      if (r?.signedOut === true) {
+        forget(slug);
+        setMe({ signedIn: false, canSignIn: true });
+        return;
+      }
+      const n = Number(r?.devices ?? 0);
       setDone(n > 0 ? `Signed out of ${n} other ${n === 1 ? 'device' : 'devices'}. You are still signed in here.` : 'No other device was signed in. You are still signed in here.');
       await refresh();
     } catch (e) {
