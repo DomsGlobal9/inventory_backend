@@ -2701,3 +2701,21 @@ body:has([aria-modal="true"]) .dock { display: none; }
 .offerbox .offerline b { color: var(--ink); font-weight: 600; }
 .promisehead { margin: 0 0 12px; font-size: 13px; font-weight: 700; letter-spacing: .02em; }
 .account.si { background: color-mix(in srgb, var(--accent) 4%, var(--soft)); }
+
+/* ── The Profile menu, aligned (3 Nov, owner: "check alignment of profile dropdown") ────────
+ * One left edge for every line: the welcome, the Sign in button and the items all start 18px in; the
+ * divider runs edge to edge. On a laptop it hangs centred under Profile, with a small pointer to it. */
+.pmenu-list { width: 260px; padding: 8px; border-radius: 16px; }
+.pmenu-who { margin: -8px -8px 8px; padding: 16px 18px 14px; border-bottom: 1px solid var(--line); gap: 3px; }
+.pmenu-who b { font-size: 15px; }
+.pmenu-who span { font-size: 12.5px; }
+.pmenu-list a { padding: 11px 10px; gap: 12px; }
+.pmenu-list a svg { flex: 0 0 auto; }
+.pmenu-list a.pmenu-sign { margin: 0 0 6px; padding: 12px 10px; border-radius: 11px; }
+@media (min-width: 720px) {
+  .pmenu-list { right: auto; left: 50%; translate: -50% 0; }
+  .pmenu-list::before {
+    content: ''; position: absolute; top: -7px; left: 50%; width: 12px; height: 12px; translate: -50% 0; rotate: 45deg;
+    background: var(--bg); border-left: 1px solid var(--line); border-top: 1px solid var(--line); border-top-left-radius: 3px;
+  }
+}
