@@ -26,9 +26,10 @@ export default function Footer({ shop }) {
   return (
     <footer className="foot">
       <div className="wrap">
+        {/* The logo on its own row (3 Nov, owner): the store name and every column heading then start on one line. */}
+        {shop.logoUrl ? <img className="mark footmark" src={shop.logoUrl} alt="" /> : null}
         <div className="cols">
           <section className="who">
-            {shop.logoUrl ? <img className="mark" src={shop.logoUrl} alt="" /> : null}
             <h3>{shop.name}</h3>
             {seller?.address ? <p>{seller.address}</p> : null}
             {seller?.gstNumber ? <p>GSTIN: {seller.gstNumber}</p> : null}
@@ -81,12 +82,11 @@ export default function Footer({ shop }) {
           )}
         </div>
 
-        {/* Whose shop this is. The seller is the shop; ScaleEzy only carries the page. */}
-        <p className="by">
-          Sold by {seller?.name || shop.name}
-          {shop.buying?.open ? ' · Orders are taken here' : ''}
-          <span> · Shop online with ScaleEzy</span>
-        </p>
+        {/* Whose store this is, and, at the right, who made the page (3 Nov, owner). */}
+        <div className="by">
+          <span>© {new Date().getFullYear()} {seller?.name || shop.name}. All rights reserved.</span>
+          <a className="made" href="https://scaleezy.com" target="_blank" rel="noopener noreferrer">Made with ScaleEzy</a>
+        </div>
       </div>
     </footer>
   );

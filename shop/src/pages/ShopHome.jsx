@@ -257,7 +257,7 @@ export default function ShopHome({ slug, shop }) {
             <div ref={edge} className="edge">
               {state.data.hasMore ? (
                 <button className="go quiet" style={{ flex: '0 0 auto' }} disabled={fetchingMore} onClick={more}>
-                  {fetchingMore ? 'Fetching…' : 'Show more'}
+                  {fetchingMore ? 'Loading…' : 'Show more'}
                 </button>
               ) : shown.length > 12 ? (
                 <p className="tiny">That is everything {shop?.name || 'this shop'} has online.</p>
