@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { wantThis } from '../api';
 
 /**
- * "Tell the shop you want this", on a piece that is sold out.
+ * "Notify me when available", on a piece that is sold out.
  *
  * The page already offers "Ask if it is coming back", which opens WhatsApp. That works, and
  * plenty of people will use it -- but it leaves the shop nothing to count. Twenty messages over
@@ -54,14 +54,14 @@ export default function TellTheShop({ slug, product, variantCode, piece }) {
   if (!open) {
     return (
       <button type="button" className="go quiet" onClick={() => setOpen(true)}>
-        Tell the shop you want this
+        Notify me when available
       </button>
     );
   }
 
   return (
     <form className="wantit" onSubmit={send}>
-      <p>Leave your number and the shop will get in touch about <b>{piece || 'this piece'}</b>.</p>
+      <p>Leave your number and the store will contact you about <b>{piece || 'this piece'}</b>.</p>
       <div className="row">
         <input
           type="tel" inputMode="tel" autoComplete="tel" required
@@ -76,7 +76,7 @@ export default function TellTheShop({ slug, product, variantCode, piece }) {
       </div>
       <div className="row">
         <button type="submit" className="go" disabled={state === 'sending' || phone.trim().length < 6}>
-          {state === 'sending' ? 'Sending…' : 'Tell the shop'}
+          {state === 'sending' ? 'Sending…' : 'Notify me'}
         </button>
         <button type="button" className="go quiet" onClick={() => setOpen(false)}>Not now</button>
       </div>

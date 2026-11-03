@@ -70,21 +70,21 @@ export function Problem({ error, onRetry, shopName }) {
   if (kind === 'UNKNOWN_SHOP') {
     return (
       <Say title="There is no shop at this address">
-        Check the link you were sent. It may have been typed by hand, or the shop may have moved.
+        This page could not be found. Please check the link and try again.
       </Say>
     );
   }
   if (kind === 'CLOSED') {
     return (
       <Say title={`${shopName || 'This shop'} is not open just now`}>
-        The shop has closed its online shop for the moment. Your link still works — try again later.
+        This store is temporarily closed. Please check back later.
       </Say>
     );
   }
   if (kind === 'GONE') {
     return (
       <Say title="That is no longer in this shop" action={<Retry onRetry={onRetry} />}>
-        It may have sold, or the shop may have taken it off. Have a look at what else there is.
+        This item is no longer available. Explore more from the store.
       </Say>
     );
   }

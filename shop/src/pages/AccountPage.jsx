@@ -67,8 +67,8 @@ export default function AccountPage({ shop, view = 'profile' }) {
       <div className="account">
         <section className="card asignin">
           <h1>{shop?.name || 'This shop'} does not offer accounts</h1>
-          <p>You can still order without signing in. Your order's link, in the WhatsApp the shop sends, is how you check on it.</p>
-          <Link className="go quiet" to={`/${slug}/orders`}>Orders from this phone</Link>
+          <p>You can still order as a guest. Use the link in your WhatsApp order confirmation to track it.</p>
+          <Link className="go quiet" to={`/${slug}/orders`}>Your orders</Link>
         </section>
       </div>
     );
@@ -78,7 +78,7 @@ export default function AccountPage({ shop, view = 'profile' }) {
       <div className="account">
         <section className="card asignin">
           <h1>{shop?.name || 'This shop'} does not keep wishlists</h1>
-          <p>Have a look around: everything the shop has online is on its front page.</p>
+          <p>Browse the latest collection on the home page.</p>
           <Link className="go quiet keepon" to={`/${slug}`}>Continue shopping</Link>
         </section>
       </div>
@@ -133,7 +133,7 @@ export default function AccountPage({ shop, view = 'profile' }) {
         {said ? <p className="refused" role="alert">{said}</p> : null}
         <section className="card">
         {me.hearts.length === 0 ? (
-          <div className="aemptybig"><div className="art"><EmptyWishlist /></div><p className="aempty">Your wishlist is empty. Tap the heart on a piece to save it here.</p><Link className="go quiet keepon" to={`/${slug}`}>Continue shopping</Link></div>
+          <div className="aemptybig"><div className="art"><EmptyWishlist /></div><p className="aempty">Your wishlist is empty. Tap the heart on any item to save it here.</p><Link className="go quiet keepon" to={`/${slug}`}>Continue shopping</Link></div>
         ) : (
           <ul className="awish">
             {me.hearts.map(h => (
@@ -167,7 +167,7 @@ export default function AccountPage({ shop, view = 'profile' }) {
         {said ? <p className="refused" role="alert">{said}</p> : null}
         <section className="card" id="addresses">
         {me.addresses.length === 0 && editing !== 'new' ? (
-          <p className="aempty">Add an address and it is ready at the checkout. Addresses you order to are saved here too.</p>
+          <p className="aempty">Add an address to use it at checkout. Addresses from your orders are saved here too.</p>
         ) : (
           <ul className="aaddr">
             {me.addresses.map(a => editing?.id === a.id ? (
@@ -230,9 +230,9 @@ export default function AccountPage({ shop, view = 'profile' }) {
 
   // The profile: who they are, their balances, and a short menu to everything else.
   const rows = [
-    { to: `/${slug}/orders`, title: 'Orders', sub: me.orders.length ? `${me.orders.length} ${me.orders.length === 1 ? 'order' : 'orders'} · track, cancel or check a delivery` : 'Track, cancel or check a delivery', icon: 'orders' },
-    ...(shop?.wishlist === false ? [] : [{ to: `/${slug}/wishlist`, title: 'Wishlist', sub: me.hearts.length ? `${me.hearts.length} saved ${me.hearts.length === 1 ? 'piece' : 'pieces'}` : 'The pieces you heart', icon: 'heart' }]),
-    { to: `/${slug}/addresses`, title: 'Saved addresses', sub: me.addresses.length ? `${me.addresses.length} saved · used at the checkout` : 'Add one, and it is ready at the checkout', icon: 'pin' }
+    { to: `/${slug}/orders`, title: 'Orders', sub: me.orders.length ? `${me.orders.length} ${me.orders.length === 1 ? 'order' : 'orders'} · track, cancel or check a delivery` : 'Track or cancel your orders', icon: 'orders' },
+    ...(shop?.wishlist === false ? [] : [{ to: `/${slug}/wishlist`, title: 'Wishlist', sub: me.hearts.length ? `${me.hearts.length} saved ${me.hearts.length === 1 ? 'piece' : 'pieces'}` : 'Items you saved', icon: 'heart' }]),
+    { to: `/${slug}/addresses`, title: 'Saved addresses', sub: me.addresses.length ? `${me.addresses.length} saved · used at the checkout` : 'Add one to use it at checkout', icon: 'pin' }
   ];
   return (
     <div className="account">
@@ -244,7 +244,7 @@ export default function AccountPage({ shop, view = 'profile' }) {
         </div>
         <div className="aout">
           <button type="button" className="go quiet" onClick={() => out(false)}>Sign out</button>
-          {me.devices > 1 ? <button type="button" className="drop" onClick={() => out(true)}>Sign out on all phones</button> : null}
+          {me.devices > 1 ? <button type="button" className="drop" onClick={() => out(true)}>Sign out of all devices</button> : null}
         </div>
       </section>
 
@@ -318,7 +318,7 @@ function AddressForm({ slug, token, me, address, first = false, onDone, onCancel
       {/* The default cannot simply be switched off: the checkout would then have nothing chosen. It moves
           when another address is made the default. */}
       <label className="acheck"><input type="checkbox" checked={f.isDefault} onChange={set('isDefault')} disabled={!!address?.isDefault || first} /> Make this my default address</label>
-      {address?.isDefault ? <small className="ahint">This is your default. To change it, choose Make default on another address.</small> : first ? <small className="ahint">Your first address is your default.</small> : null}
+      {address?.isDefault ? <small className="ahint">This is your default address. To change it, set another address as default.</small> : first ? <small className="ahint">Your first address is your default.</small> : null}
       {said ? <p className="refused" role="alert">{said}</p> : null}
       <div className="aformbtns">
         <button type="submit" className="go" disabled={busy}>{busy ? 'Saving…' : 'Save address'}</button>

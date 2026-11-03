@@ -71,8 +71,8 @@ export default function BagPage({ shop }) {
   if (lines.length === 0) {
     return (
       <Say title="Your bag is empty" art={<LottieArt load={loadEmptyBag} fallback={<EmptyBag />} size={200} />}
-        action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
-        Anything you add is kept here until you order it, even if you close the page.
+        action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Start shopping</Link>}>
+        Items you add are saved here until you check out.
       </Say>
     );
   }
@@ -137,17 +137,17 @@ export default function BagPage({ shop }) {
         </ul>
 
         <aside className="bill">
-          <h2>What it comes to</h2>
+          <h2>Price details</h2>
           {bag ? (
             <>
               <dl>
-                <div><dt>Pieces</dt><dd>{money(bag.goods, currency)}</dd></div>
+                <div><dt>Items</dt><dd>{money(bag.goods, currency)}</dd></div>
                 {bag.saved > 0 ? <div className="good"><dt>You save</dt><dd>−{money(bag.saved, currency)}</dd></div> : null}
                 <div>
                   <dt>Delivery</dt>
                   <dd>{bag.delivery > 0 ? money(bag.delivery, currency) : <span className="good">Free</span>}</dd>
                 </div>
-                <div className="sum"><dt>To pay</dt><dd>{money(bag.total, currency)}</dd></div>
+                <div className="sum"><dt>Total amount</dt><dd>{money(bag.total, currency)}</dd></div>
               </dl>
 
               {/* Why money came off, in the shop's own words. */}
@@ -187,7 +187,7 @@ export default function BagPage({ shop }) {
                   <Toward done={(bag.goods - bag.saved) / bag.freeDeliveryAbove} />
                 </div>
               ) : bag.freeDeliveryAbove != null && bag.delivery === 0 && bag.goods > 0 ? (
-                <p className="nudge">You have free delivery.</p>
+                <p className="nudge">You get free delivery on this order.</p>
               ) : null}
               {short > 0 ? (
                 <p className="nudge warn">This shop sends orders of {money(bag.minOrderValue, currency)} and above.
@@ -196,9 +196,9 @@ export default function BagPage({ shop }) {
 
               <button type="button" className="go" disabled={short > 0 || state.loading}
                 onClick={() => nav(`/${slug}/checkout`)}>
-                {short > 0 ? 'Add a little more' : 'Place your order'}
+                {short > 0 ? 'Add more items' : 'Place order'}
               </button>
-              <Link className="go quiet" to={`/${slug}`}>Keep looking</Link>
+              <Link className="go quiet" to={`/${slug}`}>Continue shopping</Link>
             </>
           ) : (
             <div className="bone" style={{ height: 150, borderRadius: 12 }} />

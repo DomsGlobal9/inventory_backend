@@ -223,7 +223,7 @@ export default function ShopHome({ slug, shop }) {
         total === 0 ? (
           chosen.length ? (
             <Say title="Nothing matched that" art={<NoMatch />}
-              action={<button className="go quiet" style={{ flex: '0 0 auto' }} onClick={() => setParams(new URLSearchParams())}>Show everything</button>}>
+              action={<button className="go quiet" style={{ flex: '0 0 auto' }} onClick={() => setParams(new URLSearchParams())}>Show all</button>}>
               Try a shorter word, or have a look at everything {shop?.name || 'the shop'} has.
             </Say>
           ) : (

@@ -162,7 +162,7 @@ function Gallery({ photos, title, actions = null }) {
       <div className="gallery">
         <div className="swipe">
           <figure style={{ display: 'grid', placeItems: 'center', color: 'var(--faint)', fontSize: 13 }}>
-            No photograph of this one yet
+            Image coming soon
           </figure>
         </div>
         {/* A piece with no photograph can still be saved and sent on. */}
@@ -365,7 +365,7 @@ export default function ProductPage({ slug, shop }) {
       <>
         <Problem error={state.error} shopName={shop?.name} onRetry={() => setNonce(n => n + 1)} />
         <div style={{ textAlign: 'center', paddingBottom: 40 }}>
-          <Link className="go quiet" style={{ display: 'inline-flex' }} to={`/${slug}`}>See the whole shop</Link>
+          <Link className="go quiet" style={{ display: 'inline-flex' }} to={`/${slug}`}>Continue shopping</Link>
         </div>
       </>
     );
@@ -432,7 +432,7 @@ export default function ProductPage({ slug, shop }) {
   return (
     <>
       <p className="crumbs">
-        <Link to={`/${slug}`}>Everything in the shop</Link>
+        <Link to={`/${slug}`}>Home</Link>
         {p.category ? <> <span>›</span> <Link to={`/${slug}?category=${encodeURIComponent(p.category)}`}>
           {p.category.charAt(0) + p.category.slice(1).toLowerCase()}</Link></> : null}
       </p>
@@ -487,7 +487,7 @@ export default function ProductPage({ slug, shop }) {
 
           {soldOut ? (
             <p className="tax" style={{ color: 'var(--muted)', marginTop: -12 }}>
-              Sold out just now — ask the shop, they may be getting more.
+              Out of stock. Ask the store about a restock.
             </p>
           ) : null}
 
@@ -592,7 +592,7 @@ export default function ProductPage({ slug, shop }) {
               </a>
             ) : (
               <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0 }}>
-                This shop has not given a number to chat on yet.
+                Chat is not available for this store yet.
               </p>
             )}
           </div>
@@ -614,7 +614,7 @@ export default function ProductPage({ slug, shop }) {
               </span>
               <span className="words">
                 Virtual Try-On
-                <small>See this piece on your own photo</small>
+                <small>See how it looks on you</small>
               </span>
               <em>Free</em>
               <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -644,7 +644,7 @@ export default function ProductPage({ slug, shop }) {
                 {shop.buying.payWays?.includes('ON_DELIVERY') ? (
                   <div>
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><circle cx="12" cy="12" r="2.6" /></svg>
-                    <div style={{ display: 'block' }}><b>Cash on Delivery (COD) available</b><span>Pay when it arrives.</span></div>
+                    <div style={{ display: 'block' }}><b>Cash on Delivery (COD) available</b><span>Pay by cash or UPI on delivery.</span></div>
                   </div>
                 ) : null}
                 {shop.buying.payWays?.includes('ONLINE') ? (
@@ -683,11 +683,11 @@ export default function ProductPage({ slug, shop }) {
                   while adding the product and it was shown on their own preview, but it never
                   reached the page: the one person actually choosing between two sarees could not
                   see it. For a saree it says more about the price than the brand does. */}
-              {p.craft ? <><dt>Made</dt><dd>{p.craft}</dd></> : null}
+              {p.craft ? <><dt>Craft</dt><dd>{p.craft}</dd></> : null}
               {p.brand ? <><dt>Brand</dt><dd>{p.brand}</dd></> : null}
               {chosen?.colour ? <><dt>Colour</dt><dd>{chosen.colour}</dd></> : null}
               {chosen?.size ? <><dt>Size</dt><dd>{chosen.size}</dd></> : null}
-              <dt>Code</dt><dd>{p.productCode}</dd>
+              <dt>Product code</dt><dd>{p.productCode}</dd>
             </dl>
             {p.description ? <p>{p.description}</p> : null}
           </div>
@@ -733,7 +733,7 @@ export default function ProductPage({ slug, shop }) {
                 </a>
               ) : (
                 <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0 }}>
-                  This shop has not given a number to chat on yet.
+                  Chat is not available for this store yet.
                 </p>
               )}
             </div>

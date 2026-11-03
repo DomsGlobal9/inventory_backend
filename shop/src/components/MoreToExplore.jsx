@@ -266,7 +266,7 @@ function Endless({ slug, product, skip, banner }) {
     <section ref={spot} className="alsoin endless">
       <div className="head">
         <h2>You may also like</h2>
-        <Link to={`/${slug}`}>See everything</Link>
+        <Link to={`/${slug}`}>View all</Link>
       </div>
       <div className="grid">
         {rows.map((p, i) => (
@@ -289,7 +289,7 @@ function Endless({ slug, product, skip, banner }) {
           </div>
         ) : hasMore && page >= AUTO_PAGES ? (
           <button type="button" className="go quiet" style={{ flex: '0 0 auto' }} disabled={busy} onClick={more}>
-            {busy ? 'Fetching…' : 'Show more'}
+            {busy ? 'Loading…' : 'Show more'}
           </button>
         ) : null}
       </div>

@@ -54,7 +54,7 @@ export default function DeliveryCheck({ slug, deliversEverywhere }) {
 
   return (
     <div className="pincheck">
-      <label htmlFor="pincheck-input"><b>Do we deliver to you?</b></label>
+      <label htmlFor="pincheck-input"><b>Check delivery</b></label>
       <form
         onSubmit={(e) => { e.preventDefault(); check(pincode); }}
         style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}
@@ -77,7 +77,7 @@ export default function DeliveryCheck({ slug, deliversEverywhere }) {
       <p id="pincheck-answer" role="status" className={`ans ${state ?? ''}`}>
         {state === 'yes' && <>Yes &mdash; we deliver to {checkedFor}.</>}
         {state === 'no' && <>We do not deliver to {checkedFor} just now. Ask us on WhatsApp &mdash; we may still be able to help.</>}
-        {state === 'bad' && <>A PIN code is six digits.</>}
+        {state === 'bad' && <>Enter a valid 6-digit PIN code.</>}
       </p>
     </div>
   );

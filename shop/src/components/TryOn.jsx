@@ -61,9 +61,9 @@ function NumberStep({ slug, onProved }) {
     try {
       await sendCode(slug, phone, undefined, 'TRYON');
       setSent(true); setCode('');
-      setSaid('We have sent a code to your WhatsApp.');
+      setSaid('OTP sent to your WhatsApp.');
     } catch (err) {
-      setSaid(err?.message ?? 'That code could not be sent. Try again.');
+      setSaid(err?.message ?? 'We could not send the OTP. Please try again.');
     } finally { setBusy(false); }
   };
 
@@ -74,7 +74,7 @@ function NumberStep({ slug, onProved }) {
       holdProof(slug, out?.token);
       onProved();
     } catch (err) {
-      setSaid(err?.message ?? 'That code was not right.');
+      setSaid(err?.message ?? 'That OTP is not correct.');
     } finally { setBusy(false); }
   };
 
@@ -83,7 +83,7 @@ function NumberStep({ slug, onProved }) {
       {sent ? (
         <>
           <label>
-            <span>The code we sent to your WhatsApp</span>
+            <span>OTP sent to your WhatsApp</span>
             <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric"
               autoComplete="one-time-code" maxLength={6} placeholder="123456" autoFocus />
           </label>
@@ -91,19 +91,19 @@ function NumberStep({ slug, onProved }) {
             <button type="button" className="go" disabled={busy || code.replace(/\D/g, '').length !== 6} onClick={check}>
               {busy ? 'Checking…' : 'Confirm'}
             </button>
-            <button type="button" className="again" disabled={busy} onClick={send}>Send it again</button>
+            <button type="button" className="again" disabled={busy} onClick={send}>Resend OTP</button>
             <button type="button" className="again" disabled={busy} onClick={() => { setSent(false); setSaid(null); }}>Change number</button>
           </div>
         </>
       ) : (
         <>
-          <p className="why">Enter your WhatsApp number. We'll send a code to check it's yours.</p>
+          <p className="why">Enter your mobile number to receive an OTP on WhatsApp.</p>
           <label>
             <span>WhatsApp number</span>
             <input value={phone} onChange={e => setPhone(e.target.value)} inputMode="tel" autoComplete="tel"
               placeholder="98480 11122" maxLength={16} />
           </label>
-          <button type="button" className="go" disabled={busy} onClick={send}>{busy ? 'Sending…' : 'Send code'}</button>
+          <button type="button" className="go" disabled={busy} onClick={send}>{busy ? 'Sending OTP…' : 'Get OTP'}</button>
         </>
       )}
       {said ? <p className="said" role="status">{said}</p> : null}
@@ -181,7 +181,7 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
               </button>
             </div>
             <p className="tiny">
-              A picture made by a computer, to give you an idea. The real thing may sit differently.
+              AI-generated preview. The actual fit and drape may vary.
             </p>
             <div className="sheetrow">
               <button type="button" className="go quiet" onClick={() => { setResult(null); setPhoto(null); }}>
@@ -218,7 +218,7 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
             </div>
             {/* role=status so the wait is announced to a screen reader, which cannot see the band
                 of light. The dots are aria-hidden, so only the words are read out. */}
-            {busy ? <p className="tiny" role="status">Putting it on you <Working /></p> : null}
+            {busy ? <p className="tiny" role="status">Creating your look <Working /></p> : null}
           </>
         ) : (
           <>
@@ -248,13 +248,13 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
                   <path d="M20 24v18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
                   <path d="M6 46h28" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity=".45" />
                 </svg>
-                <span>Plain wall</span>
+                <span>Plain background</span>
               </div>
             </div>
 
             <p className="why">
-              Your photograph is used once to make the picture and then deleted. The shop does not
-              keep it.
+              Your photo is used only to create this preview and is deleted right after. The store does
+              not keep it.
             </p>
             {said ? <p className="refused">{said}</p> : null}
 

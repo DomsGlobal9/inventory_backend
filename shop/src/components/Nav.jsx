@@ -100,7 +100,7 @@ function ProfileMenu({ slug, me, firstName, wishlist }) {
         <div className="pmenu-list" role="menu" style={{ '--below': `${below}px` }} onClick={(e) => { if (e.target.closest('a')) setOpen(false); }}>
           <div className="pmenu-who">
             {me ? <><b>Hello{firstName ? ` ${firstName}` : ''}</b><span>{me.phone ? `Signed in with ••${String(me.phone).slice(-4)}` : 'Signed in'}</span></>
-              : <><b>Welcome</b><span>Sign in to see your orders from any phone</span></>}
+              : <><b>Welcome</b><span>Sign in to see your orders on any device</span></>}
           </div>
           {me ? null : <Link role="menuitem" className="pmenu-sign" to={`/${slug}/account`}>Sign in</Link>}
           <Link role="menuitem" to={`/${slug}/orders`}><OrdersGlyph size={18} /> Orders</Link>
@@ -259,7 +259,7 @@ export default function Nav({ shop, compact = false }) {
               <OrdersGlyph />
               <span className="word" aria-hidden="true">Orders</span>
             </Link> : null}
-            <Link to={`/${slug}/bag`} className="icon worded" aria-label={count ? `Your bag, ${count} pieces` : 'Your bag'}>
+            <Link to={`/${slug}/bag`} className="icon worded" aria-label={count ? `Your bag, ${count} items` : 'Your bag'}>
               <Bag n={count} />
               <span className="word" aria-hidden="true">Bag</span>
             </Link>

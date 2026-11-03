@@ -37,12 +37,12 @@ async function get(path, { signal, send, method } = {}) {
   } catch (e) {
     // A cancelled request is the page moving on, not a problem to report.
     if (e?.name === 'AbortError') throw e;
-    throw new ShopError('OFFLINE', 'We could not reach the shop. Check your connection and try again.');
+    throw new ShopError('OFFLINE', 'We could not connect. Check your internet connection and try again.');
   }
 
   if (res.ok) {
     const body = await res.json().catch(() => null);
-    if (!body?.success) throw new ShopError('BROKEN', 'The shop sent something we could not read.');
+    if (!body?.success) throw new ShopError('BROKEN', 'Something went wrong. Please try again.');
     return body.data;
   }
 
@@ -58,8 +58,8 @@ async function get(path, { signal, send, method } = {}) {
   if (res.status === 404 && body?.state === 'UNKNOWN') throw new ShopError('UNKNOWN_SHOP', 'There is no shop at this address.');
   if (res.status === 503 && body?.state === 'CLOSED') throw new ShopError('CLOSED', body.message || 'This shop is not open just now.');
   if (res.status === 404) throw new ShopError('GONE', body?.message || 'That is no longer in this shop.');
-  if (res.status === 429) throw new ShopError('OFFLINE', 'That was a lot of requests at once. Wait a moment and try again.');
-  throw new ShopError('BROKEN', body?.message || 'Something went wrong at the shop. Please try again.');
+  if (res.status === 429) throw new ShopError('OFFLINE', 'Too many requests. Please wait a moment and try again.');
+  throw new ShopError('BROKEN', body?.message || 'Something went wrong. Please try again.');
 }
 
 export const getShop = (slug, opts) => get(`/shop/${encodeURIComponent(slug)}`, opts);

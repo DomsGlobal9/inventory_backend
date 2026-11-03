@@ -18,15 +18,15 @@ import { sized, orWhole, THUMB } from '../photo';
  */
 
 const STATES = {
-  PLACED: { title: 'Your order is placed', note: 'The shop has it and is getting it ready.' },
-  PACKED: { title: 'Your order is packed', note: 'It leaves the shop with the courier soon.' },
+  PLACED: { title: 'Your order is placed', note: 'The store is preparing your order.' },
+  PACKED: { title: 'Your order is packed', note: 'It will be handed to the courier soon.' },
   PART_PACKED: { title: 'Part of your order is packed', note: 'The rest follows shortly.' },
   PART_SENT: { title: 'Part of your order is on its way', note: 'The rest follows shortly.' },
-  SENT: { title: 'Your order is on its way', note: 'The shop has sent it.' },
+  SENT: { title: 'Your order is on its way', note: 'Your order has been shipped.' },
   OUT_FOR_DELIVERY: { title: 'Your order arrives today', note: 'It is out for delivery.' },
   DELIVERED: { title: 'Your order was delivered', note: 'We hope you love it.' },
-  TROUBLE: { title: 'There is a problem with your delivery', note: 'The shop will be in touch. You can also ask them below.' },
-  CANCELLED: { title: 'This order was cancelled', note: 'Nothing is owed. Ask the shop if this is a surprise.' }
+  TROUBLE: { title: 'There is a problem with your delivery', note: 'The store will contact you. You can also message them below.' },
+  CANCELLED: { title: 'This order was cancelled', note: 'Nothing is due on this order.' }
 };
 
 /*
@@ -40,11 +40,11 @@ function parcelWords(p) {
     case 'BOOKED': return { title: 'Packed', note: 'The courier collects it soon.' };
     case 'ON_ITS_WAY': return { title: 'On its way' };
     case 'OUT_FOR_DELIVERY': return { title: 'Out for delivery today' };
-    case 'MISSED': return { title: 'Delivery attempt missed', note: 'The courier will try again. If you will not be in, ask the shop.' };
+    case 'MISSED': return { title: 'Delivery attempt missed', note: 'The courier will try again. If you will be away, message the store.' };
     case 'DELIVERED': return { title: p.deliveredAt ? `Delivered on ${dayOf(p.deliveredAt)}` : 'Delivered' };
-    case 'RETURNING': return { title: 'Going back to the shop', note: 'It could not be delivered. The shop will be in touch.' };
-    case 'PROBLEM': return { title: 'A problem with this parcel', note: 'The shop will be in touch.' };
-    case 'REARRANGING': return { title: 'Being booked again', note: 'The shop is arranging the courier again.' };
+    case 'RETURNING': return { title: 'Returning to the store', note: 'It could not be delivered. The store will contact you.' };
+    case 'PROBLEM': return { title: 'A problem with this parcel', note: 'The store will contact you.' };
+    case 'REARRANGING': return { title: 'Courier being rebooked', note: 'The store is rebooking the courier.' };
     default: return { title: 'On its way' };
   }
 }
@@ -101,7 +101,7 @@ export default function OrderPage({ shop }) {
       <>
         <Problem error={state.error} shopName={shop?.name} onRetry={() => load()} />
         <div style={{ textAlign: 'center', paddingBottom: 40 }}>
-          <Link className="go quiet" style={{ display: 'inline-flex' }} to={`/${slug}`}>Go to the shop</Link>
+          <Link className="go quiet" style={{ display: 'inline-flex' }} to={`/${slug}`}>Continue shopping</Link>
         </div>
       </>
     );
@@ -238,7 +238,7 @@ export default function OrderPage({ shop }) {
           ))}
         </ul>
 
-        <h3 className="osub">What it came to</h3>
+        <h3 className="osub">Price details</h3>
         <dl>
           <div><dt>Pieces</dt><dd>{money(o.goods)}</dd></div>
           {o.saved > 0 ? <div className="good"><dt>You saved</dt><dd>−{money(o.saved)}</dd></div> : null}
@@ -250,7 +250,7 @@ export default function OrderPage({ shop }) {
         <div className="due">
           <span>
             {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.paidOnDelivery ? 'Paid on delivery' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
-            <span>{refunding ? 'Going back to how you paid' : (o.paid || o.paidOnDelivery) ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash on Delivery (COD): cash or UPI' : ''}</span>
+            <span>{refunding ? 'Refund to your original payment method' : (o.paid || o.paidOnDelivery) ? 'Nothing more to pay' : o.payWay === 'ON_DELIVERY' ? 'Cash on Delivery (COD): cash or UPI' : ''}</span>
           </span>
           <b>{money(o.total)}</b>
         </div>
@@ -270,7 +270,7 @@ export default function OrderPage({ shop }) {
               Ask {shop?.name || 'the shop'} about this order
             </a>
           ) : null}
-          <Link className="go quiet" to={`/${slug}`}>Keep shopping</Link>
+          <Link className="go quiet" to={`/${slug}`}>Continue shopping</Link>
 
           {/*
             Calling it off, while it is still sitting at the shop. Offered rather than hidden: a
@@ -285,7 +285,7 @@ export default function OrderPage({ shop }) {
                   {/* Paid online, the customer IS owed something: their money, and they should know it comes back by itself. */}
                   {o.paid && o.payWay === 'ONLINE'
                     ? `Cancel ${o.orderNumber}? Your ${money(o.total)} goes back to how you paid, by itself — banks usually take 5–7 working days to show it.`
-                    : `Cancel ${o.orderNumber}? The shop puts everything back and nothing is owed.`}
+                    : `Cancel ${o.orderNumber}? You will not be charged.`}
                 </p>
                 {refused ? <p className="refused">{refused}</p> : null}
                 <div className="row">
@@ -299,7 +299,7 @@ export default function OrderPage({ shop }) {
                       setState({ loading: false, error: null, order: after });
                       setCalling('no');
                     } catch (err) {
-                      setRefused(err?.message ?? 'That could not be cancelled. Message the shop.');
+                      setRefused(err?.message ?? 'This order could not be cancelled. Please message the store.');
                       setCalling('asking');
                     }
                   }}>Yes, cancel it</button>
@@ -313,7 +313,7 @@ export default function OrderPage({ shop }) {
             )
           )}
 
-          <p className="tiny">Keep this link — it is how you check on your order.</p>
+          <p className="tiny">Save this link to track your order.</p>
         </section>
       </div>
     </div>

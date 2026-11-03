@@ -134,7 +134,7 @@ export default function CheckoutPage({ shop }) {
    * What is on the form already WINS: it is what they last ordered to on this device, and it is
    * almost always one of these cards anyway, since the book fills itself. Where it matches a card,
    * that card is the one shown as chosen -- otherwise the page would offer three saved addresses
-   * and highlight "Somewhere else" while displaying one of the three.
+   * and highlight "Deliver to another address" while displaying one of the three.
    */
   const formNow = useRef(form);
   useEffect(() => { formNow.current = form; }, [form]);
@@ -159,7 +159,7 @@ export default function CheckoutPage({ shop }) {
     return (
       <Say title="Your bag is empty" art={<EmptyBag />}
         action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
-        Put something in it and you can order from here.
+        Add items to your bag to check out.
       </Say>
     );
   }
@@ -173,9 +173,9 @@ export default function CheckoutPage({ shop }) {
    * typing their own name is a form that tells them they are wrong before they have finished.
    */
   const missing = () => {
-    if (form.name.trim().length < 2) return 'Tell the shop your name.';
-    if (form.phone.replace(/\D/g, '').length < 10) return 'The shop needs a phone number to reach you on.';
-    if (form.address.trim().length < 10) return 'Write out the full address, with the house, the street and the area.';
+    if (form.name.trim().length < 2) return 'Enter your full name.';
+    if (form.phone.replace(/\D/g, '').length < 10) return 'Enter a mobile number for delivery updates.';
+    if (form.address.trim().length < 10) return 'Enter the full address: house number, street and area.';
     if (!/^[1-9][0-9]{5}$/.test(form.pincode.replace(/\D/g, ''))) return 'That PIN code does not look right. It is six digits.';
     if (!form.payWay) return 'Choose how you would like to pay.';
     return null;
@@ -186,7 +186,7 @@ export default function CheckoutPage({ shop }) {
    * who proves their number and then fixes a typo in their name should not be asked again.
    */
   const askForCode = async () => {
-    const wrong = form.phone.replace(/\D/g, '').length < 10 ? 'The shop needs a phone number to reach you on.' : null;
+    const wrong = form.phone.replace(/\D/g, '').length < 10 ? 'Enter a mobile number for delivery updates.' : null;
     if (wrong) { setRefused(wrong); return; }
     setProof(p => ({ ...p, busy: true, said: null }));
     try {
@@ -195,10 +195,10 @@ export default function CheckoutPage({ shop }) {
       setProof({
         state: out.alreadyVerified ? 'done' : 'sent',
         code: '', busy: false, forPhone: form.phone,
-        said: out.alreadyVerified ? 'This number is already confirmed.' : 'We have sent a code to your WhatsApp.'
+        said: out.alreadyVerified ? 'This number is already verified.' : 'We have sent a code to your WhatsApp.'
       });
     } catch (err) {
-      setProof(p => ({ ...p, busy: false, said: err?.message ?? 'That could not be sent.' }));
+      setProof(p => ({ ...p, busy: false, said: err?.message ?? 'We could not send the OTP.' }));
     }
   };
 
@@ -209,10 +209,10 @@ export default function CheckoutPage({ shop }) {
       // saved addresses are read with from here on.
       const out = await checkCode(slug, form.phone, proof.code);
       holdProof(slug, out?.token);
-      setProof(p => ({ ...p, state: 'done', busy: false, said: 'Number confirmed.', forPhone: form.phone }));
+      setProof(p => ({ ...p, state: 'done', busy: false, said: 'Number verified.', forPhone: form.phone }));
       void loadBook();
     } catch (err) {
-      setProof(p => ({ ...p, busy: false, said: err?.message ?? 'That code was not right.' }));
+      setProof(p => ({ ...p, busy: false, said: err?.message ?? 'That OTP is not correct.' }));
     }
   };
 
@@ -313,7 +313,7 @@ export default function CheckoutPage({ shop }) {
       clearPlacementKey(slug);
       nav(`/${slug}/order/${order.token}`, { replace: true });
     } catch (err) {
-      setRefused(err?.message ?? 'That could not be sent. Please try again.');
+      setRefused(err?.message ?? 'We could not send the OTP. Please try again.');
       setPlacing(false);
       // The bag may have been the problem -- something sold out while they typed. Ask again.
       reprice();
@@ -329,18 +329,18 @@ export default function CheckoutPage({ shop }) {
       <div className="checkbody">
         <div className="asks">
           <section className="ask">
-            <h2><i>1</i> Who is it for?</h2>
+            <h2><i>1</i> Contact details</h2>
             <div className="fields">
               <label>
-                <span>Your name</span>
+                <span>Full name</span>
                 <input value={form.name} onChange={e => set('name', e.target.value)}
                   autoComplete="name" maxLength={80} placeholder="Priya Reddy" />
               </label>
               <label>
-                <span>Phone</span>
+                <span>Mobile number</span>
                 <input value={form.phone} onChange={e => { set('phone', e.target.value); setProof(p => ({ ...p, said: null })); }}
                   type="tel" inputMode="tel" autoComplete="tel" maxLength={20} placeholder="98480 22338" />
-                <small>The shop rings this to arrange delivery.</small>
+                <small>Used for delivery updates.</small>
               </label>
               <label className="wide">
                 <span>Email <em>(optional)</em></span>
@@ -361,7 +361,7 @@ export default function CheckoutPage({ shop }) {
             a shop with no linked number answered every press with "Something went wrong".
           */}
           {!shop?.canVerifyPhone ? null : signedInHere ? (
-            <p className="proved">✓ Signed in as {form.phone}. No code needed.</p>
+            <p className="proved">✓ Signed in as {form.phone}. No OTP needed.</p>
           ) : proved ? (
             <p className="proved">✓ {form.phone} confirmed</p>
           ) : (
@@ -369,7 +369,7 @@ export default function CheckoutPage({ shop }) {
               {proof.state === 'sent' ? (
                 <>
                   <label>
-                    <span>The code we sent to your WhatsApp</span>
+                    <span>OTP sent to your WhatsApp</span>
                     <input value={proof.code} onChange={e => setProof(p => ({ ...p, code: e.target.value }))}
                       inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456" />
                   </label>
@@ -381,20 +381,20 @@ export default function CheckoutPage({ shop }) {
                 </>
               ) : (
                 <div className="row">
-                  <span>Confirm your number so the shop knows the order is real.</span>
+                  <span>Verify your mobile number to place this order.</span>
                   <button type="button" className="go quiet" disabled={proof.busy} onClick={askForCode}>
-                    {proof.busy ? 'Sending…' : 'Send me a code'}
+                    {proof.busy ? 'Sending…' : 'Get OTP on WhatsApp'}
                   </button>
                 </div>
               )}
               {proof.said ? <p className="said">{proof.said}</p> : null}
               {/* Said before they confirm, not after: what confirming lets the shop see (shop-views, 30 days). */}
-              <p className="said privacy">Once your number is confirmed, the shop can see which pieces you look at and try on here for 30 days, so it can help you when you visit.</p>
+              <p className="said privacy">Once verified, the store can see the items you view and try on here for 30 days, to help you when you visit.</p>
             </div>
           )}
 
           <section className="ask">
-            <h2><i>2</i> Where does it go?</h2>
+            <h2><i>2</i> Delivery address</h2>
 
             {/*
               Addresses this person has saved, for a shopper whose number is proved.
@@ -422,8 +422,8 @@ export default function CheckoutPage({ shop }) {
                   type="button" className="saved fresh" aria-pressed={usingId === null}
                   onClick={() => { setUsingId(null); set('address', ''); set('pincode', ''); }}
                 >
-                  <b>Somewhere else</b>
-                  <span>Type a new address</span>
+                  <b>Deliver to another address</b>
+                  <span>Add a new address</span>
                 </button>
               </div>
             )}
@@ -526,7 +526,7 @@ export default function CheckoutPage({ shop }) {
               {refused ? <p className="refused" role="alert">{refused}</p> : null}
 
               <button type="submit" className="go" disabled={placing || state.loading}>
-                {placing ? (form.payWay === 'ONLINE' ? 'Opening the payment page…' : 'Sending your order…')
+                {placing ? (form.payWay === 'ONLINE' ? 'Opening the payment page…' : 'Placing your order…')
                   : form.payWay === 'ONLINE' ? `Pay ${money(bag.total, currency)}`
                   : `Place order · ${money(bag.total, currency)}`}
               </button>
@@ -534,7 +534,7 @@ export default function CheckoutPage({ shop }) {
                 By ordering you agree to {shop?.seller?.name || shop?.name}'s terms.
                 {shop?.returnPolicy ? ' Returns are at the bottom of this page.' : ''}
               </p>
-              <Link className="go quiet" to={`/${slug}/bag`}>Back to the bag</Link>
+              <Link className="go quiet" to={`/${slug}/bag`}>Back to bag</Link>
             </>
           ) : state.error ? (
             /*
@@ -546,9 +546,9 @@ export default function CheckoutPage({ shop }) {
              */
             <>
               <p className="tiny" style={{ marginTop: 0 }}>
-                Sort your bag out and come back — nothing has been ordered.
+                Please review your bag. Nothing has been ordered yet.
               </p>
-              <Link className="go" to={`/${slug}/bag`}>Back to the bag</Link>
+              <Link className="go" to={`/${slug}/bag`}>Back to bag</Link>
             </>
           ) : (
             <div className="bone" style={{ height: 180, borderRadius: 12 }} />

@@ -58,8 +58,8 @@ export default function MyOrdersPage({ shop }) {
       <Say title="No orders from this phone yet" art={<EmptyOrders />}
         action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
         {signedIn(slug)
-          ? <>Orders you place with your number appear here, from any phone.</>
-          : <>Orders you place here are kept on this phone. <Link to={`/${slug}/account`}>Sign in</Link> to see orders from every phone, or open the link {shop?.name || 'the shop'} sent you on WhatsApp.</>}
+          ? <>Orders placed with your number appear here, on any device.</>
+          : <>Orders placed on this device appear here. <Link to={`/${slug}/account`}>Sign in</Link> to see orders from every phone, or open the link {shop?.name || 'the shop'} sent you on WhatsApp.</>}
       </Say>
     );
   }
@@ -97,10 +97,10 @@ export default function MyOrdersPage({ shop }) {
       {/* Said for who is looking: signed in, this is every order on their number; signed out, only this phone's. */}
       <p className="tiny" style={{ paddingBottom: 30 }}>
         {signedIn(slug)
-          ? <>These are all your orders with this number, from any phone.</>
+          ? <>All orders placed with your number.</>
           : shop?.accounts !== false
-            ? <>These are the orders placed from this phone. <Link to={`/${slug}/account`}>Sign in</Link> to see your orders from every phone.</>
-            : <>These are the orders placed from this phone. Anything ordered elsewhere is in the link the shop sent you.</>}
+            ? <>Orders placed on this device. <Link to={`/${slug}/account`}>Sign in</Link> to see your orders from every phone.</>
+            : <>Orders placed on this device. For other orders, use the link in your WhatsApp confirmation.</>}
       </p>
     </div>
   );
