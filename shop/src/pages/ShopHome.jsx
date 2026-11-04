@@ -62,15 +62,27 @@ export default function ShopHome({ slug, shop }) {
   const minPrice = params.get('minPrice') ?? '';
 
   /* Anything chosen starts the list again from the top. */
-  useEffect(() => { setDeeper(1); setShown([]); }, [slug, q, sort, category, fabric, craft, dressType, maxPrice, minPrice, nonce]);
+  const filterKey = `${slug}|${q}|${sort}|${category}|${fabric}|${craft}|${dressType}|${maxPrice}|${minPrice}|${nonce}`;
+  const lastFilterKey = useRef(filterKey);
 
   useEffect(() => {
     const ac = new AbortController();
-    const first = deeper === 1;
-    if (first) setState(s => ({ ...s, loading: true, error: null }));
-    else setFetchingMore(true);
+    const filterChanged = lastFilterKey.current !== filterKey;
+    if (filterChanged) {
+      lastFilterKey.current = filterKey;
+      setDeeper(1);
+    }
+    const pageToFetch = filterChanged ? 1 : deeper;
+    const first = pageToFetch === 1;
 
-    getProducts(slug, { q, sort, category, fabric, craft, dressType, maxPrice, minPrice, page: deeper, limit: 24 }, { signal: ac.signal })
+    if (first) {
+      setState(s => ({ ...s, loading: true, error: null, data: filterChanged ? null : s.data }));
+      if (filterChanged) setShown([]);
+    } else {
+      setFetchingMore(true);
+    }
+
+    getProducts(slug, { q, sort, category, fabric, craft, dressType, maxPrice, minPrice, page: pageToFetch, limit: 24 }, { signal: ac.signal })
       .then(data => {
         setState({ loading: false, error: null, data });
         setShown(was => {
@@ -88,7 +100,7 @@ export default function ShopHome({ slug, shop }) {
         if (first) setState({ loading: false, error: e, data: null });
       });
     return () => ac.abort();
-  }, [slug, q, sort, category, fabric, craft, dressType, maxPrice, minPrice, deeper, nonce]);
+  }, [slug, q, sort, category, fabric, craft, dressType, maxPrice, minPrice, deeper, nonce, filterKey]);
 
   /*
    * The next lot, fetched before the bottom is reached.

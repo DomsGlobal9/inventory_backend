@@ -32,6 +32,7 @@ export interface CatalogueScope {
   clientId: string;
   /** Empty means every location the tenant has. */
   locationIds: string[];
+  hideOutOfStock?: boolean;
 }
 
 export interface StorefrontVariant {
@@ -482,8 +483,37 @@ export class StorefrontCatalogueService {
       ...(opts.fabric ? { fabric: { equals: literal(opts.fabric), mode: 'insensitive' } } : {}),
       ...(opts.craft ? { craft: { equals: literal(opts.craft), mode: 'insensitive' } } : {}),
       ...(opts.dressType ? { dressType: { equals: literal(opts.dressType), mode: 'insensitive' } } : {}),
+      ...(scope.hideOutOfStock && scope.locationIds?.length
+        ? {
+            variants: {
+              some: {
+                stocks: { some: { locationId: { in: scope.locationIds }, quantity: { gt: 0 } } },
+                NOT: { locationProfiles: { some: { locationId: { in: scope.locationIds }, isAvailable: false } } }
+              }
+            }
+          }
+        : {}),
       ...(opts.minPrice != null || opts.maxPrice != null
-        ? { basePrice: { ...(opts.minPrice != null ? { gte: opts.minPrice } : {}), ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {}) } }
+        ? {
+            OR: [
+              {
+                basePrice: {
+                  ...(opts.minPrice != null ? { gte: opts.minPrice } : {}),
+                  ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {})
+                }
+              },
+              {
+                variants: {
+                  some: {
+                    sellingPrice: {
+                      ...(opts.minPrice != null ? { gte: opts.minPrice } : {}),
+                      ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {})
+                    }
+                  }
+                }
+              }
+            ]
+          }
         : {}),
       // What a shopper actually types: a name, a fabric, a colour, or the code off a tag.
       ...(q

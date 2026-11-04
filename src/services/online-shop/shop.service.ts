@@ -577,7 +577,7 @@ export async function publicProducts(
     minPrice?: number; maxPrice?: number; sort?: string; page?: number; limit?: number;
   } = {}
 ) {
-  const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false };
+  const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false, hideOutOfStock: shop.hideOutOfStock };
   const sort = ['NEW', 'PRICE_LOW', 'PRICE_HIGH', 'NAME'].includes(String(opts.sort))
     ? (opts.sort as 'NEW' | 'PRICE_LOW' | 'PRICE_HIGH' | 'NAME')
     : 'NEW';

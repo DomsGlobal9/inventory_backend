@@ -76,7 +76,23 @@ export default function Footer({ shop }) {
               <h3>Help</h3>
               {grievance?.name ? <p>{grievance.name}</p> : null}
               {grievance?.phone ? <p><a href={`tel:${grievance.phone}`}>{grievance.phone}</a></p> : null}
-              {grievance?.email ? <p><a href={`mailto:${grievance.email}`}>{grievance.email}</a></p> : null}
+              {grievance?.email ? (
+                <p>
+                  <a
+                    href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(grievance.email)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="foot-email"
+                    title="Send email via Gmail in new tab"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ verticalAlign: '-2px', marginRight: 6, display: 'inline-block' }}>
+                      <rect width="20" height="16" x="2" y="4" rx="2" />
+                      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+                    </svg>
+                    {grievance.email}
+                  </a>
+                </p>
+              ) : null}
               {returnPolicy ? <p className="policy">{returnPolicy}</p> : null}
             </section>
           )}
