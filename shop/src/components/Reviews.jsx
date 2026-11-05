@@ -341,24 +341,28 @@ export default function Reviews({ slug, shop, product, variantCode, onSummary })
   const allPhotos = reviews.flatMap(r => r.photos ?? []);
   const signInState = { back: where.pathname + where.search + (where.search ? '&' : '?') + 'review=1', why: 'review' };
 
+  // Nothing to read and nothing they can do: no section at all. An empty "Ratings and reviews" box and
+  // "Bought this?" are noise to somebody looking at a saree (owner, 5 Nov). It appears with the first
+  // review, or for the one person who received this item, once we know that is who they are.
+  if (state.loading) return null;
+  if (none && !me?.canReview && !me?.review && !thanks) return null;
+
   const cta = me?.review ? (
     <button type="button" className="rv-cta quiet" onClick={() => setWriting(true)}>Edit your review</button>
   ) : me?.canReview ? (
     <button type="button" className="rv-cta" onClick={() => setWriting(true)}>Write a review</button>
   ) : me && !me.signedIn && shop?.accounts !== false ? (
     <Link className="rv-cta quiet" to={`/${slug}/account`} state={signInState}>Bought this? Sign in to review</Link>
-  ) : me?.signedIn ? (
-    <p className="rv-cta-note">Only customers who received this item can review it.</p>
   ) : null;
 
   return (
     <section className="rv" id="reviews" ref={section} aria-labelledby="rv-title">
       <div className="rv-verdict">
         <h2 id="rv-title">Ratings and reviews</h2>
-        {state.loading ? <div className="bone" style={{ height: 150, borderRadius: 14 }} /> : none ? (
+        {none ? (
           <div className="rv-first">
             <Stars value={0} size={26} />
-            <p>No reviews yet. Customers who bought this item can share their experience here.</p>
+            <p>Be the first to review this item.</p>
           </div>
         ) : (
           <>
