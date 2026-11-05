@@ -181,7 +181,8 @@ router.use('/_api/shop', shopPublicRoutes);
 router.use((_req, res, next) => {
   res.set('Content-Security-Policy', [
     "default-src 'self'",
-    "img-src 'self' data: https:",
+    // https: covers live storage. The local storage stand-in is plain http, and only ever on this address.
+    `img-src 'self' data: https:${/^http:\/\/127\.0\.0\.1:\d+/.test(process.env.SUPABASE_URL ?? '') ? ` ${process.env.SUPABASE_URL}` : ''}`,
     // The app styles components inline, as the rest of this codebase does.
     "style-src 'self' 'unsafe-inline'",
     /*

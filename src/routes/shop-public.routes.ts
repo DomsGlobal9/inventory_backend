@@ -1,3 +1,4 @@
+import * as shopReviews from '../services/shop-reviews';
 import express, { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { onlineShop, shopCheckout, shopOtp, shopTryOn, shopAddresses, shopInterest, shopAccount, OnlineShopRuleError } from '../services/online-shop';
@@ -59,6 +60,13 @@ router.use('/:slug/products/:productCode/tryon', express.json({ limit: '21mb' })
   (err: any, _req: Request, res: Response, next: NextFunction) =>
     err?.type === 'entity.too.large'
       ? res.status(413).json({ success: false, message: 'That photograph is too large. Take another one.' })
+      : next(err));
+
+// A review's photograph, already made small by the page: well under a try-on's, well over everything else.
+router.use('/:slug/products/:productCode/reviews/photo', express.json({ limit: '12mb' }),
+  (err: any, _req: Request, res: Response, next: NextFunction) =>
+    err?.type === 'entity.too.large'
+      ? res.status(413).json({ success: false, message: 'That photo is too large. Choose a smaller one.' })
       : next(err));
 
 router.use(express.json({ limit: '32kb' }));
@@ -428,6 +436,52 @@ router.post('/:slug/account/signout', buyLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   return shopAccount.signOut(shop.clientId, req.body?.token, req.body?.everywhere === true, req.body?.others === true);
+}));
+
+/*
+ * Reviews and private feedback (services/shop-reviews). Reading is open; every write proves the number, or holds
+ * the order's own link. Off where the shop has switched reviews off, or has no accounts to prove a buyer with.
+ */
+const reviewLimiter = rateLimit({
+  windowMs: 10 * 60_000,
+  max: relaxed ? 2000 : 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'That is a lot of changes in a short time. Please wait a few minutes.' }
+});
+const reviewingShop = async (req: Request) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
+  if (shop.reviews === false) throw new OnlineShopRuleError('This shop does not take reviews.');
+  return shop;
+};
+router.get('/:slug/products/:productCode/reviews', priceLimiter, buying(async (req) => {
+  const shop = await reviewingShop(req);
+  return shopReviews.listPublic(shop.clientId, req.params.productCode, { page: req.query.page, sort: req.query.sort, rating: req.query.rating });
+}));
+router.post('/:slug/products/:productCode/reviews/mine', priceLimiter, buying(async (req) => {
+  const shop = await reviewingShop(req);
+  return shopReviews.mine(shop.clientId, req.body?.token, req.params.productCode);
+}));
+router.post('/:slug/products/:productCode/reviews/photo', reviewLimiter, buying(async (req) => {
+  const shop = await reviewingShop(req);
+  return shopReviews.addPhoto(shop.clientId, req.body?.token, req.params.productCode, req.body?.photo);
+}));
+router.post('/:slug/products/:productCode/reviews/remove', reviewLimiter, buying(async (req) => {
+  const shop = await reviewingShop(req);
+  return shopReviews.removeOwn(shop.clientId, req.body?.token, req.params.productCode);
+}));
+router.post('/:slug/products/:productCode/reviews', reviewLimiter, buying(async (req) => {
+  const shop = await reviewingShop(req);
+  return shopReviews.save(shop.clientId, req.body?.token, req.params.productCode, req.body ?? {});
+}));
+router.post('/:slug/reviews/order', priceLimiter, buying(async (req) => {
+  const shop = await reviewingShop(req);
+  return shopReviews.forOrder(shop.clientId, req.body?.orderToken);
+}));
+router.post('/:slug/reviews/feedback', reviewLimiter, buying(async (req) => {
+  const shop = await reviewingShop(req);
+  return shopReviews.saveFeedback(shop.clientId, req.body?.orderToken, req.body?.body);
 }));
 
 /** A heart on a piece: saved for a proved or signed-in number only (shop-views like), never for a stranger. */

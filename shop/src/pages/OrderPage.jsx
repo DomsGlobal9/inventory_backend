@@ -4,6 +4,9 @@ import { getOrder, cancelOrder, money, askOnWhatsApp } from '../api';
 import { Problem, Say } from '../components/States';
 import { Landed } from '../components/Motion';
 import { becomeSignedIn } from '../account';
+import { Stars } from '../components/Reviews';
+import { OrderFeedback } from '../components/OrderFeedback';
+import { orderReviewState } from '../api';
 import { sized, orWhole, THUMB } from '../photo';
 
 /**
@@ -93,6 +96,16 @@ export default function OrderPage({ shop }) {
    * Quiet either way; nothing on this page waits for it.
    */
   useEffect(() => { if (shop?.accounts !== false) void becomeSignedIn(slug); }, [slug, shop?.accounts]);
+  // A delivered order can be rated, item by item, and the store told anything privately.
+  const [reviewState, setReviewState] = useState(null);
+  const reviewable = shop?.reviews !== false && !!state.order?.delivered;
+  useEffect(() => {
+    if (!reviewable) return undefined;
+    const ac = new AbortController();
+    orderReviewState(slug, token, { signal: ac.signal }).then(setReviewState).catch(() => null);
+    return () => ac.abort();
+  }, [reviewable, slug, token]);
+  const canRate = reviewable;
 
   if (state.loading) return <div className="bone" style={{ height: 260, borderRadius: 14, margin: '20px 0' }} />;
 
@@ -236,6 +249,13 @@ export default function OrderPage({ shop }) {
               )}
               <div className="what">
                 <h3>{to ? <Link className="itemlink" to={to}>{i.title}</Link> : i.title}</h3>
+                {canRate && i.productCode ? (
+                  <Link className="rv-rateitem" to={`${to}${to.includes('?') ? '&' : '?'}review=1`}>
+                    {reviewState?.ratings?.[i.productCode]
+                      ? <><Stars value={reviewState.ratings[i.productCode]} size={13} /> Edit your review</>
+                      : <><Stars value={0} size={13} /> Rate this item</>}
+                  </Link>
+                ) : null}
                 <p className="of">
                   {[i.colour, i.size].filter(Boolean).join(' · ')}
                   {i.colourHex ? <i className="swatch" style={{ background: i.colourHex }} aria-hidden="true" /> : null}
@@ -274,6 +294,7 @@ export default function OrderPage({ shop }) {
           {o.phone ? <p>{o.phone}</p> : null}
         </section>
 
+        {canRate ? <OrderFeedback slug={slug} token={token} sent={reviewState?.feedback} /> : null}
         <section className="card ohelp bill">
           {ask ? (
             <a className="go quiet" href={ask} target="_blank" rel="noopener noreferrer">

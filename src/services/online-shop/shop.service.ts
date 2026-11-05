@@ -116,6 +116,7 @@ export async function settingsFor(clientId: string) {
     showAllPhotos: shop?.showAllPhotos ?? true,
     accounts: shop?.accounts ?? true,
     wishlist: shop?.wishlist ?? true,
+    reviews: shop?.reviews ?? true,
     showBalances: shop?.showBalances ?? true,
     /** Whether the platform can do try-on at all, so the screen can say why the switch is off. */
     tryOnAvailable: Boolean(env.SHOPPER_TRYON_GATEWAY_URL),
@@ -170,7 +171,7 @@ export async function save(clientId: string, input: {
   acceptsOrders?: unknown; payOnDelivery?: unknown; payOnline?: unknown;
   deliveryFee?: unknown; freeDeliveryAbove?: unknown; minOrderValue?: unknown;
   deliverPincodes?: unknown; tryOn?: unknown; showAllPhotos?: unknown;
-  accounts?: unknown; wishlist?: unknown; showBalances?: unknown;
+  accounts?: unknown; wishlist?: unknown; reviews?: unknown; showBalances?: unknown;
 }) {
   const shop = await prisma.onlineShop.findUnique({ where: { clientId } });
   if (!shop) throw new OnlineShopRuleError('Choose a web address for your shop first.');
@@ -287,6 +288,7 @@ export async function save(clientId: string, input: {
       // Customer accounts: true or false only; anything else leaves the setting as it was.
       ...(typeof input.accounts === 'boolean' ? { accounts: input.accounts } : {}),
       ...(typeof input.wishlist === 'boolean' ? { wishlist: input.wishlist } : {}),
+      ...(typeof input.reviews === 'boolean' ? { reviews: input.reviews } : {}),
       ...(typeof input.showBalances === 'boolean' ? { showBalances: input.showBalances } : {}),
       returnPolicy: text(input.returnPolicy, 4000),
       grievanceName: text(input.grievanceName, 80),
@@ -387,7 +389,7 @@ export async function publicShop(slugRaw: unknown): Promise<
       /** Whether this shop can send a code to prove a phone number, so the page offers it only where it works. */
       canVerifyPhone: boolean;
       /** Customer accounts (the shop's settings): sign in, the wishlist (needs accounts), balances on the account. */
-      accounts: boolean; wishlist: boolean; showBalances: boolean;
+      accounts: boolean; wishlist: boolean; reviews: boolean; showBalances: boolean;
       /** Whether a customer can actually buy here, and on what terms. */
       buying: {
         open: boolean;
@@ -457,6 +459,7 @@ export async function publicShop(slugRaw: unknown): Promise<
     canVerifyPhone: canProve,
     accounts: shop.accounts,
     wishlist: shop.accounts && shop.wishlist,
+    reviews: shop.accounts && shop.reviews,
     showBalances: shop.showBalances,
     buying: {
       open: shop.acceptsOrders && (shop.payOnDelivery || payOnlineNow),

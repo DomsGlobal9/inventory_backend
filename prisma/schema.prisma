@@ -614,6 +614,7 @@ model Product {
   variants       ProductVariant[]
   images         ProductImage[]
   interests      ShopInterest[]
+  shopReviews    ShopReview[]
   shopViews      ShopProductView[]
   photoJobs      PhotoJob[]
   shopifyMirrors ShopifyProductMirror[]
@@ -4277,6 +4278,8 @@ model OnlineShop {
   accounts     Boolean @default(true) @map("accounts")
   /// Signed-in shoppers can heart pieces into a wishlist. Needs accounts.
   wishlist     Boolean @default(true) @map("wishlist")
+  /// Customers can rate and review what was delivered (services/shop-reviews). Needs accounts.
+  reviews      Boolean @default(true) @map("reviews")
   /// A signed-in shopper sees their points (while loyalty is on) and store credit on their account.
   showBalances Boolean @default(true) @map("show_balances")
 
@@ -4374,6 +4377,8 @@ model OnlineShopOrder {
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  feedback ShopOrderFeedback?
 
   @@unique([clientId, placementKey])
   @@index([clientId, createdAt])
@@ -4758,6 +4763,64 @@ enum OnlineShopBannerLink {
 /// throws on a value it does not know. A table nothing currently reads cannot do that.
 ///
 /// Nothing here promises an automatic message. The shop sees who is waiting and rings them.
+/// A delivered buyer's review of an item (services/shop-reviews). One per item per number. Managed from CRM.
+model ShopReview {
+  id            String  @id @default(uuid())
+  clientId      String  @map("client_id")
+  productId     String  @map("product_id")
+  onlineOrderId String? @map("online_order_id")
+  variantCode   String? @map("variant_code")
+  variantLabel  String? @map("variant_label")
+  /// E.164, as the number proof stores it. Never shown on the shop.
+  phone         String
+  customerName  String? @map("customer_name")
+  rating        Int
+  body          String?
+  tags          String[] @default([])
+  /// [{ url, path }]: re-drawn on upload, so no location or other hidden data stays in the file.
+  photos        Json     @default("[]")
+  /// PUBLISHED or HIDDEN. Text, not an enum: a new enum value breaks a deployed build reading this shared database.
+  status        String   @default("PUBLISHED")
+  hiddenReason  String?  @map("hidden_reason")
+  hiddenAt      DateTime? @map("hidden_at")
+  hiddenBy      String?  @map("hidden_by")
+  reply         String?
+  replyAt       DateTime? @map("reply_at")
+  replyBy       String?  @map("reply_by")
+  editedAt      DateTime? @map("edited_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, phone])
+  @@index([productId, status, createdAt])
+  @@index([clientId, status, createdAt])
+  @@index([clientId, phone])
+  @@map("shop_reviews")
+}
+
+/// Private feedback about a delivered online order: for the shop only, never on a product page. Managed from CRM.
+model ShopOrderFeedback {
+  id            String  @id @default(uuid())
+  clientId      String  @map("client_id")
+  onlineOrderId String  @unique @map("online_order_id")
+  orderNumber   String? @map("order_number")
+  phone         String?
+  customerName  String? @map("customer_name")
+  body          String
+  handledAt     DateTime? @map("handled_at")
+  handledBy     String?  @map("handled_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  onlineOrder OnlineShopOrder @relation(fields: [onlineOrderId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, createdAt])
+  @@index([clientId, phone])
+  @@map("shop_order_feedback")
+}
+
 model ShopInterest {
   id        String @id @default(uuid())
   clientId  String @map("client_id")

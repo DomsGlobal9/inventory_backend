@@ -1,3 +1,4 @@
+import { forgetNumberRows, forgetPhotos } from '../shop-reviews';
 import { prisma } from '../../lib/prisma';
 import { badRequest, conflict, notFound } from '../../utils/httpError';
 
@@ -59,10 +60,12 @@ export async function deleteCustomer(clientId: string, id: string, confirmRaw: u
   }
   const phone = c.phone;
 
+  let reviewPhotos: Awaited<ReturnType<typeof forgetNumberRows>> = [];
   await prisma.$transaction(async (tx) => {
     // Tied to the number: what they looked at and tried on, their phone code, door check-ins, look-ups.
     if (phone) {
       await tx.shopProductView.deleteMany({ where: { clientId, phone } });
+      reviewPhotos = await forgetNumberRows(tx, clientId, phone);
       await tx.onlineShopPhoneCode.deleteMany({ where: { clientId, phone } });
       // Signed in to the online shop on any phone: signed out, and the sign-ins gone with the number.
       await tx.onlineShopSession.deleteMany({ where: { clientId, phone } });
@@ -92,5 +95,6 @@ export async function deleteCustomer(clientId: string, id: string, confirmRaw: u
       });
     }
   });
+  void forgetPhotos(reviewPhotos);
   return { mode, name: c.name };
 }

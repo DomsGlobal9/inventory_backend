@@ -998,7 +998,8 @@ function SignIn({ slug, shop, canSignIn, why, onDone }) {
   };
 
   const heroBanner = placed(shop?.banners, 'HOME_TOP')[0]?.imageUrl ?? null;
-  const lede = why === 'heart' ? 'Sign in to save this item to your wishlist.'
+  const lede = why === 'review' ? 'Sign in with the number you ordered with to review this item.'
+    : why === 'heart' ? 'Sign in to save this item to your wishlist.'
     : why === 'addresses' ? 'Sign in to keep your addresses ready for checkout.'
     : 'Your wishlist, orders and saved addresses, together in one place.';
 

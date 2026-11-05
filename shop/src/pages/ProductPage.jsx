@@ -11,6 +11,7 @@ import { Problem, Say } from '../components/States';
 const TryOn = lazy(() => import('../components/TryOn'));
 import { Ticked } from '../components/Motion';
 import MoreToExplore from '../components/MoreToExplore';
+import Reviews, { Stars } from '../components/Reviews';
 import Heart from '../components/Heart';
 import Banners, { placed } from '../components/Banners';
 import { sized, orWhole, THUMB } from '../photo';
@@ -256,6 +257,7 @@ function Gallery({ photos, title, actions = null }) {
 }
 
 export default function ProductPage({ slug, shop }) {
+  const [rated, setRated] = useState(null);   // the reviews' average, for the line under the title
   const { code } = useParams();
   const nav = useNavigate();
   const bag = useBag(slug);
@@ -448,6 +450,11 @@ export default function ProductPage({ slug, shop }) {
         <div>
           <div className="titlerow">
             <h1>{p.title}</h1>
+            {rated?.count ? (
+              <a className="rv-titlelink" href="#reviews" onClick={(e) => { e.preventDefault(); document.getElementById('reviews')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
+                <Stars value={rated.average} size={14} /><b>{Number(rated.average).toFixed(1)}</b><span>{rated.count === 1 ? '1 review' : `${rated.count} reviews`}</span>
+              </a>
+            ) : null}
           </div>
           <p className="of">{[p.fabric, p.dressType, p.brand].filter(Boolean).join(' · ') || p.productCode}</p>
 
@@ -743,6 +750,9 @@ export default function ProductPage({ slug, shop }) {
 
       {/* The page carries on being a shop rather than stopping at the description: an offer, more
           like this, other fabrics and budgets, what they looked at before, then the rest of it. */}
+      {/* Ratings and reviews, right after the piece itself: the next thing a shopper wants to know. */}
+      {shop?.reviews !== false ? <Reviews slug={slug} shop={shop} product={p} variantCode={chosen?.variantCode} onSummary={setRated} /> : null}
+
       {/* Banners the shop placed on every product page (the same on all of them). */}
       <Banners slug={slug} banners={placed(shop?.banners, 'PRODUCT')} inline label="Offers" />
 

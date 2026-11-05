@@ -4,6 +4,7 @@ import { loadIdentity } from '../lib/identityCache';
 import { grants, holdsEverything } from '../config/permissions';
 import { customerCard } from '../services/customer-card';
 import { customerGroups } from '../services/customer-groups';
+import * as shopReviews from '../services/shop-reviews';
 import { crmHandover } from '../services/crm-handover';
 import { offersState, setOffersConsent } from '../services/campaigns';
 import { customerService } from '../services/customer.service';
@@ -133,6 +134,24 @@ router.delete('/shops/:clientId/groups/:key', shop, person('customer:manage_grou
 
 const customerIdOf = (req: Request) => String(req.params.customerId);
 const actorOf = (req: Request) => (req as any).actor as { id: string; clientId: string; permissions?: string[]; roles?: string[] };
+
+// ---- Reviews and private feedback (services/shop-reviews): managed here, shown on the shop ----------
+// Reply and hide. Never the customer's own words: a shop that could rewrite a review could write its own.
+const actorName = (req: Request) => String((req as any).actor?.name ?? 'Store');
+router.get('/shops/:clientId/reviews/stats', shop, readable, act(req => shopReviews.crm.stats(clientIdOf(req))));
+router.get('/shops/:clientId/reviews/hide-reasons', shop, readable, act(async () => shopReviews.crm.hideReasons()));
+router.get('/shops/:clientId/reviews', shop, readable, act(req => shopReviews.crm.list(clientIdOf(req), req.query)));
+router.post('/shops/:clientId/reviews/:id/reply', shop, person('customer:update'),
+  act(req => shopReviews.crm.reply(clientIdOf(req), req.params.id, req.body?.text, actorName(req)), req => ['REPLY_REVIEW', String(req.params.id)], 'ShopReview'));
+router.delete('/shops/:clientId/reviews/:id/reply', shop, person('customer:update'),
+  act(req => shopReviews.crm.removeReply(clientIdOf(req), req.params.id), req => ['REMOVE_REVIEW_REPLY', String(req.params.id)], 'ShopReview'));
+router.post('/shops/:clientId/reviews/:id/hide', shop, person('customer:update'),
+  act(req => shopReviews.crm.hide(clientIdOf(req), req.params.id, req.body?.reason, actorName(req)), req => ['HIDE_REVIEW', String(req.params.id)], 'ShopReview'));
+router.post('/shops/:clientId/reviews/:id/unhide', shop, person('customer:update'),
+  act(req => shopReviews.crm.unhide(clientIdOf(req), req.params.id), req => ['UNHIDE_REVIEW', String(req.params.id)], 'ShopReview'));
+router.get('/shops/:clientId/feedback', shop, readable, act(req => shopReviews.crm.feedback(clientIdOf(req), req.query)));
+router.post('/shops/:clientId/feedback/:id/handled', shop, person('customer:update'),
+  act(req => shopReviews.crm.setFeedbackHandled(clientIdOf(req), req.params.id, req.body?.handled !== false, actorName(req)), req => ['HANDLE_FEEDBACK', String(req.params.id)], 'ShopOrderFeedback'));
 
 router.get('/shops/:clientId/customers/:customerId/offers', shop, readable,
   act(req => offersState(cid(req), customerIdOf(req))));

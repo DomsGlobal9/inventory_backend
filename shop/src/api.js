@@ -206,6 +206,20 @@ export const signOutOf = (slug, token, everywhere, opts) =>
 /** Every other device signed out; this one stays signed in. Answers { devices: how many were ended }. */
 export const signOutOthers = (slug, token, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/account/signout`, { ...opts, send: { token, others: true } });
+/* Reviews (services/shop-reviews). Reading them is public; writing needs the number proved. */
+const reviewsPath = (slug, productCode) => `/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(productCode)}/reviews`;
+export const getReviews = (slug, productCode, { page = 1, sort = 'NEW', rating } = {}, opts) => {
+  const q = new URLSearchParams({ page: String(page), sort });
+  if (rating) q.set('rating', String(rating));
+  return get(`${reviewsPath(slug, productCode)}?${q}`, opts);
+};
+export const myReview = (slug, token, productCode, opts) => get(`${reviewsPath(slug, productCode)}/mine`, { ...opts, send: { token } });
+export const saveReview = (slug, token, productCode, review, opts) => get(reviewsPath(slug, productCode), { ...opts, send: { token, ...review } });
+export const removeMyReview = (slug, token, productCode, opts) => get(`${reviewsPath(slug, productCode)}/remove`, { ...opts, send: { token } });
+export const addReviewPhoto = (slug, token, productCode, photo, opts) => get(`${reviewsPath(slug, productCode)}/photo`, { ...opts, send: { token, photo } });
+export const orderReviewState = (slug, orderToken, opts) => get(`/shop/${encodeURIComponent(slug)}/reviews/order`, { ...opts, send: { orderToken } });
+export const sendOrderFeedback = (slug, orderToken, body, opts) => get(`/shop/${encodeURIComponent(slug)}/reviews/feedback`, { ...opts, send: { orderToken, body } });
+
 export const likePiece = (slug, token, productCode, liked, variantCode, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(productCode)}/like`, { ...opts, send: { token, liked, variantCode } });
 
