@@ -458,25 +458,36 @@ async function main() {
   return { placedId: placed.id, tillKeyId: (tillKey as any).id };
 }
 
-/** Everything the suite made: its numbers all start with its stamp. */
+/** Everything the suite made, orders included: nothing of it stays in the test shop for CRM to copy. */
 async function cleanUp() {
   const made = await prisma.customer.findMany({ where: { OR: [{ phone: { startsWith: `+919${STAMP}` } }, { importSource: { startsWith: SOURCE } }, { customerCode: `PP-${STAMP}` }] }, select: { id: true } });
   const ids = made.map(c => c.id);
-  const orders = await prisma.salesOrder.findMany({ where: { clientId: C, OR: [{ customerId: { in: ids } }, { customerPhone: { startsWith: `+919${STAMP}` } }] }, select: { id: true } });
-  console.log(`\n(left in the local test shop for its history: ${orders.length} test orders; removing the load records)`);
+  const orders = (await prisma.salesOrder.findMany({ where: { clientId: C, customerId: { in: ids } }, select: { id: true } })).map(o => o.id);
+  await prisma.salesLedger.deleteMany({ where: { clientId: C, salesOrderId: { in: orders } } });
+  await prisma.dispatch.deleteMany({ where: { salesOrderId: { in: orders } } });
+  await prisma.salesOrder.deleteMany({ where: { id: { in: orders } } });
   await prisma.pastPurchase.deleteMany({ where: { source: { startsWith: SOURCE } } });
   await prisma.pastPurchaseImport.deleteMany({ where: { source: { startsWith: SOURCE } } });
-  const free = await prisma.customer.findMany({ where: { id: { in: ids }, salesOrders: { none: {} } }, select: { id: true } });
-  await prisma.campaignRecipient.deleteMany({ where: { customerId: { in: free.map(c => c.id) } } });
-  await prisma.counterLookup.deleteMany({ where: { customerId: { in: free.map(c => c.id) } } });
-  await prisma.customer.deleteMany({ where: { id: { in: free.map(c => c.id) } } });
-  await prisma.posConnection?.deleteMany?.({ where: { clientId: C, name: `Past ${STAMP}` } }).catch(() => null);
+  await prisma.campaignRecipient.deleteMany({ where: { customerId: { in: ids } } });
+  await prisma.counterLookup.deleteMany({ where: { customerId: { in: ids } } });
+  await prisma.customer.deleteMany({ where: { id: { in: ids } } });
+  const product = await prisma.product.findFirst({ where: { clientId: C, productCode: `PP${STAMP}` }, select: { id: true, variants: { select: { id: true } } } });
+  if (product) {
+    const variants = product.variants.map(v => v.id);
+    await prisma.inventoryStock.deleteMany({ where: { clientId: C, variantId: { in: variants } } });
+    await prisma.inventoryTransaction.deleteMany({ where: { clientId: C, variantId: { in: variants } } });
+    await prisma.productVariant.deleteMany({ where: { clientId: C, id: { in: variants } } });
+    await prisma.product.delete({ where: { id: product.id } });
+  }
+  await prisma.storefrontConnection.deleteMany({ where: { clientId: C, name: `Past ${STAMP}` } }).catch(() => null);
+  const left = await prisma.customer.count({ where: { OR: [{ phone: { startsWith: `+919${STAMP}` } }, { importSource: { startsWith: SOURCE } }] } });
+  console.log(`\n(cleaned up: ${ids.length} customers, ${orders.length} orders; left behind: ${left})`);
 }
 
 main()
   .catch(e => { failed++; failures.push(`stopped: ${e?.message ?? e}`); console.log(`  FAIL stopped: ${e?.stack ?? e}`); })
   .finally(async () => {
-    await cleanUp().catch(e => console.log('clean up:', e?.message));
+    await cleanUp().catch(e => { failed++; failures.push(`clean up: ${e?.message}`); });
     console.log(`\n${passed} passed, ${failed} failed`);
     if (failures.length) console.log(failures.map(f => ` - ${f}`).join('\n'));
     await prisma.$disconnect();
