@@ -287,6 +287,28 @@ async function main() {
   eq('search works with pages, counted on what it found', [found.customers.map((x: any) => x.id), found.meta.total, found.meta.totalPages], [[one.id], 1, 1]);
   const none = (await list('page=1&limit=10&search=no-such-customer-anywhere')).body;
   eq('nothing found: nobody, one empty page', [none.customers.length, none.meta.total, none.meta.totalPages], [0, 0, 1]);
+  // The filters: what each should give, counted from the rows themselves.
+  const totalOf = async (q: string) => (await list(`page=1&limit=10&${q}`)).body.meta.total;
+  const wc = { clientId: C, deletedAt: null };
+  const billed = { OR: [{ salesOrders: { some: { deletedAt: null, status: { not: 'CANCELLED' } } } }, { pastPurchases: { some: {} } }] } as any;
+  eq('bought: has bills, and no bills yet, add up to everyone', [await totalOf('bought=has'), await totalOf('bought=none')], [await prisma.customer.count({ where: { ...wc, ...billed } }), everyone - await prisma.customer.count({ where: { ...wc, ...billed } })]);
+  check('...someone with only past bills counts as having bills', (await list(`page=1&limit=10&bought=has&search=${phone(3)}`)).body.meta.total === 1 && (await list(`page=1&limit=10&bought=none&search=${phone(3)}`)).body.meta.total === 0);
+  check('...a new customer with none counts as no bills', (await list(`page=1&limit=10&bought=none&search=${phone(5)}`)).body.meta.total === 1 && (await list(`page=1&limit=10&bought=has&search=${phone(5)}`)).body.meta.total === 0);
+  eq('where from: earlier records, and new, add up to everyone', [await totalOf('source=earlier'), await totalOf('source=new')], [await prisma.customer.count({ where: { ...wc, importSource: { not: null } } }), await prisma.customer.count({ where: { ...wc, importSource: null } })]);
+  eq('phone: has one, and none', [await totalOf('phone=has'), await totalOf('phone=none')], [await prisma.customer.count({ where: { ...wc, phone: { not: null } } }), await prisma.customer.count({ where: { ...wc, phone: null } })]);
+  eq('offers: agreed, not agreed, said STOP', [await totalOf('offers=agreed'), await totalOf('offers=not'), await totalOf('offers=stopped')], [await prisma.customer.count({ where: { ...wc, whatsappOffers: true, whatsappStoppedAt: null } }), await prisma.customer.count({ where: { ...wc, whatsappOffers: false, whatsappStoppedAt: null } }), await prisma.customer.count({ where: { ...wc, whatsappStoppedAt: { not: null } } })]);
+  const addedToday = await list('page=1&limit=100&added=month');
+  check('added lately never lists someone from a load, though they were made today', !addedToday.body.customers.some((x: any) => x.importSource) && addedToday.body.meta.total >= 1, addedToday.body.meta);
+  check('...and a customer really added today is there', (await list(`page=1&limit=10&added=today&search=${phone(5)}`)).body.meta.total === 1);
+  eq('filters work together, with search', (await list(`page=1&limit=10&source=earlier&bought=has&phone=has&offers=not&search=${phone(3)}`)).body.customers.map((x: any) => x.phone), [e164(3)]);
+  eq('...and one that rules them out leaves nobody', (await list(`page=1&limit=10&source=new&search=${phone(3)}`)).body.meta.total, 0);
+  for (const bad of ['bought=x', 'source=x', 'phone=x', 'offers=x', 'added=x', 'sort=x', 'bought=', "source='%20OR%201=1"]) eq(`${bad} is no filter, not an error`, await totalOf(bad), everyone);
+  const byName = (await list('page=1&limit=25&sort=name')).body.customers.map((x: any) => x.name);
+  check('sort by name', JSON.stringify(byName) === JSON.stringify([...byName].sort((x: string, y: string) => x < y ? -1 : x > y ? 1 : 0)), byName.slice(0, 6));
+  const oldest = (await list('page=1&limit=25&sort=old')).body.customers, newest = (await list('page=1&limit=25')).body.customers;
+  check('sort oldest and newest are opposite ends', new Date(oldest[0].createdAt) <= new Date(newest[0].createdAt) && oldest[0].id !== newest[0].id);
+  const walkedByName = new Set<string>(); for (let i = 1; ; i++) { const w = (await list(`page=${i}&limit=25&sort=name`)).body; w.customers.forEach((x: any) => walkedByName.add(x.id)); if (i >= w.meta.totalPages) break; }
+  eq('every page under a sort reaches everyone once', walkedByName.size, everyone);
   eq('search by number finds them', (await list(`search=${phone(1)}`)).body.map((x: any) => x.id), [one.id]);
 
   console.log('\n6. THE REAL FLOWS, NO SECOND COPY');

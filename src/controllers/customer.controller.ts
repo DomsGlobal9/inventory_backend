@@ -60,6 +60,8 @@ export const getCustomers = async (req: Request, res: Response) => {
       search: req.query.search,
       status: req.query.status,
       group: typeof req.query.group === 'string' ? req.query.group : undefined,
+      bought: req.query.bought, source: req.query.source, phone: req.query.phone,
+      offers: req.query.offers, added: req.query.added, sort: req.query.sort,
       page: req.query.page,
       limit: req.query.limit
     };

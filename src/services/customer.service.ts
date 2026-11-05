@@ -7,6 +7,8 @@ import { notFound, badRequest } from '../utils/httpError';
 import { normalisePhone, phoneSearchDigits } from '../lib/phone';
 import { CustomerStatus, Prisma } from '@prisma/client';
 import { spellingsOf, keyOf } from './customer-groups';
+import { getShopSettings } from '../lib/clientSettings';
+import { startOfLocalDay, todayKey } from '../utils/businessDay';
 
 type Tx = Prisma.TransactionClient;
 
@@ -246,8 +248,29 @@ export class CustomerService {
       where.tags = { hasSome: await spellingsOf(clientId, [keyOf(String(filters.group))]) };
     }
 
+    // The Customers page's filters. A value it does not know means no filter, not an error.
+    const and: Prisma.CustomerWhereInput[] = [];
+    if (filters.bought === 'has') and.push({ OR: [{ salesOrders: { some: { deletedAt: null, status: { not: 'CANCELLED' } } } }, { pastPurchases: { some: {} } }] });
+    if (filters.bought === 'none') and.push({ salesOrders: { none: { deletedAt: null, status: { not: 'CANCELLED' } } }, pastPurchases: { none: {} } });
+    if (filters.source === 'earlier') and.push({ importSource: { not: null } });
+    if (filters.source === 'new') and.push({ importSource: null });
+    if (filters.phone === 'has') and.push({ phone: { not: null } });
+    if (filters.phone === 'none') and.push({ phone: null });
+    if (filters.offers === 'agreed') and.push({ whatsappOffers: true, whatsappStoppedAt: null });
+    if (filters.offers === 'not') and.push({ whatsappOffers: false, whatsappStoppedAt: null });
+    if (filters.offers === 'stopped') and.push({ whatsappStoppedAt: { not: null } });
+    const days = ({ today: 0, week: 6, month: 29 } as Record<string, number | undefined>)[String(filters.added)];
+    if (days !== undefined) {
+      const { timezone } = await getShopSettings(clientId);
+      // The day of a load is not the day somebody became a customer, so a load is never "added lately".
+      and.push({ importSource: null, createdAt: { gte: new Date(startOfLocalDay(todayKey(timezone), timezone).getTime() - days * 86_400_000) } });
+    }
+    if (and.length) where.AND = and;
+
     // A bulk load shares one createdAt, so the code keeps the order the same between looks and pages.
-    const orderBy = [{ createdAt: 'desc' as const }, { customerCode: 'desc' as const }];
+    const orderBy: Prisma.CustomerOrderByWithRelationInput[] = filters.sort === 'old' ? [{ createdAt: 'asc' }, { customerCode: 'asc' }]
+      : filters.sort === 'name' ? [{ name: 'asc' }, { customerCode: 'asc' }]
+      : [{ createdAt: 'desc' }, { customerCode: 'desc' }];
 
     // The list page asks for one page at a time: a shop can hold thousands. Anything else that calls
     // this without a page (the group picker's search) still gets a plain list.
