@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { sendOrderFeedback } from '../api';
 
 /** Anything the customer wants the store to know about a delivered order. Private: it goes to the store's CRM only. */
@@ -8,17 +8,20 @@ export function OrderFeedback({ slug, token, sent }) {
   const [saved, setSaved] = useState(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState(null);
+  const working = useRef(false);   // taps faster than the page redraws
   useEffect(() => { setSaved(sent ?? null); }, [sent]);
 
   const send = async (e) => {
     e.preventDefault();
     if (!body.trim()) { setSaid('Type your feedback first.'); return; }
+    if (working.current) return;
+    working.current = true;
     setBusy(true); setSaid(null);
     try {
       await sendOrderFeedback(slug, token, body);
       setSaved(body.trim()); setEditing(false);
     } catch (err) { setSaid(err?.kind === 'RULE' && err?.message ? err.message : 'Your feedback could not be sent. Please try again.'); }
-    finally { setBusy(false); }
+    finally { working.current = false; setBusy(false); }
   };
 
   if (saved && !editing) {

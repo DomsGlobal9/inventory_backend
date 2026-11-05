@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getProduct, money, askOnWhatsApp, shareThis , offerWords, markSeen } from '../api';
@@ -65,9 +65,40 @@ function ShareButton({ shopName, product, bare = false }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const box = useRef(null);
+  const menu = useRef(null);
+  const [at, setAt] = useState(null);
+  /*
+   * Where the menu goes, against the real screen (5 Nov, owner: "going backward"). It is drawn on the page itself,
+   * not inside .piece: .piece's entrance animation makes it a layer of its own, so the photographs further down
+   * painted over the menu. Below the button when it fits above the buy bar, above it when not, always on screen.
+   */
+  useLayoutEffect(() => {
+    if (!open) { setAt(null); return undefined; }
+    const place = () => {
+      const button = box.current?.getBoundingClientRect();
+      if (!button) return;
+      const GAP = 6, EDGE = 8;
+      const width = menu.current?.offsetWidth || 190, height = menu.current?.offsetHeight || 140;
+      const dock = document.querySelector('.dock[data-show="true"]')?.getBoundingClientRect();
+      const floor = dock && dock.height > 0 && dock.top < window.innerHeight ? dock.top : window.innerHeight;
+      const header = document.querySelector('header')?.getBoundingClientRect();
+      const ceiling = header && header.bottom > 0 ? header.bottom : 0;
+      const fitsBelow = button.bottom + GAP + height + EDGE <= floor;
+      const fitsAbove = button.top - GAP - height - EDGE >= ceiling;
+      const top = fitsBelow || !fitsAbove
+        ? Math.max(ceiling + EDGE, Math.min(button.bottom + GAP, floor - height - EDGE))
+        : button.top - GAP - height;
+      const left = Math.max(EDGE, Math.min(button.right - width, window.innerWidth - width - EDGE));
+      setAt(was => (was && was.top === top && was.left === left ? was : { top, left }));
+    };
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => { window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); };
+  }, [open]);
   useEffect(() => {
     if (!open) return undefined;
-    const away = (e) => { if (!box.current?.contains(e.target)) setOpen(false); };
+    const away = (e) => { if (!box.current?.contains(e.target) && !menu.current?.contains(e.target)) setOpen(false); };
     const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('pointerdown', away);
     document.addEventListener('keydown', esc);
@@ -102,8 +133,8 @@ function ShareButton({ shopName, product, bare = false }) {
         </svg>
         {bare ? null : 'Share'}
       </button>
-      {open && (
-        <div className="sharemenu" role="menu">
+      {open && createPortal(
+        <div className="sharemenu" role="menu" ref={menu} style={at ? { top: at.top, left: at.left } : { visibility: 'hidden', top: 0, left: 0 }}>
           <button type="button" role="menuitem" onClick={copy}>
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" /><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></svg>
             {copied ? 'Link copied' : 'Copy link'}
@@ -113,7 +144,8 @@ function ShareButton({ shopName, product, bare = false }) {
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3.5 6.5 8.5 6.5 8.5-6.5" /></svg>
             Email
           </a>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

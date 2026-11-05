@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import sharp from 'sharp';
 import { prisma } from '../../lib/prisma';
 import { supabase } from '../../lib/supabase';
@@ -39,7 +39,7 @@ const photosOf = (v: unknown): Photo[] => (Array.isArray(v) ? (v as Photo[]) : [
 /** Printable text, one run of blank lines at most. React escapes it on the way out; this keeps it tidy. */
 const clean = (v: unknown, max: number) => String(typeof v === 'string' ? v : '')
   .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
-  .replace(/\n{3,}/g, '\n\n').trim().slice(0, max);
+  .replace(/\n{3,}/g, '\n\n').trim().slice(0, max).replace(/\p{Cs}/gu, '').trimEnd();
 const lastTen = (phone: unknown) => String(phone ?? '').replace(/\D/g, '').slice(-10);
 /** "Kavya Reddy" reads "Kavya R". No name: nothing, and the page says "Verified buyer". */
 function publicName(name: unknown): string | null {
@@ -98,9 +98,10 @@ export async function listPublic(clientId: string, codeRaw: unknown, opts: { pag
   const product = await productOf(clientId, codeRaw);
   const page = Math.max(1, Math.min(Number(opts.page) || 1, 1000));
   const rating = [1, 2, 3, 4, 5].includes(Number(opts.rating)) ? Number(opts.rating) : undefined;
-  const orderBy = opts.sort === 'HIGH' ? [{ rating: 'desc' as const }, { createdAt: 'desc' as const }]
-    : opts.sort === 'LOW' ? [{ rating: 'asc' as const }, { createdAt: 'desc' as const }]
-    : [{ createdAt: 'desc' as const }];
+  // The id last: with only the date, reviews from one instant could repeat or vanish from page to page.
+  const orderBy = opts.sort === 'HIGH' ? [{ rating: 'desc' as const }, { createdAt: 'desc' as const }, { id: 'desc' as const }]
+    : opts.sort === 'LOW' ? [{ rating: 'asc' as const }, { createdAt: 'desc' as const }, { id: 'desc' as const }]
+    : [{ createdAt: 'desc' as const }, { id: 'desc' as const }];
   const where = { productId: product.id, status: 'PUBLISHED', ...(rating ? { rating } : {}) };
   const [rows, matching, summary] = await Promise.all([
     prisma.shopReview.findMany({ where, orderBy, skip: (page - 1) * PAGE, take: PAGE }),
@@ -147,7 +148,7 @@ export async function save(clientId: string, token: unknown, codeRaw: unknown, i
   const phone = await whoIs(clientId, token);
   if (!phone) throw rule('Sign in with your WhatsApp number to review this item.');
 
-  const rating = Number(input.rating);
+  const rating = typeof input.rating === 'number' ? input.rating : typeof input.rating === 'string' && /^[1-5]$/.test(input.rating) ? Number(input.rating) : NaN;
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw rule('Choose a rating from 1 to 5 stars.');
   const body = clean(input.body, MAX_BODY) || null;
   const tags = Array.isArray(input.tags) ? [...new Set(input.tags.filter((t): t is string => REVIEW_TAGS.includes(t as string)))] : [];
@@ -156,19 +157,19 @@ export async function save(clientId: string, token: unknown, codeRaw: unknown, i
   const order = await deliveredOrder(clientId, phone, product.id);
   if (!order && !existing) throw rule('You can review this item once your order of it has been delivered.');
 
-  // Only photographs uploaded for this shop, and that are this review's or fresh from the upload just now.
-  const wanted = Array.isArray(input.photos) ? (input.photos as unknown[]).slice(0, MAX_PHOTOS + 1) : [];
+  // Only this writer's own uploads to this shop, that really are there; the same one twice counts once.
+  const wanted = Array.isArray(input.photos) ? [...new Set(input.photos as unknown[])].slice(0, MAX_PHOTOS + 1) : [];
   if (wanted.length > MAX_PHOTOS) throw rule(`Add up to ${MAX_PHOTOS} photos.`);
-  const prefix = `reviews/${clientId}/`;
   const photos: Photo[] = [];
   for (const raw of wanted) {
-    const url = String(raw ?? '');
+    const url = typeof raw === 'string' ? raw : '';
     const known = photosOf(existing?.photos).find(p => p.url === url);
     if (known) { photos.push(known); continue; }
-    const at = url.indexOf(prefix);
-    const path = at >= 0 ? url.slice(at).split('?')[0] : '';
-    if (!path || !/^reviews\/[^/]+\/[\w-]+\.jpg$/.test(path)) throw rule('One of those photos could not be used. Add it again.');
-    photos.push({ url: supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl, path });
+    const mine = photoFolder(clientId, phone);
+    const base = supabase.storage.from(BUCKET).getPublicUrl(mine).data.publicUrl;
+    const name = url.startsWith(base) ? url.slice(base.length) : '';
+    if (!/^[\w-]+\.jpg$/.test(name) || !(await stored(url))) throw rule('One of those photos could not be used. Add it again.');
+    photos.push({ url, path: mine + name });
   }
 
   const item = order?.salesOrder.items.find(i => i.variant?.variantCode === input.variantCode) ?? order?.salesOrder.items[0];
@@ -177,7 +178,10 @@ export async function save(clientId: string, token: unknown, codeRaw: unknown, i
   const name = customer?.name ?? order?.salesOrder.customerName ?? existing?.customerName ?? null;
 
   const saved = existing
-    ? await prisma.shopReview.update({ where: { id: existing.id }, data: { rating, body, tags, photos, editedAt: new Date(), customerName: name } })
+    ? await prisma.shopReview.update({ where: { id: existing.id }, data: { rating, body, tags, photos, editedAt: new Date(), customerName: name } }).catch((e: any) => {
+        if (e?.code === 'P2025') throw rule('Your review changed just now. Please try again.');   // removed on another tab
+        throw e;
+      })
     : await prisma.shopReview.create({ data: {
         clientId, productId: product.id, phone, rating, body, tags, photos, customerName: name,
         onlineOrderId: order?.id ?? null, variantCode: item?.variant?.variantCode ?? null, variantLabel: label
@@ -198,7 +202,7 @@ export async function removeOwn(clientId: string, token: unknown, codeRaw: unkno
   if (!phone) throw rule('Sign in with your WhatsApp number first.');
   const existing = await prisma.shopReview.findUnique({ where: { productId_phone: { productId: product.id, phone } } });
   if (existing) {
-    await prisma.shopReview.delete({ where: { id: existing.id } });
+    await prisma.shopReview.deleteMany({ where: { id: existing.id } });   // deleteMany: two taps must not be an error
     void removePhotos(photosOf(existing.photos));
   }
   return { removed: !!existing, summary: await summaryOf(product.id) };
@@ -226,13 +230,25 @@ export async function addPhoto(clientId: string, token: unknown, codeRaw: unknow
   } catch {
     throw rule('That file could not be read as a photo. Choose a JPG or PNG.');
   }
-  const path = `reviews/${clientId}/${randomUUID()}.jpg`;
+  const path = `${photoFolder(clientId, phone)}${randomUUID()}.jpg`;
   const { error } = await supabase.storage.from(BUCKET).upload(path, jpeg, { contentType: 'image/jpeg', upsert: false });
   if (error) {
     console.error('[shop-reviews] a photo could not be stored:', error.message);
     throw rule('That photo could not be saved. Please try again.');
   }
   return { url: supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl };
+}
+
+/** Where this number's photographs go: the address itself says whose it is, so nobody can claim another's. */
+const photoFolder = (clientId: string, phone: string) => `reviews/${clientId}/${createHash('sha256').update(`${clientId}:${phone}`).digest('hex').slice(0, 16)}-`;
+
+/** The picture really is in storage: a made-up address would show a broken image on the shop for good. */
+async function stored(url: string) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    await res.body?.cancel();
+    return res.ok;
+  } catch { return false; }
 }
 
 async function removePhotos(photos: Photo[]) {
@@ -274,10 +290,14 @@ export async function saveFeedback(clientId: string, orderToken: unknown, bodyRa
     select: { id: true, customerPhone: true, salesOrder: { select: { orderNumber: true, customerName: true } } }
   });
   if (!row) throw rule('That order could not be found.');
+  const change = { body, handledAt: null, handledBy: null };
   await prisma.shopOrderFeedback.upsert({
     where: { onlineOrderId: row.id },
     create: { clientId, onlineOrderId: row.id, body, phone: row.customerPhone, customerName: row.salesOrder.customerName, orderNumber: row.salesOrder.orderNumber },
-    update: { body, handledAt: null, handledBy: null }
+    update: change
+  }).catch((e: any) => {
+    if (e?.code !== 'P2002') throw e;   // two sends racing: the first made it, this one is a change to it
+    return prisma.shopOrderFeedback.update({ where: { onlineOrderId: row.id }, data: change });
   });
   return { saved: true };
 }
@@ -351,7 +371,7 @@ export const crm = {
   async hide(clientId: string, id: unknown, reasonRaw: unknown, by: string) {
     await reviewFor(clientId, id);
     const reason = String(reasonRaw ?? '');
-    if (!HIDE_REASONS[reason]) throw new Error(`Choose why this is being hidden: ${Object.values(HIDE_REASONS).join(', ')}.`);
+    if (!Object.prototype.hasOwnProperty.call(HIDE_REASONS, reason)) throw new Error(`Choose why this is being hidden: ${Object.values(HIDE_REASONS).join(', ')}.`);
     await prisma.shopReview.update({ where: { id: String(id) }, data: { status: 'HIDDEN', hiddenReason: reason, hiddenAt: new Date(), hiddenBy: by } });
     return crmRow(await reviewFor(clientId, id));
   },

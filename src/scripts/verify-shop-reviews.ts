@@ -140,7 +140,8 @@ async function main() {
     check('...and it is a JPEG', meta.format === 'jpeg', meta.format);
     r = await call(`/products/${A.code}/reviews`, { token: t1, rating: 5, photos: ['https://evil.example/x.jpg'] });
     check('a photo from elsewhere: refused', r.status === 400 && /photos/.test(r.body?.message), r.body);
-    r = await call(`/products/${A.code}/reviews`, { token: t1, rating: 5, photos: [url1, url1, url1, url1] });
+    const more = await Promise.all([1, 2, 3].map(() => call(`/products/${A.code}/reviews/photo`, { token: t1, photo })));
+    r = await call(`/products/${A.code}/reviews`, { token: t1, rating: 5, photos: [url1, ...more.map(m => m.body?.data?.url)] });
     check('more than three photos: refused', r.status === 400 && /up to 3/.test(r.body?.message), r.body);
 
     console.log('\n3. WHAT THE PUBLIC SEES');

@@ -88,6 +88,8 @@ function Composer({ slug, product, variantCode, tagsOffered, existing, onClose, 
   const first = useRef(null);
   const shown = hover || rating;
   const refusal = useRef(null);
+  // Taps faster than the page redraws: "disabled" only arrives with the next draw, this is at once.
+  const working = useRef(false);
   useEffect(() => { if (said) refusal.current?.scrollIntoView({ block: 'nearest' }); }, [said]);
 
   useEffect(() => {
@@ -119,20 +121,25 @@ function Composer({ slug, product, variantCode, tagsOffered, existing, onClose, 
   const submit = async (e) => {
     e.preventDefault();
     if (!rating) { setSaid('Choose a star rating first.'); return; }
+    if (working.current) return;
+    working.current = true;
     setBusy(true); setSaid(null);
     try {
       const out = await saveReview(slug, heldProof(slug), product.productCode, { rating, body, tags, photos, variantCode });
       onSaved(out);
     } catch (err) {
+      working.current = false;
       setSaid(err?.kind === 'RULE' && err?.message ? err.message : 'Your review could not be saved. Please try again.');
       setBusy(false);
     }
   };
 
   const remove = async () => {
+    if (working.current) return;
+    working.current = true;
     setBusy(true); setSaid(null);
     try { onRemoved(await removeMyReview(slug, heldProof(slug), product.productCode)); }
-    catch (err) { setSaid(err?.kind === 'RULE' && err?.message ? err.message : 'Your review could not be removed. Please try again.'); setBusy(false); setSure(false); }
+    catch (err) { working.current = false; setSaid(err?.kind === 'RULE' && err?.message ? err.message : 'Your review could not be removed. Please try again.'); setBusy(false); setSure(false); }
   };
 
   return createPortal(

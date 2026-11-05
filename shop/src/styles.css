@@ -4564,3 +4564,10 @@ a.shot { display: block; }
 @keyframes rv-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
 @keyframes rv-pop { 0% { transform: scale(.8); } 60% { transform: scale(1.18); } 100% { transform: none; } }
 @media (prefers-reduced-motion: reduce) { .rv-veil, .rv-sheet, .rv-light, .rv-track i, .rv-pick-star.just svg, .rv-uploading { animation: none; } .rv-pick-star, .rv-pick-star svg { transition: none; } }
+/* 16px in a text box: below it, an iPhone zooms the whole page in when the box is tapped. */
+@media (max-width: 720px) { .rv-field textarea, .rv-feedback textarea { font-size: 16px; } }
+
+/* The share menu, drawn on the page itself and placed from the button (ProductPage ShareButton): above the buy bar,
+   and under anything that takes over the screen. */
+.sharemenu, .pactions .sharemenu { position: fixed; right: auto; z-index: 90; }
+.sharewrap > .sharemenu { position: fixed; }

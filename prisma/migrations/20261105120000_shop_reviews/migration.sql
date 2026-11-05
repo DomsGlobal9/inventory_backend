@@ -61,6 +61,8 @@ DO $$
 DECLARE
     t record;
 BEGIN
+    -- A database without the outbox function must still take this migration.
+    IF to_regproc('module_outbox_capture') IS NULL THEN RETURN; END IF;
     FOR t IN SELECT * FROM (VALUES ('shop_reviews', 'review'), ('shop_order_feedback', 'feedback')) AS v(tbl, entity) LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS module_outbox_ins ON %I', t.tbl);
         EXECUTE format('DROP TRIGGER IF EXISTS module_outbox_upd ON %I', t.tbl);
