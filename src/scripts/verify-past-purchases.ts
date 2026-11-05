@@ -17,7 +17,7 @@ import http from 'node:http';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
-import { analyse, PastBill, tierOf } from '../services/past-purchases';
+import { analyse, PastBill } from '../services/past-purchases';
 import { applyImport, cleanFile, hashOf, ImportFile, ImportRefused, plan, undoImport } from '../services/past-purchases/importer';
 import { customerService } from '../services/customer.service';
 import { posConnectionService } from '../services/pos/pos-connection.service';
@@ -49,6 +49,7 @@ const e164 = (n: number) => `+91${phone(n)}`;
 const silk = (amount: number, quantity = 1) => ({ kind: 'Pattu', fabric: 'Silk', quantity, amount });
 const fancy = (amount: number, quantity = 1) => ({ kind: 'Fancy', fabric: null, quantity, amount });
 const bill = (billNo: number | string, lines: any[], paidBy: string | null = 'CARD') => ({ billNo, net: lines.reduce((t, l) => t + l.amount, 0), paidBy, lines });
+const kindIn = (p: any, name: string) => p.byKind.find((k: any) => k.name === name);
 const asBill = (b: any): PastBill => ({ billNo: String(b.billNo), billedOn: null, net: b.net, paidBy: b.paidBy, lines: b.lines });
 
 async function main() {
@@ -65,40 +66,51 @@ async function main() {
   console.log('\n1. THE PATTERN');
   eq('no bills: no pattern', analyse([]), null);
   let p = analyse([asBill(bill(100, [silk(30000), silk(18000)]))])!;
-  eq('silk only', [p.buys, p.billCount, p.netSpend, p.silkItems, p.fancyItems, p.budgetTier, p.typicalItem, p.dearestItem, p.silkBand, p.fancyBand], ['SILK', 1, 48000, 2, 0, '20K_PLUS', 24000, 30000, { from: 18000, to: 18000 }, null]);
+  eq('one kind', [p.topKind, p.billCount, p.netSpend, kindIn(p, 'Pattu').items, p.byKind.length, p.typicalItem, p.dearestItem, kindIn(p, 'Pattu').usual, p.byFabric.map((f: any) => f.name)], ['Pattu', 1, 48000, 2, 1, 24000, 30000, { from: 18000, to: 18000 }, ['Silk']]);
   p = analyse([asBill(bill(100, [silk(5000), fancy(2000), fancy(2000), fancy(2000)]))])!;
-  eq('silk bought, but fancy took more money: mostly fancy', [p.buys, p.silkSpend, p.fancySpend, p.items], ['MIXED', 5000, 6000, 4]);
+  eq('two kinds: the one with more money comes first, though the dearest item is the other', [p.topKind, kindIn(p, 'Pattu').spend, kindIn(p, 'Fancy').spend, p.items, p.dearestItem], ['Fancy', 5000, 6000, 4, 5000]);
   p = analyse([asBill(bill(100, [fancy(2500)]))])!;
-  eq('fancy only', [p.buys, p.budgetTier], ['FANCY', 'UNDER_3K']);
+  eq('no fabric in the records: none is claimed', [p.topKind, p.byFabric], ['Fancy', []]);
   p = analyse([asBill(bill(100, [fancy(2500), fancy(-2500, -1)]))])!;
-  eq('sold and taken back on one bill: no bill, no item, no spend, nothing bought', [p.billCount, p.visitsEstimated, p.items, p.netSpend, p.buys, p.budgetTier, p.returnLines, p.allBills], [0, 0, 0, 0, 'NONE', null, 1, 1]);
+  eq('sold and taken back on one bill: no bill, no item, no spend, nothing bought', [p.billCount, p.visits, p.items, p.netSpend, p.topKind, p.typicalItem, p.returnLines, p.allBills], [0, 0, 0, 0, null, null, 1, 1]);
   p = analyse([asBill(bill(100, [fancy(2500)])), asBill(bill(200, [fancy(-2500, -1)]))])!;
-  eq('returned on a later bill: nets out, and that later bill is not a bill that counts', [p.billCount, p.items, p.netSpend, p.buys], [1, 0, 0, 'NONE']);
+  eq('returned on a later bill: nets out, and that later bill is not a bill that counts', [p.billCount, p.items, p.netSpend, p.topKind], [1, 0, 0, null]);
   // A shop's own case: sold at 8,000, taken back bills later with 9,500 bought on that same bill (-8,000 + 9,500).
   p = analyse([asBill(bill(5360, [fancy(8000)])), asBill(bill(5851, [fancy(-8000, -1), fancy(9500)]))])!;
   eq('a -8,000 return on a later bill: spend, bills, the kept item', [p.netSpend, p.billCount, p.items, p.returnLines, p.returnsNotInRecords], [9500, 2, 1, 1, 0]);
-  eq('...the item they gave back sets no budget and is not their dearest', [p.typicalItem, p.dearestItem, p.fancyBand, p.fancySpend, p.budgetTier], [9500, 9500, { from: 9500, to: 9500 }, 9500, '8K_20K']);
+  eq('...the item they gave back sets no budget and is not their dearest', [p.typicalItem, p.dearestItem, kindIn(p, 'Fancy').usual, kindIn(p, 'Fancy').spend], [9500, 9500, { from: 9500, to: 9500 }, 9500]);
   p = analyse([asBill(bill(10, [silk(70500), silk(30500), fancy(5000)])), asBill(bill(40, [silk(21000), silk(-70500, -1), silk(31500)]))])!;
-  eq('their dearest item, returned later, stops being their dearest', [p.dearestItem, p.silkItems, p.fancyItems, p.netSpend, p.billCount], [31500, 3, 1, 88000, 1]);
+  eq('their dearest item, returned later, stops being their dearest', [p.dearestItem, kindIn(p, 'Pattu').items, kindIn(p, 'Fancy').items, p.netSpend, p.billCount], [31500, 3, 1, 88000, 1]);
   p = analyse([asBill(bill(10, [fancy(5434.78), fancy(5434.78)])), asBill(bill(50, [fancy(-5435, -1)]))])!;
   eq('a return a few paise off the sale, from a discount spread over the bill, still finds its item', [p.items, p.returnsNotInRecords], [1, 0]);
   p = analyse([asBill(bill(20, [fancy(-16500, -1)])), asBill(bill(90, [fancy(7500), fancy(2700), fancy(2700), fancy(6100)]))])!;
-  eq('returned something from before the records: the money comes off, their items stay', [p.netSpend, p.items, p.fancySpend, p.returnsNotInRecords, p.buys, p.dearestItem], [2500, 4, 19000, 1, 'FANCY', 7500]);
+  eq('returned something from before the records: the money comes off, their items stay', [p.netSpend, p.items, kindIn(p, 'Fancy').spend, p.returnsNotInRecords, p.topKind, p.dearestItem], [2500, 4, 19000, 1, 'Fancy', 7500]);
   p = analyse([asBill(bill(30, [fancy(-11987, -5), fancy(2000), fancy(2000), fancy(2000), fancy(2000), fancy(3801)]))])!;
-  eq('an exchange that nets below zero: spend below zero shown, what they took is real', [p.netSpend, p.billCount, p.items, p.buys], [-186, 0, 5, 'FANCY']);
+  eq('an exchange that nets below zero: spend below zero shown, what they took is real', [p.netSpend, p.billCount, p.items, p.topKind], [-186, 0, 5, 'Fancy']);
   p = analyse([asBill(bill(10, [silk(9000)])), asBill(bill(50, [fancy(-9000, -1)]))])!;
-  eq('a fancy return does not take a silk item', [p.silkItems, p.returnsNotInRecords], [1, 1]);
+  eq('a return of one kind does not take an item of another', [kindIn(p, 'Pattu').items, p.returnsNotInRecords], [1, 1]);
   p = analyse([asBill(bill(200, [silk(-9000, -1)]))])!;
-  eq('only a return: spend below zero is shown, never a bill', [p.billCount, p.netSpend, p.silkSpend], [0, -9000, 0]);
+  eq('only a return: spend below zero is shown, never a bill', [p.billCount, p.netSpend, p.byKind], [0, -9000, []]);
   p = analyse([asBill(bill(10, [fancy(1000)])), asBill(bill(15, [fancy(1000)])), asBill(bill(21, [fancy(1000)]))])!;
-  eq('bills 5 apart are one visit, 6 apart are two', [p.billCount, p.visitsEstimated], [3, 2]);
+  eq('bills 5 apart are one visit, 6 apart are two', [p.billCount, p.visits], [3, 2]);
   p = analyse([asBill(bill(21, [fancy(1000)])), asBill(bill(10, [fancy(1000)]))])!;
-  eq('the order bills arrive in does not matter', p.visitsEstimated, 2);
+  eq('the order bills arrive in does not matter', p.visits, 2);
   p = analyse([asBill(bill('A-1', [fancy(1000)])), asBill(bill('A-2', [fancy(1000)]))])!;
-  eq('bill numbers that are not numbers: each is its own visit', p.visitsEstimated, 2);
+  eq('bill numbers that are not numbers: each is its own visit', p.visits, 2);
   p = analyse([asBill(bill(10, [fancy(3000, 3)]))])!;
-  eq('three items on one line: the price of one, and three prices', [p.typicalItem, p.dearestItem, p.fancyItems], [1000, 1000, 3]);
-  eq('budget edges', [2999, 3000, 7999, 8000, 19999, 20000].map(tierOf), ['UNDER_3K', '3K_8K', '3K_8K', '8K_20K', '8K_20K', '20K_PLUS']);
+  eq('three items on one line: the price of one, and three prices', [p.typicalItem, p.dearestItem, kindIn(p, 'Fancy').items], [1000, 1000, 3]);
+  // Any shop: its own words, whatever its records hold, and nothing about what counts as dear.
+  const line = (kind: string, amount: number, extra: any = {}) => ({ kind, quantity: amount < 0 ? -1 : 1, amount, ...extra });
+  p = analyse([asBill(bill(1, [line('Kurti', 800, { fabric: 'Cotton', craft: 'Block print', colour: 'Blue', size: 'M' }), line('Kurti', 1200, { fabric: 'Cotton', craft: 'Block print', colour: 'Red', size: 'M' }), line('Lehenga', 2500, { fabric: 'Net', craft: 'Zardosi', colour: 'Red', size: 'L' })]))])!;
+  eq('a kurti shop: its own kinds, fabrics, crafts, colours and sizes', [p.topKind, p.byKind.map((k: any) => k.name), p.byFabric.map((k: any) => k.name), p.byCraft.map((k: any) => [k.name, k.items, k.spend]), p.byColour.map((k: any) => [k.name, k.items]), p.bySize.map((k: any) => [k.name, k.items])], ['Lehenga', ['Lehenga', 'Kurti'], ['Net', 'Cotton'], [['Zardosi', 1, 2500], ['Block print', 2, 2000]], [['Red', 2], ['Blue', 1]], [['L', 1], ['M', 2]]]);
+  check('...and no budget label: what is dear is the shop\'s to say', !('budgetTier' in p) && !('buys' in p) && !JSON.stringify(p).match(/silk|fancy/i), p);
+  const datedBill = (no: number, on: string, lines: any[]) => ({ ...asBill(bill(no, lines)), billedOn: on });
+  p = analyse([datedBill(1, '2024-01-05', [fancy(100)]), datedBill(2, '2024-01-05', [fancy(100)]), datedBill(900, '2024-03-01', [fancy(100)])])!;
+  eq('with dates, a visit is a day, and not an estimate', [p.visits, p.visitsAreAnEstimate, p.datesKnown], [2, false, true]);
+  p = analyse([asBill(bill(1, [fancy(100)])), asBill(bill(2, [fancy(100)]))])!;
+  eq('with no dates, it says it is an estimate', [p.visits, p.visitsAreAnEstimate, p.datesKnown], [1, true, false]);
+  p = analyse([datedBill(1, '2024-01-05', [fancy(100)]), asBill(bill(900, [fancy(100)]))])!;
+  eq('some dates only: bill numbers again, still an estimate', [p.visits, p.visitsAreAnEstimate, p.datesKnown], [2, true, true]);
   p = analyse([asBill(bill(1, [fancy(1000)], 'CASH')), asBill(bill(2, [fancy(1000)], 'CARD')), asBill(bill(3, [fancy(1000)], 'CARD'))])!;
   eq('usually pays by the most used', p.usuallyPaysBy, 'CARD');
   p = analyse([asBill(bill(1, [fancy(1000), fancy(-1000, -1)], 'CASH'))])!;
@@ -115,6 +127,9 @@ async function main() {
   refuses('a bill with no lines', () => cleanFile({ customers: [person(1, [{ billNo: 1, net: 0, lines: [] }])] }), /no lines/);
   refuses('a bill with no number', () => cleanFile({ customers: [person(1, [{ billNo: ' ', net: 1, lines: [fancy(1)] }])] }), /no number/);
   refuses('an amount that is not a number', () => cleanFile({ customers: [person(1, [{ billNo: 1, net: 1, lines: [{ kind: 'Fancy', quantity: 1, amount: 'x' }] }])] } as any), /cannot be read/);
+  const rich = cleanFile({ customers: [person(1, [{ billNo: 1, net: 500, lines: [{ kind: ' Kurti ', quantity: 1, amount: 500, craft: ' Block print ', colour: 'Blue', size: '', fabric: null, extra: 'x' } as any] }])] });
+  eq('any shop\'s file: its words kept and tidied, blanks and unknown fields dropped', rich.customers[0].bills[0].lines[0], { kind: 'Kurti', quantity: 1, amount: 500, craft: 'Block print', colour: 'Blue' });
+  refuses('a craft that is not words', () => cleanFile({ customers: [person(1, [{ billNo: 1, net: 1, lines: [{ kind: 'K', quantity: 1, amount: 1, craft: 5 } as any] }])] }), /craft/);
   refuses('a date that is not a date', () => cleanFile({ customers: [person(1, [{ ...bill(1, [fancy(1)]), billedOn: 'soon' }])] }), /date/);
   const cleaned = cleanFile({ customers: [person(1, [], '  '), { phone: '12345', name: 'Landline', bills: [bill(9, [fancy(1)])] }, { phone: '9999999999', name: 'Fake', bills: [] }] });
   eq('a number that cannot be a phone is left out and counted; no name gets the last 4 digits', [cleaned.customers.length, cleaned.badPhones, cleaned.badPhoneBills, cleaned.noName, cleaned.customers[0].name, cleaned.customers[0].phone], [1, 2, 1, 1, `Customer ${phone(1).slice(-4)}`, e164(1)]);
@@ -196,7 +211,7 @@ async function main() {
   eq('...their bill is on them and nobody else', [await prisma.pastPurchase.count({ where: { customerId: kept.id } }), await prisma.pastPurchase.count({ where: { customerId: one.id, billNo: `${STAMP}70` } })], [1, 0]);
   eq('...offers off', kept.whatsappOffers, false);
   const nnSeen = (await as('GET', `/customers/${kept.id}/past-purchases`)).body?.data;
-  eq('...their page has it', [nnSeen?.bills?.length, nnSeen?.pattern?.netSpend, nnSeen?.pattern?.buys], [1, 14500, 'FANCY']);
+  eq('...their page has it', [nnSeen?.bills?.length, nnSeen?.pattern?.netSpend, nnSeen?.pattern?.topKind], [1, 14500, 'Fancy']);
   await prisma.pastPurchaseImport.update({ where: { clientId_source: { clientId: C, source: nn } }, data: { finishedAt: null } });
   await applyImport(C, nn, sameNameFile, hashOf('nn'));
   eq('stopped and run again: the same row, no second copy', [await prisma.customer.count({ where: { clientId: C, externalCustomerId: `import:nn-${STAMP}` } }), await prisma.pastPurchase.count({ where: { clientId: C, source: nn } })], [1, 1]);
@@ -241,7 +256,7 @@ async function main() {
 
   console.log('\n5. THE SCREENS\' ANSWERS');
   const seen = (await as('GET', `/customers/${one.id}/past-purchases`)).body?.data;
-  eq('the customer page gets the pattern and the bills, last number first', [seen?.pattern?.buys, seen?.pattern?.netSpend, seen?.pattern?.billCount, seen?.pattern?.allBills, seen?.pattern?.datesKnown, seen?.bills?.map((x: any) => x.billNo)], ['SILK', 48000, 1, 2, false, [`${STAMP}02`, `${STAMP}01`]]);
+  eq('the customer page gets the pattern and the bills, last number first', [seen?.pattern?.topKind, seen?.pattern?.netSpend, seen?.pattern?.billCount, seen?.pattern?.allBills, seen?.pattern?.datesKnown, seen?.bills?.map((x: any) => x.billNo)], ['Pattu', 48000, 1, 2, false, [`${STAMP}02`, `${STAMP}01`]]);
   eq('...each bill with no date', seen?.bills?.map((x: any) => x.billedOn), [null, null]);
   const plainCustomer = await customerService.createCustomer(C, { name: 'Never Imported', phone: phone(5) });
   eq('a customer with no past bills: no pattern, no bills', (await as('GET', `/customers/${plainCustomer.id}/past-purchases`)).body?.data, { pattern: null, bills: [] });
@@ -262,7 +277,7 @@ async function main() {
 
   console.log('\n6. THE REAL FLOWS, NO SECOND COPY');
   let cardNow = (await as('GET', `/customers/card?phone=${phone(1)}`)).body?.data;
-  eq('Customer card: finds them, no real bills, the pattern beside', [cardNow?.customer?.id, cardNow?.visits?.bills, cardNow?.visits?.lastVisit, cardNow?.past?.buys, cardNow?.past?.allBills], [one.id, 0, null, 'SILK', 2]);
+  eq('Customer card: finds them, no real bills, the pattern beside', [cardNow?.customer?.id, cardNow?.visits?.bills, cardNow?.visits?.lastVisit, cardNow?.past?.topKind, cardNow?.past?.allBills], [one.id, 0, null, 'Pattu', 2]);
   const dup = await as('POST', '/customers', { name: 'Typed Again', phone: phone(1) });
   eq('Add customer with their number: refused, and says who', [dup.status, dup.body?.existingCustomerId ?? dup.body?.details?.existingCustomerId], [409, one.id]);
   const byPhone = (await as('GET', `/customers/by-phone/${encodeURIComponent(e164(1))}`)).body;
@@ -365,7 +380,7 @@ async function main() {
     const bearer = (scope: string[], clientId?: string) => ({ Authorization: `Bearer ${jwt.sign({ sub: 'scaleezy-crm-test', scope, ...(clientId ? { clientId } : {}) }, key, { algorithm: 'RS256', audience: 'inventory', issuer: 'scaleezy-crm-test', keyid: 'test-1', expiresIn: '5m' })}` });
     const crm = (path: string, headers: Record<string, string>) => fetch(`http://127.0.0.1:4026/api/v1/internal/modules/crm${path}`, { headers }).then(async x => ({ status: x.status, body: await x.json().catch(() => null) as any }));
     const mine = await crm(`/shops/${C}/customers/${fifty.id}/past-purchases`, bearer(['modules:crm']));
-    eq('CRM gets one customer: the same pattern Inventory shows, and the bills', [mine.status, mine.body?.data?.pattern?.buys, mine.body?.data?.pattern?.netSpend, mine.body?.data?.bills?.length, mine.body?.data?.bills?.[0]?.billedOn], [200, 'SILK', 5000, 2, null]);
+    eq('CRM gets one customer: the same pattern Inventory shows, and the bills', [mine.status, mine.body?.data?.pattern?.topKind, mine.body?.data?.pattern?.netSpend, mine.body?.data?.bills?.length, mine.body?.data?.bills?.[0]?.billedOn], [200, 'Pattu', 5000, 2, null]);
     const seenIds: string[] = []; let after = ''; let pages = 0;
     for (;;) {
       const page = await crm(`/shops/${C}/past-purchases?limit=3${after ? `&after=${after}` : ''}`, bearer(['modules:crm']));
@@ -376,6 +391,18 @@ async function main() {
     }
     const allBills = await prisma.pastPurchase.count({ where: { clientId: C, customer: { deletedAt: null } } });
     eq('...and pages through every bill of the shop, each once', [seenIds.length, new Set(seenIds).size, pages > 1], [allBills, allBills, true]);
+    const gotPatterns: any[] = []; let pAfter = ''; let pPages = 0;
+    for (;;) {
+      const page = await crm(`/shops/${C}/past-purchases/patterns?limit=2${pAfter ? `&after=${pAfter}` : ''}`, bearer(['modules:crm']));
+      if (page.status !== 200) { check('CRM can page through the patterns', false, page); break; }
+      gotPatterns.push(...page.body.data.customers); pPages++;
+      if (!page.body.data.next) break;
+      pAfter = page.body.data.next;
+    }
+    const withBills = await prisma.customer.count({ where: { clientId: C, deletedAt: null, pastPurchases: { some: {} } } });
+    eq('...and pages through the pattern of every customer with past bills, each once', [gotPatterns.length, new Set(gotPatterns.map(x => x.customerId)).size, pPages > 1], [withBills, withBills, true]);
+    eq('...the same pattern the one-customer route gives', gotPatterns.find(x => x.customerId === fifty.id)?.pattern, mine.body?.data?.pattern);
+    eq('...another shop\'s token cannot read them', (await crm(`/shops/${C}/past-purchases/patterns`, bearer(['modules:crm'], OTHER))).status, 403);
     eq('a token without the CRM scope is refused', (await crm(`/shops/${C}/past-purchases`, bearer(['modules:logistics']))).status, 403);
     eq('a token for another shop is refused', (await crm(`/shops/${C}/past-purchases`, bearer(['modules:crm'], OTHER))).status, 403);
     eq('no token is refused', (await crm(`/shops/${C}/past-purchases`, {})).status, 401);

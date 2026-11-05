@@ -27,6 +27,7 @@ export type ImportFile = { customers: ImportCustomer[] };
 type Clean = { phone: string | null; externalId: string | null; name: string; bills: { billNo: string; billedOn: Date | null; net: number; paidBy: string | null; lines: PastLine[] }[] };
 const idOf = (c: Clean) => c.phone ?? c.externalId!;
 
+const OPTIONAL_WORDS = ['fabric', 'craft', 'colour', 'size', 'title'] as const;
 const CHUNK = 200;
 const LOOKUP = 1000;
 
@@ -61,6 +62,10 @@ export function cleanFile(file: ImportFile) {
       if (!Array.isArray(b.lines) || !b.lines.length) throw new ImportRefused(`Bill ${billNo} has no lines.`);
       for (const l of b.lines) {
         if (typeof l.kind !== 'string' || !l.kind.trim() || !Number.isFinite(l.quantity) || !Number.isFinite(l.amount)) throw new ImportRefused(`Bill ${billNo} has a line that cannot be read.`);
+        for (const word of OPTIONAL_WORDS) {
+          const v = l[word];
+          if (v !== undefined && v !== null && (typeof v !== 'string' || v.length > 200)) throw new ImportRefused(`Bill ${billNo}: ${word} on a line cannot be read.`);
+        }
       }
       const net = Number(b.net);
       const sum = b.lines.reduce((t, l) => t + l.amount, 0);
@@ -70,7 +75,11 @@ export function cleanFile(file: ImportFile) {
         billedOn = new Date(b.billedOn);
         if (Number.isNaN(billedOn.getTime())) throw new ImportRefused(`Bill ${billNo} has a date that cannot be read.`);
       }
-      return { billNo, billedOn, net, paidBy: b.paidBy ? String(b.paidBy) : null, lines: b.lines.map(l => ({ kind: l.kind, fabric: l.fabric ?? null, quantity: l.quantity, amount: l.amount })) };
+      return { billNo, billedOn, net, paidBy: b.paidBy ? String(b.paidBy) : null, lines: b.lines.map(l => ({
+        kind: l.kind.trim(), quantity: l.quantity, amount: l.amount,
+        // Only what the shop's records actually hold.
+        ...Object.fromEntries(OPTIONAL_WORDS.filter(w => l[w]?.trim()).map(w => [w, l[w]!.trim()]))
+      })) };
     });
     byPhone.set(id, { phone: key ? null : id, externalId: key, name: name || `Customer ${id.slice(-4)}`, bills });
   }

@@ -160,6 +160,8 @@ router.post('/shops/:clientId/feedback/:id/handled', shop, person('customer:upda
 router.get('/shops/:clientId/customers/:customerId/past-purchases', shop, readable, act(req => pastPurchases.forCustomer(cid(req), customerIdOf(req))));
 // Every past bill, to catch up: pass the last `next` as ?after=. New ones and deletes also come on the feed.
 router.get('/shops/:clientId/past-purchases', shop, readable, act(req => pastPurchases.page(cid(req), req.query)));
+// The pattern of every customer with past bills, a page at a time: for filters, instead of one call per customer.
+router.get('/shops/:clientId/past-purchases/patterns', shop, readable, act(req => pastPurchases.patterns(cid(req), req.query)));
 
 router.get('/shops/:clientId/customers/:customerId/offers', shop, readable,
   act(req => offersState(cid(req), customerIdOf(req))));

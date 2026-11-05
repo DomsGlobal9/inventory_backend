@@ -8,6 +8,19 @@
  *   npx tsx src/scripts/import-past-customers.ts --client <clientId> --source <name> --undo --apply         take it back out
  *
  * It uses whichever database DATABASE_URL points at, and says which host before doing anything.
+ *
+ * For any shop. The file, cleaned from that shop's own records:
+ *   { "customers": [ {
+ *       "phone": "9848022338",          // or null with "key": "something-unique", kept with a name and no number
+ *       "name": "As the shop wrote it",
+ *       "bills": [ {
+ *         "billNo": "4241", "net": 23000,   // net must equal the lines added up
+ *         "billedOn": "2024-03-01",         // leave out when the records have no date; it is never guessed
+ *         "paidBy": "CARD",
+ *         "lines": [ { "kind": "the shop's own word", "quantity": 1, "amount": 8000,    // a return is negative on both
+ *                      "fabric": "...", "craft": "...", "colour": "...", "size": "...", "title": "..." } ]   // whichever it has
+ *       } ] } ] }
+ * --source names the load, one name per load per shop: it is how a re-run and an undo find it.
  */
 import fs from 'fs';
 import { prisma } from '../lib/prisma';
