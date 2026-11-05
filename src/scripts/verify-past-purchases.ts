@@ -74,6 +74,20 @@ async function main() {
   eq('sold and taken back on one bill: no bill, no item, no spend, nothing bought', [p.billCount, p.visitsEstimated, p.items, p.netSpend, p.buys, p.budgetTier, p.returnLines, p.allBills], [0, 0, 0, 0, 'NONE', null, 1, 1]);
   p = analyse([asBill(bill(100, [fancy(2500)])), asBill(bill(200, [fancy(-2500, -1)]))])!;
   eq('returned on a later bill: nets out, and that later bill is not a bill that counts', [p.billCount, p.items, p.netSpend, p.buys], [1, 0, 0, 'NONE']);
+  // A shop's own case: sold at 8,000, taken back bills later with 9,500 bought on that same bill (-8,000 + 9,500).
+  p = analyse([asBill(bill(5360, [fancy(8000)])), asBill(bill(5851, [fancy(-8000, -1), fancy(9500)]))])!;
+  eq('a -8,000 return on a later bill: spend, bills, the kept item', [p.netSpend, p.billCount, p.items, p.returnLines, p.returnsNotInRecords], [9500, 2, 1, 1, 0]);
+  eq('...the item they gave back sets no budget and is not their dearest', [p.typicalItem, p.dearestItem, p.fancyBand, p.fancySpend, p.budgetTier], [9500, 9500, { from: 9500, to: 9500 }, 9500, '8K_20K']);
+  p = analyse([asBill(bill(10, [silk(70500), silk(30500), fancy(5000)])), asBill(bill(40, [silk(21000), silk(-70500, -1), silk(31500)]))])!;
+  eq('their dearest item, returned later, stops being their dearest', [p.dearestItem, p.silkItems, p.fancyItems, p.netSpend, p.billCount], [31500, 3, 1, 88000, 1]);
+  p = analyse([asBill(bill(10, [fancy(5434.78), fancy(5434.78)])), asBill(bill(50, [fancy(-5435, -1)]))])!;
+  eq('a return a few paise off the sale, from a discount spread over the bill, still finds its item', [p.items, p.returnsNotInRecords], [1, 0]);
+  p = analyse([asBill(bill(20, [fancy(-16500, -1)])), asBill(bill(90, [fancy(7500), fancy(2700), fancy(2700), fancy(6100)]))])!;
+  eq('returned something from before the records: the money comes off, their items stay', [p.netSpend, p.items, p.fancySpend, p.returnsNotInRecords, p.buys, p.dearestItem], [2500, 4, 19000, 1, 'FANCY', 7500]);
+  p = analyse([asBill(bill(30, [fancy(-11987, -5), fancy(2000), fancy(2000), fancy(2000), fancy(2000), fancy(3801)]))])!;
+  eq('an exchange that nets below zero: spend below zero shown, what they took is real', [p.netSpend, p.billCount, p.items, p.buys], [-186, 0, 5, 'FANCY']);
+  p = analyse([asBill(bill(10, [silk(9000)])), asBill(bill(50, [fancy(-9000, -1)]))])!;
+  eq('a fancy return does not take a silk item', [p.silkItems, p.returnsNotInRecords], [1, 1]);
   p = analyse([asBill(bill(200, [silk(-9000, -1)]))])!;
   eq('only a return: spend below zero is shown, never a bill', [p.billCount, p.netSpend, p.silkSpend], [0, -9000, 0]);
   p = analyse([asBill(bill(10, [fancy(1000)])), asBill(bill(15, [fancy(1000)])), asBill(bill(21, [fancy(1000)]))])!;

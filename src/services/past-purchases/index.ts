@@ -14,6 +14,8 @@ export type BudgetTier = 'UNDER_3K' | '3K_8K' | '8K_20K' | '20K_PLUS';
 
 /** Bills of one customer within this many numbers are taken as one visit. With no dates it is an estimate. */
 export const VISIT_GAP = 5;
+/** Rupees a returned item's price may differ from the sale it came from. */
+const RETURN_MATCH = 1;
 
 const money2 = (n: number) => Math.round(n * 100) / 100;
 const isSilk = (l: PastLine) => l.fabric === 'Silk';
@@ -37,8 +39,10 @@ function byNumber(bills: PastBill[]) {
 /**
  * The buying pattern from a customer's past bills. Null when they have none.
  *
- * A bill counts only if money stayed (sold and taken back on one bill does not). Prices come from what
- * stayed on each bill; spend and item counts are net of returns, so an item taken back is not "bought".
+ * A bill counts only if money stayed (sold and taken back on one bill does not). Items, prices, silk and
+ * fancy are what they kept: an item taken back, even bills later, is not "bought" and sets no budget.
+ * netSpend is the plain sum of their bills, so it matches the shop's sheet and can go below zero when
+ * they returned something bought before these records.
  */
 export function analyse(input: PastBill[]) {
   if (!input.length) return null;
@@ -51,27 +55,36 @@ export function analyse(input: PastBill[]) {
     ? (numbers.length ? 1 + numbers.slice(1).filter((n, i) => Number(n) - Number(numbers[i]) > VISIT_GAP).length : 0)
     : numbers.length;
 
-  let silkKept = 0, fancyKept = 0, silkMoney = 0, fancyMoney = 0, returnLines = 0;
+  // Every item sold, one price each; then each return takes its item back out, on whichever bill it came.
   const silkPrices: number[] = [], fancyPrices: number[] = [];
+  const returns: { silk: boolean; price: number }[] = [];
+  let returnLines = 0;
   for (const b of bills) {
-    const onBill = new Map<string, { silk: boolean; price: number; qty: number }>();
     for (const l of b.lines) {
       if (l.amount < 0) returnLines++;
-      if (isSilk(l)) { silkKept += l.quantity; silkMoney += l.amount; } else { fancyKept += l.quantity; fancyMoney += l.amount; }
       if (!l.quantity) continue;
       const price = Math.abs(money2(l.amount / l.quantity));
-      const key = `${isSilk(l)}|${price}`;
-      const was = onBill.get(key);
-      if (was) was.qty += l.quantity; else onBill.set(key, { silk: isSilk(l), price, qty: l.quantity });
-    }
-    for (const { silk, price, qty } of onBill.values()) {
-      for (let i = 0; i < qty; i++) (silk ? silkPrices : fancyPrices).push(price);
+      for (let i = 0; i < Math.abs(l.quantity); i++) {
+        if (l.quantity > 0) (isSilk(l) ? silkPrices : fancyPrices).push(price);
+        else returns.push({ silk: isSilk(l), price });
+      }
     }
   }
+  // A return of something not among these bills was bought before the records begin, or under another
+  // number. The money still comes off their spend, but it takes no item of theirs away.
+  let returnsNotInRecords = 0;
+  for (const r of returns) {
+    const list = r.silk ? silkPrices : fancyPrices;
+    // Within a rupee: a bill's discount spread over its lines can sell at 5,434.78 and take back at 5,435.
+    const at = list.findIndex(p => Math.abs(p - r.price) <= RETURN_MATCH);
+    if (at >= 0) list.splice(at, 1); else returnsNotInRecords++;
+  }
+  const sum = (v: number[]) => v.reduce((t, x) => t + x, 0);
   const prices = [...silkPrices, ...fancyPrices];
   const typical = prices.length ? Math.round(median(prices)) : null;
-  const silkSpend = Math.max(0, silkMoney), fancySpend = Math.max(0, fancyMoney);
-  const buys = silkKept <= 0 && fancyKept <= 0 ? 'NONE' : silkKept > 0 && silkSpend >= fancySpend ? 'SILK' : silkKept > 0 ? 'MIXED' : 'FANCY';
+  const silkKept = silkPrices.length, fancyKept = fancyPrices.length;
+  const silkSpend = sum(silkPrices), fancySpend = sum(fancyPrices);
+  const buys = !silkKept && !fancyKept ? 'NONE' : silkKept && silkSpend >= fancySpend ? 'SILK' : silkKept ? 'MIXED' : 'FANCY';
 
   const pays = new Map<string, number>();
   for (const b of counted) if (b.paidBy) pays.set(b.paidBy, (pays.get(b.paidBy) ?? 0) + 1);
@@ -81,9 +94,9 @@ export function analyse(input: PastBill[]) {
     billCount: counted.length,
     visitsEstimated: visits,
     netSpend: Math.round(bills.reduce((t, b) => t + b.net, 0)),
-    items: Math.max(0, silkKept) + Math.max(0, fancyKept),
-    silkItems: Math.max(0, silkKept),
-    fancyItems: Math.max(0, fancyKept),
+    items: silkKept + fancyKept,
+    silkItems: silkKept,
+    fancyItems: fancyKept,
     silkSpend: Math.round(silkSpend),
     fancySpend: Math.round(fancySpend),
     buys,
@@ -93,6 +106,7 @@ export function analyse(input: PastBill[]) {
     fancyBand: spendBand(fancyPrices),
     dearestItem: prices.length ? Math.round(Math.max(...prices)) : null,
     returnLines,
+    returnsNotInRecords,
     usuallyPaysBy,
     allBills: bills.length,
     datesKnown: bills.some(b => b.billedOn)
