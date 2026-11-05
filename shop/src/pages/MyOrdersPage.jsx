@@ -465,7 +465,7 @@ export default function MyOrdersPage({ shop }) {
                       {o.items?.length > 1 ? ` and ${o.items.length - 1} other ${o.items.length - 1 === 1 ? 'item' : 'items'}` : ''}
                     </p>
                     <p className="order-items-meta">
-                      {pieces} {pieces === 1 ? 'piece' : 'pieces'}
+                      {pieces} {pieces === 1 ? 'item' : 'items'}
                       {o.items?.[0]?.colour ? ` · ${o.items[0].colour}` : ''}
                     </p>
                   </div>

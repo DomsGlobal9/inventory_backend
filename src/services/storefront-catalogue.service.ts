@@ -476,6 +476,10 @@ export class StorefrontCatalogueService {
     const scoped = new Set(locationIds);
 
     const q = (opts.q ?? '').trim().slice(0, 60);
+    const priceRange = {
+      ...(opts.minPrice != null ? { gte: opts.minPrice } : {}),
+      ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {})
+    };
     const where: Prisma.ProductWhereInput = {
       clientId: scope.clientId,
       ...ELIGIBLE_PRODUCT,
@@ -483,52 +487,39 @@ export class StorefrontCatalogueService {
       ...(opts.fabric ? { fabric: { equals: literal(opts.fabric), mode: 'insensitive' } } : {}),
       ...(opts.craft ? { craft: { equals: literal(opts.craft), mode: 'insensitive' } } : {}),
       ...(opts.dressType ? { dressType: { equals: literal(opts.dressType), mode: 'insensitive' } } : {}),
-      ...(scope.hideOutOfStock && scope.locationIds?.length
-        ? {
-            variants: {
-              some: {
-                stocks: { some: { locationId: { in: scope.locationIds }, quantity: { gt: 0 } } },
-                NOT: { locationProfiles: { some: { locationId: { in: scope.locationIds }, isAvailable: false } } }
-              }
-            }
-          }
-        : {}),
-      ...(opts.minPrice != null || opts.maxPrice != null
-        ? {
-            OR: [
-              {
-                basePrice: {
-                  ...(opts.minPrice != null ? { gte: opts.minPrice } : {}),
-                  ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {})
-                }
-              },
-              {
-                variants: {
-                  some: {
-                    sellingPrice: {
-                      ...(opts.minPrice != null ? { gte: opts.minPrice } : {}),
-                      ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {})
-                    }
-                  }
-                }
-              }
-            ]
-          }
-        : {}),
-      // What a shopper actually types: a name, a fabric, a colour, or the code off a tag.
-      ...(q
-        ? {
-            OR: [
-              { title: { contains: q, mode: 'insensitive' } },
-              { fabric: { contains: q, mode: 'insensitive' } },
-              { craft: { contains: q, mode: 'insensitive' } },
-              { dressType: { contains: q, mode: 'insensitive' } },
-              { brand: { contains: q, mode: 'insensitive' } },
-              { productCode: { contains: q, mode: 'insensitive' } },
-              { variants: { some: { colorName: { contains: q, mode: 'insensitive' } } } }
-            ]
-          }
-        : {})
+      // Each is its own AND entry: spread into one object, a second OR replaced the first, and a price
+      // filter was ignored whenever the shopper had also typed a search (Nov 2026).
+      AND: [
+        // A first cut so the pages are full; the exact rule (`sellable`) is still applied per product by
+        // the caller, so this must never drop something sellable: switched off at one store is still
+        // sellable at another. (A service keeps no stock and is not sold online: forShopper.)
+        ...(scope.hideOutOfStock
+          ? [{ variants: { some: { stocks: { some: { locationId: { in: locationIds }, quantity: { gt: 0 } } } } } }]
+          : []),
+        // The price a shopper sees: the variant's own, or the product's where the variant has none.
+        ...(opts.minPrice != null || opts.maxPrice != null
+          ? [{
+              OR: [
+                { variants: { some: { sellingPrice: priceRange } } },
+                { basePrice: priceRange, variants: { some: { sellingPrice: null } } }
+              ]
+            }]
+          : []),
+        // What a shopper actually types: a name, a fabric, a colour, or the code off a tag.
+        ...(q
+          ? [{
+              OR: [
+                { title: { contains: q, mode: 'insensitive' } },
+                { fabric: { contains: q, mode: 'insensitive' } },
+                { craft: { contains: q, mode: 'insensitive' } },
+                { dressType: { contains: q, mode: 'insensitive' } },
+                { brand: { contains: q, mode: 'insensitive' } },
+                { productCode: { contains: q, mode: 'insensitive' } },
+                { variants: { some: { colorName: { contains: q, mode: 'insensitive' } } } }
+              ]
+            }]
+          : [])
+      ] as Prisma.ProductWhereInput[]
     };
 
     const orderBy: Prisma.ProductOrderByWithRelationInput[] =

@@ -4365,3 +4365,63 @@ a.shot { display: block; }
   }
 }
 
+
+/* Small fixes to the 4 Nov redesign (5 Nov): air round the breadcrumb's arrow; a phone number on one line. */
+.acrumb > span[aria-hidden="true"] { margin: 0 6px; }
+.profile-phone-pill { white-space: nowrap; flex-wrap: wrap; }
+
+/* ── Saved addresses, alike the redesigned Wishlist and Orders (5 Nov, owner) ───────────────
+ * Cards side by side on a laptop, the default one marked, and adding an address is the last tile. The
+ * form takes the whole width. On a phone, one column. */
+.book-page { max-width: 880px; margin-left: auto; margin-right: auto; padding-bottom: 28px; }
+.book-header { margin: 18px 0; }
+.apage .book-header .pagetitle { margin: 0 0 2px; }
+.apage #addresses.book-grid { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: stretch; }
+.book-grid > .aaddr { display: contents; }
+@media (min-width: 720px) { .apage #addresses.book-grid { grid-template-columns: 1fr 1fr; } }
+.book-grid .aedit, .book-grid > .aempty, .book-grid > .book-empty { grid-column: 1 / -1; }
+.book-grid > .aedit, .book-grid .aaddr > li.aedit {
+  background: var(--card, var(--bg)); border: 1px solid var(--line); border-radius: 16px; padding: 18px;
+}
+.aaddr li.book-card {
+  background: var(--card, var(--bg)); border: 1px solid var(--line); border-radius: 16px; padding: 16px 16px 8px; gap: 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,.03); justify-content: space-between; min-width: 0;
+}
+.aaddr li.book-card + li.book-card { border-top: 1px solid var(--line); }
+.aaddr li.book-card[data-default] { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.book-card .awhere { gap: 8px; }
+.book-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; white-space: normal; }
+.book-icon {
+  width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: 0 0 auto;
+  background: color-mix(in srgb, var(--accent) 10%, var(--soft)); color: var(--accent);
+}
+.book-head b { font-size: 15px; font-weight: 650; min-width: 0; overflow-wrap: anywhere; }
+.book-head .atags { margin: 0 0 0 auto; }
+.aaddr .book-head .atag { padding: 3px 9px; border-radius: 999px; background: var(--soft); color: var(--ink); }
+.aaddr .book-head .atag.adefault { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.book-line { font-size: 14px; line-height: 1.5; color: var(--ink); white-space: pre-wrap; }
+.aaddr small.book-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); }
+/* Quiet actions along the foot of the card, in place of three big boxes. */
+.aaddr li.book-card > span.abtns { gap: 2px; padding-top: 6px; }
+.aaddr li.book-card > span.abtns:not(.asure) .abtn {
+  flex: 0 0 auto; min-width: 0; min-height: 40px; padding: 0 10px; border: 0; background: none; border-radius: 9px; font-size: 13px;
+}
+.aaddr li.book-card > span.abtns:not(.asure) .abtn:hover,
+.aaddr li.book-card > span.abtns:not(.asure) .abtn:focus-visible { background: var(--soft); }
+.aaddr li.book-card > span.abtns:not(.asure) .abtn.danger { margin-left: auto; }
+.aaddr li.book-card > span.abtns:not(.asure) .abtn.danger:hover,
+.aaddr li.book-card > span.abtns:not(.asure) .abtn.danger:focus-visible { background: #fef3f2; }
+.aaddr li.book-card > span.asure { padding-bottom: 8px; }
+.book-add {
+  display: flex; align-items: center; justify-content: center; min-height: 120px; width: 100%; padding: 16px;
+  border: 1.5px dashed var(--line); border-radius: 16px; background: none; color: var(--ink);
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.book-add:hover, .book-add:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+@media (max-width: 719px) { .book-add { min-height: 64px; } }
+.book-empty { width: 100%; }
+.book-empty-art { width: 64px; height: 64px; border-radius: 18px; }
+.account .book-grid .book-empty h2 { margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -.02em; text-transform: none; color: var(--ink); }
+.account .book-grid .book-empty h2 { border: 0; padding: 0; }
+.book-empty .go { margin-top: 8px; }
+.book-add { border-color: color-mix(in srgb, var(--ink) 22%, var(--line)); }

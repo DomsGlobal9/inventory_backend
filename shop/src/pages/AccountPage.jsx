@@ -225,17 +225,34 @@ export default function AccountPage({ shop, view = 'profile' }) {
   // 2. Saved Addresses View
   if (view === 'addresses') {
     return (
-      <div className="account apage">
+      <div className="account apage book-page">
         <nav className="acrumb" aria-label="Breadcrumb">
           <Link to={`/${slug}/account`}>Account</Link>
           <span aria-hidden="true">›</span>
           <span>Saved addresses</span>
         </nav>
-        <h1 className="pagetitle">Saved addresses</h1>
+        <header className="book-header">
+          <div className="orders-title-group">
+            <div className="orders-title-icon" aria-hidden="true"><PlaceGlyph label="" size={22} /></div>
+            <div>
+              <h1 className="pagetitle">Saved addresses</h1>
+              <p className="orders-subtitle">
+                {me.addresses.length === 0
+                  ? 'Ready to use at checkout'
+                  : `${me.addresses.length} saved ${me.addresses.length === 1 ? 'address' : 'addresses'} · Ready to use at checkout`}
+              </p>
+            </div>
+          </div>
+        </header>
         {said ? <p className="refused" role="alert">{said}</p> : null}
-        <section className="card" id="addresses">
+        <section className="card book-grid" id="addresses">
           {me.addresses.length === 0 && editing !== 'new' ? (
-            <p className="aempty">Add an address to use it at checkout. Addresses from your orders are saved here too.</p>
+            <div className="wish-empty-wrap book-empty">
+              <div className="orders-title-icon book-empty-art" aria-hidden="true"><PlaceGlyph label="" size={30} /></div>
+              <h2>No saved addresses yet</h2>
+              <p>Add an address to use it at checkout. Addresses from your orders are saved here too.</p>
+              <button type="button" className="go" onClick={() => setEditing('new')}>+ Add a new address</button>
+            </div>
           ) : (
             <ul className="aaddr">
               {me.addresses.map(a => editing?.id === a.id ? (
@@ -243,15 +260,21 @@ export default function AccountPage({ shop, view = 'profile' }) {
                   <AddressForm slug={slug} token={token} me={me} address={a} onDone={async () => { setEditing(null); await refresh(); }} onCancel={() => setEditing(null)} />
                 </li>
               ) : (
-                <li key={a.id} className="acard">
+                <li key={a.id} className="acard book-card" data-default={a.isDefault ? 'true' : undefined}>
                   <span className="awhere">
-                    <span className="atags">
-                      {a.label ? <em className="atag">{a.label}</em> : null}
-                      {a.isDefault ? <em className="atag adefault">Default</em> : null}
+                    <span className="book-head">
+                      <span className="book-icon" aria-hidden="true"><PlaceGlyph label={a.label} size={18} /></span>
+                      <b>{a.name || a.label || 'Address'}</b>
+                      <span className="atags">
+                        {a.label ? <em className="atag">{a.label}</em> : null}
+                        {a.isDefault ? <em className="atag adefault">Default</em> : null}
+                      </span>
                     </span>
-                    {a.name ? <b>{a.name}</b> : null}
-                    <span>{a.line}</span>
-                    <small>PIN {a.pincode}{a.phone ? ` · ${shownPhone(a.phone)}` : ''}</small>
+                    <span className="book-line">{withoutPin(a.line, a.pincode)}</span>
+                    <small className="book-meta">
+                      <span>PIN {a.pincode}</span>
+                      {a.phone ? <span>{shownPhone(a.phone)}</span> : null}
+                    </small>
                   </span>
                   {confirming === a.id ? (
                     <span className="abtns asure" role="group" aria-label="Remove this address?">
@@ -283,10 +306,10 @@ export default function AccountPage({ shop, view = 'profile' }) {
           )}
           {editing === 'new' ? (
             <div className="aedit"><AddressForm slug={slug} token={token} me={me} address={null} first={me.addresses.length === 0} onDone={async () => { setEditing(null); await refresh(); }} onCancel={() => setEditing(null)} /></div>
-          ) : editing ? null : me.addresses.length >= MOST_ADDRESSES ? (
+          ) : editing || me.addresses.length === 0 ? null : me.addresses.length >= MOST_ADDRESSES ? (
             <p className="aempty">You can keep {MOST_ADDRESSES} addresses. Remove one to add another.</p>
           ) : (
-            <button type="button" className="go quiet aadd" onClick={() => setEditing('new')}>+ Add a new address</button>
+            <button type="button" className="book-add" onClick={() => setEditing('new')}>+ Add a new address</button>
           )}
         </section>
       </div>
@@ -321,6 +344,10 @@ function WishlistView({ slug, shop, me, said, unheart }) {
 
   const hearts = me?.hearts ?? [];
   const inStockCount = hearts.filter(h => h.available).length;
+  // Only what the bag can truly take: a shop not taking orders has no bag to add to, and a piece with a
+  // choice of sizes is chosen on its own page.
+  const buying = shop?.buying?.open === true;
+  const ready = buying ? hearts.filter(h => h.available && h.buyCode) : [];
   const soldOutCount = hearts.filter(h => !h.available).length;
 
   const filteredHearts = useMemo(() => {
@@ -340,8 +367,7 @@ function WishlistView({ slug, shop, me, said, unheart }) {
   const handleAdd = (h, e) => {
     e.preventDefault();
     e.stopPropagation();
-    const targetCode = h.variantCode || h.productCode;
-    addToBag(slug, targetCode, 1);
+    addToBag(slug, h.buyCode, 1);
     setAddedCodes(prev => ({ ...prev, [h.productCode]: true }));
     setTimeout(() => {
       setAddedCodes(prev => ({ ...prev, [h.productCode]: false }));
@@ -349,11 +375,8 @@ function WishlistView({ slug, shop, me, said, unheart }) {
   };
 
   const handleMoveAll = () => {
-    const available = hearts.filter(h => h.available);
-    if (!available.length) return;
-    for (const h of available) {
-      addToBag(slug, h.variantCode || h.productCode, 1);
-    }
+    if (!ready.length) return;
+    for (const h of ready) addToBag(slug, h.buyCode, 1);
     setMovingAll(true);
     setTimeout(() => setMovingAll(false), 2500);
   };
@@ -382,13 +405,13 @@ function WishlistView({ slug, shop, me, said, unheart }) {
               <h1 className="pagetitle">My Wishlist</h1>
               <p className="wish-subtitle">
                 {hearts.length === 0
-                  ? 'Pieces you have saved to shop later'
-                  : `${hearts.length} saved ${hearts.length === 1 ? 'piece' : 'pieces'} · ${inStockCount} available to order`}
+                  ? 'Items you have saved to shop later'
+                  : `${hearts.length} saved ${hearts.length === 1 ? 'item' : 'items'} · ${inStockCount} available to order`}
               </p>
             </div>
           </div>
 
-          {inStockCount > 1 && (
+          {ready.length > 1 && (
             <button
               type="button"
               className="wish-move-all-btn"
@@ -399,7 +422,7 @@ function WishlistView({ slug, shop, me, said, unheart }) {
                 <path d="M5.3 8.2h13.4l1.2 11.4a1.7 1.7 0 0 1-1.7 1.9H5.8a1.7 1.7 0 0 1-1.7-1.9Z" strokeLinejoin="round" />
                 <path d="M8.7 8.2V6.6a3.3 3.3 0 0 1 6.6 0v1.6" strokeLinecap="round" />
               </svg>
-              <span>{movingAll ? 'Added in-stock pieces to bag ✓' : 'Move in-stock to bag'}</span>
+              <span>{movingAll ? 'Added in-stock items to bag ✓' : 'Move in-stock to bag'}</span>
             </button>
           )}
         </div>
@@ -465,7 +488,7 @@ function WishlistView({ slug, shop, me, said, unheart }) {
             <EmptyWishlist />
           </div>
           <h2>Your wishlist is empty</h2>
-          <p>Tap the heart icon on any piece you love to save it here for later, compare options, or add to bag when you're ready.</p>
+          <p>Tap the heart icon on any item you love to save it here for later, compare options, or add to bag when you're ready.</p>
           <div className="wish-empty-actions">
             <Link className="go" to={`/${slug}`}>
               Explore our collection
@@ -559,7 +582,11 @@ function WishlistView({ slug, shop, me, said, unheart }) {
 
                   {/* Quick Action Button */}
                   <div className="wish-actions">
-                    {h.available ? (
+                    {h.available && !(buying && h.buyCode) ? (
+                      <Link className="wish-add-btn" to={`/${slug}/p/${encodeURIComponent(h.productCode)}${h.variantCode ? `?v=${encodeURIComponent(h.variantCode)}` : ''}`}>
+                        <span>{buying ? 'Choose size' : 'View item'}</span>
+                      </Link>
+                    ) : h.available ? (
                       <button
                         type="button"
                         className={`wish-add-btn ${isAdded ? 'added' : ''}`}
@@ -636,7 +663,7 @@ function ProfileView({ slug, shop, me, said, done, asking, setAsking, ending, ou
     ...(shop?.wishlist === false ? [] : [{
       to: `/${slug}/wishlist`,
       title: 'My Wishlist',
-      sub: me.hearts.length ? `${me.hearts.length} saved ${me.hearts.length === 1 ? 'piece' : 'pieces'} · Add directly to bag` : 'Items you bookmarked',
+      sub: me.hearts.length ? `${me.hearts.length} saved ${me.hearts.length === 1 ? 'item' : 'items'} · Add directly to bag` : 'Items you bookmarked',
       count: me.hearts.length,
       icon: ICONS.heart
     }]),
@@ -832,7 +859,7 @@ function ProfileView({ slug, shop, me, said, done, asking, setAsking, ending, ou
           <div className="security-signout-row">
             <button type="button" className="drop" onClick={() => out(false)}>Sign out this device</button>
             {me.devices > 1 && (
-              <button type="button" className="drop" onClick={() => setAsking(true)}>Sign out {me.devices - 1} other devices</button>
+              <button type="button" className="drop" onClick={() => setAsking(true)}>Sign out {me.devices - 1} other {me.devices === 2 ? 'device' : 'devices'}</button>
             )}
           </div>
         </div>
@@ -848,6 +875,22 @@ function ProfileView({ slug, shop, me, said, done, asking, setAsking, ending, ou
 const LABELS = ['Home', 'Work', 'Other'];
 /** The most a customer may keep (services/online-shop/addresses.ts says the same). */
 const MOST_ADDRESSES = 8;
+
+/** A house, a briefcase, or a map pin, by what the shopper called the address. */
+function PlaceGlyph({ label, size = 18 }) {
+  const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
+  if (/home/i.test(label ?? '')) return <svg {...common}><path d="M4 11.2 12 4.5l8 6.7" /><path d="M6 9.8V19.5h12V9.8" /><path d="M10 19.5v-5.2h4v5.2" /></svg>;
+  if (/work|office/i.test(label ?? '')) return <svg {...common}><rect x="3.5" y="8" width="17" height="11.5" rx="2" /><path d="M9 8V6a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 6v2" /><path d="M3.5 13h17" /></svg>;
+  return <svg {...common}><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" /><circle cx="12" cy="10" r="2.4" /></svg>;
+}
+
+/** The address as saved often ends with its PIN, which the card shows on its own line. For showing only. */
+const withoutPin = (line, pincode) => {
+  const text = String(line ?? '').trimEnd();
+  const pin = String(pincode ?? '');
+  if (!pin || !text.endsWith(pin) || text.length === pin.length) return text;
+  return text.slice(0, -pin.length).replace(/[\s,-]+$/, '');
+};
 function AddressForm({ slug, token, me, address, first = false, onDone, onCancel }) {
   const [f, setF] = useState(() => ({
     label: address?.label ?? 'Home',
@@ -895,7 +938,7 @@ function AddressForm({ slug, token, me, address, first = false, onDone, onCancel
 
 /** The four things an account gives a shopper, said once and the same on every shop. */
 const PERKS = [
-  { key: 'wish', title: 'Wishlist', line: 'Keep the pieces you love in one place.', d: 'M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.7c0 5.6-7.5 10.2-7.5 10.2Z' },
+  { key: 'wish', title: 'Wishlist', line: 'Keep the items you love in one place.', d: 'M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.7c0 5.6-7.5 10.2-7.5 10.2Z' },
   { key: 'orders', title: 'Order tracking', line: 'Follow every order to your doorstep.', d: 'M12 2.8 20.5 7.4v9.2L12 21.2l-8.5-4.6V7.4ZM3.8 7.6 12 12l8.2-4.4M12 12v9' },
   { key: 'addr', title: 'Saved addresses', line: 'Ready and waiting at checkout.', d: 'M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11ZM12 12.4a2.4 2.4 0 1 0 0-4.8 2.4 2.4 0 0 0 0 4.8Z' },
   { key: 'fast', title: 'Faster checkout', line: 'Your details, filled in for you.', d: 'M13 2 4 14h7l-1 8 9-12h-7Z' }
@@ -955,7 +998,7 @@ function SignIn({ slug, shop, canSignIn, why, onDone }) {
   };
 
   const heroBanner = placed(shop?.banners, 'HOME_TOP')[0]?.imageUrl ?? null;
-  const lede = why === 'heart' ? 'Sign in to save this piece to your wishlist.'
+  const lede = why === 'heart' ? 'Sign in to save this item to your wishlist.'
     : why === 'addresses' ? 'Sign in to keep your addresses ready for checkout.'
     : 'Your wishlist, orders and saved addresses, together in one place.';
 

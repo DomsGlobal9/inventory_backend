@@ -96,6 +96,12 @@ export async function me(shop: Shop, token: unknown) {
       price: prices.length ? Math.min(...prices) : null,
       imageUrl: picture,
       available: ofColour.some((v: any) => v.sellable),
+      // What "Add to bag" may add: the saved size if it can be sold, else the only one that can. A real
+      // choice of sizes (or a heart that named none) is null, and the shopper chooses on the piece's page.
+      buyCode: (() => {
+        const open = ofColour.filter((v: any) => v.sellable);
+        return open.find((v: any) => v.variantCode === h.variantCode)?.variantCode ?? (open.length === 1 ? open[0].variantCode : null);
+      })(),
       likedAt: h.likedAt.toISOString()
     };
   }))).filter(Boolean);
