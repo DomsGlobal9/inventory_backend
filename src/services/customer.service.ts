@@ -235,7 +235,10 @@ export class CustomerService {
         { customerCode: { contains: literal(search), mode: 'insensitive' } },
         { phone: { contains: literal(search), mode: 'insensitive' } },
         ...(digits ? [{ phone: { contains: digits } }] : []),
-        { email: { contains: literal(search), mode: 'insensitive' } }
+        { email: { contains: literal(search), mode: 'insensitive' } },
+        // Whose bill is this? An order number however it is typed (SO-000078, so78, 78), the till's invoice
+        // number, or an old bill's number. Exact, never "contains": bill 42 must not find bill 4243.
+        ...this.billSearch(search)
       ];
     }
 
@@ -285,6 +288,16 @@ export class CustomerService {
       return { customers, meta: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } };
     }
     return prisma.customer.findMany({ where, orderBy });
+  }
+
+  private billSearch(search: string): Prisma.CustomerWhereInput[] {
+    if (/\s/.test(search)) return [];
+    const number = /^(?:so-?)?0*(\d{1,12})$/i.exec(search)?.[1];
+    return [
+      ...(number ? [{ salesOrders: { some: { deletedAt: null, orderNumber: `SO-${number.padStart(6, '0')}` } } }] : []),
+      { salesOrders: { some: { deletedAt: null, externalOrderId: { equals: search, mode: 'insensitive' as const } } } },
+      { pastPurchases: { some: { billNo: { equals: search, mode: 'insensitive' as const } } } }
+    ];
   }
 
   async getCustomerById(clientId: string, id: string) {

@@ -328,6 +328,16 @@ async function main() {
   eq('a new order for them lands on the same customer', placed.customerId, one.id);
   eq('...their name is not replaced', (await row(1)).name, 'Person 1');
 
+  // Whose bill is this? From an order or bill number to the customer.
+  const finds = async (q: string) => (await as('GET', `/customers?search=${encodeURIComponent(q)}`)).body.map((x: any) => x.id);
+  const orderNo = placed.orderNumber as string, plainNo = String(Number(orderNo.replace(/\D/g, '')));
+  for (const typed of [orderNo, orderNo.toLowerCase(), orderNo.replace('-', ''), `so${plainNo}`, orderNo.replace(/\D/g, '')]) check(`order number typed "${typed}" finds them`, (await finds(typed)).includes(one.id), typed);
+  eq('an old bill number finds them, and only them', await finds(`${STAMP}01`), [one.id]);
+  eq('...the bill with letters too, any case', (await finds(`${STAMP}01`.toUpperCase())), [one.id]);
+  check('part of an order number does not find that customer', !(await finds(orderNo.slice(0, 5))).includes(one.id));
+  eq('a space in it is a name search, not a bill', (await finds(`${orderNo} x`)).length, 0);
+  eq('nonsense finds nobody', await finds('SO-999999999'), []);
+
   // The online shop: the number proved with a code, a real order, on the test server that has the WhatsApp stand-in.
   if (process.env.SHOP_CODES) {
     const SLUG = 'localshop', CODES = process.env.SHOP_CODES;
