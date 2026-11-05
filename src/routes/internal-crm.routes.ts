@@ -149,6 +149,7 @@ router.post('/shops/:clientId/reviews/:id/hide', shop, person('customer:update')
   act(req => shopReviews.crm.hide(clientIdOf(req), req.params.id, req.body?.reason, actorName(req)), req => ['HIDE_REVIEW', String(req.params.id)], 'ShopReview'));
 router.post('/shops/:clientId/reviews/:id/unhide', shop, person('customer:update'),
   act(req => shopReviews.crm.unhide(clientIdOf(req), req.params.id), req => ['UNHIDE_REVIEW', String(req.params.id)], 'ShopReview'));
+router.get('/shops/:clientId/orders/:salesOrderId/review-link', shop, readable, act(req => shopReviews.crm.reviewLink(clientIdOf(req), req.params.salesOrderId)));
 router.get('/shops/:clientId/feedback', shop, readable, act(req => shopReviews.crm.feedback(clientIdOf(req), req.query)));
 router.post('/shops/:clientId/feedback/:id/handled', shop, person('customer:update'),
   act(req => shopReviews.crm.setFeedbackHandled(clientIdOf(req), req.params.id, req.body?.handled !== false, actorName(req)), req => ['HANDLE_FEEDBACK', String(req.params.id)], 'ShopOrderFeedback'));

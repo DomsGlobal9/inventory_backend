@@ -5,6 +5,7 @@ import { supabase } from '../../lib/supabase';
 import { summary as orderSummary } from '../online-shop/checkout';
 import { whoIs } from '../online-shop/otp';
 import { OnlineShopRuleError } from '../online-shop/rules';
+import { shopBaseUrl } from '../online-shop/shop.service';
 
 /**
  * Customer reviews and private feedback (5 Nov 2026, owner). Its own module: the shop collects and shows them, and
@@ -319,6 +320,36 @@ async function reviewFor(clientId: string, id: unknown) {
 }
 
 export const crm = {
+  /**
+   * What CRM needs to ask a customer to review a delivered online order: the order page's link, which lists every
+   * item with its own "Rate this item", and what is still unrated. The link is a secret: it opens the customer's
+   * name and address, so it is handed over only here, never in an event. A till sale has no such page: 404.
+   */
+  async reviewLink(clientId: string, salesOrderIdRaw: unknown) {
+    const row = await prisma.onlineShopOrder.findFirst({
+      where: { clientId, salesOrderId: String(salesOrderIdRaw ?? '') },
+      select: { token: true, customerPhone: true, salesOrder: { select: { orderNumber: true, customerName: true } } }
+    });
+    if (!row) throw Object.assign(new Error('That is not an online order of this shop.'), { statusCode: 404 });
+    const [s, state, shop] = await Promise.all([
+      orderSummary(clientId, row.token) as Promise<any>,
+      forOrder(clientId, row.token),
+      prisma.onlineShop.findFirst({ where: { clientId }, select: { slug: true, reviews: true, accounts: true } })
+    ]);
+    const seen = new Set<string>();
+    const items = (s.items ?? []).filter((i: any) => i.productCode && !seen.has(i.productCode) && seen.add(i.productCode))
+      .map((i: any) => ({ productCode: i.productCode, title: i.title, rating: state.ratings[i.productCode] ?? null }));
+    const reviewsOn = !!shop?.reviews && !!shop?.accounts;
+    const path = shop ? `/${shop.slug}/order/${row.token}` : null;
+    const base = shopBaseUrl();
+    return {
+      orderNumber: row.salesOrder.orderNumber, phone: row.customerPhone, customerName: row.salesOrder.customerName,
+      delivered: !!s.delivered, reviewsOn, url: base && path ? `${base.replace(/\/+$/, '')}${path}` : null, path, items,
+      // Ask only when there is something to do: arrived, reviews on, and at least one item not yet rated.
+      askNow: !!s.delivered && reviewsOn && items.some((i: any) => i.rating === null)
+    };
+  },
+
   hideReasons: () => Object.entries(HIDE_REASONS).map(([key, label]) => ({ key, label })),
 
   /** Newest first, a page at a time. `needsReply`: visible, 3 stars or fewer, nobody has answered. */
