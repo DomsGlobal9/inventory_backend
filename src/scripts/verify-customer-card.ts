@@ -154,7 +154,7 @@ async function main() {
   const ways = ['+91 98480 11122', '098480 11122', '919848011122', '9848011122'];
   const names = await Promise.all(ways.map(w => customerCard.lookup(C, w, store.id).then((r: any) => r.customer?.name)));
   check('the same number typed four ways finds the same customer', names.every(x => x === 'Meena Iyer'), names);
-  const strangeStore: any = await customerCard.lookup(C, '9848011122', other.id.replace(/.$/, '0'));
+  const strangeStore: any = await customerCard.lookup(C, '9848011122', '00000000-0000-4000-8000-000000000000');
   check('a store that is not this shop\'s gives no picks, and no error', strangeStore.customer?.name === 'Meena Iyer' && strangeStore.picks.length === 0);
   await customerCard.addNote(C, customer.id, 'line one\nline two\t<script>x</script>', null);
   const tidy: any = await customerCard.lookup(C, '9848011122', store.id);
