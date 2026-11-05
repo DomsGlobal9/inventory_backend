@@ -17,10 +17,15 @@ import { generateSequentialCodes } from '../../utils/codeGenerator';
 import { PastLine } from './index';
 
 export type ImportBill = { billNo: string | number; billedOn?: string | null; net: number; paidBy?: string | null; lines: PastLine[] };
-export type ImportCustomer = { phone: string; name?: string | null; bills: ImportBill[] };
+/**
+ * `key`: a customer the owner chose to keep with no number (phone null). A name is never proof of who
+ * somebody is, so they are never matched to anyone: the key alone says this is the same row on a re-run.
+ */
+export type ImportCustomer = { phone: string | null; key?: string | null; name?: string | null; bills: ImportBill[] };
 export type ImportFile = { customers: ImportCustomer[] };
 
-type Clean = { phone: string; name: string; bills: { billNo: string; billedOn: Date | null; net: number; paidBy: string | null; lines: PastLine[] }[] };
+type Clean = { phone: string | null; externalId: string | null; name: string; bills: { billNo: string; billedOn: Date | null; net: number; paidBy: string | null; lines: PastLine[] }[] };
+const idOf = (c: Clean) => c.phone ?? c.externalId!;
 
 const CHUNK = 200;
 const LOOKUP = 1000;
@@ -37,13 +42,17 @@ export function cleanFile(file: ImportFile) {
   if (!file || !Array.isArray(file.customers) || !file.customers.length) throw new ImportRefused('The file has no customers.');
   const byPhone = new Map<string, Clean>();
   const seenBills = new Set<string>();
-  let badPhones = 0, badPhoneBills = 0, noName = 0;
+  let badPhones = 0, badPhoneBills = 0, noName = 0, noNumber = 0;
   for (const c of file.customers) {
-    const n = normalisePhone(c.phone);
-    if (!n.ok) { badPhones++; badPhoneBills += c.bills?.length ?? 0; continue; }
-    if (byPhone.has(n.value)) throw new ImportRefused('The same number is in the file twice (written two ways). Fix the file so each number is one customer.');
     const name = String(c.name ?? '').replace(/\s+/g, ' ').trim();
-    if (!name) noName++;
+    const key = !c.phone && c.key ? `import:${String(c.key).trim()}` : null;
+    const n = key ? null : normalisePhone(c.phone);
+    if (n && !n.ok) { badPhones++; badPhoneBills += c.bills?.length ?? 0; continue; }
+    const id = n && n.ok ? n.value : key!;
+    if (byPhone.has(id)) throw new ImportRefused(key ? `The customer kept without a number (${c.key}) is in the file twice.` : 'The same number is in the file twice (written two ways). Fix the file so each number is one customer.');
+    if (key && !name) throw new ImportRefused(`The customer kept without a number (${c.key}) has no name, so nobody could ever find them.`);
+    if (key) noNumber++;
+    else if (!name) noName++;
     const bills = (c.bills ?? []).map(b => {
       const billNo = String(b.billNo ?? '').trim();
       if (!billNo) throw new ImportRefused('A bill in the file has no number.');
@@ -63,17 +72,30 @@ export function cleanFile(file: ImportFile) {
       }
       return { billNo, billedOn, net, paidBy: b.paidBy ? String(b.paidBy) : null, lines: b.lines.map(l => ({ kind: l.kind, fabric: l.fabric ?? null, quantity: l.quantity, amount: l.amount })) };
     });
-    byPhone.set(n.value, { phone: n.value, name: name || `Customer ${n.value.slice(-4)}`, bills });
+    byPhone.set(id, { phone: key ? null : id, externalId: key, name: name || `Customer ${id.slice(-4)}`, bills });
   }
-  return { customers: [...byPhone.values()], badPhones, badPhoneBills, noName };
+  return { customers: [...byPhone.values()], badPhones, badPhoneBills, noName, noNumber };
 }
 
-async function holders(clientId: string, phones: string[]) {
+/** Who already holds these customers: by number, or by the load's key for one kept without a number. */
+async function holdersIn(db: { customer: { findMany: (args: any) => Promise<any[]> } }, clientId: string, part: Clean[]) {
+  const phones = part.filter(c => c.phone).map(c => c.phone!);
+  const keys = part.filter(c => c.externalId).map(c => c.externalId!);
+  const rows: { id: string; phone: string | null; externalCustomerId: string | null }[] = await db.customer.findMany({
+    where: { clientId, deletedAt: null, OR: [{ phone: { in: phones } }, { externalCustomerId: { in: keys } }] },
+    select: { id: true, phone: true, externalCustomerId: true }
+  });
   const out = new Map<string, string>();
-  for (const part of chunks(phones, LOOKUP)) {
-    const rows = await prisma.customer.findMany({ where: { clientId, phone: { in: part }, deletedAt: null }, select: { id: true, phone: true } });
-    for (const r of rows) out.set(r.phone!, r.id);
+  for (const r of rows) {
+    if (r.phone && phones.includes(r.phone)) out.set(r.phone, r.id);
+    if (r.externalCustomerId && keys.includes(r.externalCustomerId)) out.set(r.externalCustomerId, r.id);
   }
+  return out;
+}
+
+async function holders(clientId: string, customers: Clean[]) {
+  const out = new Map<string, string>();
+  for (const part of chunks(customers, LOOKUP)) for (const [k, v] of await holdersIn(prisma, clientId, part)) out.set(k, v);
   return out;
 }
 
@@ -87,7 +109,7 @@ export async function plan(clientId: string, source: string, file: ImportFile, f
     prisma.pastPurchaseImport.findUnique({ where: { clientId_source: { clientId, source } } }),
     prisma.pastPurchase.findMany({ where: { clientId, source }, select: { billNo: true } })
   ]);
-  const have = await holders(clientId, clean.customers.map(c => c.phone));
+  const have = await holders(clientId, clean.customers);
   const done = new Set(loaded.map(b => b.billNo));
   const bills = clean.customers.flatMap(c => c.bills);
   return {
@@ -95,38 +117,36 @@ export async function plan(clientId: string, source: string, file: ImportFile, f
     finishedAt: marker?.finishedAt ?? null,
     sameFile: marker ? marker.fileHash === fileHash : null,
     customersInFile: clean.customers.length,
-    customersToCreate: clean.customers.filter(c => !have.has(c.phone)).length,
-    customersAlreadyHere: clean.customers.filter(c => have.has(c.phone)).length,
+    customersToCreate: clean.customers.filter(c => !have.has(idOf(c))).length,
+    customersAlreadyHere: clean.customers.filter(c => have.has(idOf(c))).length,
     billsInFile: bills.length,
     billsToAdd: bills.filter(b => !done.has(b.billNo)).length,
     billsAlreadyHere: bills.filter(b => done.has(b.billNo)).length,
     numbersLeftOut: clean.badPhones,
     billsLeftOutWithThem: clean.badPhoneBills,
-    customersWithNoName: clean.noName
+    customersWithNoName: clean.noName,
+    customersKeptWithoutNumber: clean.noNumber
   };
 }
 
 /** One chunk, all or nothing. Returns who was made and which bills went in. */
 async function loadChunk(clientId: string, source: string, part: Clean[], now: Date) {
   return prisma.$transaction(async tx => {
-    const phones = part.map(c => c.phone);
-    const known = async () => new Map((await tx.customer.findMany({
-      where: { clientId, phone: { in: phones }, deletedAt: null }, select: { id: true, phone: true }
-    })).map(r => [r.phone!, r.id]));
+    const known = () => holdersIn(tx, clientId, part);
 
     let ids = await known();
     let created = 0;
     // A till can save one of these numbers, or take a code, at this very moment: such a row is simply skipped
     // here (the database's own unique indexes), and the look-up below finds whoever holds the number.
     for (let attempt = 0; attempt < 3; attempt++) {
-      const missing = part.filter(c => !ids.has(c.phone));
+      const missing = part.filter(c => !ids.has(idOf(c)));
       if (!missing.length) break;
       const codes = await generateSequentialCodes(clientId, 'CUS', 'CUSTOMER', missing.length, tx);
       const taken = new Set((await tx.customer.findMany({ where: { clientId, customerCode: { in: codes } }, select: { customerCode: true } })).map(r => r.customerCode));
       const free = codes.filter(code => !taken.has(code));
       const made = await tx.customer.createMany({
         data: missing.slice(0, free.length).map((c, i) => ({
-          clientId, customerCode: free[i], name: c.name, phone: c.phone, status: 'ACTIVE' as const,
+          clientId, customerCode: free[i], name: c.name, phone: c.phone, externalCustomerId: c.externalId, status: 'ACTIVE' as const,
           whatsappOffers: false, importSource: source, createdAt: now, updatedAt: now
         })),
         skipDuplicates: true
@@ -134,12 +154,12 @@ async function loadChunk(clientId: string, source: string, part: Clean[], now: D
       created += made.count;
       ids = await known();
     }
-    const stillMissing = part.filter(c => !ids.has(c.phone)).length;
+    const stillMissing = part.filter(c => !ids.has(idOf(c))).length;
     if (stillMissing) throw new Error(`${stillMissing} customers could not be saved after three tries. Nothing in this part was kept. Run it again.`);
 
     const added = await tx.pastPurchase.createMany({
       data: part.flatMap(c => c.bills.map(b => ({
-        id: randomUUID(), clientId, customerId: ids.get(c.phone)!, source,
+        id: randomUUID(), clientId, customerId: ids.get(idOf(c))!, source,
         billNo: b.billNo, billedOn: b.billedOn, net: b.net, paidBy: b.paidBy, lines: b.lines as any
       }))),
       skipDuplicates: true
@@ -158,7 +178,7 @@ export async function applyImport(clientId: string, source: string, file: Import
   // Two runs started together both land here; the chunks below cope with that, so this must not refuse the second.
   if (!marker) await prisma.pastPurchaseImport.createMany({ data: [{ clientId, source, fileHash }], skipDuplicates: true });
 
-  const before = await holders(clientId, clean.customers.map(c => c.phone));
+  const before = await holders(clientId, clean.customers);
   const now = new Date();
   let created = 0, added = 0, done = 0;
   for (const part of chunks(clean.customers, CHUNK)) {

@@ -50,6 +50,7 @@ async function main() {
   console.log(`Bills to add: ${p.billsToAdd}. Already here: ${p.billsAlreadyHere}.`);
   if (p.numbersLeftOut) console.log(`Numbers that cannot be phones, left out: ${p.numbersLeftOut}, with ${p.billsLeftOutWithThem} bills.`);
   if (p.customersWithNoName) console.log(`No name in the file, saved as "Customer" + the last 4 digits: ${p.customersWithNoName}.`);
+  if (p.customersKeptWithoutNumber) console.log(`Kept with their name and no number: ${p.customersKeptWithoutNumber}.`);
   if (p.finishedAt) console.log(`This load already finished on ${p.finishedAt.toISOString()}.`);
   if (p.sameFile === false) console.log('This load was started from a different file.');
 

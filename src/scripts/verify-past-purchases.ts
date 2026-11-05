@@ -181,6 +181,33 @@ async function main() {
   eq('the number that is not a phone made nobody', await prisma.pastPurchase.count({ where: { clientId: C, billNo: `${STAMP}06` } }), 0);
   eq('no date on any bill', await prisma.pastPurchase.count({ where: { clientId: C, source: SOURCE, billedOn: { not: null } } }), 0);
 
+  console.log('\n3b. KEPT WITH A NAME AND NO NUMBER');
+  refuses('no number and no name is refused: nobody could find them', () => cleanFile({ customers: [{ phone: null, key: 'k1', name: ' ', bills: [] }] }), /no name/);
+  refuses('the same one twice is refused', () => cleanFile({ customers: [{ phone: null, key: 'k1', name: 'A', bills: [] }, { phone: null, key: 'k1', name: 'A', bills: [] }] }), /twice/);
+  eq('no number and no key is only left out, as before', cleanFile({ customers: [{ phone: null, name: 'A', bills: [bill(`${STAMP}99`, [fancy(1)])] }, person(1, [])] }).badPhones, 1);
+  const nn = `${SOURCE}-nonum`, sameNameFile: ImportFile = { customers: [
+    { phone: null, key: `nn-${STAMP}`, name: 'Person 1', bills: [bill(`${STAMP}70`, [fancy(14500)], 'CASH')] }
+  ] };
+  const nnDry = await plan(C, nn, sameNameFile, hashOf('nn'));
+  eq('the dry run says so', [nnDry.customersToCreate, nnDry.customersKeptWithoutNumber, nnDry.billsToAdd, nnDry.numbersLeftOut], [1, 1, 1, 0]);
+  await applyImport(C, nn, sameNameFile, hashOf('nn'));
+  const kept = await prisma.customer.findFirstOrThrow({ where: { clientId: C, externalCustomerId: `import:nn-${STAMP}` } });
+  check('saved with no number, as a new customer, though someone else has that very name', kept.phone === null && kept.name === 'Person 1' && kept.id !== one.id, { phone: kept.phone, same: kept.id === one.id });
+  eq('...their bill is on them and nobody else', [await prisma.pastPurchase.count({ where: { customerId: kept.id } }), await prisma.pastPurchase.count({ where: { customerId: one.id, billNo: `${STAMP}70` } })], [1, 0]);
+  eq('...offers off', kept.whatsappOffers, false);
+  const nnSeen = (await as('GET', `/customers/${kept.id}/past-purchases`)).body?.data;
+  eq('...their page has it', [nnSeen?.bills?.length, nnSeen?.pattern?.netSpend, nnSeen?.pattern?.buys], [1, 14500, 'FANCY']);
+  await prisma.pastPurchaseImport.update({ where: { clientId_source: { clientId: C, source: nn } }, data: { finishedAt: null } });
+  await applyImport(C, nn, sameNameFile, hashOf('nn'));
+  eq('stopped and run again: the same row, no second copy', [await prisma.customer.count({ where: { clientId: C, externalCustomerId: `import:nn-${STAMP}` } }), await prisma.pastPurchase.count({ where: { clientId: C, source: nn } })], [1, 1]);
+  const nnEdit = await as('PATCH', `/customers/${kept.id}`, { phone: phone(70) });
+  eq('a number added later: their bills stay with them', [nnEdit.status, (await as('GET', `/customers/${kept.id}/past-purchases`)).body?.data?.bills?.length], [200, 1]);
+  await prisma.customer.update({ where: { id: kept.id }, data: { phone: null } });
+  const nnPrev = (await as('GET', `/customers/${kept.id}/delete-preview`)).body?.data;
+  eq('the delete box asks for the name', [nnPrev?.mode, nnPrev?.phoneLast4, nnPrev?.pastBills], ['REMOVE', null, 1]);
+  const nnDel = await as('DELETE', `/customers/${kept.id}`, { confirm: 'Person 1' });
+  eq('...and removes them with their bill', [nnDel.status, await prisma.customer.count({ where: { id: kept.id } }), await prisma.pastPurchase.count({ where: { customerId: kept.id } })], [200, 0, 0]);
+
   console.log('\n4. RUNNING IT AGAIN');
   const shapeNow = await shape(), billsNow = await prisma.pastPurchase.count({ where: { clientId: C, source: SOURCE } });
   const again = await applyImport(C, SOURCE, file, hash);
