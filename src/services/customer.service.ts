@@ -246,14 +246,22 @@ export class CustomerService {
       where.tags = { hasSome: await spellingsOf(clientId, [keyOf(String(filters.group))]) };
     }
 
-    // A shop can hold thousands. The list page asks for a screenful at a time; a bulk load shares one
-    // createdAt, so the code keeps the order the same between looks.
-    const limit = Number(filters.limit);
-    return prisma.customer.findMany({
-      where,
-      orderBy: [{ createdAt: 'desc' }, { customerCode: 'desc' }],
-      ...(Number.isInteger(limit) && limit >= 1 && limit <= 5000 ? { take: limit } : {})
-    });
+    // A bulk load shares one createdAt, so the code keeps the order the same between looks and pages.
+    const orderBy = [{ createdAt: 'desc' as const }, { customerCode: 'desc' as const }];
+
+    // The list page asks for one page at a time: a shop can hold thousands. Anything else that calls
+    // this without a page (the group picker's search) still gets a plain list.
+    if (filters.page !== undefined) {
+      const asked = Number(filters.page), size = Number(filters.limit);
+      const page = Number.isInteger(asked) && asked >= 1 ? asked : 1;
+      const limit = Number.isInteger(size) && size >= 1 && size <= 100 ? size : 10;
+      const [customers, total] = await Promise.all([
+        prisma.customer.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),
+        prisma.customer.count({ where })
+      ]);
+      return { customers, meta: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } };
+    }
+    return prisma.customer.findMany({ where, orderBy });
   }
 
   async getCustomerById(clientId: string, id: string) {

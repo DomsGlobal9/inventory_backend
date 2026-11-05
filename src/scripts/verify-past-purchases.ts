@@ -268,11 +268,25 @@ async function main() {
   eq('their sales orders are still only sales orders', [detail.importSource, detail.salesOrders.length], [SOURCE, 0]);
 
   const list = (q: string) => as('GET', `/customers?${q}`);
-  eq('a list asked for 5 gives 5', (await list('limit=5')).body.length, 5);
-  const firstFive = (await list('limit=5')).body.map((x: any) => x.id), firstFiveAgain = (await list('limit=5')).body.map((x: any) => x.id);
-  eq('...the same 5 each time, even with one load time', firstFive, firstFiveAgain);
   const everyone = (await list('')).body.length;
-  for (const bad of ['limit=abc', 'limit=0', 'limit=-1', 'limit=99999', 'limit=1.5']) eq(`${bad} is ignored`, (await list(bad)).body.length, everyone);
+  check('with no page asked for, still the plain list others use', Array.isArray((await list('')).body) && everyone > 20, everyone);
+  const page1 = (await list('page=1&limit=10')).body, page2 = (await list('page=2&limit=10')).body;
+  eq('page 1 has 10, and says how many in all', [page1.customers.length, page1.meta.page, page1.meta.limit, page1.meta.total, page1.meta.totalPages], [10, 1, 10, everyone, Math.ceil(everyone / 10)]);
+  check('page 2 has the next 10, nobody on both', page2.customers.length === 10 && !page2.customers.some((x: any) => page1.customers.some((y: any) => y.id === x.id)));
+  eq('the same page twice is the same people, even with one load time', (await list('page=1&limit=10')).body.customers.map((x: any) => x.id), page1.customers.map((x: any) => x.id));
+  const walked = new Set<string>(); let walkPage = 1;
+  for (;;) { const w = (await list(`page=${walkPage}&limit=25`)).body; w.customers.forEach((x: any) => walked.add(x.id)); if (walkPage >= w.meta.totalPages) break; walkPage++; }
+  eq('walking every page reaches every customer, each once', walked.size, everyone);
+  const last = (await list(`page=${page1.meta.totalPages}&limit=10`)).body;
+  eq('the last page holds what is left', last.customers.length, everyone % 10 || 10);
+  const past = (await list(`page=${page1.meta.totalPages + 5}&limit=10`)).body;
+  eq('past the end: nobody, and it still says how many pages there are', [past.customers.length, past.meta.totalPages], [0, page1.meta.totalPages]);
+  for (const bad of ['page=abc', 'page=0', 'page=-1', 'page=1.5']) eq(`${bad} means page 1`, (await list(`${bad}&limit=10`)).body.meta.page, 1);
+  for (const bad of ['limit=abc', 'limit=0', 'limit=-1', 'limit=101', 'limit=1.5']) eq(`${bad} means 10`, (await list(`page=1&${bad}`)).body.meta.limit, 10);
+  const found = (await list(`page=1&limit=10&search=${phone(1)}`)).body;
+  eq('search works with pages, counted on what it found', [found.customers.map((x: any) => x.id), found.meta.total, found.meta.totalPages], [[one.id], 1, 1]);
+  const none = (await list('page=1&limit=10&search=no-such-customer-anywhere')).body;
+  eq('nothing found: nobody, one empty page', [none.customers.length, none.meta.total, none.meta.totalPages], [0, 0, 1]);
   eq('search by number finds them', (await list(`search=${phone(1)}`)).body.map((x: any) => x.id), [one.id]);
 
   console.log('\n6. THE REAL FLOWS, NO SECOND COPY');

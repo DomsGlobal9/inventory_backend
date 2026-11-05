@@ -60,6 +60,7 @@ export const getCustomers = async (req: Request, res: Response) => {
       search: req.query.search,
       status: req.query.status,
       group: typeof req.query.group === 'string' ? req.query.group : undefined,
+      page: req.query.page,
       limit: req.query.limit
     };
     const customers = await customerService.getCustomers(clientId, filters);
