@@ -713,6 +713,8 @@ export class PlatformAdminService {
       `DELETE FROM inventory_locations WHERE client_id = $1`,
       `DELETE FROM catalog_template_items WHERE template_id IN (SELECT id FROM inventory_label_templates WHERE client_id = $1)`,
       `DELETE FROM inventory_label_templates WHERE client_id = $1`,
+      `DELETE FROM past_purchases WHERE client_id = $1`,
+      `DELETE FROM past_purchase_imports WHERE client_id = $1`,
       `DELETE FROM customers WHERE client_id = $1`,
       `DELETE FROM support_ticket_messages WHERE ticket_id IN (SELECT id FROM support_tickets WHERE client_id = $1)`,
       `DELETE FROM support_tickets WHERE client_id = $1`,

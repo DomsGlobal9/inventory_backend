@@ -16,6 +16,8 @@ import { groupNamesOf } from '../customer-groups';
 import { colourFamily } from './colours';
 import { lookedAt } from '../shop-views';
 import { alsoBought } from '../also-bought';
+import { spendBand } from './spend-band';
+import { pastPurchases } from '../past-purchases';
 
 // shortcut: a hard ceiling so one bad record can never make the card slow; nobody has 5,000 bills yet.
 const MAX_BILLS = 5000;
@@ -54,14 +56,7 @@ function top(counts: Map<string, number>, n: number): string[] {
 export const sizeKey = (s: string | null | undefined) => { const k = String(s ?? '').toLowerCase().replace(/[\s_-]+/g, ''); return k === 'freesize' || k === 'onesize' ? 'free' : k; };
 const bump = (m: Map<string, number>, k: string | null | undefined, by = 1) => { const v = k?.trim(); if (v) m.set(v, (m.get(v) ?? 0) + by); };
 
-/** What a bill of theirs usually comes to: the middle half of their bills, or the one bill. Rupees. */
-export function spendBand(totals: number[]): { from: number; to: number } | null {
-  const t = totals.filter(x => x > 0).sort((a, b) => a - b);
-  if (!t.length) return null;
-  const at = (q: number) => t[Math.min(t.length - 1, Math.floor(q * (t.length - 1)))];
-  const r = (x: number) => Math.round(x / 100) * 100;     // "₹4,000 – 8,000", not "₹3,987 – 8,123"
-  return { from: r(at(0.25)), to: r(at(0.75)) };
-}
+export { spendBand };
 
 export const customerCard = {
   async lookup(clientId: string, rawPhone: unknown, locationId?: string) {
@@ -81,7 +76,9 @@ export const customerCard = {
     // Not a customer yet -- but a proved number may have tried things on (TryOn2Buy, the online shop)
     // today. Shown, so staff see it straight away and can add them (28 Oct).
     if (!customer) return { phone: phone.value, customer: null, lookedOnline: await lookedOnline(clientId, phone.value, locationId, new Map()) };
-    return { phone: phone.value, ...(await cardOf(clientId, customer, phone.value, locationId)) };
+    // Bills from before ScaleEzy (never mixed into the rest of the card, which is worked out from real, dated bills).
+    const past = await pastPurchases.forCustomer(clientId, customer.id);
+    return { phone: phone.value, ...(await cardOf(clientId, customer, phone.value, locationId)), past: past.pattern };
   },
 
   /**

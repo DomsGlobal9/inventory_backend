@@ -85,6 +85,22 @@ export const generateSequentialCode = async (
   return `${prefix}-${paddedValue}`;
 };
 
+/** Several numbers in one step, for a bulk load: the same sequence and the same form as generateSequentialCode. */
+export const generateSequentialCodes = async (
+  clientId: string,
+  prefix: string,
+  entityType: string,
+  count: number,
+  tx: { clientSequence: { upsert: (args: any) => Promise<{ lastValue: number }> } }
+): Promise<string[]> => {
+  const { lastValue } = await tx.clientSequence.upsert({
+    where: { clientId_entityType: { clientId, entityType } },
+    update: { lastValue: { increment: count } },
+    create: { clientId, entityType, lastValue: count }
+  });
+  return Array.from({ length: count }, (_, i) => `${prefix}-${String(lastValue - count + 1 + i).padStart(6, '0')}`);
+};
+
 
 /**
  * The next number in the sequence that nothing is already using.

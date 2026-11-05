@@ -28,8 +28,10 @@ async function load(clientId: string, id: string) {
     select: { id: true, name: true, phone: true, loyaltyPoints: true, storeCreditPaise: true }
   });
   if (!c) throw notFound('That customer was not found.');
-  const [bills, open, points, credit, offers] = await Promise.all([
+  const [bills, pastBills, open, points, credit, offers] = await Promise.all([
     prisma.salesOrder.count({ where: { clientId, customerId: id } }),
+    // The shop's own earlier records, a copy: they do not keep a customer from being removed, and they go with them.
+    prisma.pastPurchase.count({ where: { clientId, customerId: id } }),
     prisma.salesOrder.findFirst({ where: { clientId, customerId: id, deletedAt: null, status: { in: [...OPEN_ORDER] } }, select: { orderNumber: true } }),
     prisma.loyaltyEntry.count({ where: { customerId: id } }),
     prisma.storeCreditEntry.count({ where: { customerId: id } }),
@@ -40,13 +42,13 @@ async function load(clientId: string, id: string) {
     ? `${c.name} has ₹${(c.storeCreditPaise / 100).toLocaleString('en-IN')} store credit. Pay it out, or let them use it, first.`
     : open ? `${c.name} has an order still to go out (${open.orderNumber}). Send it or cancel it first.`
     : null;
-  return { c, last4, mode: (bills || points || credit || offers ? 'ERASE' : 'REMOVE') as 'ERASE' | 'REMOVE', bills, blocked };
+  return { c, last4, mode: (bills || points || credit || offers ? 'ERASE' : 'REMOVE') as 'ERASE' | 'REMOVE', bills, pastBills, blocked };
 }
 
 /** What deleting would do, for the confirmation box. */
 export async function preview(clientId: string, id: string) {
-  const { c, last4, mode, bills, blocked } = await load(clientId, id);
-  return { name: c.name, phoneLast4: last4, mode, bills, loyaltyPoints: c.loyaltyPoints, blocked };
+  const { c, last4, mode, bills, pastBills, blocked } = await load(clientId, id);
+  return { name: c.name, phoneLast4: last4, mode, bills, pastBills, loyaltyPoints: c.loyaltyPoints, blocked };
 }
 
 /** Delete (remove or erase). `confirm` must be the last 4 digits of their number, or their name when they have none. */
@@ -74,6 +76,8 @@ export async function deleteCustomer(clientId: string, id: string, confirmRaw: u
     await tx.storeCheckin.deleteMany({ where: { clientId, OR: [{ customerId: id }, ...(phone ? [{ phone }] : [])] } });
     await tx.counterLookup.deleteMany({ where: { clientId, customerId: id } });
     await tx.customerAddress.deleteMany({ where: { customerId: id } });
+    // Bills from before ScaleEzy name what this person bought. An erased customer's row stays, so they must go by hand.
+    await tx.pastPurchase.deleteMany({ where: { clientId, customerId: id } });
     // Links that are not records of them: cleared.
     await tx.pricingQuote.updateMany({ where: { customerId: id }, data: { customerId: null } });
     await tx.posHold.updateMany({ where: { customerId: id }, data: { customerId: null } });

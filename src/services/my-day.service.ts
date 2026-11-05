@@ -40,8 +40,9 @@ export async function myDay(clientId: string, user: { permissions?: string[]; ro
     may('return:inspect') && prisma.salesReturn.count({
       where: { clientId, ...store, status: 'RECEIVED' }
     }).then(n => { out.returnsToInspect = n; }),
+    // A load of the shop's earlier customers is not new customers today.
     may('customer:view') && prisma.customer.count({
-      where: { clientId, deletedAt: null, createdAt: { gte: since } }
+      where: { clientId, deletedAt: null, importSource: null, createdAt: { gte: since } }
     }).then(n => { out.customersToday = n; }),
     // On the way to or from this store; every store's when none is picked.
     may('inventory:transfer') && prisma.inventoryTransfer.count({

@@ -246,9 +246,13 @@ export class CustomerService {
       where.tags = { hasSome: await spellingsOf(clientId, [keyOf(String(filters.group))]) };
     }
 
+    // A shop can hold thousands. The list page asks for a screenful at a time; a bulk load shares one
+    // createdAt, so the code keeps the order the same between looks.
+    const limit = Number(filters.limit);
     return prisma.customer.findMany({
       where,
-      orderBy: { createdAt: 'desc' }
+      orderBy: [{ createdAt: 'desc' }, { customerCode: 'desc' }],
+      ...(Number.isInteger(limit) && limit >= 1 && limit <= 5000 ? { take: limit } : {})
     });
   }
 

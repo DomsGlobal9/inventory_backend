@@ -1187,6 +1187,44 @@ model CustomerGroup {
   @@map("customer_groups")
 }
 
+/// A bill from before the shop came to ScaleEzy, from its own records. Read only, and not a sales order:
+/// no stock, Day Book, GST or report ever reads this. See migration 20261105180000_past_purchases.
+model PastPurchase {
+  id         String   @id @default(uuid())
+  clientId   String   @map("client_id")
+  customerId String   @map("customer_id")
+  source     String
+  billNo     String   @map("bill_no")
+  /// Null: the date is not known, and it is never guessed.
+  billedOn   DateTime? @map("billed_on") @db.Date
+  net        Decimal  @db.Decimal(12, 2)
+  paidBy     String?  @map("paid_by")
+  /// [{ kind, fabric, quantity, amount }]. A return is a negative line.
+  lines      Json     @default("[]")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, source, billNo])
+  @@index([clientId, customerId])
+  @@map("past_purchases")
+}
+
+/// One row per load of past purchases. Finished means running it again changes nothing.
+model PastPurchaseImport {
+  clientId         String    @map("client_id")
+  source           String
+  fileHash         String    @map("file_hash")
+  customersCreated Int       @default(0) @map("customers_created")
+  customersMatched Int       @default(0) @map("customers_matched")
+  billsAdded       Int       @default(0) @map("bills_added")
+  startedAt        DateTime  @default(now()) @map("started_at")
+  finishedAt       DateTime? @map("finished_at")
+
+  @@id([clientId, source])
+  @@map("past_purchase_imports")
+}
+
 enum CustomerStatus {
   ACTIVE
   INACTIVE
@@ -1250,10 +1288,15 @@ model Customer {
   /// be spent. The sum of store_credit_entries, moved together with them.
   storeCreditPaise Int @default(0) @map("store_credit_paise")
 
+  /// The load of a shop's earlier records that made this customer (services/past-purchases), or null.
+  /// Their createdAt is the day of the load, not the day they became a customer: "new today" skips them.
+  importSource String? @map("import_source")
+
   salesOrders        SalesOrder[]
   loyaltyEntries     LoyaltyEntry[]
   storeCreditEntries StoreCreditEntry[]
   addresses          CustomerAddress[]
+  pastPurchases      PastPurchase[]
 
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")

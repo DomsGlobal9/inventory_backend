@@ -398,6 +398,7 @@ export class ShopifyPrivacyService {
 
     await prisma.$transaction(async tx => {
       if (customerIds.length) {
+        await tx.pastPurchase.deleteMany({ where: { customerId: { in: customerIds } } });
         await tx.customer.updateMany({ where: { id: { in: customerIds } }, data: ERASED_CUSTOMER });
       }
       if (orderIds.length) {
@@ -441,6 +442,7 @@ export class ShopifyPrivacyService {
     const clientId = installation?.clientId ?? null;
 
     const summary = await prisma.$transaction(async tx => {
+      if (clientId) await tx.pastPurchase.deleteMany({ where: { clientId, customer: { sourceStore: shopDomain } } });
       const customers = clientId
         ? await tx.customer.updateMany({ where: { clientId, sourceStore: shopDomain }, data: ERASED_CUSTOMER })
         : { count: 0 };

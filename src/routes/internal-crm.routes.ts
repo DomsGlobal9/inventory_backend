@@ -9,6 +9,7 @@ import { crmHandover } from '../services/crm-handover';
 import { offersState, setOffersConsent } from '../services/campaigns';
 import { customerService } from '../services/customer.service';
 import * as customerDelete from '../services/customer-delete';
+import { pastPurchases } from '../services/past-purchases';
 import { isAuditNoise } from '../services/audit-feed.service';
 import { pruneAuditLogs } from '../services/security-log';
 import { respondWithError } from '../utils/respondWithError';
@@ -153,6 +154,12 @@ router.get('/shops/:clientId/orders/:salesOrderId/review-link', shop, readable, 
 router.get('/shops/:clientId/feedback', shop, readable, act(req => shopReviews.crm.feedback(clientIdOf(req), req.query)));
 router.post('/shops/:clientId/feedback/:id/handled', shop, person('customer:update'),
   act(req => shopReviews.crm.setFeedbackHandled(clientIdOf(req), req.params.id, req.body?.handled !== false, actorName(req)), req => ['HANDLE_FEEDBACK', String(req.params.id)], 'ShopOrderFeedback'));
+
+// ---- Bills from before ScaleEzy (services/past-purchases). Inventory holds them; billedOn null = date not known. ----
+// One customer's bills and buying pattern, worked out by the same rules the Inventory page uses.
+router.get('/shops/:clientId/customers/:customerId/past-purchases', shop, readable, act(req => pastPurchases.forCustomer(cid(req), customerIdOf(req))));
+// Every past bill, to catch up: pass the last `next` as ?after=. New ones and deletes also come on the feed.
+router.get('/shops/:clientId/past-purchases', shop, readable, act(req => pastPurchases.page(cid(req), req.query)));
 
 router.get('/shops/:clientId/customers/:customerId/offers', shop, readable,
   act(req => offersState(cid(req), customerIdOf(req))));

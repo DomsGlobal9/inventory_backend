@@ -17,6 +17,7 @@ import { prisma } from '../lib/prisma';
 import { respondWithError } from '../utils/respondWithError';
 import { holdsEverything } from '../config/permissions';
 import * as customerDelete from '../services/customer-delete';
+import { pastPurchases } from '../services/past-purchases';
 
 const router = Router();
 
@@ -104,6 +105,11 @@ router.post('/:id/notes', requirePermission('customer:update'), async (req, res)
   try {
     res.status(201).json({ success: true, data: await customerCard.addNote((req as any).clientId, String(req.params.id),req.body?.note, (req as any).user?.id ?? null) });
   } catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+// What they bought before the shop came to ScaleEzy: read only, and never a sales order (services/past-purchases).
+router.get('/:id/past-purchases', requirePermission('customer:view'), async (req, res) => {
+  try { res.json({ success: true, data: await pastPurchases.forCustomer((req as any).clientId, String(req.params.id)) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
 // Before /:id, which would otherwise take "by-phone" as a customer id.
 router.get('/by-phone/:phone', requirePermission('customer:view'), getCustomerByPhone);
