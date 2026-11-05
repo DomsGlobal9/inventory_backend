@@ -19,6 +19,9 @@ import { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER, isWanted } from '.
  */
 const MAX_QUEUED_PER_CLIENT = 10;
 
+/** Photographs of one piece that goes with the garment: sent as references, never made into views. */
+const PIECE_SLOTS = ['blouse', 'top', 'top-front', 'top-back', 'bottom'];
+
 /** A colour a job could not be made for, and why -- in words the shop is shown as written. */
 export interface Refusal { colour: string; why: string; }
 
@@ -213,13 +216,13 @@ export class PhotoJobQueue {
 
     const colours = await coloursOf(req.productId, req.clientId);
 
-    // Sent when the shop has just uploaded a flat-lay for this run. Checked against this product
-    // rather than trusted: an id arriving from a browser must never reach another shop's picture.
-    let given: { id: string; url: string } | null = null;
+    // A flat-lay just uploaded for this run, or the photograph the shop chose on the Images tab. Checked
+    // against this product rather than trusted: an id from a browser must never reach another shop's picture.
+    let given: { id: string; url: string; variantId: string | null; slot: string | null } | null = null;
     if (req.sourceImageId) {
       given = await prisma.productImage.findFirst({
         where: { id: req.sourceImageId, productId: req.productId, product: { clientId: req.clientId } },
-        select: { id: true, url: true }
+        select: { id: true, url: true, variantId: true, slot: true }
       });
       if (!given) throw { statusCode: 400, message: 'That photograph does not belong to this product.' };
     }
@@ -235,6 +238,19 @@ export class PhotoJobQueue {
       const colour = colours.find(c => c.name.toLowerCase() === name.toLowerCase());
       if (!colour) { refused.push({ colour: name, why: 'That colour is no longer on this product.' }); continue; }
       if (colour.variantIds.length === 0) { refused.push({ colour: name, why: 'That colour has no sizes to save photographs against.' }); continue; }
+
+      // Views of this colour are made from a photograph of this colour, and of the garment itself. The
+      // model would otherwise wear the wrong saree, or a blouse piece as a drape, with nothing failing.
+      if (req.kind === 'VIEWS' && given) {
+        if (given.variantId && !colour.variantIds.includes(given.variantId)) {
+          refused.push({ colour: name, why: 'That photograph is of another colour. Choose one of this colour.' });
+          continue;
+        }
+        if (given.slot && PIECE_SLOTS.includes(given.slot)) {
+          refused.push({ colour: name, why: 'That photograph is of one piece, not the whole garment. Choose another.' });
+          continue;
+        }
+      }
 
       const source = req.kind === 'COLOUR' ? copyFrom : (given ?? sourceForViews(colour));
       if (!source?.url) {
