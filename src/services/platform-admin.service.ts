@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { readablePassword } from '../lib/readablePassword';
 import { whatsappClient, whatsappConfigured } from './whatsapp/client';
 import { prisma } from '../lib/prisma';
 import { inventoryValueFor, inventoryValueByClient, valuationCaveatFor } from '../lib/inventoryValuation';
@@ -12,9 +13,7 @@ import { encryptCredential, decryptCredential } from '../lib/credentialEncryptio
 import { mailService } from './mail.service';
 import { supabase } from '../lib/supabase';
 
-function generateTempPassword() {
-  return crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe -- same scheme as team.service.ts
-}
+const generateTempPassword = () => readablePassword();   // same scheme as team.service.ts
 
 /**
  * How far a shop has got with racks and shelves, in three counts and a state, so the console can
@@ -338,7 +337,7 @@ export class PlatformAdminService {
     const fullAddress = [more.address, more.city, [stateName, more.pin].filter(Boolean).join(' ')].filter(Boolean).join(', ') || null;
     const clientId = await this.generateClientId(companyName);
 
-    const tempPassword = crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe
+    const tempPassword = readablePassword();
     const hashed = await AuthService.hashPassword(tempPassword);
     // Same reversible-encryption scheme as Team & Users (team.service.ts) -- this account
     // is itself a team member of the new client, so its password should be viewable there
@@ -606,6 +605,8 @@ export class PlatformAdminService {
       ...images.map(i => i.storagePath),
       ...campaignPictures.map(p => p.storagePath),
       ...shopBanners.map(b => b.imagePath),
+      // Customers' review photographs (services/shop-reviews).
+      ...(await prisma.shopReview.findMany({ where: { clientId }, select: { photos: true } })).flatMap(r => (Array.isArray(r.photos) ? (r.photos as any[]) : []).map(p => p?.path as string)),
       shop?.iconPath,
       shop?.bannerPath
     ].filter((p): p is string => !!p);
@@ -619,6 +620,8 @@ export class PlatformAdminService {
       `DELETE FROM storefront_connections WHERE client_id = $1`,
       // Shopify: the children hang off the installation.
       `DELETE FROM shopify_inventory_echoes WHERE installation_id IN (SELECT id FROM shopify_installations WHERE client_id = $1)`,
+      `DELETE FROM shop_order_feedback WHERE client_id = $1`,
+      `DELETE FROM shop_reviews WHERE client_id = $1`,
       `DELETE FROM shopify_id_maps WHERE client_id = $1`,
       `DELETE FROM shopify_location_maps WHERE client_id = $1`,
       `DELETE FROM shopify_oauth_states WHERE client_id = $1`,
@@ -865,7 +868,7 @@ export class PlatformAdminService {
     }
 
     // Longer than the shop-staff default for the same reason as the check above.
-    const password = params.customPassword || crypto.randomBytes(15).toString('base64url');
+    const password = params.customPassword || readablePassword(20);
     const hashed = await AuthService.hashPassword(password);
 
     const admin = await prisma.platformAdmin.create({
@@ -930,7 +933,7 @@ export class PlatformAdminService {
     const target = await prisma.platformAdmin.findUnique({ where: { id: params.adminId } });
     if (!target) throw Object.assign(new Error('Platform admin not found'), { statusCode: 404 });
 
-    const password = params.customPassword || crypto.randomBytes(15).toString('base64url');
+    const password = params.customPassword || readablePassword(20);
     await prisma.platformAdmin.update({
       where: { id: params.adminId },
       data: { password: await AuthService.hashPassword(password), sessionVersion: { increment: 1 } }

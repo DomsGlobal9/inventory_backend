@@ -20,6 +20,17 @@ export class AuthService {
     return bcrypt.compare(password, hash);
   }
 
+  /**
+   * The password as typed, or the same without stray spaces at its ends (a paste, or a phone keyboard's
+   * suggestion, leaves one). A password really made with a space at its end still matches the first way.
+   */
+  static async passwordMatches(typed: string, hash: string): Promise<boolean> {
+    const text = String(typed);
+    if (await bcrypt.compare(text, hash)) return true;
+    const trimmed = text.trim();
+    return trimmed !== text && trimmed !== '' ? bcrypt.compare(trimmed, hash) : false;
+  }
+
   static generateToken(payload: { userId: string; clientId: string; sessionVersion?: number }): string {
     const jwtPayload = {
       sub: payload.userId,

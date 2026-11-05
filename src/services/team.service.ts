@@ -1,3 +1,4 @@
+import { readablePassword } from '../lib/readablePassword';
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import { AuthService } from './auth.service';
@@ -42,9 +43,7 @@ async function userKeys(clientId: string, userId: string): Promise<string[]> {
   return rows.map(r => r.permission.key);
 }
 
-function generateTempPassword() {
-  return crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe -- same scheme as onboarding
-}
+const generateTempPassword = () => readablePassword();   // same scheme as onboarding
 
 export class TeamService {
   async listMembers(clientId: string) {

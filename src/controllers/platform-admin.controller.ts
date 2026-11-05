@@ -15,7 +15,8 @@ const cookieOptions = platformAdminCookieOptions;
 
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { password } = req.body;
+    const email = typeof req.body.email === 'string' ? req.body.email.trim() : '';
     if (!email || !password) {
       return res.status(400).json({ success: false, message: 'Missing credentials' });
     }
@@ -28,13 +29,13 @@ export const login = async (req: Request, res: Response) => {
       return res.status(429).json({ success: false, message: tooManyMessage(wait) });
     }
 
-    const admin = await prisma.platformAdmin.findUnique({ where: { email } });
+    const admin = await prisma.platformAdmin.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
     if (!admin || admin.status !== 'ACTIVE') {
       recordFailure(throttleKey);
       return res.status(401).json({ success: false, message: 'Invalid credentials or inactive admin' });
     }
 
-    const isValid = await AuthService.comparePassword(password, admin.password);
+    const isValid = await AuthService.passwordMatches(password, admin.password);
     if (!isValid) {
       recordFailure(throttleKey);
       return res.status(401).json({ success: false, message: 'Invalid credentials' });

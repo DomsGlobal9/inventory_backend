@@ -40,7 +40,7 @@ function noteRefusedSignIn(email: string, clientId: string | undefined, found: {
     return;
   }
   prisma.user
-    .findMany({ where: { email, ...(clientId ? { clientId } : {}) }, select: { id: true, clientId: true, status: true }, take: 10 })
+    .findMany({ where: { email: { equals: email, mode: 'insensitive' }, ...(clientId ? { clientId } : {}) }, select: { id: true, clientId: true, status: true }, take: 10 })
     .then(accounts => accounts.forEach(a => recordAccountEvent({
       clientId: a.clientId, accountUserId: a.id, action: a.status === 'ACTIVE' ? 'SIGN_IN_FAILED' : 'SIGN_IN_BLOCKED', ipAddress: ip
     })))
@@ -49,7 +49,10 @@ function noteRefusedSignIn(email: string, clientId: string | undefined, found: {
 
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, password, clientId } = req.body;
+    const { password, clientId } = req.body;
+    // As typed, less stray spaces. Matched whatever its capitals: a phone keyboard capitalises the first
+    // letter, and "Owner@shop.in" is the same mailbox as "owner@shop.in" (5 Nov, owner).
+    const email = typeof req.body.email === 'string' ? req.body.email.trim() : '';
 
     if (!email || !password) {
       return res.status(400).json({ success: false, message: 'Missing credentials' });
@@ -69,8 +72,8 @@ export const login = async (req: Request, res: Response) => {
       // Only reached when the frontend already knows which workspace to use --
       // either it remembered the visitor's last one, or the visitor just picked
       // one from the disambiguation step below.
-      user = await prisma.user.findUnique({
-        where: { clientId_email: { clientId, email } },
+      user = await prisma.user.findFirst({
+        where: { clientId, email: { equals: email, mode: 'insensitive' } },
         include: userWithRolesInclude
       });
     } else {
@@ -81,13 +84,13 @@ export const login = async (req: Request, res: Response) => {
       // password match, and only ask the visitor to choose in the rare case where more
       // than one of their workspaces shares both the same email and the same password.
       const candidates = await prisma.user.findMany({
-        where: { email, status: 'ACTIVE' },
+        where: { email: { equals: email, mode: 'insensitive' }, status: 'ACTIVE' },
         include: userWithRolesInclude
       });
 
       const matches = [];
       for (const candidate of candidates) {
-        if (await AuthService.comparePassword(password, candidate.password)) {
+        if (await AuthService.passwordMatches(password, candidate.password)) {
           matches.push(candidate);
         }
       }
@@ -112,7 +115,7 @@ export const login = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials or inactive user' });
     }
 
-    const isValidPassword = await AuthService.comparePassword(password, user.password);
+    const isValidPassword = await AuthService.passwordMatches(password, user.password);
 
     if (!isValidPassword) {
       recordFailure(throttleKey);
