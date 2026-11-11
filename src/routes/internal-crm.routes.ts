@@ -14,6 +14,7 @@ import { isAuditNoise } from '../services/audit-feed.service';
 import { pruneAuditLogs } from '../services/security-log';
 import { respondWithError } from '../utils/respondWithError';
 import { badRequest } from '../utils/httpError';
+import { customerSchema } from '../validations/customer.schema';
 
 /**
  * What ScaleEzy CRM asks Inventory for one shop, mounted at /api/v1/internal/modules/crm (behind
@@ -167,6 +168,24 @@ router.get('/shops/:clientId/customers/:customerId/offers', shop, readable,
   act(req => offersState(cid(req), customerIdOf(req))));
 router.put('/shops/:clientId/customers/:customerId/offers', shop, person('customer:update'),
   act(req => setOffersConsent(actorOf(req), customerIdOf(req), req.body?.agreed), req => ['UPDATED', customerIdOf(req)], 'CUSTOMER'));
+
+// A new customer added by a salesperson on CRM's floor ({ name, phone, birthday?, offers? }), so the till
+// finds them by number at once. The app's own create (customerService.createCustomer): one number, one
+// customer -- a number someone already has is refused 409 PHONE_TAKEN, naming who, for CRM to open them.
+// `offers: true` = they said yes to WhatsApp offers in the shop; saved only when the person may change
+// offers, and said back either way, so CRM never claims a yes it could not record.
+router.post('/shops/:clientId/customers', shop, person('customer:create'), act(async req => {
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const parsed = customerSchema.safeParse({ name: body.name, phone: body.phone, birthday: body.birthday ?? null });
+  if (!parsed.success) throw badRequest(parsed.error.issues[0]?.message ?? 'Check the name and number.');
+  const c = await customerService.createCustomer(cid(req), parsed.data);
+  let offers: 'saved' | 'not_asked' | string = 'not_asked';
+  if (body.offers === true) {
+    try { await setOffersConsent(actorOf(req), c.id, true); offers = 'saved'; }
+    catch (e: any) { offers = String(e?.message ?? 'Their answer about offers could not be saved.'); }
+  }
+  return { id: c.id, customerCode: c.customerCode, name: c.name, phone: c.phone, offers };
+}, (req, data) => ['CREATED', String(data?.id ?? '')], 'CUSTOMER'));
 // { birthday?, anniversary? }: "MM-DD" (a year is dropped), or null to clear. Only what is sent changes.
 router.put('/shops/:clientId/customers/:customerId/dates', shop, person('customer:update'), act(async req => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
