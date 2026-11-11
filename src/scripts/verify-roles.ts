@@ -65,9 +65,9 @@ async function main() {
   try {
     // ── The owner composes the roles a shop actually has ────────────────────
     console.log('AN OWNER CAN COMPOSE THE ROLES A SHOP ACTUALLY HAS');
-    const catalogue = roles.getCatalogue(owner);
+    const catalogue = await roles.getCatalogue(owner);
     check('the roles screen has something to draw',
-      catalogue.groups.length === 6 && catalogue.templates.length >= 5);
+      catalogue.groups.length >= 6 && catalogue.templates.length >= 5);
     check('every permission is grantable by the owner',
       catalogue.groups.every(g => g.permissions.every(p => p.grantable)));
     check('and the money ones are flagged as sensitive',

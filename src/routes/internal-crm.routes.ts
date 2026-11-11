@@ -53,7 +53,9 @@ const shop = async (req: Request, res: Response, next: NextFunction) => {
  * Who the change is for: onBehalfOf.userId, a person ACTIVE in this very shop with `permission`
  * (null = the owner only). Refused otherwise -- a change nobody can be named for is not made.
  */
-const person = (permission: string | null) => async (req: Request, res: Response, next: NextFunction) => {
+// `permission`: one key, or several where any one is enough (an Inventory key and its CRM twin, 11 Nov);
+// null = the shop's owner only.
+const person = (permission: string | string[] | null) => async (req: Request, res: Response, next: NextFunction) => {
   try {
     const s = service(req);
     const userId = s.onBehalfOf?.userId;
@@ -62,10 +64,14 @@ const person = (permission: string | null) => async (req: Request, res: Response
     if (!u || u.clientId !== clientIdOf(req)) return fail(res, 403, 'That person is not in this shop.');
     if (u.status !== 'ACTIVE') return fail(res, 403, 'That person\'s account is switched off.');
     const owner = holdsEverything(u.permissions, u.roles);
-    if (permission === null ? !owner : !(owner || grants(u.permissions, permission))) {
-      return fail(res, 403, permission === null ? 'Only the shop\'s owner can change this.' : `That person may not do this in Inventory (needs ${permission}).`);
+    const anyOf = permission === null ? [] : Array.isArray(permission) ? permission : [permission];
+    if (permission === null ? !owner : !(owner || anyOf.some(k => grants(u.permissions, k)))) {
+      return fail(res, 403, permission === null ? 'Only the shop\'s owner can change this.' : `That person may not do this in Inventory (needs ${anyOf.join(' or ')}).`);
     }
-    (req as any).actor = { id: u.id, name: u.name, clientId: u.clientId, permissions: u.permissions, roles: u.roles };
+    // Let in by a CRM twin (e.g. crm:customer:update for customer:update): for this one request the person
+    // holds the Inventory key too, so a check inside the service (offers consent) answers as the route did.
+    const twin = anyOf.length > 1 && !owner && !grants(u.permissions, anyOf[0]) ? [anyOf[0]] : [];
+    (req as any).actor = { id: u.id, name: u.name, clientId: u.clientId, permissions: [...u.permissions, ...twin], roles: u.roles };
     next();
   } catch (error) { return respondWithError(res, error, { status: 500 }); }
 };
@@ -117,17 +123,17 @@ router.get('/shops/:clientId/customers/:customerId/suggestions', shop, async (re
 const cid = clientIdOf;
 const readable = async (req: Request, res: Response, next: NextFunction) =>
   // Reading needs no person; when one is named, they must still be able to see customers.
-  service(req).onBehalfOf ? person('customer:view')(req, res, next) : next();
+  service(req).onBehalfOf ? person(['customer:view', 'crm:customer:view'])(req, res, next) : next();
 
 router.get('/shops/:clientId/groups', shop, readable, act(req => customerGroups.list(cid(req))));
-router.post('/shops/:clientId/groups', shop, person('customer:manage_groups'), act(req => customerGroups.create(cid(req), req.body?.name), req => ['CREATED', 'n/a']));
-router.post('/shops/:clientId/groups/members', shop, person('customer:update'), act(req => customerGroups.addMembers(cid(req), req.body?.group, req.body?.customerIds), () => ['MEMBERS', 'members']));
+router.post('/shops/:clientId/groups', shop, person(['customer:manage_groups', 'crm:lists']), act(req => customerGroups.create(cid(req), req.body?.name), req => ['CREATED', 'n/a']));
+router.post('/shops/:clientId/groups/members', shop, person(['customer:update', 'crm:lists']), act(req => customerGroups.addMembers(cid(req), req.body?.group, req.body?.customerIds), () => ['MEMBERS', 'members']));
 router.get('/shops/:clientId/groups/:key/members', shop, readable, act(req => customerGroups.members(cid(req), key(req))));
-router.delete('/shops/:clientId/groups/:key/members/:customerId', shop, person('customer:update'), act(req => customerGroups.removeMember(cid(req), key(req), String(req.params.customerId)), req => ['MEMBERS', key(req)]));
-router.post('/shops/:clientId/groups/:key/rename', shop, person('customer:manage_groups'), act(req => customerGroups.rename(cid(req), key(req), req.body?.name), req => ['RENAME', key(req)]));
-router.post('/shops/:clientId/groups/:key/merge', shop, person('customer:manage_groups'), act(req => customerGroups.rename(cid(req), key(req), req.body?.into, { merge: true }), req => ['MERGE', key(req)]));
-router.patch('/shops/:clientId/groups/:key/rules', shop, person('customer:manage_groups'), act(req => customerGroups.setRules(cid(req), key(req), req.body), req => ['RULES', key(req)]));
-router.delete('/shops/:clientId/groups/:key', shop, person('customer:manage_groups'), act(req => customerGroups.remove(cid(req), key(req)), req => ['DELETED', key(req)]));
+router.delete('/shops/:clientId/groups/:key/members/:customerId', shop, person(['customer:update', 'crm:lists']), act(req => customerGroups.removeMember(cid(req), key(req), String(req.params.customerId)), req => ['MEMBERS', key(req)]));
+router.post('/shops/:clientId/groups/:key/rename', shop, person(['customer:manage_groups', 'crm:lists']), act(req => customerGroups.rename(cid(req), key(req), req.body?.name), req => ['RENAME', key(req)]));
+router.post('/shops/:clientId/groups/:key/merge', shop, person(['customer:manage_groups', 'crm:lists']), act(req => customerGroups.rename(cid(req), key(req), req.body?.into, { merge: true }), req => ['MERGE', key(req)]));
+router.patch('/shops/:clientId/groups/:key/rules', shop, person(['customer:manage_groups', 'crm:lists']), act(req => customerGroups.setRules(cid(req), key(req), req.body), req => ['RULES', key(req)]));
+router.delete('/shops/:clientId/groups/:key', shop, person(['customer:manage_groups', 'crm:lists']), act(req => customerGroups.remove(cid(req), key(req)), req => ['DELETED', key(req)]));
 
 // ---- A customer's offers answer, birthday and anniversary, and deleting them (moved.profile) --------
 // The same service functions as the app (campaign.routes consent, customer.routes PATCH and DELETE), with
@@ -143,17 +149,17 @@ const actorName = (req: Request) => String((req as any).actor?.name ?? 'Store');
 router.get('/shops/:clientId/reviews/stats', shop, readable, act(req => shopReviews.crm.stats(clientIdOf(req))));
 router.get('/shops/:clientId/reviews/hide-reasons', shop, readable, act(async () => shopReviews.crm.hideReasons()));
 router.get('/shops/:clientId/reviews', shop, readable, act(req => shopReviews.crm.list(clientIdOf(req), req.query)));
-router.post('/shops/:clientId/reviews/:id/reply', shop, person('customer:update'),
+router.post('/shops/:clientId/reviews/:id/reply', shop, person(['customer:update', 'crm:reviews']),
   act(req => shopReviews.crm.reply(clientIdOf(req), req.params.id, req.body?.text, actorName(req)), req => ['REPLY_REVIEW', String(req.params.id)], 'ShopReview'));
-router.delete('/shops/:clientId/reviews/:id/reply', shop, person('customer:update'),
+router.delete('/shops/:clientId/reviews/:id/reply', shop, person(['customer:update', 'crm:reviews']),
   act(req => shopReviews.crm.removeReply(clientIdOf(req), req.params.id), req => ['REMOVE_REVIEW_REPLY', String(req.params.id)], 'ShopReview'));
-router.post('/shops/:clientId/reviews/:id/hide', shop, person('customer:update'),
+router.post('/shops/:clientId/reviews/:id/hide', shop, person(['customer:update', 'crm:reviews']),
   act(req => shopReviews.crm.hide(clientIdOf(req), req.params.id, req.body?.reason, actorName(req)), req => ['HIDE_REVIEW', String(req.params.id)], 'ShopReview'));
-router.post('/shops/:clientId/reviews/:id/unhide', shop, person('customer:update'),
+router.post('/shops/:clientId/reviews/:id/unhide', shop, person(['customer:update', 'crm:reviews']),
   act(req => shopReviews.crm.unhide(clientIdOf(req), req.params.id), req => ['UNHIDE_REVIEW', String(req.params.id)], 'ShopReview'));
 router.get('/shops/:clientId/orders/:salesOrderId/review-link', shop, readable, act(req => shopReviews.crm.reviewLink(clientIdOf(req), req.params.salesOrderId)));
 router.get('/shops/:clientId/feedback', shop, readable, act(req => shopReviews.crm.feedback(clientIdOf(req), req.query)));
-router.post('/shops/:clientId/feedback/:id/handled', shop, person('customer:update'),
+router.post('/shops/:clientId/feedback/:id/handled', shop, person(['customer:update', 'crm:reviews']),
   act(req => shopReviews.crm.setFeedbackHandled(clientIdOf(req), req.params.id, req.body?.handled !== false, actorName(req)), req => ['HANDLE_FEEDBACK', String(req.params.id)], 'ShopOrderFeedback'));
 
 // ---- Bills from before ScaleEzy (services/past-purchases). Inventory holds them; billedOn null = date not known. ----
@@ -166,7 +172,7 @@ router.get('/shops/:clientId/past-purchases/patterns', shop, readable, act(req =
 
 router.get('/shops/:clientId/customers/:customerId/offers', shop, readable,
   act(req => offersState(cid(req), customerIdOf(req))));
-router.put('/shops/:clientId/customers/:customerId/offers', shop, person('customer:update'),
+router.put('/shops/:clientId/customers/:customerId/offers', shop, person(['customer:update', 'crm:customer:update']),
   act(req => setOffersConsent(actorOf(req), customerIdOf(req), req.body?.agreed), req => ['UPDATED', customerIdOf(req)], 'CUSTOMER'));
 
 // A new customer added by a salesperson on CRM's floor ({ name, phone, birthday?, offers? }), so the till
@@ -174,20 +180,26 @@ router.put('/shops/:clientId/customers/:customerId/offers', shop, person('custom
 // customer -- a number someone already has is refused 409 PHONE_TAKEN, naming who, for CRM to open them.
 // `offers: true` = they said yes to WhatsApp offers in the shop; saved only when the person may change
 // offers, and said back either way, so CRM never claims a yes it could not record.
-router.post('/shops/:clientId/customers', shop, person('customer:create'), act(async req => {
+// Either key: Inventory's own, or CRM's (a role given only the CRM box, 11 Nov).
+router.post('/shops/:clientId/customers', shop, person(['customer:create', 'crm:customer:create']), act(async req => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
   const parsed = customerSchema.safeParse({ name: body.name, phone: body.phone, birthday: body.birthday ?? null });
   if (!parsed.success) throw badRequest(parsed.error.issues[0]?.message ?? 'Check the name and number.');
   const c = await customerService.createCustomer(cid(req), parsed.data);
   let offers: 'saved' | 'not_asked' | string = 'not_asked';
   if (body.offers === true) {
-    try { await setOffersConsent(actorOf(req), c.id, true); offers = 'saved'; }
+    // Recording the answer is changing the customer: Inventory's customer:update, or CRM's crm:customer:update.
+    const a = actorOf(req);
+    const held = a.permissions ?? [];
+    const mayRecord = grants(held, 'customer:update') || grants(held, 'crm:customer:update');
+    const consentActor = mayRecord && !grants(held, 'customer:update') ? { ...a, permissions: [...held, 'customer:update'] } : a;
+    try { await setOffersConsent(consentActor, c.id, true); offers = 'saved'; }
     catch (e: any) { offers = String(e?.message ?? 'Their answer about offers could not be saved.'); }
   }
   return { id: c.id, customerCode: c.customerCode, name: c.name, phone: c.phone, offers };
 }, (req, data) => ['CREATED', String(data?.id ?? '')], 'CUSTOMER'));
 // { birthday?, anniversary? }: "MM-DD" (a year is dropped), or null to clear. Only what is sent changes.
-router.put('/shops/:clientId/customers/:customerId/dates', shop, person('customer:update'), act(async req => {
+router.put('/shops/:clientId/customers/:customerId/dates', shop, person(['customer:update', 'crm:customer:update']), act(async req => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
   const change: { birthday?: unknown; anniversary?: unknown } = {};
   if ('birthday' in body) change.birthday = body.birthday;

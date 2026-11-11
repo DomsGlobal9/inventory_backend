@@ -1906,6 +1906,10 @@ model User {
   /// not come back on their phone, on a second computer, or after clearing the browser.
   tourSeenAt DateTime? @map("tour_seen_at")
 
+  /// The stores this person works in (stock_locations ids of this shop), set in Team members. Empty = all
+  /// stores. Sent to other modules on the session answer as user.locationIds (CRM limits its floor screens).
+  locationIds String[] @default([]) @map("location_ids")
+
   dailyReportDeliveries DailyReportDelivery[]
 
   /// Orders this person rang up.

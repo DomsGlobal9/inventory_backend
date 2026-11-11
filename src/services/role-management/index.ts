@@ -94,10 +94,16 @@ function sanitise(requested: string[], actor: Actor): string[] {
 }
 
 /** The catalogue and the templates, as the roles screen needs them. */
-export function getCatalogue(actor: Actor) {
+export async function getCatalogue(actor: Actor) {
   const allowed = grantableBy(actor);
+  // Another module's group (CRM) only for a shop that has the module switched on. Unreadable
+  // subscriptions (a database without the table yet) mean Inventory only, as at sign-in.
+  const modules = await prisma.moduleSubscription
+    .findMany({ where: { clientId: actor.clientId }, select: { module: true } })
+    .then(rows => rows.map(r => r.module))
+    .catch(() => [] as string[]);
   return {
-    groups: catalogueByGroup().map(g => ({
+    groups: catalogueByGroup(modules).map(g => ({
       group: g.group,
       permissions: g.permissions.map(p => ({
         key: p.key,

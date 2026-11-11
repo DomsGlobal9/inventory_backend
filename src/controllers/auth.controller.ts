@@ -274,8 +274,8 @@ async function modulesOf(clientId: string): Promise<string[]> {
 
 async function sessionBody(user: UserWithRoles) {
     const own = await prisma.user
-      .findUnique({ where: { id: user.id }, select: { tourSeenAt: true } })
-      .catch(() => ({ tourSeenAt: new Date(0) }));
+      .findUnique({ where: { id: user.id }, select: { tourSeenAt: true, locationIds: true } })
+      .catch(() => ({ tourSeenAt: new Date(0), locationIds: [] as string[] }));
 
     return {
       success: true,
@@ -283,6 +283,9 @@ async function sessionBody(user: UserWithRoles) {
       user: {
         id: user.id,
         tourSeenAt: own?.tourSeenAt ?? null,
+        // The stores this person works in (Team members), stock_locations ids. [] = all stores. For other
+        // modules: CRM limits its Sales dashboard and At the door to these. Inventory's screens ignore it.
+        locationIds: own?.locationIds ?? [],
         name: user.name,
         email: user.email,
         roles: user.roles, // from normalized req.user (UserWithRoles.roles is the array field — there is no singular `role`)

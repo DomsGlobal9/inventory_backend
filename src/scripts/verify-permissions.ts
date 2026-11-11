@@ -56,7 +56,7 @@ async function main() {
   // legitimate exception is a field-level key: cost:view is enforced on the way out, on the
   // response body, not on the way in -- and the catalogue says so itself.
   const unused = ALL_PERMISSION_KEYS.filter(k =>
-    !used.has(k) && !getPermission(k)?.fieldLevel && !getPermission(k)?.checkedInline);
+    !used.has(k) && !getPermission(k)?.fieldLevel && !getPermission(k)?.checkedInline && !getPermission(k)?.module);
   check('every route-level permission guards a route', unused.length === 0, unused.join(', '));
 
   // An inline check is exempt only while it is really there. Without this the marker would be a

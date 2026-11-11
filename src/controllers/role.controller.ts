@@ -37,7 +37,7 @@ export const listRoles = async (req: Request, res: Response) => {
 
 export const getCatalogue = async (req: Request, res: Response) => {
   try {
-    res.json({ success: true, data: roles.getCatalogue(actor(req)) });
+    res.json({ success: true, data: await roles.getCatalogue(actor(req)) });
   } catch (error: any) {
     handle(res, error, 'Failed to load the permission list');
   }

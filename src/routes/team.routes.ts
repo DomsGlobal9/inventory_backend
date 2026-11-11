@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requirePermission } from '../middleware/permission.middleware';
 import {
-  listMembers, listRoles, listActivity, listSecurityEvents, inviteMember, updateMemberRole, setMemberStatus,
+  listMembers, listRoles, listActivity, listSecurityEvents, inviteMember, updateMemberRole, setMemberStatus, setMemberStores,
   viewMemberPassword,
   resendMemberCredentials,
   sendMemberCredentialsWhatsApp, setMemberPassword
@@ -20,6 +20,7 @@ router.get('/security-log', listSecurityEvents);
 router.post('/members', inviteMember);
 router.patch('/members/:id/role', updateMemberRole);
 router.patch('/members/:id/status', setMemberStatus);
+router.patch('/members/:id/stores', setMemberStores);
 // POST (not GET) deliberately -- viewing a password is a meaningful, auditable action, and
 // only mutation methods flow through auditLogger's activity feed.
 //

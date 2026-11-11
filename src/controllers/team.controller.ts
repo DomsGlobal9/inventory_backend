@@ -98,6 +98,20 @@ export const updateMemberRole = async (req: Request, res: Response) => {
   }
 };
 
+/** Which stores a team member works in: { locationIds: [] } is all stores. */
+export const setMemberStores = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const result = await teamService.setMemberStores({
+      clientId: user.clientId, userId: req.params.id as string, locationIds: req.body?.locationIds, requesterUserId: user.id,
+      requesterIsSuperAdmin: isSuperAdmin(req), requesterPermissions: (req as any).user?.permissions ?? []
+    });
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.statusCode ? error.message : 'Their stores could not be saved. Try again.' });
+  }
+};
+
 export const setMemberStatus = async (req: Request, res: Response) => {
   try {
     const user = (req as any).user;

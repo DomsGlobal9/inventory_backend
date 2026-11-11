@@ -28,7 +28,8 @@ export type PermissionGroup =
   | 'Buying'
   | 'Selling'
   | 'Money'
-  | 'The shop';
+  | 'The shop'
+  | 'CRM';
 
 export type PermissionDef = {
   /** The key used in code and stored against a role. */
@@ -72,6 +73,15 @@ export type PermissionDef = {
    * there -- so the exemption cannot quietly outlive the check it describes.
    */
   checkedInline?: string;
+  /**
+   * Belongs to another ScaleEzy module, which enforces it on its own server (11 Nov 2026: CRM).
+   *
+   * Team members and roles are kept in ONE place for every module, and for now that place is
+   * Inventory's roles screen, so the box lives here. Inventory never checks these keys on its own
+   * routes (unless `checkedInline` says where it does); the module reads them from the session
+   * answer. The roles screen shows the group only to a shop that has the module switched on.
+   */
+  module?: 'crm';
 };
 
 export const PERMISSIONS: readonly PermissionDef[] = [
@@ -222,7 +232,31 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   // Linking the shop's own WhatsApp number: whoever holds it decides which phone every bill and
   // purchase order is sent from. Sending itself needs no key of its own -- whoever may send a
   // purchase order or take a sale may send it on WhatsApp too.
-  { key: 'whatsapp:manage', group: 'The shop', label: "Link and unlink the shop's WhatsApp number", sensitive: true }
+  { key: 'whatsapp:manage', group: 'The shop', label: "Link and unlink the shop's WhatsApp number", sensitive: true },
+
+  // ── CRM ────────────────────────────────────────────────────────────────────
+  // ScaleEzy CRM's own keys (11 Nov 2026), checked by CRM. Shown only to shops with CRM on. Roles
+  // made before these existed keep working: CRM also reads Inventory's customer and campaign keys
+  // as the matching CRM ones. Deleting customers, CRM's shop settings and automatic messages stay
+  // with the owner, so they have no key. Labels as CRM wrote them.
+  { key: 'crm:sales', group: 'CRM', module: 'crm', implies: ['crm:customer:view'],
+    label: 'Use the Sales dashboard: take walk-ins, show pieces, record what they tried and bought' },
+  { key: 'crm:customer:create', group: 'CRM', module: 'crm', implies: ['crm:customer:view'],
+    label: 'Add new customers', checkedInline: 'src/routes/internal-crm.routes.ts' },
+  { key: 'crm:customer:view', group: 'CRM', module: 'crm', label: 'See customers, their page and timeline' },
+  { key: 'crm:customer:phone', group: 'CRM', module: 'crm', implies: ['crm:customer:view'], sensitive: true,
+    label: 'See full phone numbers' },
+  { key: 'crm:customer:update', group: 'CRM', module: 'crm', implies: ['crm:customer:view'],
+    label: 'Write notes and follow-ups; change dates and WhatsApp consent' },
+  { key: 'crm:customer:merge', group: 'CRM', module: 'crm', implies: ['crm:customer:view'], sensitive: true,
+    label: 'Merge duplicate customers' },
+  { key: 'crm:lists', group: 'CRM', module: 'crm', implies: ['crm:customer:view'], label: 'Saved lists and customer groups' },
+  { key: 'crm:messages:view', group: 'CRM', module: 'crm', label: 'See WhatsApp messages and how they went' },
+  { key: 'crm:messages:send', group: 'CRM', module: 'crm', implies: ['crm:messages:view'], sensitive: true,
+    label: 'Write and send WhatsApp messages' },
+  { key: 'crm:reviews', group: 'CRM', module: 'crm', label: 'Reply to and hide reviews' },
+  { key: 'crm:team:view', group: 'CRM', module: 'crm', label: 'See This week (how the team did)' },
+  { key: 'crm:shop', group: 'CRM', module: 'crm', label: 'Festivals and price ranges' }
 ];
 
 /**
@@ -329,10 +363,12 @@ export function grants(granted: readonly string[], required: string): boolean {
 }
 
 /** The catalogue as the roles screen wants it: grouped, in the order defined above. */
-export function catalogueByGroup(): { group: PermissionGroup; permissions: PermissionDef[] }[] {
-  const order: PermissionGroup[] = ['Products', 'Stock', 'Buying', 'Selling', 'Money', 'The shop'];
+export function catalogueByGroup(modules?: readonly string[]): { group: PermissionGroup; permissions: PermissionDef[] }[] {
+  const order: PermissionGroup[] = ['Products', 'Stock', 'Buying', 'Selling', 'Money', 'The shop', 'CRM'];
+  // `modules` given: another module's keys only for a shop that has that module. Left out: everything.
+  const shown = (p: PermissionDef) => !p.module || !modules || modules.includes(p.module);
   return order
-    .map(group => ({ group, permissions: PERMISSIONS.filter(p => p.group === group) }))
+    .map(group => ({ group, permissions: PERMISSIONS.filter(p => p.group === group && shown(p)) }))
     .filter(g => g.permissions.length > 0);
 }
 

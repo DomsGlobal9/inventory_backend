@@ -51,6 +51,7 @@ export class TeamService {
       where: { clientId },
       select: {
         id: true, name: true, email: true, phone: true, status: true, lastActiveAt: true, lastLoginAt: true, createdAt: true,
+        locationIds: true,
         roles: { select: { role: { select: { id: true, name: true } } } }
       },
       orderBy: { createdAt: 'asc' }
@@ -197,6 +198,41 @@ export class TeamService {
     forgetIdentity(params.userId);
 
     return { id: target.id, role: role.name };
+  }
+
+  /**
+   * Which stores a team member works in (11 Nov 2026). An empty list means all stores. Read by
+   * ScaleEzy CRM from the session answer (user.locationIds) to limit its floor screens to those
+   * stores; customers stay shop-wide, and Inventory's own screens are not limited by it.
+   *
+   * Only this shop's active stores and warehouses can be chosen -- not the Online location, which is
+   * nobody's place of work. The same rules as changing a role decide who may set it for whom.
+   */
+  async setMemberStores(params: { clientId: string; userId: string; locationIds: unknown; requesterUserId: string; requesterIsSuperAdmin: boolean; requesterPermissions?: string[] }) {
+    if (params.userId === params.requesterUserId) {
+      throw Object.assign(new Error("You can't change your own stores. Ask another admin."), { statusCode: 403 });
+    }
+    await this.assertCanManageTarget(params.clientId, params.userId, params.requesterIsSuperAdmin, params.requesterPermissions);
+    if (!Array.isArray(params.locationIds) || params.locationIds.some(v => typeof v !== 'string')) {
+      throw Object.assign(new Error('Send the stores as a list, or an empty list for all stores.'), { statusCode: 400 });
+    }
+    const wanted = Array.from(new Set((params.locationIds as string[]).map(v => v.trim()).filter(Boolean)));
+    if (wanted.length > 100) throw Object.assign(new Error('That is more stores than this shop has.'), { statusCode: 400 });
+
+    const target = await prisma.user.findFirst({ where: { id: params.userId, clientId: params.clientId }, select: { id: true } });
+    if (!target) throw Object.assign(new Error('Team member not found'), { statusCode: 404 });
+
+    if (wanted.length) {
+      const found = await prisma.stockLocation.findMany({
+        where: { clientId: params.clientId, id: { in: wanted }, active: true, type: { not: 'ONLINE' } },
+        select: { id: true }
+      });
+      if (found.length !== wanted.length) {
+        throw Object.assign(new Error('One of those stores is not an open store of this shop. Reload the page and choose again.'), { statusCode: 400 });
+      }
+    }
+    await prisma.user.update({ where: { id: target.id }, data: { locationIds: wanted } });
+    return { id: target.id, locationIds: wanted };
   }
 
   async setMemberStatus(params: { clientId: string; userId: string; status: 'ACTIVE' | 'INACTIVE'; requesterUserId: string; requesterIsSuperAdmin: boolean; requesterPermissions?: string[] }) {
