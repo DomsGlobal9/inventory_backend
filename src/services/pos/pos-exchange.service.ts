@@ -45,7 +45,8 @@ export type PosExchangeEvent = {
   /** How the leftover went back, when the new goods cost less. */
   refund?: { method?: string; reference?: string } | null;
   refunds?: { method?: string; amountPaise?: number; reference?: string }[] | null;
-  customer?: { phone?: string; name?: string } | null;
+  /** whatsappOffers: true when they said yes to WhatsApp offers at the counter on this exchange (see sale.completed). */
+  customer?: { phone?: string; name?: string; whatsappOffers?: boolean | null } | null;
   occurredAt?: string;
   note?: string;
   /** The till's quote for the NEW goods (contract §9), so they get the offers a fresh sale would. */

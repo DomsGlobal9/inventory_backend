@@ -34,6 +34,7 @@ import { offerRedemptionService } from '../offers/redemption.service';
 import { settleSale } from '../loyalty';
 import { settleOnSale as settleHolds, customerForTill } from './pos-holds.service';
 import { registrationInForce } from '../pricing/tax';
+import { recordOffersConsent, POS_TILL_CONSENT } from '../campaigns/consent';
 
 export const POS_SOURCE = 'SCALEEZY_POS';
 
@@ -144,7 +145,14 @@ export interface PosSaleEvent {
   occurredAt: string;
   locationCode?: string | null;
   /** gstin and address only on a B2B tax invoice: the buyer as issued, frozen on the bill. */
-  customer?: { name?: string | null; phone?: string | null; gstin?: string | null; address?: string | null } | null;
+  customer?: {
+    name?: string | null; phone?: string | null; gstin?: string | null; address?: string | null;
+    /**
+     * true: the customer said yes to WhatsApp offers at the counter, on this bill (12 Nov 2026). Only
+     * ever true -- the till never withdraws it -- and absent when nobody asked.
+     */
+    whatsappOffers?: boolean | null;
+  } | null;
   /** The customer's phone, E.164, or null for a walk-in -- the same "who" the quote was asked for. */
   customerRef?: string | null;
   /** The quote the bill was built from, and the code typed at the till, if any (§4.1). */
@@ -464,6 +472,14 @@ export async function writeSaleInTransaction(
     const paidAll = (event.payments ?? []).reduce((a, p) => a + Math.round(p.amountPaise), 0);
     const owedMinor = billMinor + (Number.isFinite(roundOffPaise) ? roundOffPaise : 0) - paidAll;
     await settleSale(tx, { clientId, customerId: made.customerId, orderId: made.id, billMinor, pointsPaidMinor: Math.min(billMinor, notMoney), userId: null, alreadyDebited: true, owedMinor });
+
+    // A yes to WhatsApp offers ticked at the counter on this bill: recorded at the bill's own time, by
+    // "POS till". Never after a STOP, never without a phone on the customer, never over an earlier yes.
+    if (event.customer?.whatsappOffers === true) {
+      const told = new Date(event.occurredAt);
+      const at = Number.isNaN(told.getTime()) || told.getTime() > Date.now() ? new Date() : told;
+      await recordOffersConsent(tx, clientId, made.customerId, POS_TILL_CONSENT, at);
+    }
   }
 
   // §4.1: the offers this bill says it used, counted against the quote it names. Never a refusal.

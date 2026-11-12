@@ -18,11 +18,22 @@ type Tx = Prisma.TransactionClient;
 export type Actor = { id: string; clientId: string; permissions?: string[]; roles?: string[] };
 const may = (a: Actor, key: string) => holdsEverything(a.permissions, a.roles) || grants(a.permissions ?? [], key);
 
-/** Record a yes, inside the caller's transaction. A customer who replied STOP stays stopped. */
-export async function recordOffersConsent(tx: Tx, clientId: string, customerId: string, byUserId: string | null) {
-  await tx.customer.updateMany({
-    where: { id: customerId, clientId, whatsappOffers: false, whatsappStoppedAt: null },
-    data: { whatsappOffers: true, whatsappOffersAt: new Date(), whatsappOffersBy: byUserId }
+/**
+ * Who recorded a yes ticked on the ScaleEzy POS till (12 Nov 2026). Stored in whatsapp_offers_by,
+ * which otherwise holds a team member's id; read back as "POS till".
+ */
+export const POS_TILL_CONSENT = 'pos:till';
+
+/**
+ * Record a yes, inside the caller's transaction. A customer who replied STOP stays stopped, a
+ * customer who already agreed keeps the first record of it, and nobody without a phone can agree
+ * (there is nothing to send to). `at`: when they said it -- a till bill can arrive late, and the
+ * record must show the moment at the counter, not the moment it reached Inventory.
+ */
+export async function recordOffersConsent(tx: Tx, clientId: string, customerId: string, byUserId: string | null, at: Date = new Date()) {
+  return tx.customer.updateMany({
+    where: { id: customerId, clientId, whatsappOffers: false, whatsappStoppedAt: null, phone: { not: null } },
+    data: { whatsappOffers: true, whatsappOffersAt: at, whatsappOffersBy: byUserId }
   });
 }
 
@@ -72,13 +83,13 @@ export async function offersState(clientId: string, customerId: string) {
     select: { whatsappOffers: true, whatsappOffersAt: true, whatsappOffersBy: true, whatsappStoppedAt: true, birthday: true, anniversary: true }
   });
   if (!c) throw notFound('Customer not found');
-  const by = c.whatsappOffersBy
+  const by = c.whatsappOffersBy && c.whatsappOffersBy !== POS_TILL_CONSENT
     ? await prisma.user.findFirst({ where: { id: c.whatsappOffersBy }, select: { name: true } }).catch(() => null)
     : null;
   return {
     agreed: c.whatsappOffers && !c.whatsappStoppedAt,
     changedAt: c.whatsappOffersAt,
-    changedBy: by?.name ?? null,
+    changedBy: c.whatsappOffersBy === POS_TILL_CONSENT ? 'POS till' : by?.name ?? null,
     stoppedAt: c.whatsappStoppedAt,
     birthday: c.birthday,
     anniversary: c.anniversary
