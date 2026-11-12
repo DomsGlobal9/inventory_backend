@@ -45,6 +45,8 @@ const C = `floor-${STAMP}`, OTHER = `floor-other-${STAMP}`;
     const store = await prisma.stockLocation.create({ data: { clientId: C, name: 'Main Store', code: `FM-${STAMP}`, type: 'STORE' as any, active: true } });
     await prisma.stockLocation.create({ data: { clientId: OTHER, name: 'Theirs', code: `FO-${STAMP}`, type: 'STORE' as any, active: true } });
     await prisma.clientSettings.create({ data: { clientId: C, businessName: 'Lakshmi Silks' } as any });
+    // Walk-ins are taken on CRM's Shop floor since 12 Nov: the shop has CRM. (OTHER has not.)
+    await prisma.moduleSubscription.create({ data: { clientId: C, module: 'crm', enabledBy: 'verify-door-floor' } as any });
     const mk = (name: string, status = 'ACTIVE', clientId = C) => prisma.user.create({ data: { clientId, email: `${name.toLowerCase()}-${STAMP}@example.com`, name, password: 'unused', status: status as any } });
     const lakshmi = await mk('Lakshmi'), ravi = await mk('Ravi'), priya = await mk('Priya'), gone = await mk('Gone', 'INACTIVE'), stranger = await mk('Stranger', 'ACTIVE', OTHER);
     const L = { id: lakshmi.id, name: 'Lakshmi' }, R = { id: ravi.id, name: 'Ravi' }, P = { id: priya.id, name: 'Priya' };
@@ -195,6 +197,8 @@ const C = `floor-${STAMP}`, OTHER = `floor-other-${STAMP}`;
     check(`the suite reached the end (stopped at: ${String(e?.message ?? e).split('\n')[0]})`, false);
   } finally {
     await prisma.storeCheckin.deleteMany({ where: { OR: [{ clientId: { in: [C, OTHER] } }, { id: { in: httpRows } }] } }).catch(() => null);
+    await prisma.moduleSubscription.deleteMany({ where: { clientId: { in: [C, OTHER] } } }).catch(() => null);
+    await prisma.moduleEvent.deleteMany({ where: { clientId: { in: [C, OTHER] } } }).catch(() => null);
     await prisma.inventoryAlert.deleteMany({ where: { clientId: { in: [C, OTHER] } } }).catch(() => null);
     await prisma.salesOrder.deleteMany({ where: { clientId: C } }).catch(() => null);
     await prisma.customer.deleteMany({ where: { clientId: C } }).catch(() => null);

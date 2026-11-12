@@ -242,6 +242,13 @@ export class SalesOrderService {
         let existingCustomer = await tx.customer.findFirst({
           where: { clientId, externalCustomerId: data.customer.externalId }
         });
+        // An erased or removed customer never takes a new bill (12 Nov 2026): the person came back, and
+        // they are somebody new now. The erased row lets go of the outside id (unique per shop), so the
+        // new customer can carry it; the old row keeps its bills as "Removed customer".
+        if (existingCustomer?.deletedAt) {
+          await tx.customer.update({ where: { id: existingCustomer.id }, data: { externalCustomerId: null } });
+          existingCustomer = null;
+        }
 
         if (!existingCustomer) {
           // Kept only when it is a real number nobody else in the shop has -- see phoneForOutsideCustomer.

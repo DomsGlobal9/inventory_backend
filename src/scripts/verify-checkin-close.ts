@@ -13,6 +13,7 @@ for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
 }
 const STAMP = Date.now();
 const CLIENT = `checkin-close-${STAMP}`;
+const NOCRM = `checkin-close-nocrm-${STAMP}`;
 let passed = 0, failed = 0;
 const check = (name: string, ok: boolean, detail = '') => {
   if (ok) { passed++; console.log(`  ok   ${name}`); } else { failed++; console.log(`  FAIL ${name} -- ${detail}`); }
@@ -21,6 +22,9 @@ const fails = async (p: Promise<unknown>) => { try { await p; return null; } cat
 
 async function main() {
   const store = await prisma.stockLocation.create({ data: { clientId: CLIENT, name: 'Main', code: `CC-${STAMP}`, type: 'STORE' as any, active: true } });
+  // Walk-ins are taken on CRM's Shop floor: this shop has CRM. NOCRM has not.
+  await prisma.moduleSubscription.create({ data: { clientId: CLIENT, module: 'crm', enabledBy: 'verify-checkin-close' } as any });
+  const plainStore = await prisma.stockLocation.create({ data: { clientId: NOCRM, name: 'Plain', code: `CP-${STAMP}`, type: 'STORE' as any, active: true } });
   const priya = { id: `u-priya-${STAMP}`, name: 'Priya', owner: false };
   const ravi = { id: `u-ravi-${STAMP}`, name: 'Ravi', owner: false };
   const owner = { id: `u-owner-${STAMP}`, name: 'Owner', owner: true };
@@ -51,6 +55,14 @@ async function main() {
   await doorCheckins.close(CLIENT, alerted.id, 'LEFT', ravi);
   const bell = before.waitAlertId ? await prisma.inventoryAlert.findUnique({ where: { id: before.waitAlertId } }) : null;
   check('one already alerted: closing settles the owner\'s bell', !!bell && bell.isResolved === true, JSON.stringify({ alert: before.waitAlertId, resolved: bell?.isResolved }));
+
+  // A shop without CRM (or one that switched it off) with an arrival left from before: nobody can take it,
+  // so no bell and no "sorry for the wait".
+  const old = await prisma.storeCheckin.create({ data: { clientId: NOCRM, locationId: plainStore.id, phone: '+919000044999',
+    createdAt: new Date(Date.now() - 20 * 60_000), waitingSince: new Date(Date.now() - 20 * 60_000) } });
+  await doorCheckins.waitTick(new Date(), [NOCRM]);
+  const oldAfter = await row(old.id);
+  check('a shop without CRM: an old waiting arrival gets no bell and no apology', oldAfter.waitAlertedAt === null && oldAfter.waitAlertId === null, JSON.stringify(oldAfter));
 
   console.log('\nC. A TAKEN CUSTOMER');
   const t = await arrive(2);
@@ -85,11 +97,13 @@ async function main() {
 main()
   .catch(e => { failed++; console.error('CRASHED', e); })
   .finally(async () => {
-    const alerts = await prisma.storeCheckin.findMany({ where: { clientId: CLIENT }, select: { waitAlertId: true } });
+    const alerts = await prisma.storeCheckin.findMany({ where: { clientId: { in: [CLIENT, NOCRM] } }, select: { waitAlertId: true } });
     await prisma.inventoryAlert.deleteMany({ where: { id: { in: alerts.map(a => a.waitAlertId).filter(Boolean) as string[] } } }).catch(() => null);
-    await prisma.storeCheckin.deleteMany({ where: { clientId: CLIENT } });
-    await prisma.stockLocation.deleteMany({ where: { clientId: CLIENT } });
-    const left = await prisma.storeCheckin.count({ where: { clientId: CLIENT } });
+    await prisma.storeCheckin.deleteMany({ where: { clientId: { in: [CLIENT, NOCRM] } } });
+    await prisma.moduleSubscription.deleteMany({ where: { clientId: { in: [CLIENT, NOCRM] } } });
+    await prisma.moduleEvent.deleteMany({ where: { clientId: { in: [CLIENT, NOCRM] } } });
+    await prisma.stockLocation.deleteMany({ where: { clientId: { in: [CLIENT, NOCRM] } } });
+    const left = await prisma.storeCheckin.count({ where: { clientId: { in: [CLIENT, NOCRM] } } });
     check('nothing left behind', left === 0);
     console.log(`\n${passed} passed, ${failed} failed`);
     await prisma.$disconnect();

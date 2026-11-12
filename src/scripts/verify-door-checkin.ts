@@ -28,6 +28,8 @@ async function main() {
   const branch = await prisma.stockLocation.create({ data: { clientId: C, name: 'Branch', code: `DB-${STAMP}`, type: 'STORE' as any, active: true } });
   const elsewhere = await prisma.stockLocation.create({ data: { clientId: OTHER, name: 'Their Store', code: `DO-${STAMP}`, type: 'STORE' as any, active: true } });
   await prisma.clientSettings.create({ data: { clientId: C, businessName: 'Lakshmi Silks', gstRegistration: 'UNREGISTERED' } as any });
+  // Walk-ins are taken on CRM's Shop floor since 12 Nov: the shop has CRM. (OTHER has not.)
+  await prisma.moduleSubscription.create({ data: { clientId: C, module: 'crm', enabledBy: 'verify-door-checkin' } as any });
   const meena = await prisma.customer.create({ data: { clientId: C, customerCode: `DC-${STAMP}`, name: 'Meena Iyer', phone: '+919848033311', tags: ['VIP'] } });
   const mainCode = doorCode(C, main.id);
 
@@ -35,6 +37,13 @@ async function main() {
   check('six letters and digits, none of 0 O 1 I', /^[A-HJ-NP-Z2-9]{6}$/.test(mainCode), mainCode);
   check('the same every time for a store, so a printed standee keeps working', doorCode(C, main.id) === mainCode);
   check('each store has its own, and another shop never shares it', doorCode(C, branch.id) !== mainCode && doorCode(OTHER, main.id) !== mainCode);
+
+  console.log('\nA2. A SHOP WITHOUT CRM (nobody can see arrivals)');
+  const noCrmCode = doorCode(OTHER, elsewhere.id);
+  const sentBefore = sent.length;
+  const r0 = await arrive(OTHER, '919848033322', noCrmCode);
+  const noCrmRows = await prisma.storeCheckin.count({ where: { clientId: OTHER } });
+  check('its old printed QR: no arrival and no welcome promising someone is coming', noCrmRows === 0 && sent.length === sentBefore, { r0, noCrmRows, sent: sent.length - sentBefore });
 
   console.log('\nB. A CUSTOMER ARRIVES');
   const r1 = await arrive(C, '919848033311', mainCode);
@@ -136,6 +145,8 @@ async function main() {
 main().catch(e => { failed++; console.error(e); }).finally(async () => {
   for (const c of [C, OTHER]) {
     await prisma.storeCheckin.deleteMany({ where: { clientId: c } }).catch(() => {});
+    await prisma.moduleSubscription.deleteMany({ where: { clientId: c } }).catch(() => {});
+    await prisma.moduleEvent.deleteMany({ where: { clientId: c } }).catch(() => {});
     await prisma.customer.deleteMany({ where: { clientId: c } }).catch(() => {});
     await prisma.clientSettings.deleteMany({ where: { clientId: c } }).catch(() => {});
     await prisma.stockLocation.deleteMany({ where: { clientId: c } }).catch(() => {});

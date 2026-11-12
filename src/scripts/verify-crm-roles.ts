@@ -204,6 +204,47 @@ async function main() {
   r = await call('PATCH', team(floorUser), owner, { locationIds: [] });
   s = await call('GET', '/auth/session', app(floorUser));
   check('back to all stores: [] again', r.status === 200 && s.data?.user?.locationIds?.length === 0, brief(s));
+
+  // ── D. SHOP FLOOR: THE DOOR QR AND CLOSING A WALK-IN, THROUGH CRM'S ROUTES ─────────
+  console.log('\nD. DOOR QR AND "NOT HERE", THROUGH CRM\'S ROUTES');
+  r = await call('GET', crm(`/door-qr?locationId=${north.id}`), tokenFor());
+  check('the door QR for a store: shop, store, message; WhatsApp not linked -> no link, the reason to show',
+    r.status === 200 && r.data?.data?.store === 'North Branch' && r.data?.data?.link === null && r.data?.data?.fix === 'WHATSAPP' && typeof r.data?.data?.reason === 'string', brief(r));
+  r = await call('GET', crm(`/door-qr?locationId=${elsewhere.id}`), tokenFor());
+  check('another shop\'s store: refused, no QR', r.status >= 400 && !r.data?.data?.link, brief(r));
+  r = await call('GET', crm('/door-qr'), tokenFor());
+  check('no store named: refused in words', r.status === 400, brief(r));
+  r = await call('GET', crm(`/door-qr?locationId=${north.id}`), as(store));
+  check('a storekeeper named as the person: refused (no customer keys)', r.status === 403, brief(r));
+
+  const arrival = await prisma.storeCheckin.create({ data: { clientId: SHOP, locationId: north.id, phone: '+919000055001' } });
+  const close = (who: { id: string }, body: any, id = arrival.id) => call('POST', crm(`/checkins/${id}/close`), as(who), body);
+  r = await close(store, { as: 'LEFT' });
+  check('a storekeeper cannot close a walk-in', r.status === 403, brief(r));
+  r = await close(floorUser, { as: 'BYE' });
+  check('a wrong "as": refused in words', r.status === 400 && /LEFT or MISTAKE/.test(r.data?.message), brief(r));
+  r = await call('POST', crm(`/checkins/${arrival.id}/close`), tokenFor(), { as: 'LEFT' });
+  check('nobody named: refused', r.status === 403, brief(r));
+  r = await close(floorUser, { as: 'LEFT' });
+  let a1 = await prisma.storeCheckin.findUniqueOrThrow({ where: { id: arrival.id } });
+  check('crm:sales closes a walk-in nobody has taken: LEFT, by Priya', r.status === 200 && r.data?.data?.closedAs === 'LEFT' && a1.closedByName === 'Floor Priya' && !!a1.doneAt, brief(r));
+  r = await call('POST', crm(`/checkins/${arrival.id}/reopen`), as(writerUser));
+  check('someone else cannot undo Priya\'s "Not here"', r.status === 403, brief(r));
+  r = await call('POST', crm(`/checkins/${arrival.id}/reopen`), as(floorUser));
+  a1 = await prisma.storeCheckin.findUniqueOrThrow({ where: { id: arrival.id } });
+  check('Priya undoes it: waiting again', r.status === 200 && a1.doneAt === null && a1.closedAs === null, brief(r));
+  r = await close(floorUser, { as: 'LEFT' }, '00000000-0000-0000-0000-000000000000');
+  check('an arrival that does not exist: 404', r.status === 404, brief(r));
+  const theirs = await prisma.storeCheckin.create({ data: { clientId: PLAIN, locationId: elsewhere.id, phone: '+919000055002' } });
+  r = await close(floorUser, { as: 'LEFT' }, theirs.id);
+  const theirsAfter = await prisma.storeCheckin.findUniqueOrThrow({ where: { id: theirs.id } });
+  check('another shop\'s arrival: not found, untouched', r.status === 404 && theirsAfter.doneAt === null, brief(r));
+  await prisma.storeCheckin.update({ where: { id: arrival.id }, data: { takenAt: new Date(), takenById: writerUser.id, takenByName: 'Writer Divya' } });
+  r = await close(floorUser, { as: 'LEFT' });
+  check('a walk-in Divya has taken: Priya cannot close it', r.status === 403 && /Writer Divya is with them/.test(r.data?.message), brief(r));
+  r = await close(viaApiOwner, { as: 'MISTAKE' });
+  check('the owner can (a visit left open at closing time)', r.status === 200 && r.data?.data?.closedAs === 'MISTAKE', brief(r));
+  await prisma.storeCheckin.deleteMany({ where: { id: { in: [arrival.id, theirs.id] } } });
 }
 
 async function cleanup() {

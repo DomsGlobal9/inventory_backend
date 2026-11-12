@@ -67,11 +67,28 @@ export const checkinWelcome = {
   }
 };
 
+/**
+ * Whether anybody can see a door arrival (12 Nov 2026): walk-ins are taken on ScaleEzy CRM's Shop floor
+ * now, and Inventory has no screen for them. A shop without CRM -- or one that switched it off -- still
+ * has its printed QR, so its scans must not become arrivals nobody can take, each followed by a bell and
+ * a "sorry for the wait" five minutes later.
+ */
+async function crmShops(clientIds: string[]): Promise<Set<string>> {
+  if (!clientIds.length) return new Set();
+  const rows = await prisma.moduleSubscription.findMany({ where: { clientId: { in: [...new Set(clientIds)] }, module: 'crm' }, select: { clientId: true } })
+    .catch(() => [] as { clientId: string }[]);
+  return new Set(rows.map(r => r.clientId));
+}
+
 export const doorCheckins = {
-  /** contact.checked_in from the WhatsApp Service. Null when the code names no store of this shop. */
+  /**
+   * contact.checked_in from the WhatsApp Service. Null when the code names no store of this shop, or
+   * when the shop has no CRM (no arrival, no welcome promising that someone is coming).
+   */
   async record(clientId: string, contactDigits: string, code: string, now = new Date()) {
     const phone = normalisePhone(`+${String(contactDigits).replace(/\D/g, '')}`);
     if (!phone.ok) return null;
+    if (!(await crmShops([clientId])).has(clientId)) return null;
     const store = await storeForCode(clientId, code);
     if (!store) return null;
 
@@ -292,7 +309,9 @@ export const doorCheckins = {
       take: 100
     });
     let raised = 0;
-    for (const r of due) {
+    // Only where somebody can take them: a shop with CRM (see crmShops).
+    const seen = await crmShops(due.map(r => r.clientId));
+    for (const r of due.filter(d => seen.has(d.clientId))) {
       const claimed = await prisma.storeCheckin.updateMany({ where: { id: r.id, waitAlertedAt: null, takenAt: null }, data: { waitAlertedAt: now } });
       if (claimed.count === 0) continue;
       const [customer, store, settings] = await Promise.all([
@@ -306,7 +325,7 @@ export const doorCheckins = {
         data: {
           clientId: r.clientId, type: 'CUSTOMER_WAITING' as any, severity: 'WARNING', locationId: r.locationId,
           title: `${customer?.name || 'A customer'} is waiting at ${store?.name ?? 'the store'}`,
-          message: `${who} has waited ${mins} minutes at ${store?.name ?? 'the store'} with nobody taking them. Open the Customer card to take them.`
+          message: `${who} has waited ${mins} minutes at ${store?.name ?? 'the store'} with nobody taking them. Take them on the Shop floor in ScaleEzy CRM.`
         }
       });
       await prisma.storeCheckin.update({ where: { id: r.id }, data: { waitAlertId: alert.id } });

@@ -135,6 +135,37 @@ async function main() {
   c = await byPhone('9000033401');
   const t = c?.whatsappOffersAt?.getTime() ?? 0;
   check('a bill dated in the future: the yes is recorded at now, never in the future', c?.whatsappOffers === true && t >= before - 1000 && t <= Date.now() + 1000, String(c?.whatsappOffersAt));
+
+  console.log('\nF. WORST CASES');
+  const longAgo = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const beforeOld = Date.now();
+  r = await sale('F1', { name: 'Old Bill Gita', phone: '+919000033501', whatsappOffers: true }, longAgo);
+  c = await byPhone('9000033501');
+  const tOld = c?.whatsappOffersAt?.getTime() ?? 0;
+  check('a bill dated 30 days ago: recorded at now, the same rule as the bill\'s date (never backdated)', c?.whatsappOffers === true && tOld >= beforeOld - 1000, String(c?.whatsappOffersAt));
+  r = await sale('F2', { name: 'Bad Time Usha', phone: '+919000033502', whatsappOffers: true }, 'not a date');
+  c = await byPhone('9000033502');
+  check('an unreadable bill time: the sale goes in, the yes is recorded at now', r.answer === 'APPLIED' && c?.whatsappOffers === true, JSON.stringify({ r: r.answer, at: c?.whatsappOffersAt }));
+
+  // Two bills for the same new number at the same moment, both with a yes.
+  const [x1, x2] = await Promise.all([
+    sale('F3', { name: 'Twin Bills Rama', phone: '+919000033503', whatsappOffers: true }),
+    sale('F4', { name: 'Twin Bills Rama', phone: '+919000033503', whatsappOffers: true })
+  ]);
+  const twins = await prisma.customer.findMany({ where: { clientId: CLIENT, phone: { contains: '9000033503' } }, select: { whatsappOffers: true } });
+  check('two bills at once for one number, both saying yes: both go in, one customer, agreeing',
+    [x1.answer, x2.answer].every(a => a === 'APPLIED') && twins.length === 1 && twins[0].whatsappOffers === true, JSON.stringify({ a: [x1.answer, x2.answer], twins }));
+
+  // A customer the owner erased comes back to the till with the same number and says yes.
+  await sale('F5', { name: 'Erased Leela', phone: '+919000033504' });
+  const erased = await byPhone('9000033504');
+  await prisma.customer.update({ where: { id: erased!.id }, data: { name: 'Removed customer', phone: null, deletedAt: new Date(), whatsappOffers: false } });
+  r = await sale('F6', { name: 'Leela Again', phone: '+919000033504', whatsappOffers: true });
+  const back = await prisma.customer.findMany({ where: { clientId: CLIENT, phone: { contains: '9000033504' }, deletedAt: null }, select: { id: true, name: true, whatsappOffers: true } });
+  const stillErased = await prisma.customer.findUniqueOrThrow({ where: { id: erased!.id }, select: { whatsappOffers: true, phone: true, deletedAt: true } });
+  check('an erased customer back at the till: a NEW customer agrees; the erased one stays erased with no yes',
+    r.answer === 'APPLIED' && back.length === 1 && back[0].id !== erased!.id && back[0].whatsappOffers === true && stillErased.whatsappOffers === false && stillErased.phone === null && !!stillErased.deletedAt,
+    JSON.stringify({ r: r.answer, back, stillErased }));
 }
 
 main()

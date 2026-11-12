@@ -476,8 +476,11 @@ export async function writeSaleInTransaction(
     // A yes to WhatsApp offers ticked at the counter on this bill: recorded at the bill's own time, by
     // "POS till". Never after a STOP, never without a phone on the customer, never over an earlier yes.
     if (event.customer?.whatsappOffers === true) {
-      const told = new Date(event.occurredAt);
-      const at = Number.isNaN(told.getTime()) || told.getTime() > Date.now() ? new Date() : told;
+      // The same time the bill itself is dated with (dateFromTill): the till's, within the last 7 days;
+      // a future, unreadable or older one is now, so a yes can never be backdated.
+      const told = new Date(String(event.occurredAt ?? ''));
+      const nowMs = Date.now();
+      const at = Number.isNaN(told.getTime()) || told.getTime() > nowMs || told.getTime() < nowMs - 7 * 86_400_000 ? new Date(nowMs) : told;
       await recordOffersConsent(tx, clientId, made.customerId, POS_TILL_CONSENT, at);
     }
   }
