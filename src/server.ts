@@ -1,4 +1,5 @@
 import { CampaignsScheduler } from './jobs/campaigns.scheduler';
+import { startLive } from './services/live';
 import { PhotoJobsScheduler } from './jobs/photo-jobs.scheduler';
 import { PosQueueScheduler } from './jobs/pos-queue.scheduler';
 import { PaymentsScheduler } from './jobs/payments.scheduler';
@@ -262,6 +263,8 @@ const PORT = env.PORT;
 
 app.listen(PORT, () => {
   console.log(`🚀 Inventory Microservice running on port ${PORT}`);
+  // Every instance listens: each serves its own open screens (services/live). Not a background job.
+  startLive();
   // The old single-destination webhook poller is not started. It read one global
   // STOREFRONT_WEBHOOK_URL for every tenant, carried no clientId, and claimed rows before
   // checking it had somewhere to send them -- which is why all 747 of its events are stranded.

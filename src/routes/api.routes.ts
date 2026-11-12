@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import liveRoutes from './live.routes';
 import { authenticate } from '../middleware/auth.middleware';
 import { trackActivity } from '../middleware/activity-tracker.middleware';
 import { auditLogger } from '../middleware/audit-logger.middleware';
@@ -136,6 +137,9 @@ router.use(auditLogger);
 // definition (their permissions `exposesCost`, or require report:financial), and stripping it
 // there would leave a purchase order with no prices. See middleware/cost-visibility.
 const hideCost = hideCostUnlessPermitted();
+
+// Instant updates: "this changed" for the signed-in person's shop (services/live, PLAN-live.md).
+router.use('/live', liveRoutes);
 
 // Mount Business Routes
 // Mounted BEFORE /products so that /products/import is not swallowed by /products/:id.
