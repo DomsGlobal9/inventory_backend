@@ -1,5 +1,6 @@
 import { CampaignsScheduler } from './jobs/campaigns.scheduler';
 import { startLive } from './services/live';
+import { startPosPush } from './services/pos-push';
 import { PhotoJobsScheduler } from './jobs/photo-jobs.scheduler';
 import { PosQueueScheduler } from './jobs/pos-queue.scheduler';
 import { PaymentsScheduler } from './jobs/payments.scheduler';
@@ -265,6 +266,8 @@ app.listen(PORT, () => {
   console.log(`🚀 Inventory Microservice running on port ${PORT}`);
   // Every instance listens: each serves its own open screens (services/live). Not a background job.
   startLive();
+  // Tell connected POS tills at once when their catalogue changes or a customer is erased (services/pos-push).
+  if (startPosPush()) console.log('[pos-push] telling tills of catalogue changes and erasures.');
   // The old single-destination webhook poller is not started. It read one global
   // STOREFRONT_WEBHOOK_URL for every tenant, carried no clientId, and claimed rows before
   // checking it had somewhere to send them -- which is why all 747 of its events are stranded.

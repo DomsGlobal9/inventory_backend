@@ -13,8 +13,13 @@
 import { Client } from 'pg';
 
 export const LIVE_CHANNEL = 'inventory_live';
-export const TOPICS = ['orders', 'returns', 'customers', 'vouchers', 'stock', 'shelves', 'products', 'alerts', 'purchases', 'counts', 'offers'] as const;
+export const TOPICS = ['orders', 'returns', 'customers', 'vouchers', 'stock', 'shelves', 'products', 'alerts', 'purchases', 'counts', 'offers', 'settings'] as const;
 export type Topic = typeof TOPICS[number];
+/** Heard by the server only, never sent to screens (services/pos-push). */
+export const SERVER_TOPICS = ['erasures'] as const;
+export type AnyTopic = Topic | typeof SERVER_TOPICS[number];
+const isScreenTopic = (t: unknown): t is Topic => (TOPICS as readonly unknown[]).includes(t);
+const isServerTopic = (t: unknown): t is AnyTopic => isScreenTopic(t) || (SERVER_TOPICS as readonly unknown[]).includes(t);
 
 /** Changes heard within this long are sent to a screen together: a burst of writes is one reload. */
 export const BATCH_MS = 300;
@@ -23,6 +28,11 @@ export const MAX_PER_SHOP = 200;
 
 type Listener = (topics: Topic[]) => void;
 const byShop = new Map<string, Set<Listener>>();
+/** Server-side listeners: every shop, every topic, as heard (services/pos-push). */
+const watchers = new Set<(clientId: string, topic: AnyTopic) => void>();
+function tellWatchers(clientId: string, topic: AnyTopic) {
+  for (const w of watchers) { try { w(clientId, topic); } catch { /* one watcher never stops the others */ } }
+}
 let client: Client | null = null;
 let started = false;
 let connected = false;
@@ -38,6 +48,16 @@ function deliver(clientId: string, topics: Topic[]) {
 /** Tell every open screen of every shop to reload everything (after the line to the database was down). */
 function everyoneEverything() {
   for (const clientId of byShop.keys()) deliver(clientId, [...TOPICS]);
+  tellWatchers('*', 'products');
+}
+
+/**
+ * Hear every change signal of every shop on this server, e.g. to tell the till. `clientId` is '*' after the line
+ * to the database was down: something may have changed in any shop. Returns the way to stop.
+ */
+export function watchAll(fn: (clientId: string, topic: AnyTopic) => void) {
+  watchers.add(fn);
+  return () => { watchers.delete(fn); };
 }
 
 async function connect() {
@@ -48,7 +68,9 @@ async function connect() {
     if (msg.channel !== LIVE_CHANNEL || !msg.payload) return;
     try {
       const { c: shop, t } = JSON.parse(msg.payload);
-      if (typeof shop === 'string' && (TOPICS as readonly string[]).includes(t)) deliver(shop, [t]);
+      if (typeof shop !== 'string') return;
+      if (isScreenTopic(t)) deliver(shop, [t]);
+      if (isServerTopic(t)) tellWatchers(shop, t);
     } catch { /* not ours */ }
   });
   const lost = (why: string) => {

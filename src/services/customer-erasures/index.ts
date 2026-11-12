@@ -12,6 +12,7 @@
  */
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
+import { queueErasures, POS_MODULE, ERASED_KIND } from '../pos-push';
 
 export const KEEP_DAYS = 30;
 const PAGE = 200;
@@ -23,6 +24,8 @@ export async function noteErasures(tx: Tx, clientId: string, phones: (string | n
   const clean = [...new Set(phones.map(p => String(p ?? '').trim()).filter(Boolean))];
   if (!clean.length) return 0;
   const r = await tx.customerErasure.createMany({ data: clean.map(phone => ({ clientId, phone })) });
+  // The till is told at once too (services/pos-push), in this same transaction.
+  await queueErasures(tx, clientId, clean);
   return r.count;
 }
 
@@ -31,7 +34,10 @@ export async function noteErasures(tx: Tx, clientId: string, phones: (string | n
  * Rows past KEEP_DAYS are deleted first, so they are never answered.
  */
 export async function erasuresAfter(clientId: string, sinceRaw: unknown, now = new Date()) {
-  await prisma.customerErasure.deleteMany({ where: { erasedAt: { lt: new Date(now.getTime() - KEEP_DAYS * 86_400_000) } } });
+  const cutoff = new Date(now.getTime() - KEEP_DAYS * 86_400_000);
+  await prisma.customerErasure.deleteMany({ where: { erasedAt: { lt: cutoff } } });
+  // The pushed copies too, whatever became of them (one the till never took would otherwise keep the number).
+  await prisma.moduleEvent.deleteMany({ where: { module: POS_MODULE, kind: ERASED_KIND, createdAt: { lt: cutoff } } });
   const text = String(sinceRaw ?? '').trim();
   if (text && !/^\d{1,18}$/.test(text)) throw Object.assign(new Error('since must be the "next" number from the last answer, or left out.'), { statusCode: 400 });
   const since = BigInt(text || '0');
