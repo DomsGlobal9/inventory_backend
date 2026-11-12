@@ -240,7 +240,7 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   // as the matching CRM ones. Deleting customers, CRM's shop settings and automatic messages stay
   // with the owner, so they have no key. Labels as CRM wrote them.
   { key: 'crm:sales', group: 'CRM', module: 'crm', implies: ['crm:customer:view'],
-    label: 'Use the Sales dashboard: take walk-ins, show pieces, record what they tried and bought' },
+    label: 'Use the Shop floor: take walk-ins, show pieces, record what they tried and bought' },
   { key: 'crm:customer:create', group: 'CRM', module: 'crm', implies: ['crm:customer:view'],
     label: 'Add new customers', checkedInline: 'src/routes/internal-crm.routes.ts' },
   { key: 'crm:customer:view', group: 'CRM', module: 'crm', label: 'See customers, their page and timeline' },

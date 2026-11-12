@@ -75,7 +75,7 @@ async function main() {
   check('a shop with CRM sees a CRM group, last, with the 12 keys',
     !!crmGroup && cat.groups[cat.groups.length - 1].group === 'CRM' && crmGroup.permissions.map(p => p.key).sort().join() === [...CRM_KEYS].sort().join(),
     crmGroup?.permissions.map(p => p.key));
-  check('every CRM key carries CRM\'s own sentence', crmGroup?.permissions.find(p => p.key === 'crm:sales')?.label === 'Use the Sales dashboard: take walk-ins, show pieces, record what they tried and bought'
+  check('every CRM key carries CRM\'s own sentence', crmGroup?.permissions.find(p => p.key === 'crm:sales')?.label === 'Use the Shop floor: take walk-ins, show pieces, record what they tried and bought'
     && crmGroup?.permissions.find(p => p.key === 'crm:customer:phone')?.label === 'See full phone numbers', '');
   check('the owner can tick every CRM box', !!crmGroup && crmGroup.permissions.every(p => p.grantable));
   const plainCat = await roles.getCatalogue(plainActor);
