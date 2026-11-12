@@ -222,7 +222,7 @@ async function main() {
   r = await close(store, { as: 'LEFT' });
   check('a storekeeper cannot close a walk-in', r.status === 403, brief(r));
   r = await close(floorUser, { as: 'BYE' });
-  check('a wrong "as": refused in words', r.status === 400 && /LEFT or MISTAKE/.test(r.data?.message), brief(r));
+  check('a wrong "as": refused in words', r.status === 400 && /LEFT, MISTAKE or DONE/.test(r.data?.message), brief(r));
   r = await call('POST', crm(`/checkins/${arrival.id}/close`), tokenFor(), { as: 'LEFT' });
   check('nobody named: refused', r.status === 403, brief(r));
   r = await close(floorUser, { as: 'LEFT' });

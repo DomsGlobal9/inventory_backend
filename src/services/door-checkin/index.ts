@@ -257,10 +257,12 @@ export const doorCheckins = {
    * a taken one only the person with them, or the owner. Closing twice answers the same.
    */
   async close(clientId: string, id: string, as: unknown, actor: Actor) {
-    if (as !== 'LEFT' && as !== 'MISTAKE') throw badRequest('Say how it ended: LEFT or MISTAKE.');
+    if (as !== 'LEFT' && as !== 'MISTAKE' && as !== 'DONE') throw badRequest('Say how it ended: LEFT, MISTAKE or DONE.');
     const row = await prisma.storeCheckin.findFirst({ where: { id, clientId } });
     if (!row) throw notFound('That arrival could not be found.');
     if (row.doneAt) return { id, done: true, closedAs: row.closedAs ?? 'DONE' };
+    // DONE (served, 12 Nov: CRM ends a visit) is Done: only for someone who was being served.
+    if (as === 'DONE' && !row.takenAt) throw badRequest('Nobody is with them yet: use LEFT or MISTAKE.');
     if (row.takenAt && row.takenById !== actor.id && !actor.owner) {
       throw forbidden(`${row.takenByName || 'Someone'} is with them. Only they, or the owner, can close this.`);
     }

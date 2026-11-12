@@ -40,7 +40,8 @@ async function main() {
   r = await doorCheckins.close(CLIENT, a.id, 'MISTAKE', priya);
   x = await row(a.id);
   check('closing again answers the same and changes nothing', r.closedAs === 'LEFT' && x.closedAs === 'LEFT' && x.closedByName === 'Ravi', JSON.stringify(r));
-  check('a wrong "as" is refused in words', (await fails(doorCheckins.close(CLIENT, (await arrive()).id, 'GONE', ravi)))?.message === 'Say how it ended: LEFT or MISTAKE.');
+  check('a wrong "as" is refused in words', (await fails(doorCheckins.close(CLIENT, (await arrive()).id, 'GONE', ravi)))?.message === 'Say how it ended: LEFT, MISTAKE or DONE.');
+  check('DONE on a walk-in nobody has taken: refused (nobody served them)', /Nobody is with them yet/.test((await fails(doorCheckins.close(CLIENT, (await arrive()).id, 'DONE', ravi)))?.message ?? ''));
   check('an arrival of another shop: not found', /could not be found/.test((await fails(doorCheckins.close('someone-else', a.id, 'LEFT', owner)))?.message ?? ''));
 
   console.log('\nB. NO "SORRY FOR THE WAIT" AFTER IT');
@@ -74,6 +75,13 @@ async function main() {
   await doorCheckins.take(CLIENT, t2.id, priya);
   r = await doorCheckins.close(CLIENT, t2.id, 'MISTAKE', priya);
   check('Priya may close her own, as a mistake', r.closedAs === 'MISTAKE', JSON.stringify(r));
+  const t3 = await arrive(2);
+  await doorCheckins.take(CLIENT, t3.id, priya);
+  check('DONE by someone else on Priya\'s customer: refused', (await fails(doorCheckins.close(CLIENT, t3.id, 'DONE', ravi)))?.statusCode === 403);
+  r = await doorCheckins.close(CLIENT, t3.id, 'DONE', priya);
+  x = await row(t3.id);
+  check('CRM ends Priya\'s visit as served: DONE, by Priya, and it cannot be undone as a Not here', r.closedAs === 'DONE' && x.closedByName === 'Priya'
+    && /Only a "Not here"/.test((await fails(doorCheckins.reopen(CLIENT, t3.id, priya)))?.message ?? ''), JSON.stringify(x));
 
   console.log('\nD. UNDO');
   const u = await arrive(1);

@@ -199,7 +199,7 @@ router.post('/shops/:clientId/customers', shop, person(['customer:create', 'crm:
   }
   return { id: c.id, customerCode: c.customerCode, name: c.name, phone: c.phone, offers };
 }, (req, data) => ['CREATED', String(data?.id ?? '')], 'CUSTOMER'));
-// A door arrival closed on CRM's Shop floor (12 Nov): { as: 'LEFT' | 'MISTAKE' }. Inventory stops waiting
+// A door arrival closed on CRM's Shop floor (12 Nov): { as: 'LEFT' | 'MISTAKE' | 'DONE' } (DONE: served, needs someone with them). Inventory stops waiting
 // for them, so no bell or "sorry for the wait" goes out after it. Reopen undoes it within 2 minutes.
 const floorActorOf = (req: Request) => {
   const a = actorOf(req);
