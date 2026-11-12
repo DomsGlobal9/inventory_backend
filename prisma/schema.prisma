@@ -5118,6 +5118,10 @@ model StoreCheckin {
   /// The 5-minute waiting alert (owner's bell + one "sorry for the wait"), sent once.
   waitAlertedAt DateTime? @map("wait_alerted_at")
   waitAlertId   String?   @map("wait_alert_id")
+  /// How it ended: DONE, BILLED, LEFT ("Not here"), MISTAKE. Who closed it (null for BILLED).
+  closedAs     String?   @map("closed_as")
+  closedById   String?   @map("closed_by_id")
+  closedByName String?   @map("closed_by_name")
 
   @@index([clientId, locationId, createdAt])
   @@map("store_checkins")

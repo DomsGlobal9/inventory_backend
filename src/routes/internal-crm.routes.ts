@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import { loadIdentity } from '../lib/identityCache';
 import { grants, holdsEverything } from '../config/permissions';
+import { doorCheckins } from '../services/door-checkin';
 import { customerCard } from '../services/customer-card';
 import { customerGroups } from '../services/customer-groups';
 import * as shopReviews from '../services/shop-reviews';
@@ -198,6 +199,19 @@ router.post('/shops/:clientId/customers', shop, person(['customer:create', 'crm:
   }
   return { id: c.id, customerCode: c.customerCode, name: c.name, phone: c.phone, offers };
 }, (req, data) => ['CREATED', String(data?.id ?? '')], 'CUSTOMER'));
+// A door arrival closed on CRM's Shop floor (12 Nov): { as: 'LEFT' | 'MISTAKE' }. Inventory stops waiting
+// for them, so no bell or "sorry for the wait" goes out after it. Reopen undoes it within 2 minutes.
+const floorActorOf = (req: Request) => {
+  const a = actorOf(req);
+  return { id: a.id, name: actorName(req), owner: holdsEverything(a.permissions ?? [], a.roles ?? []) };
+};
+// The door QR for one store, for CRM's Shop floor to show and print (12 Nov: Inventory's own Door QR
+// screen is gone). Same answer as before: shop, store, message, WhatsApp link -- or why there is none yet.
+router.get('/shops/:clientId/door-qr', shop, readable, act(req => doorCheckins.doorQr(cid(req), req.query.locationId)));
+router.post('/shops/:clientId/checkins/:checkinId/close', shop, person(['customer:view', 'crm:sales']),
+  act(req => doorCheckins.close(cid(req), String(req.params.checkinId), req.body?.as, floorActorOf(req)), req => ['CLOSE_CHECKIN', String(req.params.checkinId)], 'StoreCheckin'));
+router.post('/shops/:clientId/checkins/:checkinId/reopen', shop, person(['customer:view', 'crm:sales']),
+  act(req => doorCheckins.reopen(cid(req), String(req.params.checkinId), floorActorOf(req)), req => ['REOPEN_CHECKIN', String(req.params.checkinId)], 'StoreCheckin'));
 // { birthday?, anniversary? }: "MM-DD" (a year is dropped), or null to clear. Only what is sent changes.
 router.put('/shops/:clientId/customers/:customerId/dates', shop, person(['customer:update', 'crm:customer:update']), act(async req => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};

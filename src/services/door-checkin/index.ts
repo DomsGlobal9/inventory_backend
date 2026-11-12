@@ -18,6 +18,8 @@ import { groupNamesOf } from '../customer-groups';
 export const VISIT_MS = 2 * 60 * 60 * 1000;
 /** Waiting this long with nobody taking them: the owner's bell, and one "sorry for the wait". */
 export const WAIT_ALERT_MS = 5 * 60 * 1000;
+/** How long a "Not here" can be undone. */
+export const UNDO_MS = 2 * 60 * 1000;
 
 /** "They asked for Lakshmi": a 409 that carries the name, so the screen can ask "take them anyway?". */
 export class AskedForSomeoneElse extends HttpError {
@@ -126,7 +128,7 @@ export const doorCheckins = {
       if (bill) billed.push(r.id);
     }
     if (billed.length) {
-      await prisma.storeCheckin.updateMany({ where: { id: { in: billed }, doneAt: null }, data: { doneAt: now } });
+      await prisma.storeCheckin.updateMany({ where: { id: { in: billed }, doneAt: null }, data: { doneAt: now, closedAs: 'BILLED' } });
       rows = rows.filter(r => !billed.includes(r.id));
     }
 
@@ -227,8 +229,51 @@ export const doorCheckins = {
     if (row.doneAt) return { id, done: true };
     if (!row.takenAt) throw badRequest('Nobody is with them yet.');
     if (row.takenById !== actor.id && !actor.owner) throw forbidden('Only the person with them, or the owner, can finish with them.');
-    await prisma.storeCheckin.updateMany({ where: { id, clientId, doneAt: null }, data: { doneAt: new Date() } });
+    await prisma.storeCheckin.updateMany({ where: { id, clientId, doneAt: null }, data: { doneAt: new Date(), closedAs: 'DONE', closedById: actor.id, closedByName: actor.name } });
     return { id, done: true };
+  },
+
+  /**
+   * "Not here" (12 Nov 2026): close an arrival without serving them -- LEFT (they went, or nobody came)
+   * or MISTAKE (a wrong scan). Closed, nothing is waiting any more: no bell and no "sorry for the wait"
+   * go out after it, and one already raised is settled. Anybody may close an arrival nobody has taken;
+   * a taken one only the person with them, or the owner. Closing twice answers the same.
+   */
+  async close(clientId: string, id: string, as: unknown, actor: Actor) {
+    if (as !== 'LEFT' && as !== 'MISTAKE') throw badRequest('Say how it ended: LEFT or MISTAKE.');
+    const row = await prisma.storeCheckin.findFirst({ where: { id, clientId } });
+    if (!row) throw notFound('That arrival could not be found.');
+    if (row.doneAt) return { id, done: true, closedAs: row.closedAs ?? 'DONE' };
+    if (row.takenAt && row.takenById !== actor.id && !actor.owner) {
+      throw forbidden(`${row.takenByName || 'Someone'} is with them. Only they, or the owner, can close this.`);
+    }
+    const closed = await prisma.storeCheckin.updateMany({
+      where: { id, clientId, doneAt: null },
+      data: { doneAt: new Date(), closedAs: as, closedById: actor.id, closedByName: actor.name }
+    });
+    const after = await prisma.storeCheckin.findFirstOrThrow({ where: { id, clientId } });
+    if (closed.count && after.waitAlertId) {
+      await prisma.inventoryAlert.updateMany({ where: { id: after.waitAlertId, clientId }, data: { isResolved: true } }).catch(() => null);
+    }
+    return { id, done: true, closedAs: after.closedAs ?? as };
+  },
+
+  /**
+   * Undo a "Not here" pressed by mistake: within UNDO_MS, by whoever closed it or the owner. The arrival
+   * is waiting again from where it was (its waiting time and any alert already sent are kept).
+   */
+  async reopen(clientId: string, id: string, actor: Actor, now = new Date()) {
+    const row = await prisma.storeCheckin.findFirst({ where: { id, clientId } });
+    if (!row) throw notFound('That arrival could not be found.');
+    if (!row.doneAt) return { id, done: false };
+    if (row.closedAs !== 'LEFT' && row.closedAs !== 'MISTAKE') throw conflict('Only a "Not here" can be undone.');
+    if (now.getTime() - row.doneAt.getTime() > UNDO_MS) throw conflict('Too late to undo. They can scan the door QR again.');
+    if (row.closedById !== actor.id && !actor.owner) throw forbidden('Only the person who closed it, or the owner, can undo it.');
+    await prisma.storeCheckin.updateMany({
+      where: { id, clientId, doneAt: row.doneAt },
+      data: { doneAt: null, closedAs: null, closedById: null, closedByName: null }
+    });
+    return { id, done: false };
   },
 
   /**
