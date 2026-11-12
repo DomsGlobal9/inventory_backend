@@ -245,6 +245,45 @@ async function main() {
   r = await close(viaApiOwner, { as: 'MISTAKE' });
   check('the owner can (a visit left open at closing time)', r.status === 200 && r.data?.data?.closedAs === 'MISTAKE', brief(r));
   await prisma.storeCheckin.deleteMany({ where: { id: { in: [arrival.id, theirs.id] } } });
+
+  // ── E. TAKEN ON CRM'S SHOP FLOOR ──────────────────────────────────────────
+  console.log('\nE. TAKEN ON CRM\'S SHOP FLOOR (take / untake)');
+  const walkIn = await prisma.storeCheckin.create({ data: { clientId: SHOP, locationId: north.id, phone: '+919000055011', waitingSince: new Date(Date.now() - 4 * 60_000) } });
+  const take = (who: { id: string }, body: any = {}, id = walkIn.id) => call('POST', crm(`/checkins/${id}/take`), as(who), body);
+  r = await take(store);
+  check('a storekeeper cannot take a walk-in', r.status === 403, brief(r));
+  r = await take(floorUser);
+  let w = await prisma.storeCheckin.findUniqueOrThrow({ where: { id: walkIn.id } });
+  check('Priya takes them in CRM: Inventory has them as with Priya', r.status === 200 && w.takenById === floorUser.id && w.takenByName === 'Floor Priya' && !!w.takenAt, brief(r));
+  r = await take(floorUser);
+  check('taking again: same answer, no error', r.status === 200, brief(r));
+  r = await take(sales);
+  check('Ravi (Shop floor) trying to take Priya\'s customer: 409, naming Priya', r.status === 409 && /Floor Priya is already with them/.test(r.data?.message), brief(r));
+  r = await call('POST', crm(`/checkins/${walkIn.id}/untake`), as(sales));
+  check('Ravi cannot let Priya\'s customer go (only Priya or the owner)', r.status === 403 && /Floor Priya is with them/.test(r.data?.message), brief(r));
+  r = await take(writerUser);
+  check('Divya (no Shop floor permission) cannot take anyone', r.status === 403, brief(r));
+  const beforeUntake = Date.now();
+  r = await call('POST', crm(`/checkins/${walkIn.id}/untake`), as(floorUser));
+  w = await prisma.storeCheckin.findUniqueOrThrow({ where: { id: walkIn.id } });
+  check('Priya lets them go (started by mistake): nobody with them, waiting again from now',
+    r.status === 200 && w.takenAt === null && w.takenById === null && w.waitingSince.getTime() >= beforeUntake - 1000, brief(r));
+  r = await call('POST', crm(`/checkins/${walkIn.id}/untake`), as(floorUser));
+  check('letting go again: same answer', r.status === 200 && r.data?.data?.taken === false, brief(r));
+  await prisma.storeCheckin.update({ where: { id: walkIn.id }, data: { askedForId: writerUser.id, askedForName: 'Writer Divya' } });
+  r = await take(floorUser);
+  check('they asked for Divya: Priya is told first (409 ASKED_FOR, with the name)', r.status === 409 && r.data?.code === 'ASKED_FOR' && r.data?.askedFor === 'Writer Divya', brief(r));
+  r = await take(floorUser, { anyway: true });
+  check('...and can take them anyway', r.status === 200, brief(r));
+  r = await close(floorUser, { as: 'DONE' }, walkIn.id);
+  check('Priya finishes in CRM: close as DONE now works (someone is with them)', r.status === 200 && r.data?.data?.closedAs === 'DONE', brief(r));
+  r = await take(sales);
+  check('a finished walk-in cannot be taken', r.status === 409 && /already been helped/.test(r.data?.message), brief(r));
+  r = await call('POST', crm(`/checkins/${walkIn.id}/untake`), as(floorUser));
+  check('nor let go', r.status === 409, brief(r));
+  r = await take(floorUser, {}, theirs.id);
+  check('another shop\'s walk-in: not found', r.status === 404, brief(r));
+  await prisma.storeCheckin.deleteMany({ where: { id: walkIn.id } });
 }
 
 async function cleanup() {

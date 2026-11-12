@@ -278,6 +278,24 @@ export const doorCheckins = {
   },
 
   /**
+   * Taken by mistake (12 Nov 2026: CRM's "Remove: started by mistake"): nobody is with them again. By the
+   * person who took them, or the owner. Their wait starts again from now, so a customer let go of is not
+   * sent "sorry for the wait" the moment they are back in the list.
+   */
+  async untake(clientId: string, id: string, actor: Actor, now = new Date()) {
+    const row = await prisma.storeCheckin.findFirst({ where: { id, clientId } });
+    if (!row) throw notFound('That arrival could not be found.');
+    if (row.doneAt) throw conflict('They have already been helped.');
+    if (!row.takenAt) return { id, taken: false };
+    if (row.takenById !== actor.id && !actor.owner) throw forbidden(`${row.takenByName || 'Someone'} is with them. Only they, or the owner, can let them go.`);
+    await prisma.storeCheckin.updateMany({
+      where: { id, clientId, takenById: row.takenById, doneAt: null },
+      data: { takenAt: null, takenById: null, takenByName: null, waitingSince: now }
+    });
+    return { id, taken: false };
+  },
+
+  /**
    * Undo a "Not here" pressed by mistake: within UNDO_MS, by whoever closed it or the owner. The arrival
    * is waiting again from where it was (its waiting time and any alert already sent are kept).
    */

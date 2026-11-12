@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import { loadIdentity } from '../lib/identityCache';
 import { grants, holdsEverything } from '../config/permissions';
-import { doorCheckins } from '../services/door-checkin';
+import { doorCheckins, AskedForSomeoneElse } from '../services/door-checkin';
 import { customerCard } from '../services/customer-card';
 import { customerGroups } from '../services/customer-groups';
 import * as shopReviews from '../services/shop-reviews';
@@ -208,6 +208,22 @@ const floorActorOf = (req: Request) => {
 // The door QR for one store, for CRM's Shop floor to show and print (12 Nov: Inventory's own Door QR
 // screen is gone). Same answer as before: shop, store, message, WhatsApp link -- or why there is none yet.
 router.get('/shops/:clientId/door-qr', shop, readable, act(req => doorCheckins.doorQr(cid(req), req.query.locationId)));
+// Taken on CRM's Shop floor ("I'll take this"): Inventory stops waiting for them -- no bell, no "sorry for the
+// wait" -- and a bell already rung is settled. { anyway: true } takes someone who asked for another person.
+router.post('/shops/:clientId/checkins/:checkinId/take', shop, person(['customer:view', 'crm:sales']), async (req, res) => {
+  try {
+    const a = floorActorOf(req);
+    const data = await doorCheckins.take(cid(req), String(req.params.checkinId), a, req.body?.anyway === true);
+    logActivity(req, 'TAKE_CHECKIN', 'StoreCheckin', String(req.params.checkinId));
+    res.json({ success: true, data });
+  } catch (error) {
+    if (error instanceof AskedForSomeoneElse) return res.status(409).json({ success: false, message: error.message, code: 'ASKED_FOR', askedFor: error.askedFor });
+    return respondWithError(res, error, { status: 400 });
+  }
+});
+// "Remove: started by mistake": nobody is with them again, waiting from now. The person who took them, or the owner.
+router.post('/shops/:clientId/checkins/:checkinId/untake', shop, person(['customer:view', 'crm:sales']),
+  act(req => doorCheckins.untake(cid(req), String(req.params.checkinId), floorActorOf(req)), req => ['UNTAKE_CHECKIN', String(req.params.checkinId)], 'StoreCheckin'));
 router.post('/shops/:clientId/checkins/:checkinId/close', shop, person(['customer:view', 'crm:sales']),
   act(req => doorCheckins.close(cid(req), String(req.params.checkinId), req.body?.as, floorActorOf(req)), req => ['CLOSE_CHECKIN', String(req.params.checkinId)], 'StoreCheckin'));
 router.post('/shops/:clientId/checkins/:checkinId/reopen', shop, person(['customer:view', 'crm:sales']),

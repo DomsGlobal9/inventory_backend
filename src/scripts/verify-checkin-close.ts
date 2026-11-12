@@ -83,6 +83,20 @@ async function main() {
   check('CRM ends Priya\'s visit as served: DONE, by Priya, and it cannot be undone as a Not here', r.closedAs === 'DONE' && x.closedByName === 'Priya'
     && /Only a "Not here"/.test((await fails(doorCheckins.reopen(CLIENT, t3.id, priya)))?.message ?? ''), JSON.stringify(x));
 
+  console.log('\nC2. TAKEN IN CRM, THEN LET GO');
+  const tk = await arrive(Math.ceil(WAIT_ALERT_MS / 60_000) + 2);
+  await doorCheckins.take(CLIENT, tk.id, priya);
+  await doorCheckins.waitTick(new Date(), [CLIENT]);
+  x = await row(tk.id);
+  check('taken (as CRM now tells Inventory): no bell, no apology, however long they waited first', x.waitAlertedAt === null, JSON.stringify(x));
+  await doorCheckins.untake(CLIENT, tk.id, priya);
+  await doorCheckins.waitTick(new Date(), [CLIENT]);
+  x = await row(tk.id);
+  check('let go by mistake: waiting again from now, so no apology at once', x.takenAt === null && x.waitAlertedAt === null, JSON.stringify(x));
+  await doorCheckins.waitTick(new Date(Date.now() + WAIT_ALERT_MS + 60_000), [CLIENT]);
+  x = await row(tk.id);
+  check('...and 5 minutes later with nobody taking them, the bell rings as usual', x.waitAlertedAt !== null && x.waitAlertId !== null, JSON.stringify(x));
+
   console.log('\nD. UNDO');
   const u = await arrive(1);
   await doorCheckins.close(CLIENT, u.id, 'LEFT', ravi);
