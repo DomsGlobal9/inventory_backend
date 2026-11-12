@@ -60,14 +60,34 @@ export function watchAll(fn: (clientId: string, topic: AnyTopic) => void) {
   return () => { watchers.delete(fn); };
 }
 
+/**
+ * Proof the line really hears (idea from the CRM chat, 12 Nov): a transaction pooler accepts LISTEN and then
+ * delivers nothing, and a connection can go quietly deaf. So a test signal is sent the way real changes travel
+ * (the app's normal database connection) and the line counts as listening only once it comes back -- at the start
+ * and every PROBE_EVERY_MS after. Not heard within PROBE_WAIT_MS: the line is re-made, and meanwhile screens are
+ * told listening:false, so they refresh every minute instead of waiting for news that never comes.
+ */
+export const PROBE_EVERY_MS = 5 * 60_000;
+export const PROBE_WAIT_MS = 10_000;
+const PROBE_SHOP = '__probe__';
+let warnedDeaf = false;
+
+async function sendProbe(token: string) {
+  const { prisma } = await import('../../lib/prisma');
+  await prisma.$executeRaw`SELECT pg_notify(${LIVE_CHANNEL}, ${JSON.stringify({ c: PROBE_SHOP, t: token })})`;
+}
+
 async function connect() {
   const url = process.env.DIRECT_URL || process.env.DATABASE_URL;
   if (!url) return;
   const c = new Client({ connectionString: url, keepAlive: true });
+  let waitingFor: { token: string; heard: () => void } | null = null;
+  let probeTimer: NodeJS.Timeout | null = null;
   c.on('notification', msg => {
     if (msg.channel !== LIVE_CHANNEL || !msg.payload) return;
     try {
       const { c: shop, t } = JSON.parse(msg.payload);
+      if (shop === PROBE_SHOP) { if (waitingFor && t === waitingFor.token) waitingFor.heard(); return; }
       if (typeof shop !== 'string') return;
       if (isScreenTopic(t)) deliver(shop, [t]);
       if (isServerTopic(t)) tellWatchers(shop, t);
@@ -76,6 +96,8 @@ async function connect() {
   const lost = (why: string) => {
     if (client !== c) return;
     client = null;
+    if (probeTimer) { clearInterval(probeTimer); probeTimer = null; }
+    waitingFor = null;
     const wasConnected = connected;
     connected = false;
     c.removeAllListeners();
@@ -87,14 +109,33 @@ async function connect() {
   };
   c.on('error', err => lost(err.message));
   c.on('end', () => lost('ended'));
+  /** Resolves true when this line hears a test signal sent the normal way within PROBE_WAIT_MS. */
+  const probe = () => new Promise<boolean>(resolve => {
+    const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const timer = setTimeout(() => { waitingFor = null; resolve(false); }, PROBE_WAIT_MS);
+    waitingFor = { token, heard: () => { clearTimeout(timer); waitingFor = null; resolve(true); } };
+    sendProbe(token).catch(() => { clearTimeout(timer); waitingFor = null; resolve(false); });
+  });
   client = c;
   try {
     await c.connect();
     await c.query(`LISTEN ${LIVE_CHANNEL}`);
+    if (!(await probe())) {
+      if (!warnedDeaf) {
+        warnedDeaf = true;
+        console.warn('[live] LISTEN accepted but a test signal never came back (a transaction pooler as DIRECT_URL?); screens refresh every minute until it does.');
+      }
+      return lost('test signal not heard');
+    }
+    if (client !== c) return; // dropped while proving
     const wasDown = retryMs > 1000;
     connected = true;
     retryMs = 1000;
     if (wasDown) everyoneEverything();
+    probeTimer = setInterval(() => {
+      void probe().then(ok => { if (!ok) lost('went quiet: test signal not heard'); });
+    }, PROBE_EVERY_MS);
+    probeTimer.unref?.();
   } catch (err: any) {
     lost(err?.message ?? 'could not connect');
   }
