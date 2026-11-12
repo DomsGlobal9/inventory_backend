@@ -284,6 +284,31 @@ async function main() {
   r = await take(floorUser, {}, theirs.id);
   check('another shop\'s walk-in: not found', r.status === 404, brief(r));
   await prisma.storeCheckin.deleteMany({ where: { id: walkIn.id } });
+
+  console.log('\nF. WORST CASES ON THE SHOP FLOOR');
+  // Two salespeople press "I'll take this" at the same moment: exactly one has them.
+  const race = await prisma.storeCheckin.create({ data: { clientId: SHOP, locationId: north.id, phone: '+919000055021' } });
+  const [ra, rb] = await Promise.all([take(floorUser, {}, race.id), take(sales, {}, race.id)]);
+  const raceRow = await prisma.storeCheckin.findUniqueOrThrow({ where: { id: race.id } });
+  const winners = [ra, rb].filter(x => x.status === 200).length;
+  check('two take at once: one wins (200), the other is told who has them (409)',
+    winners === 1 && [ra, rb].some(x => x.status === 409) && [floorUser.id, sales.id].includes(raceRow.takenById!), `${ra.status}/${rb.status} -> ${raceRow.takenByName}`);
+  // The owner lets Priya's (or Ravi's) customer go; then the other one can take them.
+  r = await call('POST', crm(`/checkins/${race.id}/untake`), as(viaApiOwner));
+  check('the owner can let anyone\'s customer go', r.status === 200, brief(r));
+  const loser = raceRow.takenById === floorUser.id ? sales : floorUser;
+  r = await take(loser, {}, race.id);
+  check('...and then the other salesperson can take them', r.status === 200, brief(r));
+  // A bell that already rang is settled when someone takes them.
+  const late = await prisma.storeCheckin.create({ data: { clientId: SHOP, locationId: north.id, phone: '+919000055022', createdAt: new Date(Date.now() - 20 * 60_000), waitingSince: new Date(Date.now() - 20 * 60_000) } });
+  const { doorCheckins: dc } = await import('../services/door-checkin');
+  await dc.waitTick(new Date(), [SHOP]);
+  const rang = await prisma.storeCheckin.findUniqueOrThrow({ where: { id: late.id } });
+  r = await take(floorUser, {}, late.id);
+  const bell = rang.waitAlertId ? await prisma.inventoryAlert.findUnique({ where: { id: rang.waitAlertId } }) : null;
+  check('a customer whose bell already rang: taking them settles the bell', !!bell && bell.isResolved === true && r.status === 200, JSON.stringify({ alert: rang.waitAlertId, resolved: bell?.isResolved, status: r.status }));
+  if (rang.waitAlertId) await prisma.inventoryAlert.deleteMany({ where: { id: rang.waitAlertId } });
+  await prisma.storeCheckin.deleteMany({ where: { id: { in: [race.id, late.id] } } });
 }
 
 async function cleanup() {

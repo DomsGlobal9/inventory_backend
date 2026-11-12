@@ -90,6 +90,34 @@ async function main() {
   check('205 more: a page of 200 says more; the next page has the rest', p1.erasures.length === 200 && p1.more === true && p2.erasures.length === 6 && p2.more === false, `${p1.erasures.length}/${p1.more} then ${p2.erasures.length}/${p2.more}`);
   const dupes = await prisma.$transaction(tx => noteErasures(tx, OTHER, ['+919000099999', '+919000099999', '', null]));
   check('the same number twice in one erase, or blanks: noted once', dupes === 1, String(dupes));
+
+  console.log('\nE. WORST CASES');
+  // An erase that is refused (an order still to go out) notes nothing: the note is in the same transaction.
+  const blocked = await mk(SHOP, '5', '+919000066005');
+  await prisma.salesOrder.create({ data: { clientId: SHOP, orderNumber: `SO-E5-${STAMP}`, locationId: store.id, customerId: blocked.id, status: 'CONFIRMED' as any, subtotal: 50, total: 50 } as any });
+  const before = await prisma.customerErasure.count({ where: { clientId: SHOP } });
+  let refused: any = null;
+  try { await deleteCustomer(SHOP, blocked.id, '6005'); } catch (e) { refused = e; }
+  const after = await prisma.customerErasure.count({ where: { clientId: SHOP } });
+  check('an erase refused (an order still to go out): refused, and nothing noted', !!refused && after === before, `${refused?.message} / ${before} -> ${after}`);
+
+  // The same number erased, given to somebody new, erased again: both, in order, with their own times.
+  const first = await mk(SHOP, '6', '+919000066006');
+  await deleteCustomer(SHOP, first.id, '6006');
+  const again = await mk(SHOP, '7', '+919000066006');
+  await deleteCustomer(SHOP, again.id, '6006');
+  const both = (await erasuresAfter(SHOP, '0')).erasures.filter(e => e.phone === '+919000066006');
+  check('a number erased, reused, erased again: two entries, oldest first, each with its own time',
+    both.length === 2 && Date.parse(both[0].erasedAt) <= Date.parse(both[1].erasedAt) && both[0].id !== both[1].id, JSON.stringify(both));
+
+  const all = await erasuresAfter(SHOP, '0');
+  const beyond = await erasuresAfter(SHOP, (BigInt(all.next) + 1000n).toString());
+  check('asking from beyond the last one: nothing, and next stays where asked', beyond.erasures.length === 0 && beyond.next === (BigInt(all.next) + 1000n).toString(), JSON.stringify(beyond));
+  const zeros = await erasuresAfter(SHOP, '000');
+  check('leading zeros read as the start', zeros.erasures.length === all.erasures.length, `${zeros.erasures.length} vs ${all.erasures.length}`);
+  let tooLong: any = null;
+  try { await erasuresAfter(SHOP, '1234567890123456789'); } catch (e) { tooLong = e; }
+  check('a since too long to be ours: refused', tooLong?.statusCode === 400, String(tooLong?.message));
 }
 
 main()
