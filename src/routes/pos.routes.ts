@@ -16,6 +16,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import { erasuresAfter } from '../services/customer-erasures';
 import sharp from 'sharp';
 import { authenticateStorefront, onlyPos, storefrontContext } from '../middleware/storefront.middleware';
 import { quoteForTill } from '../services/pos/pos-quote.service';
@@ -200,6 +201,21 @@ router.post('/upi-qr/:qrId/close', async (req: Request, res: Response, next: Nex
   } catch (error: any) { if (!holdFailure(res, error)) next(error); }
 });
 
+/**
+ * Customers erased in Inventory since `since`, for the till to erase its own copy (12 Nov 2026). This
+ * shop only, oldest first, 200 at a time: pass back `next`; `more` says another page is waiting. Each
+ * entry names the number the person had. Kept 30 days, so a till asks at least that often.
+ */
+router.get('/erasures', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    res.json({ success: true, data: await erasuresAfter(ctx.clientId, req.query.since) });
+  } catch (error: any) {
+    if (error?.statusCode === 400) return res.status(400).json({ success: false, message: error.message });
+    next(error);
+  }
+});
 router.get('/wallet', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ctx = storefrontContext(req, res);

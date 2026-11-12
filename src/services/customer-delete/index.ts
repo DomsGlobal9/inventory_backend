@@ -1,4 +1,5 @@
 import { forgetNumberRows, forgetPhotos } from '../shop-reviews';
+import { noteErasures } from '../customer-erasures';
 import { prisma } from '../../lib/prisma';
 import { badRequest, conflict, notFound } from '../../utils/httpError';
 
@@ -64,6 +65,8 @@ export async function deleteCustomer(clientId: string, id: string, confirmRaw: u
 
   let reviewPhotos: Awaited<ReturnType<typeof forgetNumberRows>> = [];
   await prisma.$transaction(async (tx) => {
+    // For the POS till to erase its own copy: the number they had, noted now (it is gone from the row next).
+    await noteErasures(tx, clientId, [phone]);
     // Tied to the number: what they looked at and tried on, their phone code, door check-ins, look-ups.
     if (phone) {
       await tx.shopProductView.deleteMany({ where: { clientId, phone } });

@@ -5360,3 +5360,17 @@ model ShopifyOrderUpdate {
   @@index([clientId, salesOrderId])
   @@map("shopify_order_updates")
 }
+
+/// A customer erased or removed in Inventory, for the POS till to erase its copy (12 Nov 2026). The number they
+/// had at that moment; kept 30 days (services/customer-erasures). The till reads it with its key.
+model CustomerErasure {
+  id       String   @id @default(uuid())
+  sequence BigInt   @unique @default(autoincrement())
+  clientId String   @map("client_id")
+  phone    String
+  erasedAt DateTime @default(now()) @map("erased_at")
+
+  @@index([clientId, sequence])
+  @@index([erasedAt])
+  @@map("customer_erasures")
+}

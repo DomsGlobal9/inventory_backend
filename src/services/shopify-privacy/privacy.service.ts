@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma';
+import { noteErasures } from '../customer-erasures';
 import { getShopSettings } from '../../lib/clientSettings';
 import { personalPartsOf, scrubShopifyPayload } from './scrub';
 
@@ -399,6 +400,9 @@ export class ShopifyPrivacyService {
     await prisma.$transaction(async tx => {
       if (customerIds.length) {
         await tx.pastPurchase.deleteMany({ where: { customerId: { in: customerIds } } });
+        // For the POS till: the numbers they had, before they go (services/customer-erasures).
+        const had = await tx.customer.findMany({ where: { id: { in: customerIds }, phone: { not: null } }, select: { clientId: true, phone: true } });
+        for (const c of had) await noteErasures(tx, c.clientId, [c.phone]);
         await tx.customer.updateMany({ where: { id: { in: customerIds } }, data: ERASED_CUSTOMER });
       }
       if (orderIds.length) {
@@ -443,6 +447,10 @@ export class ShopifyPrivacyService {
 
     const summary = await prisma.$transaction(async tx => {
       if (clientId) await tx.pastPurchase.deleteMany({ where: { clientId, customer: { sourceStore: shopDomain } } });
+      if (clientId) {
+        const had = await tx.customer.findMany({ where: { clientId, sourceStore: shopDomain, phone: { not: null } }, select: { phone: true } });
+        await noteErasures(tx, clientId, had.map(c => c.phone));
+      }
       const customers = clientId
         ? await tx.customer.updateMany({ where: { clientId, sourceStore: shopDomain }, data: ERASED_CUSTOMER })
         : { count: 0 };
