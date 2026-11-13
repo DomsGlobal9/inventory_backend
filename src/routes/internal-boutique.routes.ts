@@ -81,6 +81,8 @@ router.get('/items/:itemCode', read(async req => {
 }));
 router.get('/items/:itemCode/history', read(req => boutique.history(actorOf(req), String(req.params.itemCode), Number(req.query.limit) || 50)));
 
+router.post('/stores', write((tx, a, req) => boutique.addStore(tx, a, req.body ?? {})));
+
 // ── items ────────────────────────────────────────────────────────────────────────────────────────
 router.put('/items/:itemCode', write((tx, a, req) => boutique.upsertItem(tx, a, { ...(req.body ?? {}), itemCode: req.params.itemCode })));
 router.delete('/items/:itemCode', write((tx, a, req) => boutique.archiveItem(tx, a, String(req.params.itemCode))));

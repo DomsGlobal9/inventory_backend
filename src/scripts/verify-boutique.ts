@@ -229,6 +229,36 @@ async function main() {
   await prisma.boutiqueLink.update({ where: { clientId: RETAIL }, data: { unlinkedAt: new Date() } });
   check('once the owner unlinks, the boutique can no longer reach the shop', (await call('GET', '/items', undefined, { tenant: T2 })).status === 403);
 
+  console.log('\nEVERYTHING A BOUTIQUE STOCKS (CRM-B catalogue)');
+  const lining = await call('PUT', '/items/LN-GOLD', { name: 'Satin lining, gold', category: 'LINING', sellingPrice: 90 });
+  check('a lining with no unit given is counted in metres (the boutique\'s default for linings)', lining.status === 201 && lining.data?.unit === 'METRE' && lining.data?.productType === 'UNSTITCHED' && lining.data?.kind === 'LINING', lining.data);
+  const beads = await call('PUT', '/items/BD-KUN', { name: 'Kundan stones', category: 'MAGGAM', unit: 'PACKET', sellingPrice: 120, sellInShop: true, reorderLevel: 5 });
+  check('maggam stones by the packet, sold in the shop too', beads.status === 201 && beads.data?.unit === 'PACKET' && beads.data?.category === 'MAGGAM' && beads.data?.sellInShop === true, beads.data);
+  const lace = await call('PUT', '/items/LC-ZARI', { name: 'Zari lace', category: 'BORDER', sellingPrice: 35, sellInShop: true, reorderLevel: 2.5 });
+  const laceV = (await stockOf(C1, 'LC-ZARI')).v;
+  check('a zari lace border by the metre, reorder at 2.5 m (stored 250 cm)', lace.status === 201 && lace.data?.unit === 'METRE' && laceV?.reorderLevel === 250, { d: lace.data, r: laceV?.reorderLevel });
+  const glue = await call('PUT', '/items/GL-FEV', { name: 'Fabric glue', category: 'STITCHING', itemType: 'CONSUMABLE' });
+  check('glue (a consumable) is kept, not for sale', glue.status === 201 && glue.data?.itemType === 'CONSUMABLE' && glue.data?.sellInShop === false, glue.data);
+  const machine = await call('PUT', '/items/MC-OVL', { name: 'Overlock machine', category: 'OTHER', itemType: 'MACHINE', unit: 'PIECE' });
+  check('a sewing machine is kept as equipment, never for sale', machine.status === 201 && machine.data?.itemType === 'MACHINE' && machine.data?.sellInShop === false, machine.data);
+  const doc = await call('PUT', '/items/DOC-1', { name: 'QC checklist', itemType: 'DOCUMENT' });
+  check('a document is not stock: refused in words', doc.status === 400 && /not kept as stock/.test(doc.message ?? ''), doc);
+  const fg = await call('PUT', '/items/FG-ANK1', { name: 'Anarkali, rani pink', category: 'FINISHED', size: 'M', sellingPrice: 4500, sellInShop: true });
+  const fgP = await prisma.product.findFirst({ where: { clientId: C1, importKey: 'boutique:FG-ANK1' } });
+  check('a garment the boutique finished for stock is ready to wear, by the piece, on sale', fg.status === 201 && fg.data?.unit === 'PIECE' && fgP?.productType === 'READY_TO_WEAR' && await inShop(fgP!.id, ELIGIBLE_PRODUCT), { d: fg.data, t: fgP?.productType });
+  check('...and the machine is not in the shop', !(await inShop((await stockOf(C1, 'MC-OVL')).v!.productId, ELIGIBLE_PRODUCT)));
+  await call('POST', '/movements', { itemCode: 'LC-ZARI', kind: 'GOODS_RECEIPT', quantity: 20 });
+  const cons = await call('POST', '/movements', { itemCode: 'LC-ZARI', kind: 'CONSUMPTION', quantity: 1.5, orderRef: 'ORD-5' });
+  const back = await call('POST', '/movements', { itemCode: 'LC-ZARI', kind: 'RETURN', quantity: 0.5, orderRef: 'ORD-5' });
+  const sret = await call('POST', '/movements', { itemCode: 'LC-ZARI', kind: 'SUPPLIER_RETURN', quantity: 3 });
+  check('the boutique\'s own names work: GOODS_RECEIPT, CONSUMPTION, RETURN, SUPPLIER_RETURN (20 - 1.5 + 0.5 - 3 = 16 m)', [cons, back, sret].every(r => r.status === 200) && (await stockOf(C1, 'LC-ZARI')).qty === 1600, [cons.status, back.status, sret.status, (await stockOf(C1, 'LC-ZARI')).qty]);
+  const tailor = await call('POST', '/stores', { name: 'Master Ravi (tailor)', kind: 'TAILOR' });
+  const tailor2 = await call('POST', '/stores', { name: 'master ravi (TAILOR)', kind: 'TAILOR' });
+  check('the boutique adds its tailor as a place (a workroom, not a shop floor); the same name again is the same place', tailor.status === 201 && tailor.data?.type === 'WAREHOUSE' && tailor2.status === 200 && tailor2.data?.id === tailor.data?.id, { tailor, tailor2 });
+  check('an unknown kind of place is refused', (await call('POST', '/stores', { name: 'X', kind: 'SPACESHIP' })).status === 400);
+  const toTailor = await call('POST', '/transfers', { itemCode: 'LC-ZARI', quantity: 4, fromLocationId: first, toLocationId: tailor.data?.id });
+  check('4 m of lace goes to the tailor', toTailor.status === 200 && (await prisma.inventoryStock.findFirst({ where: { locationId: tailor.data?.id } }))?.quantity === 400, toTailor);
+
   console.log('\nARCHIVE');
   const arc = await call('DELETE', '/items/THR-RED');
   const thrP = await prisma.product.findUnique({ where: { id: thrV.productId } });

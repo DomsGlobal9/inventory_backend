@@ -157,7 +157,24 @@ export type ItemInput = {
   color?: unknown; colorHex?: unknown; size?: unknown; widthCm?: unknown;
   sellingPrice?: unknown; purchasePrice?: unknown; gstPercent?: unknown; hsnCode?: unknown;
   imageUrls?: unknown; sellInShop?: unknown;
+  /** The boutique's group and sort of thing (CRM-B Category / CatalogItem.item_type), and its other details. */
+  category?: unknown; itemType?: unknown; brand?: unknown; materialType?: unknown; reorderLevel?: unknown;
 };
+
+/**
+ * Everything a boutique stocks (CRM-B inventory_app): cloth, laces and borders, beads, stones, threads, buttons,
+ * packaging, glue, needles, sewing machines -- and the garments it finishes for stock. Its groups, with the unit each
+ * is counted in when the boutique does not say (CRM-B DEFAULT_UNIT_BY_CATEGORY).
+ */
+export const BOUTIQUE_CATEGORIES: Record<string, SoldBy> = {
+  FABRIC: 'METRE', BORDER: 'METRE', LINING: 'METRE', EMBELLISHMENT: 'PIECE', STITCHING: 'PIECE', PACKAGING: 'PIECE',
+  MAGGAM: 'PIECE', DESIGN: 'PIECE', FINISHED: 'PIECE', OTHER: 'UNIT'
+};
+/** What can be counted on a shelf. Documents, software and clothing-category headings are not stock. */
+export const STOCK_ITEM_TYPES = ['MATERIAL', 'CONSUMABLE', 'TOOL', 'MACHINE', 'ASSET'];
+const NOT_STOCK_ITEM_TYPES = ['DOCUMENT', 'SYSTEM', 'PRODUCT_CATEGORY'];
+/** Our kind for a boutique group, when the boutique gives a group but no kind. */
+const KIND_OF_CATEGORY: Record<string, string> = { FABRIC: 'FABRIC', BORDER: 'BORDER', LINING: 'LINING' };
 
 const hex = (v: unknown) => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toUpperCase() : null);
 
@@ -172,9 +189,18 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
   if (!/^[A-Za-z0-9._/-]{1,50}$/.test(itemCode)) throw problem('Every item needs its item code (letters, numbers, dots, dashes or slashes).');
   const name = String(input.name ?? '').trim();
   if (!name) throw problem(`${itemCode}: give the item a name.`);
-  const soldBy = soldByOf(input.unit);
+  const askedCategory = input.category ? String(input.category).trim().toUpperCase() : null;
+  const category = askedCategory ? (askedCategory in BOUTIQUE_CATEGORIES ? askedCategory : 'OTHER') : null;
+  const itemType = input.itemType ? String(input.itemType).trim().toUpperCase() : 'MATERIAL';
+  if (NOT_STOCK_ITEM_TYPES.includes(itemType)) throw problem(`${itemCode}: a ${itemType.toLowerCase().replace('_', ' ')} is not kept as stock, so it is not added here.`);
+  if (!STOCK_ITEM_TYPES.includes(itemType)) throw problem(`${itemCode}: the sort of item "${input.itemType}" is not known. Use ${STOCK_ITEM_TYPES.join(', ')}.`);
+  const soldBy = soldByOf(input.unit ?? (category ? BOUTIQUE_CATEGORIES[category] : undefined));
+  // A finished garment is ready to wear; cloth, trims and everything used to make one is not a garment yet.
+  const productType = category === 'FINISHED' ? 'READY_TO_WEAR' : 'UNSTITCHED';
+  const brand = input.brand ? String(input.brand).trim().slice(0, 100) : null;
+  const material = input.materialType ? String(input.materialType).trim().slice(0, 100) : null;
   // A kind we do not know yet (the boutique added one) is kept as OTHER rather than refusing the item.
-  const askedKind = input.kind ? String(input.kind).trim().toUpperCase().replace(/[\s/-]+/g, '_') : null;
+  const askedKind = input.kind ? String(input.kind).trim().toUpperCase().replace(/[\s/-]+/g, '_') : (category ? KIND_OF_CATEGORY[category] ?? null : null);
   const kind = askedKind && !KIND_KEYS.includes(askedKind) ? 'OTHER' : askedKind;
   const kindNote = askedKind && kind !== askedKind ? `The kind "${input.kind}" is not known here yet, so it is kept as Other.` : undefined;
   const price = input.sellingPrice == null || input.sellingPrice === '' ? 0 : storedPrice(input.sellingPrice, soldBy);
@@ -202,7 +228,8 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
     }
     const productData = {
       title: name.slice(0, 200), soldBy, kind, widthCm: width, sellInShop, priceOwner: 'BOUTIQUE',
-      basePrice: price, hsnCode: hsn, taxRateBps: gst, productType: (isMeasured(soldBy) ? 'UNSTITCHED' : 'READY_TO_WEAR') as any
+      basePrice: price, hsnCode: hsn, taxRateBps: gst, productType: productType as any,
+      boutiqueCategory: category, itemType, ...(brand ? { brand } : {}), ...(material ? { fabric: material } : {})
     };
     if (!product) {
       const n = await tx.product.count({ where: { clientId: actor.clientId } });
@@ -212,7 +239,9 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
       product = await tx.product.update({ where: { id: product.id }, data: productData as any });
     }
     const existing = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, boutiqueRef: itemCode } });
-    const variantData = { colorName: colour, hexCode: hex(input.colorHex), size, sellingPrice: price, ...(cost !== null ? { costPrice: cost } : {}) };
+    const reorder = input.reorderLevel == null || input.reorderLevel === '' ? null : baseQty(input.reorderLevel, soldBy, 'reorder level');
+    if (reorder !== null && reorder < 0) throw problem(`${itemCode}: the reorder level cannot be below 0.`);
+    const variantData = { colorName: colour, hexCode: hex(input.colorHex), size, sellingPrice: price, ...(cost !== null ? { costPrice: cost } : {}), ...(reorder !== null ? { reorderLevel: reorder } : {}) };
     const variant = existing
       ? await tx.productVariant.update({ where: { id: existing.id }, data: { ...variantData, productId: product.id } })
       : await tx.productVariant.create({ data: { clientId: actor.clientId, productId: product.id, boutiqueRef: itemCode, sku: `${itemCode}`.slice(0, 60), variantCode: `BV-${itemCode}`.slice(0, 60), reorderLevel: isMeasured(soldBy) ? 1000 : 5, ...variantData } as any });
@@ -241,7 +270,7 @@ function itemView(p: any, v: any, stock?: { quantity: number; reserved: number }
     colour: v.colorName, colourHex: v.hexCode, size: v.size, widthCm: p.widthCm,
     sellingPrice: pricePerUnit(Number(v.sellingPrice ?? p.basePrice ?? 0), p.soldBy),
     purchasePrice: v.costPrice != null ? pricePerUnit(Number(v.costPrice), p.soldBy) : null,
-    sellInShop: p.sellInShop, status: p.status,
+    sellInShop: p.sellInShop, status: p.status, category: p.boutiqueCategory ?? null, itemType: p.itemType ?? null, productType: p.productType,
     ...(stock ? { stock: stock.quantity / factorOf(p.soldBy), reserved: stock.reserved / factorOf(p.soldBy), free: (stock.quantity - stock.reserved) / factorOf(p.soldBy), stockText: formatQty(stock.quantity, p.soldBy) } : {})
   };
 }
@@ -277,6 +306,10 @@ const KINDS: Record<string, { reason: any; sign: 1 | -1; perm: string }> = {
   DAMAGE: { reason: 'DAMAGE', sign: -1, perm: 'stock:write' },
   SCRAP: { reason: 'DAMAGE', sign: -1, perm: 'stock:write' },
   SALE: { reason: 'SALE', sign: -1, perm: 'stock:write' },
+  // CRM-B's own names for the same things
+  CONSUMPTION: { reason: 'MANUAL_ADJUSTMENT', sign: -1, perm: 'stitching:issue' },
+  RETURN: { reason: 'MANUAL_ADJUSTMENT', sign: 1, perm: 'stitching:issue' },
+  SUPPLIER_RETURN: { reason: 'RETURN_TO_VENDOR', sign: -1, perm: 'stock:write' },
 };
 export const MOVEMENT_KINDS = Object.keys(KINDS);
 
@@ -359,6 +392,29 @@ export async function transfer(tx: Db, actor: Actor, input: { itemCode: unknown;
     await inventoryMutationService.applyMovement({ clientId: actor.clientId, variantId: v.id, locationId: to, movementType: 'IN' as any, reason: 'TRANSFER', quantityDelta: qty, referenceType: 'BOUTIQUE', referenceId: orderRef, notes: `moved by ${actor.name}`, tx, boutique: { kind: 'TRANSFER', orderRef: orderRef ?? null, actorName: actor.name } });
     return { status: 200, answer: { success: true, data: { itemCode: v.boutiqueRef, moved: qty / factorOf(v.product.soldBy) } } };
   }
+}
+
+/* ── the boutique's places ──────────────────────────────────────────────────────────────────────── */
+
+/** CRM-B StockLocation kinds. A shop floor is a STORE; the workroom places (cutting, tailor...) are WAREHOUSEs. */
+const STORE_KINDS: Record<string, 'STORE' | 'WAREHOUSE'> = {
+  MAIN_STORE: 'STORE', SHOWROOM: 'STORE', WAREHOUSE: 'WAREHOUSE', WORKSHOP: 'WAREHOUSE', CUTTING_UNIT: 'WAREHOUSE',
+  EMBROIDERY_UNIT: 'WAREHOUSE', TAILOR: 'WAREHOUSE', FINISHING_UNIT: 'WAREHOUSE'
+};
+
+/** Add one of the boutique's places (a tailor, the cutting unit). The same name again is the same place. */
+export async function addStore(tx: Db, actor: Actor, input: { name: unknown; kind?: unknown }) {
+  if (!actor.can.includes('stock:write')) throw problem('This person may not add places.', 403);
+  const name = String(input.name ?? '').trim().slice(0, 120);
+  if (!name) throw problem('Give the place a name.');
+  const kind = String(input.kind ?? 'WORKSHOP').toUpperCase();
+  const type = STORE_KINDS[kind];
+  if (!type) throw problem(`The kind of place "${input.kind}" is not known. Use ${Object.keys(STORE_KINDS).join(', ')}.`);
+  const same = await tx.stockLocation.findFirst({ where: { clientId: actor.clientId, name: { equals: name, mode: 'insensitive' } } });
+  if (same) return { status: 200, answer: { success: true, data: { id: same.id, name: same.name, type: same.type } } };
+  const code = `${kind.slice(0, 3)}-${name.toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 12)}-${randomBytes(2).toString('hex')}`;
+  const l = await tx.stockLocation.create({ data: { clientId: actor.clientId, name, code, type, active: true } });
+  return { status: 201, answer: { success: true, data: { id: l.id, name: l.name, type: l.type } } };
 }
 
 /* ── holding cloth for a stitching order ─────────────────────────────────────────────────────────── */

@@ -629,6 +629,10 @@ model Product {
   sellInShop Boolean @default(true) @map("sell_in_shop")
   /// Who sets the price: INVENTORY, or BOUTIQUE for an item the boutique created (read-only in Inventory).
   priceOwner String  @default("INVENTORY") @map("price_owner")
+  /// The boutique's group for an item it created (FABRIC, BORDER, LINING, EMBELLISHMENT, STITCHING, PACKAGING, MAGGAM,
+  /// FINISHED, OTHER) and what sort of thing it is (MATERIAL, CONSUMABLE, TOOL, MACHINE, ASSET). Empty for our own.
+  boutiqueCategory String? @map("boutique_category")
+  itemType         String? @map("item_type")
   status           ProductStatus @default(DRAFT)
   publishedAt      DateTime?     @map("published_at")
 
