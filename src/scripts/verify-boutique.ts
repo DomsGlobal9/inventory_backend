@@ -241,6 +241,7 @@ async function main() {
   check('glue (a consumable) is kept, not for sale', glue.status === 201 && glue.data?.itemType === 'CONSUMABLE' && glue.data?.sellInShop === false, glue.data);
   const machine = await call('PUT', '/items/MC-OVL', { name: 'Overlock machine', category: 'OTHER', itemType: 'MACHINE', unit: 'PIECE' });
   check('a sewing machine is kept as equipment, never for sale', machine.status === 201 && machine.data?.itemType === 'MACHINE' && machine.data?.sellInShop === false, machine.data);
+  check('...and raises no low-stock alert (nobody reorders a sewing machine)', (await stockOf(C1, 'MC-OVL')).v?.reorderLevel === 0, (await stockOf(C1, 'MC-OVL')).v?.reorderLevel);
   const doc = await call('PUT', '/items/DOC-1', { name: 'QC checklist', itemType: 'DOCUMENT' });
   check('a document is not stock: refused in words', doc.status === 400 && /not kept as stock/.test(doc.message ?? ''), doc);
   const fg = await call('PUT', '/items/FG-ANK1', { name: 'Anarkali, rani pink', category: 'FINISHED', size: 'M', sellingPrice: 4500, sellInShop: true });
