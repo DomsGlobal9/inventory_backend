@@ -236,18 +236,21 @@ export async function resolveItems(clientId: string, codes: string[]) {
     select: {
       id: true, variantCode: true, sku: true, taxRateBps: true,
       // trashedAt and title: so a bill for a product deleted here can say so (see applySale).
-      product: { select: { taxRateBps: true, trashedAt: true, title: true, soldBy: true } }
+      product: { select: { taxRateBps: true, trashedAt: true, title: true, soldBy: true, sellInShop: true } }
     }
   });
 
   const byCode = new Map<string, string>();
   // Sold by the metre or kilogram: the till cannot sell those yet (PLAN-fabrics.md 4.5), so a bill naming one is refused.
   const measured = new Map<string, string>();
+  // A material (sellInShop off: threads, beads, lining) is never sold, at the till either.
+  const materials = new Map<string, string>();
   const taxByCode = new Map<string, { taxRateBps: number | null; deleted?: boolean; title?: string }>();
   for (const v of found) {
     byCode.set(v.variantCode, v.id);
     if (!byCode.has(v.sku)) byCode.set(v.sku, v.id);
     if (v.product.soldBy === 'METRE' || v.product.soldBy === 'KILOGRAM') { measured.set(v.variantCode, v.product.title); measured.set(v.sku, v.product.title); }
+    if (v.product.sellInShop === false) { materials.set(v.variantCode, v.product.title); materials.set(v.sku, v.product.title); }
 
     // The variant's own rate wins over the product's -- a variant is the more specific answer.
     const standing = {
@@ -257,7 +260,7 @@ export async function resolveItems(clientId: string, codes: string[]) {
     taxByCode.set(v.variantCode, standing);
     if (!taxByCode.has(v.sku)) taxByCode.set(v.sku, standing);
   }
-  return { byCode, taxByCode, measured };
+  return { byCode, taxByCode, measured, materials };
 }
 
 /** The order this event is about, if Inventory has already seen it. */
@@ -588,7 +591,7 @@ export async function applySale(
    * its own pooled connection, so two queries cost one query's wait. A repeat invoice does throw
    * away the variant read, but a repeat is the rare path and it costs no extra wall-clock time.
    */
-  const [already, { byCode, taxByCode, measured }] = await Promise.all([
+  const [already, { byCode, taxByCode, measured, materials }] = await Promise.all([
     findByExternal(clientId, event.invoiceNo),
     resolveItems(clientId, event.lines.map(l => l.itemCode))
   ]);
@@ -597,6 +600,10 @@ export async function applySale(
   const missing = event.lines.map(l => l.itemCode).filter(c => !byCode.has(c));
   if (missing.length) {
     return { answer: 'UNKNOWN_ITEM', detail: `Not in this shop's catalogue: ${missing.join(', ')}.` };
+  }
+  const notForSale = [...new Set(event.lines.map(l => l.itemCode).filter(c => materials.has(c)).map(c => materials.get(c)))];
+  if (notForSale.length) {
+    return { answer: 'UNKNOWN_ITEM', detail: `A material, not for sale: ${notForSale.join(', ')}. Switch "Sell in shop" on for it in ScaleEzy if you do sell it.` };
   }
   const lengths = [...new Set(event.lines.map(l => l.itemCode).filter(c => measured.has(c)).map(c => measured.get(c)))];
   if (lengths.length) {

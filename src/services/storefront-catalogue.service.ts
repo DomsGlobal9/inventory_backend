@@ -103,7 +103,9 @@ export interface StorefrontProduct {
  */
 export const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = {
   status: 'ACTIVE',
-  trashedAt: null
+  trashedAt: null,
+  // A material (threads, beads, lining cut for stitching) is counted and used, never sold (PLAN-boutique-sync.md).
+  sellInShop: true
 };
 
 /**
@@ -114,8 +116,8 @@ export const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = {
  * API while every event about it was silently discarded -- a storefront that could see it but
  * would never be told when it changed.
  */
-function isEligible(product: { status: string; trashedAt: Date | null; soldBy?: string | null }): boolean {
-  return product.status === 'ACTIVE' && product.trashedAt === null && !MEASURED_UNITS.includes(String(product.soldBy ?? 'PIECE'));
+function isEligible(product: { status: string; trashedAt: Date | null; soldBy?: string | null; sellInShop?: boolean }): boolean {
+  return product.status === 'ACTIVE' && product.trashedAt === null && product.sellInShop !== false && !MEASURED_UNITS.includes(String(product.soldBy ?? 'PIECE'));
 }
 
 /*
@@ -610,7 +612,7 @@ export class StorefrontCatalogueService {
       where: { id: variantId, clientId: scope.clientId },
       select: {
         sku: true,
-        product: { select: { productCode: true, status: true, trashedAt: true, isService: true, soldBy: true } },
+        product: { select: { productCode: true, status: true, trashedAt: true, isService: true, soldBy: true, sellInShop: true } },
         stocks: { select: { locationId: true, quantity: true, reservedQty: true } },
         locationProfiles: { select: { locationId: true, isAvailable: true, priceOverride: true } }
       }

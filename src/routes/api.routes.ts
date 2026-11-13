@@ -31,6 +31,7 @@ import logisticsRoutes from './logistics.routes';
 import roleRoutes from './role.routes';
 import brandingRoutes from './branding.routes';
 import fabricsRoutes from './fabrics.routes';
+import boutiqueLinkRoutes from './boutique-link.routes';
 import productImportRoutes from './product-import.routes';
 import productPhotosRoutes from './product-photos.routes';
 import { returnsRoutes } from './returns.routes';
@@ -159,6 +160,8 @@ router.use('/dashboard', hideCost, dashboardRoutes);
 router.use('/branding', brandingRoutes);
 // Fabrics by the metre: the shop's switch and defaults (PLAN-fabrics.md).
 router.use('/fabrics', fabricsRoutes);
+// The owner links a boutique to this shop (one-time code) or unlinks it.
+router.use('/boutique-link', boutiqueLinkRoutes);
 router.use('/catalog', hideCost, catalogRoutes);
 router.use('/catalog-tryon', catalogTryOnRoutes);
 

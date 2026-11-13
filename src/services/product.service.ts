@@ -1,3 +1,4 @@
+import { guardProductPrice } from './boutique/price-lock';
 import { productRepository } from '../repositories/product.repository';
 import { afterCommit } from '../lib/afterCommit';
 import { Prisma } from '@prisma/client';
@@ -67,7 +68,9 @@ export class ProductService {
       // common path. See updateProduct for why this column needs setting at all.
       publishedAt: data.status === 'ACTIVE' ? new Date() : null,
       // How it is sold (PLAN-fabrics.md): checked and tidied in one place; PIECE when not given.
-      ...(await unitFieldsFor(clientId, null, data))
+      ...(await unitFieldsFor(clientId, null, data)),
+      // Off = a material: counted and used, never sold (PLAN-boutique-sync.md). Inventory never sets priceOwner.
+      sellInShop: data.sellInShop !== false
     };
 
     return productRepository.create(productData);
@@ -118,6 +121,8 @@ export class ProductService {
   }
 
   async updateProduct(id: string, clientId: string, data: any) {
+    // A boutique-made product keeps the boutique's price (PLAN-boutique-sync.md §0).
+    await guardProductPrice(clientId, id, data ?? {});
     // Re-generate slug if title changes, suffixed with the product's own (already
     // unique) productCode for the same reason as createProduct above.
     let updateData = { ...data };

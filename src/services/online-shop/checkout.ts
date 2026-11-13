@@ -120,7 +120,7 @@ async function resolve(clientId: string, lines: BasketLine[]): Promise<Resolved[
       id: true, variantCode: true, size: true, colorName: true, hexCode: true,
       product: {
         select: {
-          title: true, productCode: true, status: true, trashedAt: true, soldBy: true, minCut: true,
+          title: true, productCode: true, status: true, trashedAt: true, soldBy: true, minCut: true, sellInShop: true,
           images: {
             where: { imageType: { in: ['COVER', 'GALLERY'] } },
             select: { url: true, isPrimary: true, variantId: true },
@@ -138,7 +138,7 @@ async function resolve(clientId: string, lines: BasketLine[]): Promise<Resolved[
   return lines.map(line => {
     const v = byCode.get(line.variantCode);
     if (!v) throw new OnlineShopRuleError('Something in your bag is no longer in this shop. Take it out and try again.');
-    if (v.product.trashedAt || v.product.status !== 'ACTIVE') {
+    if (v.product.trashedAt || v.product.status !== 'ACTIVE' || v.product.sellInShop === false) {
       throw new OnlineShopRuleError(`${v.product.title} is no longer sold. Take it out of your bag.`);
     }
     // How much may be on this line, per unit (PLAN-fabrics.md): a length is checked against the smallest cut and

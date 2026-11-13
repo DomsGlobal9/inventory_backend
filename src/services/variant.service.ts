@@ -1,3 +1,4 @@
+import { guardVariantPrice } from './boutique/price-lock';
 import { variantRepository } from '../repositories/variant.repository';
 import { productRepository } from '../repositories/product.repository';
 import { Prisma } from '@prisma/client';
@@ -364,6 +365,7 @@ export class VariantService {
         });
 
         if (!variant) throw notFound(`SKU not found`);
+        await guardVariantPrice(clientId, { id: variant.id }, { sellingPrice, priceOverride });
 
         return prisma.$transaction(async (tx) => {
           let dataToUpdate: Prisma.ProductVariantUpdateInput = {};
@@ -565,6 +567,7 @@ export class VariantService {
    * not a side effect of editing a field.
    */
   async updateVariant(id: string, clientId: string, data: any) {
+    await guardVariantPrice(clientId, { id }, data ?? {});
     const updated = await variantRepository.updateSafe(id, clientId, data);
 
     const typedCost = Number(data?.costPrice ?? 0);

@@ -11,7 +11,14 @@ export interface ServiceIdentity {
   clientId?: string;
   onBehalfOf?: {
     userId: string;
+    /** A boutique person: their name and what the boutique lets them do (modules:boutique only). */
+    name?: string;
+    can?: string[];
   };
+  /** modules:boutique: the boutique account the token speaks for, and when it was signed / runs out. */
+  tenant?: string;
+  issuedAt?: number;
+  expiresAt?: number;
 }
 
 // Memory cache for loaded public keys
@@ -77,7 +84,7 @@ export const verifyServiceToken = (req: Request, res: Response, next: NextFuncti
       audience: 'inventory'
     }) as jwt.JwtPayload;
 
-    const { sub, scope, clientId, onBehalfOf } = decoded;
+    const { sub, scope, clientId, onBehalfOf, tenant, iat, exp } = decoded as jwt.JwtPayload & { tenant?: unknown };
 
     if (!sub || !scope || !Array.isArray(scope)) {
       return res.status(401).json({ success: false, message: 'Unauthorized: Missing required service claims (sub, scope)' });
@@ -88,7 +95,10 @@ export const verifyServiceToken = (req: Request, res: Response, next: NextFuncti
       if (typeof onBehalfOf !== 'object' || Array.isArray(onBehalfOf) || typeof onBehalfOf.userId !== 'string') {
         return res.status(401).json({ success: false, message: 'Unauthorized: Invalid onBehalfOf structure' });
       }
-      if (!clientId) {
+      // A boutique pass names its boutique account (tenant) instead: the shop comes from that link, never from the
+      // pass (routes/internal-boutique.routes.ts). Every other delegated pass still names its shop.
+      const boutiquePass = scope.includes('modules:boutique') && typeof (decoded as any).tenant === 'string';
+      if (!clientId && !boutiquePass) {
         return res.status(401).json({ success: false, message: 'Unauthorized: Tenant-scoped delegated request must include clientId' });
       }
     }
@@ -99,7 +109,10 @@ export const verifyServiceToken = (req: Request, res: Response, next: NextFuncti
       issuer: payload.iss,
       scopes: scope,
       clientId: clientId,
-      onBehalfOf: onBehalfOf
+      onBehalfOf: onBehalfOf,
+      ...(typeof tenant === 'string' ? { tenant } : {}),
+      ...(typeof iat === 'number' ? { issuedAt: iat } : {}),
+      ...(typeof exp === 'number' ? { expiresAt: exp } : {})
     };
 
     (req as any).service = normalizedService;

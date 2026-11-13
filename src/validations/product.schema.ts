@@ -52,6 +52,8 @@ export const createProductSchema = z.object({
   widthCm: z.number().int().nullable().optional(),
   rollSize: z.number().int().nullable().optional(),
   cutReturnable: z.boolean().optional(),
+  // Off = a material: counted and used, never sold anywhere (PLAN-boutique-sync.md). priceOwner is never taken from here.
+  sellInShop: z.boolean().optional(),
   basePrice: z.number().nonnegative("Base price cannot be negative").max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.').refine(isWholePaise, PAISA_MESSAGE),
   status: z.nativeEnum(ProductStatus).optional()
 }).superRefine((val, ctx) => {

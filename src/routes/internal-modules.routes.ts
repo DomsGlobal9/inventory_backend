@@ -6,6 +6,7 @@ import { sessionForToken } from '../controllers/auth.controller';
 import { cleanMoved } from '../services/crm-handover';
 import internalCrm from './internal-crm.routes';
 import internalLogistics from './internal-logistics.routes';
+import internalBoutique from './internal-boutique.routes';
 
 /**
  * What other ScaleEzy modules (CRM first) ask Inventory, service to service.
@@ -85,5 +86,7 @@ router.get('/modules/:module/shops/:clientId/events', ownModule, async (req, res
 router.use('/modules/crm', internalCrm);
 // Logistics' own questions for one shop: products by SKU (services/logistics).
 router.use('/modules/logistics', internalLogistics);
+// The boutique (CRM-B): its items and stock on this inventory (PLAN-boutique-sync.md).
+router.use('/boutique', internalBoutique);
 
 export default router;

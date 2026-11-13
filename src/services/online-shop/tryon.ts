@@ -83,7 +83,7 @@ export async function seeItOn(clientId: string, productCodeRaw: unknown, photoRa
  */
 export async function garmentFor(clientId: string, productCode: string, variantCode: string) {
   const product = await prisma.product.findFirst({
-    where: { clientId, productCode, status: 'ACTIVE', trashedAt: null },
+    where: { clientId, productCode, status: 'ACTIVE', trashedAt: null, sellInShop: true },
     select: {
       id: true, title: true, dressType: true,
       images: {

@@ -244,7 +244,7 @@ class ProductImportService {
     const existingVariants = skus.length
       ? await prisma.productVariant.findMany({
           where: { clientId, sku: { in: skus } },
-          select: { id: true, sku: true, productId: true, size: true, colorName: true, sellingPrice: true, costPrice: true, reorderLevel: true }
+          select: { id: true, sku: true, productId: true, size: true, colorName: true, sellingPrice: true, costPrice: true, reorderLevel: true, product: { select: { priceOwner: true } } }
         })
       : [];
     const variantBySku = new Map(existingVariants.map(v => [v.sku, v]));
@@ -396,6 +396,11 @@ class ProductImportService {
            * on screen contradicts it until somebody counts the shelf. Changing the stock of
            * variants that already exist is what Import Updates is for, and it says so.
            */
+          // A boutique-made colour keeps the boutique's price (PLAN-boutique-sync.md §0).
+          if (existing.product?.priceOwner === 'BOUTIQUE' && this.num(row.sellingPrice) !== undefined && Number(existing.sellingPrice ?? NaN) !== this.num(row.sellingPrice)) {
+            errors.push({ rowNumber: row.rowNumber, message: `${sku}: its price comes from your boutique. Change it there, or leave SellingPrice empty.` });
+            continue;
+          }
           const changes =
             (this.num(row.sellingPrice) !== undefined && Number(existing.sellingPrice ?? NaN) !== this.num(row.sellingPrice)) ||
             (this.num(row.costPrice) !== undefined && Number(existing.costPrice ?? NaN) !== this.num(row.costPrice)) ||

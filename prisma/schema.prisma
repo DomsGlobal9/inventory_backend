@@ -624,6 +624,11 @@ model Product {
   /// Cut cloth taken back as a customer return? Off by default: most shops do not take back cloth once cut. Only
   /// read for measured units (metre, kilogram); pieces and packets return as always.
   cutReturnable Boolean @default(false) @map("cut_returnable")
+  /// Sold in the shop at all? Off = a material (threads, needles, beads): counted and used, never in the online
+  /// shop, the till, Shopify, other websites or offers (PLAN-boutique-sync.md).
+  sellInShop Boolean @default(true) @map("sell_in_shop")
+  /// Who sets the price: INVENTORY, or BOUTIQUE for an item the boutique created (read-only in Inventory).
+  priceOwner String  @default("INVENTORY") @map("price_owner")
   status           ProductStatus @default(DRAFT)
   publishedAt      DateTime?     @map("published_at")
 
@@ -662,6 +667,8 @@ model ProductVariant {
   // Identifiers
   variantCode String @map("variant_code")
   sku         String
+  /// The boutique's item code for a colour it created (unique per shop): a repeated item lands once.
+  boutiqueRef String? @map("boutique_ref")
 
   /// Overrides the product, for a style whose variants are not all the same thing -- a saree sold
   /// with a stitched blouse. Null means "use the product's".
@@ -844,6 +851,10 @@ model InventoryTransaction {
 
   referenceType String?  @map("reference_type") // e.g. "ORDER", "PO"
   referenceId   String?  @map("reference_id")
+  /// What the boutique called it (RESERVE, ISSUE, CONSUME, RETURN_UNUSED, WASTE...), its order and the person.
+  boutiqueKind     String? @map("boutique_kind")
+  boutiqueOrderRef String? @map("boutique_order_ref")
+  actorName        String? @map("actor_name")
   unitCost      Decimal? @map("unit_cost") @db.Decimal(10, 2)
   totalCost     Decimal? @map("total_cost") @db.Decimal(15, 2)
 
@@ -5400,4 +5411,59 @@ model CustomerErasure {
   @@index([clientId, sequence])
   @@index([erasedAt])
   @@map("customer_erasures")
+}
+
+/// A boutique (CRM-B tenant) that uses this shop's products and stock (PLAN-boutique-sync.md).
+model BoutiqueLink {
+  clientId   String    @id @map("client_id")
+  tenant     String    @unique
+  shopName   String?   @map("shop_name")
+  linkedAt   DateTime  @default(now()) @map("linked_at")
+  unlinkedAt DateTime? @map("unlinked_at")
+
+  @@map("boutique_links")
+}
+
+/// The first answer to each boutique write, given again for a repeat of the same request id.
+model BoutiqueRequest {
+  clientId  String   @map("client_id")
+  requestId String   @map("request_id")
+  status    Int
+  answer    Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([clientId, requestId])
+  @@index([createdAt])
+  @@map("boutique_requests")
+}
+
+/// Cloth held for a boutique stitching order; counted in InventoryStock.reservedQty.
+model BoutiqueReservation {
+  id         String   @id @default(uuid())
+  clientId   String   @map("client_id")
+  variantId  String   @map("variant_id")
+  locationId String   @map("location_id")
+  orderRef   String   @map("order_ref")
+  quantity   Int
+  status     String   @default("ACTIVE")
+  actorName  String?  @map("actor_name")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientId, orderRef])
+  @@index([variantId])
+  @@map("boutique_reservations")
+}
+
+/// A one-time code the shop owner makes to link a boutique to this existing shop (hash only, 30 minutes).
+model BoutiqueLinkCode {
+  codeHash  String    @id @map("code_hash")
+  clientId  String    @map("client_id")
+  createdBy String?   @map("created_by")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([clientId])
+  @@map("boutique_link_codes")
 }

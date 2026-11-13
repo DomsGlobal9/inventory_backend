@@ -47,6 +47,8 @@ interface MovementInput {
    * shelf, negative takes them off. Leave it out and the shelf rule decides (services/shelves/plan.ts).
    */
   spots?: { spotId: string; quantity: number }[];
+  /** A boutique movement: what the boutique called it, its order and the person (PLAN-boutique-sync.md). */
+  boutique?: { kind: string; orderRef?: string | null; actorName?: string | null };
 }
 
 export class InventoryMutationService {
@@ -54,7 +56,7 @@ export class InventoryMutationService {
     const {
       clientId, variantId, locationId, movementType, reason, quantityDelta,
       unitCost, notes, referenceType, referenceId, createdBy, tx: externalTx, spots,
-      allowNegative
+      allowNegative, boutique
     } = input;
 
     // A move between shelves changes where pieces are, never how many the location holds.
@@ -278,7 +280,8 @@ export class InventoryMutationService {
           sku: variant.sku,
           productTitle: variant.product?.title ?? null,
           variantCode: variant.variantCode,
-          barcode: variant.barcode
+          barcode: variant.barcode,
+          ...(boutique ? { boutiqueKind: boutique.kind, boutiqueOrderRef: boutique.orderRef ?? null, actorName: boutique.actorName?.slice(0, 80) ?? null } : {})
         },
         select: { id: true }
       });
