@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { isMetre, lengthText, itemsIn } from '../units';
 import { Link, useParams } from 'react-router-dom';
 import { getOrder, getAccount, heldProof, money } from '../api';
 import { signedIn } from '../account';
@@ -356,7 +357,7 @@ export default function MyOrdersPage({ shop }) {
         <div className="orders-stack">
           {filteredOrders.map(o => {
             const cfg = STATUS_CONFIG[o.state] || STATUS_CONFIG.PLACED;
-            const pieces = o.items?.reduce((t, i) => t + (i.quantity ?? 1), 0) ?? 1;
+            const pieces = o.items?.reduce((t, i) => t + (isMetre(i.soldBy) ? 1 : (i.quantity ?? 1)), 0) ?? 1;
             const placedDate = new Date(o.placedAt).toLocaleDateString('en-IN', {
               day: 'numeric',
               month: 'short',
@@ -448,7 +449,7 @@ export default function MyOrdersPage({ shop }) {
                           ) : (
                             <div className="order-item-placeholder" />
                           )}
-                          {i.quantity > 1 && <span className="item-qty-badge">{i.quantity}x</span>}
+                          {isMetre(i.soldBy) ? <span className="item-qty-badge">{lengthText(i.quantity)}</span> : i.quantity > 1 && <span className="item-qty-badge">{i.quantity}x</span>}
                         </div>
                       </div>
                     ))}

@@ -4,6 +4,7 @@ import { bagCount, useBag } from '../bag';
 import { signedIn, onAccountChange, wishlistOn, forget, stillSignedIn } from '../account';
 import { signOutOf, heldProof } from '../api';
 import { heartsInAir, onHeartLanded } from '../fly';
+import { itemsIn } from '../units';
 
 /**
  * The bar at the top of every page of a shop.
@@ -222,7 +223,8 @@ export default function Nav({ shop, compact = false }) {
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const lines = useBag(slug);
-  const count = lines.reduce((n, l) => n + l.quantity, 0);
+  // A length of cloth counts as one item, never its centimetres (PLAN-fabrics.md).
+  const count = lines.reduce((n, l) => n + itemsIn(l), 0);
   // Who is signed in here, kept up to date when they sign in or out on another page.
   const [me, setMe] = useState(() => signedIn(slug));
   useEffect(() => { setMe(signedIn(slug)); return onAccountChange(() => setMe(signedIn(slug))); }, [slug]);

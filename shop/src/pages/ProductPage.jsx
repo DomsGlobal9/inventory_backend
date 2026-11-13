@@ -2,6 +2,8 @@ import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getProduct, money, askOnWhatsApp, shareThis , offerWords, markSeen } from '../api';
+import LengthPicker from '../components/LengthPicker';
+import { isMetre, cutOf, toCut, perMetre, lengthText } from '../units';
 import DeliveryCheck from '../components/DeliveryCheck';
 import TellTheShop from '../components/TellTheShop';
 import { addToBag, useBag } from '../bag';
@@ -321,6 +323,8 @@ export default function ProductPage({ slug, shop }) {
   const bag = useBag(slug);
   const [state, setState] = useState({ loading: true, error: null, product: null });
   const [nonce, setNonce] = useState(0);
+  // Cloth by the metre: the length chosen, in centimetres (null until the product is known).
+  const [length, setLength] = useState(null);
   const [colour, setColour] = useState(null);
   const [size, setSize] = useState(null);
   const [added, setAdded] = useState(false);
@@ -344,7 +348,7 @@ export default function ProductPage({ slug, shop }) {
   useEffect(() => {
     const ac = new AbortController();
     setState({ loading: true, error: null, product: null });
-    setColour(null); setSize(null); setAdded(false); setTrying(false);
+    setColour(null); setSize(null); setAdded(false); setTrying(false); setLength(null);
     window.scrollTo({ top: 0 });
     getProduct(slug, code, { signal: ac.signal })
       .then(product => setState({ loading: false, error: null, product }))
@@ -490,13 +494,17 @@ export default function ProductPage({ slug, shop }) {
   const off = was ? saving(chosen.price, was) : null;
 
   const buying = shop?.buying?.open === true;
+  const metre = isMetre(p.soldBy) && !!shop?.lengths;
+  const cut = metre ? cutOf(p, shop.lengths) : 1;
+  const cm = metre ? (length ?? toCut((shop.lengths.quickLengths ?? [])[0] ?? cut, cut)) : 1;
   const inBag = chosen ? bag.find(l => l.variantCode === chosen.variantCode)?.quantity ?? 0 : 0;
   const canAdd = buying && chosen && chosen.sellable;
 
   const add = (thenGo) => {
     if (!canAdd) return;
-    addToBag(slug, chosen.variantCode, 1, {
-      title: p.title, size: chosen.size, colour: chosen.colour, colourHex: chosen.colourHex
+    addToBag(slug, chosen.variantCode, metre ? cm : 1, {
+      title: p.title, size: chosen.size, colour: chosen.colour, colourHex: chosen.colourHex,
+      ...(metre ? { soldBy: 'METRE', minCut: cut } : {})
     });
     if (thenGo) nav(`/${slug}/bag`);
     else { setAdded(true); window.setTimeout(() => setAdded(false), 2200); }
@@ -537,8 +545,8 @@ export default function ProductPage({ slug, shop }) {
           {chosen && (
             <>
               <div className="pricebox">
-                <span className="now">{money(chosen.price, currency)}</span>
-                {was ? <span className="was">{money(was, currency)}</span> : null}
+                <span className="now">{metre ? <>{money(perMetre(chosen.price), currency)}<small className="per"> per metre</small></> : money(chosen.price, currency)}</span>
+                {was ? <span className="was">{money(metre ? perMetre(was) : was, currency)}</span> : null}
                 {off ? <span className="cut">{off}% OFF</span> : null}
               </div>
               {/*
@@ -550,6 +558,14 @@ export default function ProductPage({ slug, shop }) {
                 Read from the chosen piece rather than the product, because an offer can cover one
                 size and not another, and this is the moment they are choosing.
               */}
+              {metre ? (
+                <div className="lengthbox">
+                  {p.widthCm ? <p className="lp-width">{p.widthCm} cm wide ({Math.round(p.widthCm / 2.54)} inches)</p> : null}
+                  <LengthPicker cut={cut} value={cm} onChange={setLength} quick={shop.lengths.quickLengths ?? []} />
+                  <p className="lp-total"><span>{lengthText(cm)} × {money(perMetre(chosen.price), currency)}</span><strong>{money(Math.round(cm * Number(chosen.price) * 100) / 100, currency)}</strong></p>
+                  {!p.cutReturnable ? <p className="lp-note">Cut cloth is not taken back.</p> : null}
+                </div>
+              ) : null}
               <p className="tax">Inclusive of all taxes</p>
               {/* The offer as Myntra shows one (3 Nov): what it comes to, by name, and that nothing has to
                   be typed for it. "Best price" is this size's price less what the offer takes off one. */}
@@ -644,7 +660,7 @@ export default function ProductPage({ slug, shop }) {
           */}
           {chosen?.fewLeft ? (
             <p className="few">
-              {chosen.fewLeft === 1 ? 'Last one left' : `Only ${chosen.fewLeft} left`}
+              {metre ? `Only ${lengthText(chosen.fewLeft)} left` : chosen.fewLeft === 1 ? 'Last one left' : `Only ${chosen.fewLeft} left`}
             </p>
           ) : null}
 
@@ -802,7 +818,7 @@ export default function ProductPage({ slug, shop }) {
                     {added ? <><Ticked /> Added</> : inBag > 0 ? `In bag · ${inBag}` : 'Add to bag'}
                   </button>
                   <button type="button" className="go" onClick={() => add(true)}>
-                    Buy now{chosen ? <span className="amt"> · {money(chosen.price, currency)}</span> : null}
+                    Buy now{chosen ? <span className="amt"> · {money(metre ? Math.round(cm * Number(chosen.price) * 100) / 100 : chosen.price, currency)}</span> : null}
                   </button>
                 </>
               ) : buying && chosen && !chosen.sellable ? (

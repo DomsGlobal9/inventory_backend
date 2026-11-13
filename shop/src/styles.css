@@ -4645,3 +4645,21 @@ a.shot { display: block; }
 .camrow .again, .camsay .again { background: none; border: 0; font: inherit; font-size: 15px; font-weight: 500;
   padding: 10px 6px; cursor: pointer; color: var(--ink); text-decoration: none; }
 .camsay .again { color: #f2f4f8; text-decoration: underline; text-underline-offset: 3px; }
+
+/*
+ * Cloth by the metre (13 Nov 2026, PLAN-fabrics.md): the price per metre, the length picker, the total. Big targets
+ * for a thumb; the length itself in the middle, as large as the price.
+ */
+.pricebox .now .per { font-size: 14px; font-weight: 600; color: var(--muted); margin-left: 4px; }
+.lengthbox { display: grid; gap: 10px; margin: 12px 0 4px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--card); }
+.lengthpick { display: grid; gap: 10px; }
+.lp-row { display: grid; grid-template-columns: 48px 1fr 48px; align-items: center; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.lp-step { height: 48px; border: 0; background: var(--soft); color: var(--ink); font-size: 22px; cursor: pointer; }
+.lp-step:disabled { opacity: .4; cursor: default; }
+.lp-value { text-align: center; font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.lp-quick { display: flex; flex-wrap: wrap; gap: 8px; }
+.lp-chip { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px; padding: 7px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.lp-chip.on { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.lp-note, .lp-width { margin: 0; font-size: 12.5px; color: var(--muted); }
+.lp-total { display: flex; justify-content: space-between; align-items: baseline; margin: 0; font-size: 14px; }
+.lp-total strong { font-size: 17px; }

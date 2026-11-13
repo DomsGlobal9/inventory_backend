@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { lineMax, itemsIn } from './units';
 
 /**
  * The bag, kept in the shopper's own browser.
@@ -40,21 +41,26 @@ const tidy = (lines) => lines.filter(l => l && l.variantCode && l.quantity > 0).
 
 export const getBag = (slug) => tidy(read(slug));
 
-export const bagCount = (slug) => getBag(slug).reduce((n, l) => n + l.quantity, 0);
+// A length of cloth is one item in the count, never its centimetres (PLAN-fabrics.md).
+export const bagCount = (slug) => getBag(slug).reduce((n, l) => n + itemsIn(l), 0);
 
-/** Add a piece, or one more of a piece already in the bag. Ten of anything is the most. */
+/**
+ * Add a piece, or one more of a piece already in the bag. Ten of anything is the most; cloth by the metre comes as a
+ * length in centimetres (extra.soldBy = 'METRE'), up to 100 m on one line.
+ */
 export function addToBag(slug, variantCode, quantity = 1, extra = {}) {
   const lines = getBag(slug);
   const found = lines.find(l => l.variantCode === variantCode);
-  if (found) found.quantity = Math.min(found.quantity + quantity, 10);
-  else lines.push({ variantCode, quantity: Math.min(quantity, 10), ...extra });
+  const max = lineMax(extra.soldBy ?? found?.soldBy);
+  if (found) found.quantity = Math.min(found.quantity + quantity, max);
+  else lines.push({ variantCode, quantity: Math.min(quantity, max), ...extra });
   write(slug, tidy(lines));
   return lines;
 }
 
 export function setQuantity(slug, variantCode, quantity) {
   const lines = getBag(slug)
-    .map(l => (l.variantCode === variantCode ? { ...l, quantity: Math.max(0, Math.min(quantity, 10)) } : l));
+    .map(l => (l.variantCode === variantCode ? { ...l, quantity: Math.max(0, Math.min(quantity, lineMax(l.soldBy))) } : l));
   write(slug, tidy(lines));
 }
 

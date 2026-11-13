@@ -865,7 +865,7 @@ export async function summary(clientId: string, token: unknown) {
                   id: true, variantCode: true, size: true, colorName: true, hexCode: true,
                   product: {
                     select: {
-                      title: true, productCode: true,
+                      title: true, productCode: true, soldBy: true,
                       // Photographs belong to a colour, so this cannot be a `take: 1` on the
                       // product: it took whichever image sorted first and showed it against
                       // every line, so an order for one Royal Blue and two Crimson put the
@@ -941,6 +941,8 @@ export async function summary(clientId: string, token: unknown) {
         return (mine[0] ?? all[0])?.url ?? null;
       })(),
       quantity: i.quantity,
+      // How it is sold (PLAN-fabrics.md): METRE lines are centimetres with a per-centimetre unitPrice.
+      soldBy: i.variant?.product.soldBy ?? 'PIECE',
       unitPrice: Number(i.listUnitPrice),
       lineTotal: Number(i.totalPrice)
     }))

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { isMetre, lengthText, itemsIn } from '../units';
 import { Link, useParams } from 'react-router-dom';
 import { getOrder, cancelOrder, money, askOnWhatsApp } from '../api';
 import { Problem, Say } from '../components/States';
@@ -161,7 +162,7 @@ export default function OrderPage({ shop }) {
     window.open(p.trackingUrl, '_blank', 'noopener');
   };
 
-  const pieces = o.items.reduce((t, i) => t + i.quantity, 0);
+  const pieces = o.items.reduce((t, i) => t + itemsIn(i), 0);
 
   /*
    * One narrow receipt, read top to bottom (29 Oct): where the order is, what was bought and what
@@ -260,7 +261,7 @@ export default function OrderPage({ shop }) {
                   {[i.colour, i.size].filter(Boolean).join(' · ')}
                   {i.colourHex ? <i className="swatch" style={{ background: i.colourHex }} aria-hidden="true" /> : null}
                 </p>
-                <p className="of">{i.quantity} × {money(i.unitPrice)}</p>
+                <p className="of">{isMetre(i.soldBy) ? `${lengthText(i.quantity)} × ${money(Math.round(Number(i.unitPrice) * 100 * 100) / 100)} / m` : <>{i.quantity} × {money(i.unitPrice)}</>}</p>
               </div>
               <div className="cash"><b>{money(i.lineTotal)}</b></div>
             </li>

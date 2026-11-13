@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { isMetre, lengthText, lineMax } from '../units';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { priceBag, money } from '../api';
 import { useBag, setQuantity, removeFromBag } from '../bag';
@@ -118,13 +119,20 @@ export default function BagPage({ shop }) {
                       : null}
                   </p>
 
-                  <div className="qty" role="group" aria-label={`How many ${priced?.title ?? 'of this'}`}>
-                    <button type="button" aria-label="One fewer" disabled={line.quantity <= 1}
-                      onClick={() => setQuantity(slug, line.variantCode, line.quantity - 1)}>−</button>
-                    <span aria-live="polite">{line.quantity}</span>
-                    <button type="button" aria-label="One more" disabled={line.quantity >= 10}
-                      onClick={() => setQuantity(slug, line.variantCode, line.quantity + 1)}>+</button>
-                  </div>
+                  {/* Cloth by the metre: steps of its smallest cut, shown in metres, up to 100 m. */}
+                  {(() => {
+                    const metre = isMetre(line.soldBy);
+                    const step = metre ? (Number(line.minCut) > 0 ? Number(line.minCut) : 25) : 1;
+                    return (
+                      <div className="qty" role="group" aria-label={metre ? `Length of ${priced?.title ?? 'this cloth'}` : `How many ${priced?.title ?? 'of this'}`}>
+                        <button type="button" aria-label={metre ? `${lengthText(step)} less` : 'One fewer'} disabled={line.quantity <= step}
+                          onClick={() => setQuantity(slug, line.variantCode, line.quantity - step)}>−</button>
+                        <span aria-live="polite">{metre ? lengthText(line.quantity) : line.quantity}</span>
+                        <button type="button" aria-label={metre ? `${lengthText(step)} more` : 'One more'} disabled={line.quantity + step > lineMax(line.soldBy)}
+                          onClick={() => setQuantity(slug, line.variantCode, line.quantity + step)}>+</button>
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div className="cash">
                   <b>{priced ? money(priced.lineTotal, currency) : ''}</b>

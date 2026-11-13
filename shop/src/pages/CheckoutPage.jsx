@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { isMetre, lengthText, itemsIn } from '../units';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   priceBag, placeOrder, sendCode, checkCode, money,
@@ -469,13 +470,13 @@ export default function CheckoutPage({ shop }) {
         </div>
 
         <aside className="bill">
-          <h2>{(() => { const n = lines.reduce((t, l) => t + l.quantity, 0); return n === 1 ? '1 item' : `${n} items`; })()}</h2>
+          <h2>{(() => { const n = lines.reduce((t, l) => t + itemsIn(l), 0); return n === 1 ? '1 item' : `${n} items`; })()}</h2>
           {bag ? (
             <>
               <ul className="mini">
                 {bag.lines.map(l => (
                   <li key={l.variantCode}>
-                    <span className="n">{l.quantity}×</span>
+                    <span className="n">{isMetre(l.soldBy) ? lengthText(l.quantity) : `${l.quantity}×`}</span>
                     {/* The colour belongs here as much as the size. Two colours of one saree
                         share a title, a code and a price, so without it this list showed the
                         same sentence twice -- on the one screen where the customer is about to
