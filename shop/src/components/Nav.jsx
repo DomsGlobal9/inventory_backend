@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import { bagCount, useBag } from '../bag';
 import { signedIn, onAccountChange, wishlistOn, forget, stillSignedIn } from '../account';
 import { signOutOf, heldProof } from '../api';
+import { heartsInAir, onHeartLanded } from '../fly';
 
 /**
  * The bar at the top of every page of a shop.
@@ -49,6 +50,45 @@ const Bag = ({ n }) => {
     </svg>
     {n > 0 ? <i aria-hidden="true">{n > 9 ? '9+' : n}</i> : null}
   </span>
+  );
+};
+
+/**
+ * The Wishlist icon (13 Nov). A saved piece flies here as a small heart (fly.js); the count waits for it to land,
+ * then goes up with the same jolt the bag gives, so the number changes where the eye already is. A removal, or a
+ * save with nothing flying (less motion asked for, icon off screen), changes the count at once.
+ */
+const Wish = ({ n }) => {
+  const [shown, setShown] = useState(n);
+  const [jolt, setJolt] = useState(false);
+  const latest = useRef(n);
+  latest.current = n;
+
+  useEffect(() => {
+    const land = () => {
+      if (heartsInAir() > 0) return; // more still on their way: show them all landing as one
+      setShown(prev => {
+        if (latest.current > prev) { setJolt(true); window.setTimeout(() => setJolt(false), 460); }
+        return latest.current;
+      });
+    };
+    return onHeartLanded(land);
+  }, []);
+
+  useEffect(() => {
+    if (n > shown && heartsInAir() > 0) return undefined; // it lands in a moment; the landing shows it
+    if (n > shown) { setJolt(true); const t = window.setTimeout(() => setJolt(false), 460); setShown(n); return () => window.clearTimeout(t); }
+    if (n !== shown) setShown(n);
+    return undefined;
+  }, [n]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <span className={`bagicon wishicon${jolt ? ' jolt' : ''}`} data-wish-target="">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" />
+      </svg>
+      {shown > 0 ? <i aria-hidden="true">{shown > 9 ? '9+' : shown}</i> : null}
+    </span>
   );
 };
 
@@ -274,12 +314,7 @@ export default function Nav({ shop, compact = false }) {
             {wishlistOn(shop) ? <Link to={`/${slug}/wishlist`} state={me ? undefined : { why: 'heart' }} className="icon worded" aria-label={hearts ? `Your wishlist, ${hearts} ${hearts === 1 ? 'piece' : 'pieces'}` : 'Your wishlist'} title="Your wishlist">
               {/* How many are hearted, on the icon like the bag's count (owner, 29 Oct): it moves the
                   moment a heart is tapped, since noteHeart tells the bar (onAccountChange). */}
-              <span className="bagicon wishicon">
-                <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M12 20.3s-7.6-4.6-9-9.4C2 7.6 4.1 4.6 7.3 4.6c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.2 0 5.3 3 4.3 6.3-1.4 4.8-9 9.4-9 9.4Z" />
-                </svg>
-                {hearts > 0 ? <i aria-hidden="true">{hearts > 9 ? '9+' : hearts}</i> : null}
-              </span>
+              <Wish n={hearts} />
               <span className="word" aria-hidden="true">Wishlist</span>
             </Link> : null}
             {/* With no accounts there is no Profile to hold it, so Orders keeps its own place. */}

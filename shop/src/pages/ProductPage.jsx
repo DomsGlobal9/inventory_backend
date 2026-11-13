@@ -151,10 +151,32 @@ function ShareButton({ shopName, product, bare = false }) {
   );
 }
 
+/** A phone-width screen (under the laptop layout at 880px), followed as it turns or resizes. */
+const PHONE = '(max-width: 879px)';
+function usePhoneWidth() {
+  const [phone, setPhone] = useState(() => !!window.matchMedia?.(PHONE)?.matches);
+  useEffect(() => {
+    const m = window.matchMedia?.(PHONE);
+    if (!m) return undefined;
+    const change = () => setPhone(m.matches);
+    m.addEventListener?.('change', change);
+    return () => m.removeEventListener?.('change', change);
+  }, []);
+  return phone;
+}
+
 function Gallery({ photos, title, actions = null }) {
   const strip = useRef(null);
   const rail = useRef(null);
   const [at, setAt] = useState(0);
+  /*
+   * The heart and Share (13 Nov, owner: "on mobile they can float on the image, top right"): on a phone they sit
+   * on the photograph's top-right corner, as the big fashion apps have them, so they are on screen while the
+   * shopper looks at the piece instead of below the fold. On a laptop they stay in the row under the photographs.
+   */
+  const phone = usePhoneWidth();
+  const onPhoto = actions && phone ? <div className="pactions onphoto">{actions}</div> : null;
+  const below = actions && !phone ? <div className="pactions">{actions}</div> : null;
   /*
    * Photographs that are wider than they are tall (29 Oct): the flat cloth shots. In the tall frame
    * they sat as a strip with empty space above and below, so they are turned on their side to fill
@@ -193,13 +215,16 @@ function Gallery({ photos, title, actions = null }) {
   if (!photos.length) {
     return (
       <div className="gallery">
-        <div className="swipe">
-          <figure style={{ display: 'grid', placeItems: 'center', color: 'var(--faint)', fontSize: 13 }}>
-            Image coming soon
-          </figure>
+        <div className="frame">
+          <div className="swipe">
+            <figure style={{ display: 'grid', placeItems: 'center', color: 'var(--faint)', fontSize: 13 }}>
+              Image coming soon
+            </figure>
+          </div>
+          {onPhoto}
         </div>
         {/* A piece with no photograph can still be saved and sent on. */}
-        {actions ? <div className="pactions">{actions}</div> : null}
+        {below}
       </div>
     );
   }
@@ -270,6 +295,7 @@ function Gallery({ photos, title, actions = null }) {
         {photos.length > 1 && (
           <div className="photonum" aria-hidden="true">{at + 1} / {photos.length}</div>
         )}
+        {onPhoto}
       </div>
 
       {photos.length > 1 && (
@@ -283,7 +309,7 @@ function Gallery({ photos, title, actions = null }) {
           ))}
         </div>
       )}
-      {actions ? <div className="pactions">{actions}</div> : null}
+      {below}
     </div>
   );
 }
@@ -466,7 +492,12 @@ export default function ProductPage({ slug, shop }) {
   return (
     <>
       <p className="crumbs">
-        <Link to={`/${slug}`}>Home</Link>
+        {/* A house, not the word (13 Nov, owner): reads at a glance and leaves the category the words. */}
+        <Link to={`/${slug}`} className="crumbhome" aria-label="Home" title="Home">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3.5 10.6 12 3.8l8.5 6.8" /><path d="M5.8 9v10.2a.8.8 0 0 0 .8.8h3.6v-5.6h3.6V20h3.6a.8.8 0 0 0 .8-.8V9" />
+          </svg>
+        </Link>
         {p.category ? <> <span>›</span> <Link to={`/${slug}?category=${encodeURIComponent(p.category)}`}>
           {p.category.charAt(0) + p.category.slice(1).toLowerCase()}</Link></> : null}
       </p>

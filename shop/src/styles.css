@@ -4571,3 +4571,40 @@ a.shot { display: block; }
    and under anything that takes over the screen. */
 .sharemenu, .pactions .sharemenu { position: fixed; right: auto; z-index: 90; }
 .sharewrap > .sharemenu { position: fixed; }
+
+/*
+ * The heart flying from a saved piece into the Wishlist icon (fly.js, 13 Nov). Fixed to the screen so a
+ * scrolled page does not move it mid-flight; never in the way of a tap; in the shop's own colour with a
+ * soft lift so it reads against a photograph.
+ */
+.flyheart { position: fixed; z-index: 1000; pointer-events: none; color: var(--accent); will-change: transform; }
+.flyheart > div { will-change: transform, opacity; filter: drop-shadow(0 2px 4px rgba(16, 18, 24, .25)); }
+.flyheart svg { display: block; }
+
+/*
+ * The heart and Share ON the photograph, on a phone (13 Nov, owner: "float on the image, top right").
+ * Two round buttons stacked in the corner, light enough to sit over any saree, with a soft shadow so a
+ * white heart still shows on a white cloth. 40px across, the size a thumb hits without aiming. The
+ * "Saved to your wishlist" note opens to the LEFT of the heart, over the photograph, not off the screen.
+ */
+.pactions.onphoto {
+  position: absolute; top: 12px; right: 12px; z-index: 3;
+  flex-direction: column; gap: 10px; margin: 0;
+}
+.pactions.onphoto > .heartwrap, .pactions.onphoto > .sharewrap { flex: none; }
+.pactions.onphoto .pact {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  box-shadow: 0 1px 2px rgba(16, 18, 24, .12), 0 4px 12px -4px rgba(16, 18, 24, .28);
+}
+.pactions.onphoto .pact svg { width: 20px; height: 20px; }
+.pactions.onphoto .pact:active { transform: scale(.92); }
+.pactions.onphoto .heartwrap.inrow .heartsaid {
+  left: auto; right: calc(100% + 8px); top: 50%; transform: translateY(-50%);
+}
+@media (prefers-reduced-motion: reduce) { .pactions.onphoto .pact:active { transform: none; } }
+
+/* The house at the start of the trail (13 Nov): sits on the text's line, with a fair tap target on a phone. */
+.crumbs .crumbhome { display: inline-flex; align-items: center; vertical-align: -3px; padding: 4px; margin: -4px 0 -4px -4px; border-radius: 6px; }
+.crumbs .crumbhome:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }
