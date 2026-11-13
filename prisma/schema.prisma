@@ -607,6 +607,20 @@ model Product {
   /// price between Rs 2,625 and Rs 2,950 has no self-consistent rate. See PLAN-gst.md section 2.
   /// Fabric -- every saree -- stays inclusive, so nothing about today's pricing changes.
   priceIsExclusive Boolean       @default(false) @map("price_is_exclusive")
+
+  /// How it is sold (13 Nov 2026, PLAN-fabrics.md). PIECE for everything sold today. METRE: quantities are kept
+  /// in centimetres (225 = 2.25 m) and prices mean per metre. PACKET: whole packets. Text, not an enum: a new enum
+  /// value breaks the deployed build reading this shared database. The list lives in lib/units.ts.
+  soldBy    String  @default("PIECE") @map("sold_by")
+  /// What it is: FABRIC, LINING, BORDER, LACE, GOTA, BUTTONS... (lib/units.ts KINDS, the boutique's list). Empty for
+  /// ready garments.
+  kind      String?
+  /// The shortest length sold, in base units (25 = 0.25 m). Empty = the shop's default (client_settings).
+  minCut    Int?    @map("min_cut")
+  /// Cloth width in centimetres, shown on the label and the shop page. Optional.
+  widthCm   Int?    @map("width_cm")
+  /// Bought in rolls: how many base units one roll holds (2500 = 25 m). Empty = not bought in rolls.
+  rollSize  Int?    @map("roll_size")
   status           ProductStatus @default(DRAFT)
   publishedAt      DateTime?     @map("published_at")
 
@@ -2495,6 +2509,14 @@ model ClientSettings {
   /// The most a person may take off by hand at the till, as a percentage of what is being
   /// discounted, without offer:manual_discount_unlimited. Null means no limit.
   manualDiscountMaxPercent Decimal? @map("manual_discount_max_percent") @db.Decimal(5, 2)
+
+  /// Fabrics by the metre (13 Nov 2026, PLAN-fabrics.md). Off: nothing changes anywhere. On: products can be
+  /// sold by Metre or Packet in Inventory and the online shop (the POS till gets them once it understands units).
+  fabricsOn       Boolean @default(false) @map("fabrics_on")
+  /// The shop's smallest cut in centimetres (25 = 0.25 m), used where a product has none of its own.
+  fabricMinCut    Int     @default(25) @map("fabric_min_cut")
+  /// The usual roll length in centimetres (2500 = 25 m), filled in for new fabric bought in rolls.
+  fabricRollSize  Int     @default(2500) @map("fabric_roll_size")
 
   /// The shop's logo, shown wherever the shop identifies itself to its own staff.
   ///
