@@ -4613,3 +4613,35 @@ a.shot { display: block; }
 .heardonly { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 /* A failure is the one note shown: in the warning colour, not the "saved" green. */
 .heartwrap .heartsaid[role="alert"] { color: #b42318; }
+
+/*
+ * The camera inside the try-on sheet (13 Nov, Camera.jsx). A tall viewfinder the shape of a full-length photo,
+ * a head-to-toe outline to stand in, and the shutter where the thumb is. The front camera's picture is shown
+ * mirrored, as every phone does; the photograph itself is saved the right way round.
+ */
+.camera { display: grid; gap: 14px; }
+.viewfinder { position: relative; aspect-ratio: 3 / 4; max-height: 62vh; width: 100%; margin: 0 auto;
+  border-radius: var(--r); overflow: hidden; background: #0b0c0f; }
+.viewfinder video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.viewfinder[data-front='true'] video { transform: scaleX(-1); }
+.viewfinder .guide { position: absolute; inset: 8% 26%; border: 2px dashed rgba(255, 255, 255, .55);
+  border-radius: 45% 45% 12% 12% / 18% 18% 6% 6%; pointer-events: none; }
+.camsay { position: absolute; inset: 0; display: grid; place-content: center; gap: 12px; padding: 22px;
+  text-align: center; color: #f2f4f8; background: rgba(11, 12, 15, .82); font-size: 14px; line-height: 1.45; }
+.camsay p { margin: 0; }
+.camsay .again { color: #f2f4f8; }
+.camrow { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; }
+.camrow .again { justify-self: start; }
+.camrow .flip { justify-self: end; width: 46px; height: 46px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--card); color: var(--ink); display: grid; place-items: center; cursor: pointer; }
+.shutter { width: 70px; height: 70px; border-radius: 50%; border: 4px solid var(--ink); background: transparent;
+  padding: 4px; cursor: pointer; display: grid; place-items: center; }
+.shutter i { width: 100%; height: 100%; border-radius: 50%; background: var(--accent); display: block; }
+.shutter:active:not(:disabled) i { transform: scale(.9); }
+.shutter:disabled, .camrow .flip:disabled { opacity: .45; cursor: default; }
+.readying { text-align: center; padding: 48px 0; }
+@media (prefers-reduced-motion: reduce) { .shutter:active:not(:disabled) i { transform: none; } }
+/* Cancel and "Try the camera again" are quiet text buttons in the shop's type, not the browser's grey box. */
+.camrow .again, .camsay .again { background: none; border: 0; font: inherit; font-size: 15px; font-weight: 500;
+  padding: 10px 6px; cursor: pointer; color: var(--ink); text-decoration: none; }
+.camsay .again { color: #f2f4f8; text-decoration: underline; text-underline-offset: 3px; }

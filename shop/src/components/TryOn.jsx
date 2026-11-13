@@ -1,6 +1,31 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { tryOn, sendCode, checkCode, heldProof, holdProof, dropProof } from '../api';
 import { Working, Dressing } from '../components/Motion';
+import Camera, { cameraWorksHere } from './Camera';
+import { shrinkFile, MAX_BYTES } from '../tryphoto';
+
+/*
+ * A try-on that is still being made, kept beside the sheet rather than inside it (13 Nov). Each try-on costs
+ * the shop a generation, so closing the sheet and opening it again -- or tapping twice -- must never start a
+ * second one: the reopened sheet picks up the same one, still working or already done. Kept ten minutes.
+ */
+const running = new Map();
+const KEEP_MS = 10 * 60 * 1000;
+const keyOf = (slug, productCode, variantCode) => `${slug}|${productCode}|${variantCode ?? ''}`;
+function startTryOn(key, photo, ask) {
+  const entry = { photo, at: Date.now(), done: false, result: null, error: null };
+  entry.promise = ask().then(
+    out => { entry.result = out?.imageUrl ?? null; entry.done = true; return entry; },
+    err => { entry.error = err; entry.done = true; return entry; }
+  );
+  running.set(key, entry);
+  return entry;
+}
+function heldTryOn(key) {
+  const e = running.get(key);
+  if (e && Date.now() - e.at > KEEP_MS) { running.delete(key); return null; }
+  return e ?? null;
+}
 
 /**
  * "See it on you."
@@ -19,15 +44,6 @@ import { Working, Dressing } from '../components/Motion';
  * own phone, and they can change their mind. Every try-on costs the shop a generation from its own
  * allowance, so this is deliberately one photograph at a time rather than a live camera.
  */
-
-const MAX_BYTES = 12 * 1024 * 1024;
-
-const readAsDataUrl = (file) => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(r.result);
-  r.onerror = () => reject(new Error('That photograph could not be read.'));
-  r.readAsDataURL(file);
-});
 
 /*
  * Whether this device has a camera worth offering.
@@ -123,32 +139,69 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
   const [said, setSaid] = useState(null);
   /* Held down: their own photograph, for as long as they press. */
   const [comparing, setComparing] = useState(false);
+  /* The camera inside the sheet is open (Camera.jsx). */
+  const [shooting, setShooting] = useState(false);
+  /* A chosen photograph is being brought down to size. */
+  const [reading, setReading] = useState(false);
+  const readingNow = useRef(false);
+  const key = keyOf(slug, product.productCode, chosen?.variantCode);
+  const alive = useRef(true);
+  // Set on every mount, not only the first: React may mount, unmount and mount again (dev), and a sheet that
+  // thought it was closed would quietly drop the photo and the try-on result.
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+
+  // Show what a try-on came back with (or why it did not), once, and let it go.
+  const settle = (entry) => {
+    if (!alive.current) return; // closed meanwhile: kept in `running` for the next time it opens
+    running.delete(key);
+    setBusy(false);
+    if (entry.result) { setResult(entry.result); return; }
+    const err = entry.error;
+    // The pass ran out, or the shop has just started asking: back to the number, photo kept.
+    if (err?.kind === 'NEEDS_NUMBER') { dropProof(slug); setProved(false); setSaid(null); return; }
+    setSaid(err?.message ?? 'That did not work. Please try another photograph.');
+  };
+
+  // Opened again while one was being made (or after it finished): pick that one up, never start another.
+  useEffect(() => {
+    const held = heldTryOn(key);
+    if (!held) return;
+    setPhoto(held.photo);
+    if (held.done) { settle(held); return; }
+    setBusy(true);
+    void held.promise.then(settle);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const choose = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file) return;
-    if (file.size > MAX_BYTES) { setSaid('That photograph is very large. Choose a smaller one.'); return; }
+    if (!file || readingNow.current || busy) return;
+    if (file.size > MAX_BYTES) { setSaid('That photograph is too large to use. Choose another one.'); return; }
     if (/heic|heif/i.test(file.type) || /\.(heic|heif)$/i.test(file.name)) {
       setSaid('This is an iPhone HEIC photo. Share it as a JPEG and choose it again.');
       return;
     }
-    try { setPhoto(await readAsDataUrl(file)); setSaid(null); setResult(null); }
-    catch (err) { setSaid(err?.message ?? 'That photograph could not be read.'); }
+    if (file.type && !/^image\/(jpeg|png|webp)$/i.test(file.type)) { setSaid('Choose a JPEG or PNG photograph.'); return; }
+    readingNow.current = true; setReading(true); setSaid(null);
+    try { const small = await shrinkFile(file); if (alive.current) { setPhoto(small); setResult(null); } }
+    catch (err) { if (alive.current) setSaid(err?.message ?? 'That photograph could not be read.'); }
+    finally { readingNow.current = false; if (alive.current) setReading(false); }
   };
 
-  const go = async () => {
+  /* "Take a photo": the camera inside the page where it can run, the phone's own camera app where it cannot. */
+  const openCamera = () => {
+    if (busy || reading) return;
+    setSaid(null);
+    if (cameraWorksHere()) setShooting(true);
+    else cameraRef.current?.click();
+  };
+
+  const go = () => {
+    // One try-on per photograph: a second tap, or the same piece already being made, does nothing.
+    if (!photo || busy || heldTryOn(key)) return;
     setBusy(true); setSaid(null);
-    try {
-      const out = await tryOn(slug, product.productCode, photo, chosen?.variantCode);
-      setResult(out.imageUrl);
-    } catch (err) {
-      // The pass ran out, or the shop has just started asking: back to the number, photo kept.
-      if (err?.kind === 'NEEDS_NUMBER') { dropProof(slug); setProved(false); setSaid(null); return; }
-      setSaid(err?.message ?? 'That did not work. Please try another photograph.');
-    } finally {
-      setBusy(false);
-    }
+    const entry = startTryOn(key, photo, () => tryOn(slug, product.productCode, photo, chosen?.variantCode));
+    void entry.promise.then(settle);
   };
 
   /* Pressed, not toggled: a compare you have to hold is a compare nobody has to undo. */
@@ -166,6 +219,14 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
 
         {!proved ? (
           <NumberStep slug={slug} onProved={() => setProved(true)} />
+        ) : shooting ? (
+          <Camera
+            onShot={(shot) => { setShooting(false); setPhoto(shot); setResult(null); setSaid(null); }}
+            onCancel={() => setShooting(false)}
+            onPhoneCamera={() => { setShooting(false); cameraRef.current?.click(); }}
+            onGallery={() => { setShooting(false); fileRef.current?.click(); }} />
+        ) : reading ? (
+          <p className="tiny readying" role="status">Getting your photo ready <Working /></p>
         ) : result ? (
           <>
             <div className="tryshot big">
@@ -184,7 +245,7 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
               AI-generated preview. The actual fit and drape may vary.
             </p>
             <div className="sheetrow">
-              <button type="button" className="go quiet" onClick={() => { setResult(null); setPhoto(null); }}>
+              <button type="button" className="go quiet" onClick={() => { setResult(null); setPhoto(null); setSaid(null); }}>
                 Another photo
               </button>
               <a className="go" href={result} target="_blank" rel="noopener noreferrer">Open it</a>
@@ -209,10 +270,10 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
             {said ? <p className="refused">{said}</p> : null}
             <div className="sheetrow">
               <button type="button" className="go quiet" disabled={busy}
-                onClick={() => (onPhone ? cameraRef.current : fileRef.current)?.click()}>
+                onClick={() => (onPhone ? openCamera() : fileRef.current?.click())}>
                 {onPhone ? 'Retake' : 'Choose another'}
               </button>
-              <button type="button" className="go" disabled={busy} onClick={go}>
+              <button type="button" className="go" disabled={busy} aria-busy={busy || undefined} onClick={go}>
                 {busy ? 'Working…' : 'Try it on'}
               </button>
             </div>
@@ -271,7 +332,7 @@ export default function TryOn({ slug, product, chosen, asksForNumber = false, on
                   </svg>
                   Gallery
                 </button>
-                <button type="button" className="go" onClick={() => cameraRef.current?.click()}>
+                <button type="button" className="go" onClick={openCamera}>
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
                     <path d="M4 8h3l1.6-2.4h6.8L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" strokeLinejoin="round" />
                     <circle cx="12" cy="13.5" r="3.6" />
