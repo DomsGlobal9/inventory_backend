@@ -31,7 +31,7 @@ export async function setFabricSettings(clientId: string, input: { fabricsOn?: u
   }
   if (input.fabricMinCut !== undefined) {
     const n = Number(input.fabricMinCut);
-    if (!Number.isInteger(n) || n < 1 || n > 1000) throw problem('The smallest cut is between 0.01 m and 10 m.');
+    if (!Number.isInteger(n) || n < 5 || n > 1000 || n % 5 !== 0) throw problem('The minimum cut length is set in 5 cm steps, between 0.05 m and 10 m.');
     data.fabricMinCut = n;
   }
   if (input.fabricRollSize !== undefined) {
@@ -108,7 +108,10 @@ export async function unitFieldsFor(clientId: string, productId: string | null, 
     if (!Number.isInteger(n) || n < 1 || n > max) throw problem(`${label} must be a whole number above 0.`);
     return n;
   };
-  if (has('minCut')) out.minCut = measured ? positiveInt(input.minCut, 'The smallest cut', 1000) : null;
+  if (has('minCut')) {
+    out.minCut = measured ? positiveInt(input.minCut, 'The minimum cut length', 1000) : null;
+    if (out.minCut != null && ((out.minCut as number) < 5 || (out.minCut as number) % 5 !== 0)) throw problem('The minimum cut length is set in 5 cm steps, between 0.05 m and 10 m.');
+  }
   if (has('rollSize')) out.rollSize = measured ? positiveInt(input.rollSize, 'The roll length', 100_000) : null;
   if (has('widthCm')) out.widthCm = positiveInt(input.widthCm, 'The width', 1000);
   // Changed back to a counted unit: lengths that only mean something for cloth are cleared.

@@ -126,7 +126,9 @@ export function readOnboardingForm(b: any) {
   let stateCode = text(b.stateCode, 2);
   if (stateCode && !STATE_CODE.test(stateCode)) return { problem: 'Choose the state from the list.' };
   if (b.sells != null && b.sells !== '' && !isSells(b.sells)) return { problem: 'Choose what the shop sells: ready-made, fabrics, both, or let the owner choose.' };
-  const tenantIn = text(b.boutiqueTenant, 63).toLowerCase();
+  const tenantRaw = typeof b.boutiqueTenant === 'string' ? b.boutiqueTenant.trim() : '';
+  if (tenantRaw.length > 63) return { problem: 'The boutique account is at most 63 characters.' };
+  const tenantIn = tenantRaw.toLowerCase();
   if (tenantIn && !/^[a-z0-9][a-z0-9_-]{1,62}$/.test(tenantIn)) return { problem: 'The boutique account is letters, numbers and dashes, like lakshmi-boutique.' };
   const gstin = text(b.gstin, 15).toUpperCase().replace(/\s/g, '');
   if (gstin) {
