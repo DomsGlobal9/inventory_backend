@@ -104,9 +104,11 @@ export class ShopifyProductPushService {
     const installation = await this.installation(clientId);
     const product = await prisma.product.findFirst({
       where: { id: productId, clientId },
-      select: { id: true, title: true, status: true, trashedAt: true, isService: true }
+      select: { id: true, title: true, status: true, trashedAt: true, isService: true, soldBy: true }
     });
     if (!product) throw new ShopifyApiError('That product was not found in this shop.', 404);
+    // Sold by the metre: Shopify sells whole quantities only, so it stays off Shopify for now (PLAN-fabrics D4).
+    if (on && (product.soldBy === 'METRE' || product.soldBy === 'KILOGRAM')) throw new ShopifyApiError('Products sold by the metre are not put on Shopify yet: Shopify sells whole pieces only. Sell it in your online shop instead.', 409);
 
     const existing = await prisma.shopifyProductMirror.findUnique({
       where: { uq_shopify_product_mirror: { installationId: installation.id, productId } }
@@ -140,7 +142,7 @@ export class ShopifyProductPushService {
     const installation = await this.installation(clientId);
     await this.ensureMatchedMirrors(clientId, installation.id);
     const products = await prisma.product.findMany({
-      where: { clientId, status: 'ACTIVE', trashedAt: null, isService: false },
+      where: { clientId, status: 'ACTIVE', trashedAt: null, isService: false, soldBy: { notIn: ['METRE', 'KILOGRAM'] } },
       select: { id: true, shopifyMirrors: { where: { installationId: installation.id }, select: { id: true, origin: true, wanted: true } } }
     });
     let added = 0, switchedOn = 0;

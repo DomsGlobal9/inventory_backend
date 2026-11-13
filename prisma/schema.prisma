@@ -621,6 +621,9 @@ model Product {
   widthCm   Int?    @map("width_cm")
   /// Bought in rolls: how many base units one roll holds (2500 = 25 m). Empty = not bought in rolls.
   rollSize  Int?    @map("roll_size")
+  /// Cut cloth taken back as a customer return? Off by default: most shops do not take back cloth once cut. Only
+  /// read for measured units (metre, kilogram); pieces and packets return as always.
+  cutReturnable Boolean @default(false) @map("cut_returnable")
   status           ProductStatus @default(DRAFT)
   publishedAt      DateTime?     @map("published_at")
 
@@ -2517,6 +2520,8 @@ model ClientSettings {
   fabricMinCut    Int     @default(25) @map("fabric_min_cut")
   /// The usual roll length in centimetres (2500 = 25 m), filled in for new fabric bought in rolls.
   fabricRollSize  Int     @default(2500) @map("fabric_roll_size")
+  /// Quick lengths on the online shop's length picker, in centimetres (1 m, 2.5 m blouse, 5.5 m saree).
+  fabricQuickLengths Int[] @default([100, 250, 550]) @map("fabric_quick_lengths")
 
   /// The shop's logo, shown wherever the shop identifies itself to its own staff.
   ///

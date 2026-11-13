@@ -32,6 +32,12 @@ export interface BasketLine {
   dressType?: string | null;
   sku?: string;
   title?: string;
+  /**
+   * Sold by length or weight (13 Nov 2026, PLAN-fabrics decision 2): quantity is centimetres or grams, so only
+   * percentage offers apply to it ("₹50 off each" or a fixed price would be per centimetre), and in a "buy N" count
+   * the line counts as one item, never 225.
+   */
+  measured?: boolean;
 }
 
 /** An offer, flattened to what pricing actually needs. */
@@ -112,6 +118,9 @@ export interface PricedBasket {
   }[];
 }
 
+/** How many items a line is, for "buy N": a length or weight is one item, whatever its centimetres. */
+const itemsIn = (l: { quantity: number; measured?: boolean }) => (l.measured ? 1 : l.quantity);
+
 export const normaliseType = (v: string | null | undefined) => String(v ?? '').trim().toLowerCase();
 
 /** Does one target name this line? */
@@ -142,6 +151,7 @@ function excluded(offer: CandidateOffer, line: BasketLine): boolean {
 /** Does this offer apply to this line at all? */
 function matches(offer: CandidateOffer, line: BasketLine): boolean {
   if (excluded(offer, line)) return false;
+  if (line.measured && offer.valueType !== 'PERCENTAGE') return false;
   if (offer.scope === 'ALL') return true;
   return offer.targets.some(t => hits({ scope: offer.scope, refId: t.refId }, line));
 }
@@ -174,7 +184,7 @@ export function priceBasket(
   }));
 
   const subtotalMinor = priced.reduce((s, l) => s + l.lineTotalMinor, 0);
-  const totalQuantity = lines.reduce((s, l) => s + l.quantity, 0);
+  const totalQuantity = lines.reduce((s, l) => s + itemsIn(l), 0);
 
   const rejected: { code: string; reason: string }[] = [];
   const nearMisses: { offerId: string; title: string; reason: string }[] = [];
@@ -259,7 +269,7 @@ export function priceBasket(
       hit = lines.reduce((acc, l) => matches(offer, l)
         // At LIST price, as the basket's own subtotal is -- measured before any offer has touched a
         // line, so the answer cannot depend on which line happened to be priced first.
-        ? { minor: acc.minor + l.listUnitPriceMinor * l.quantity, quantity: acc.quantity + l.quantity }
+        ? { minor: acc.minor + l.listUnitPriceMinor * l.quantity, quantity: acc.quantity + itemsIn(l) }
         : acc, { minor: 0, quantity: 0 });
       coveredBy.set(offer.id, hit);
     }
@@ -381,7 +391,7 @@ export function priceBasket(
     for (const offer of plan) {
       const inBill = lines.map(l => !excluded(offer, l));
       const base = totals.reduce((s, t, i) => s + (inBill[i] ? t : 0), 0);
-      const quantity = lines.reduce((s, l, i) => s + (inBill[i] ? l.quantity : 0), 0);
+      const quantity = lines.reduce((s, l, i) => s + (inBill[i] ? itemsIn(l) : 0), 0);
       const condition = conditionsMet(offer, base, quantity);
       if (condition) { blocked.push({ offer, reason: condition }); continue; }
       // Never per piece on a bill: "200 off the bill" is 200.

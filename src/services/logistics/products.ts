@@ -157,7 +157,7 @@ export async function list(clientId: string, opts: { cursor?: unknown; limit?: u
   const rows = await prisma.productVariant.findMany({
     where: {
       clientId,
-      product: { status: 'ACTIVE', trashedAt: null },
+      product: { status: 'ACTIVE', trashedAt: null, soldBy: { notIn: ['METRE', 'KILOGRAM'] } }, // lengths: not until Logistics understands units (PLAN-fabrics 4.5)
       ...(cursor ? { sku: { gt: cursor } } : {}),
       // Either the size or its product changed: a new price on the product is a change to every size.
       ...(since ? { OR: [{ updatedAt: { gt: since } }, { product: { updatedAt: { gt: since } } }] } : {})
@@ -184,7 +184,7 @@ export async function search(clientId: string, rawQ: unknown, rawLimit?: unknown
   const rows = await prisma.productVariant.findMany({
     where: {
       clientId,
-      product: { status: 'ACTIVE', trashedAt: null },
+      product: { status: 'ACTIVE', trashedAt: null, soldBy: { notIn: ['METRE', 'KILOGRAM'] } }, // lengths: not until Logistics understands units (PLAN-fabrics 4.5)
       OR: [
         { sku: { contains: q, mode: 'insensitive' } },
         { colorName: { contains: q, mode: 'insensitive' } },

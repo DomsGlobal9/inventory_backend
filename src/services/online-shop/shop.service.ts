@@ -28,6 +28,7 @@ import { facetsFor, type Facets } from './facets';
 import { canVerify } from './otp';
 import { paymentAccounts } from '../payments/account.service';
 import { alsoBoughtCodes } from '../also-bought';
+import { fabricSettings } from '../fabrics';
 
 export { OnlineShopRuleError };
 
@@ -390,6 +391,7 @@ export async function publicShop(slugRaw: unknown): Promise<
       canVerifyPhone: boolean;
       /** Customer accounts (the shop's settings): sign in, the wishlist (needs accounts), balances on the account. */
       accounts: boolean; wishlist: boolean; reviews: boolean; showBalances: boolean;
+      lengths: { minCut: number; quickLengths: number[] } | null;
       /** Whether a customer can actually buy here, and on what terms. */
       buying: {
         open: boolean;
@@ -427,6 +429,8 @@ export async function publicShop(slugRaw: unknown): Promise<
   // The switch alone is not enough: keys revoked, or swapped for test keys, since it was turned on.
   const payOnlineNow = shop.payOnline && payReady;
   if (!shop.isLive) return { state: 'CLOSED', name };
+  // Cloth by the metre (PLAN-fabrics.md): the page's length picker needs the shop's smallest cut and quick lengths.
+  const fabrics = await fabricSettings(shop.clientId).catch(() => null);
 
   return {
     state: 'OPEN',
@@ -461,6 +465,8 @@ export async function publicShop(slugRaw: unknown): Promise<
     wishlist: shop.accounts && shop.wishlist,
     reviews: shop.accounts && shop.reviews,
     showBalances: shop.showBalances,
+    /** Null while the shop does not sell by the metre. Centimetres: the smallest cut and the quick lengths. */
+    lengths: fabrics?.fabricsOn ? { minCut: fabrics.fabricMinCut, quickLengths: fabrics.fabricQuickLengths } : null,
     buying: {
       open: shop.acceptsOrders && (shop.payOnDelivery || payOnlineNow),
       payWays: [
@@ -604,6 +610,8 @@ export async function publicProducts(
  * could see from the shelf anyway.
  */
 const FEW_LEFT = 5;
+/** For cloth by the metre, in centimetres: 2 m (5 would mean 5 cm). PLAN-fabrics decision 5. */
+const FEW_LEFT_LENGTH = 200;
 
 /**
  * What a shopper is allowed to see of a product.
@@ -630,7 +638,7 @@ function forShopper(
       price: v.price, compareAtPrice: v.compareAtPrice, currency: v.currency,
       // shortcut: a service (no stock count) is not sold in the online shop -- checkout reserves stock; sell it at the till.
       sellable: v.stock.sellable && v.stock.available !== null,
-      fewLeft: showFewLeft && v.stock.sellable && v.stock.available !== null && v.stock.available > 0 && v.stock.available <= FEW_LEFT
+      fewLeft: showFewLeft && v.stock.sellable && v.stock.available !== null && v.stock.available > 0 && v.stock.available <= (p.soldBy === 'METRE' ? FEW_LEFT_LENGTH : FEW_LEFT)
         ? v.stock.available
         : null
     }))
@@ -648,7 +656,7 @@ export async function publicProduct(
    * RAW_UPLOAD IS NEVER SHOWN TO A CUSTOMER. See publicProducts above.
    */
   const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false };
-  const p = await storefrontCatalogueService.getProduct(scope, code);
+  const p = await storefrontCatalogueService.getProduct(scope, code, { withLengths: true });
   if (!p) return null;
   // The same badge the tile wore, and per size as well: the page is where a shopper picks one,
   // and an offer that covers only the large is a fact they need at that moment.
@@ -698,7 +706,7 @@ export async function publicAlsoBought(
   // hidden photos and offers are exactly what that product's own page would show.
   // A row's worth at a time, side by side: one after another was 3-5 seconds on a product page.
   for (let i = 0; i < codes.length && products.length < ALSO_BOUGHT_TILES; i += ALSO_BOUGHT_TILES) {
-    const batch = await Promise.all(codes.slice(i, i + ALSO_BOUGHT_TILES).map(c => storefrontCatalogueService.getProduct(scope, c)));
+    const batch = await Promise.all(codes.slice(i, i + ALSO_BOUGHT_TILES).map(c => storefrontCatalogueService.getProduct(scope, c, { withLengths: true })));
     for (const p of batch) {
       if (!p) continue;
       const shown = forShopper(p, shop.showFewLeft !== false);

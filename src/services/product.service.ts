@@ -9,6 +9,7 @@ import { shopperTryOnProductService, type ScanUrlOptions } from './shopper-tryon
 import { StorefrontEventType } from '@prisma/client';
 import { conflict } from '../utils/httpError';
 import { validateProductTransition, isLive } from '../utils/product-state-machine';
+import { unitFieldsFor } from './fabrics';
 
 /**
  * Tell any connected storefront that a product appeared, changed or was withdrawn.
@@ -64,7 +65,9 @@ export class ProductService {
       priceIsExclusive: false, // always tax-inclusive; see validations/product.schema.ts
       // Published straight from the wizard rather than saved as a draft first, which is the
       // common path. See updateProduct for why this column needs setting at all.
-      publishedAt: data.status === 'ACTIVE' ? new Date() : null
+      publishedAt: data.status === 'ACTIVE' ? new Date() : null,
+      // How it is sold (PLAN-fabrics.md): checked and tidied in one place; PIECE when not given.
+      ...(await unitFieldsFor(clientId, null, data))
     };
 
     return productRepository.create(productData);
@@ -118,6 +121,11 @@ export class ProductService {
     // Re-generate slug if title changes, suffixed with the product's own (already
     // unique) productCode for the same reason as createProduct above.
     let updateData = { ...data };
+
+    // How it is sold (PLAN-fabrics.md): the raw fields replaced by the checked ones (the shop's switch, no change of
+    // unit once there is stock or sales).
+    for (const k of ['soldBy', 'kind', 'minCut', 'widthCm', 'rollSize', 'cutReturnable']) delete (updateData as any)[k];
+    Object.assign(updateData, await unitFieldsFor(clientId, id, data));
 
     // Clearing the HSN box means "not set", which is null. An empty string would look like a code
     // to every query that asks whether one exists.

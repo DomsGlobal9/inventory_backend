@@ -58,6 +58,14 @@ export interface StorefrontVariant {
 export interface StorefrontProduct {
   productCode: string;
   title: string;
+  /** How it is sold (PLAN-fabrics.md): PIECE everywhere but our online shop, which also gets METRE/PACKET. */
+  soldBy: string;
+  /** METRE: the smallest sale in centimetres; null = the shop's default. */
+  minCut: number | null;
+  /** Cloth width in centimetres, when the shop gave one. */
+  widthCm: number | null;
+  /** Whether cut cloth is taken back (METRE only). */
+  cutReturnable: boolean;
   description: string | null;
   category: string;
   productType: string;
@@ -106,9 +114,19 @@ export const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = {
  * API while every event about it was silently discarded -- a storefront that could see it but
  * would never be told when it changed.
  */
-function isEligible(product: { status: string; trashedAt: Date | null }): boolean {
-  return product.status === 'ACTIVE' && product.trashedAt === null;
+function isEligible(product: { status: string; trashedAt: Date | null; soldBy?: string | null }): boolean {
+  return product.status === 'ACTIVE' && product.trashedAt === null && !MEASURED_UNITS.includes(String(product.soldBy ?? 'PIECE'));
 }
+
+/*
+ * The FEED rule: ELIGIBLE_PRODUCT minus products sold by length or weight (13 Nov 2026, PLAN-fabrics.md 4.5).
+ * This feed is read by other websites and the POS till, whose contracts mean pieces: 1250 centimetres of cloth
+ * would read as 1,250 pieces. They see such products once their side understands units. Our own online shop does
+ * not read this feed (services/online-shop), so fabric still sells there. ELIGIBLE_PRODUCT itself is unchanged,
+ * because the online shop's facets share it.
+ */
+const MEASURED_UNITS = ['METRE', 'KILOGRAM'];
+export const FEED_PRODUCT: Prisma.ProductWhereInput = { ...ELIGIBLE_PRODUCT, soldBy: { notIn: MEASURED_UNITS } };
 
 /** Locations in scope, resolved once. An empty scope means all of the tenant's locations. */
 async function resolveLocationIds(scope: CatalogueScope): Promise<string[]> {
@@ -238,6 +256,7 @@ const PRODUCT_SELECT = {
   id: true, productCode: true, title: true, description: true,
   category: true, productType: true, dressType: true, fabric: true, craft: true, brand: true,
   basePrice: true, isService: true, publishedAt: true, createdAt: true, updatedAt: true,
+  soldBy: true, minCut: true, widthCm: true, cutReturnable: true,
   images: {
     // variantId: a photograph may belong to one colour rather than to the product as a whole,
     // which is how a shop shows the green saree when green is chosen.
@@ -354,6 +373,16 @@ function toStorefrontProduct(
     fabric: p.fabric ?? null,
     craft: p.craft ?? null,
     brand: p.brand ?? null,
+    /*
+     * How it is sold (PLAN-fabrics.md). Only our online shop ever receives a product sold by the metre (other
+     * websites and the till get pieces only, FEED_PRODUCT), so for them this is always PIECE. For METRE: stock
+     * and quantities are centimetres, prices are per centimetre (price × 100 = per metre), and a sale is a
+     * multiple of minCut (null = the shop default, sent as fabricMinCut by the online shop).
+     */
+    soldBy: (p as any).soldBy ?? 'PIECE',
+    minCut: (p as any).minCut ?? null,
+    widthCm: (p as any).widthCm ?? null,
+    cutReturnable: !!(p as any).cutReturnable,
     publishedAt: p.publishedAt ? p.publishedAt.toISOString() : null,
     updatedAt: p.updatedAt.toISOString(),
     /*
@@ -409,7 +438,7 @@ export class StorefrontCatalogueService {
 
     const where: Prisma.ProductWhereInput = {
       clientId: scope.clientId,
-      ...ELIGIBLE_PRODUCT,
+      ...FEED_PRODUCT,
       ...(opts.since ? { updatedAt: { gte: opts.since } } : {}),
       ...(decoded
         ? {
@@ -482,7 +511,7 @@ export class StorefrontCatalogueService {
     };
     const where: Prisma.ProductWhereInput = {
       clientId: scope.clientId,
-      ...ELIGIBLE_PRODUCT,
+      ...ELIGIBLE_PRODUCT, // the online shop's list: fabric sells there (PLAN-fabrics 4.5)
       ...(opts.category ? { category: opts.category as never } : {}),
       ...(opts.fabric ? { fabric: { equals: literal(opts.fabric), mode: 'insensitive' } } : {}),
       ...(opts.craft ? { craft: { equals: literal(opts.craft), mode: 'insensitive' } } : {}),
@@ -550,7 +579,8 @@ export class StorefrontCatalogueService {
   }
 
   /** One product by its public code, for a storefront filling a gap it noticed. */
-  async getProduct(scope: CatalogueScope, productCode: string): Promise<StorefrontProduct | null> {
+  /** `withLengths`: our own online shop, which sells by the metre; other websites and the till get pieces only. */
+  async getProduct(scope: CatalogueScope, productCode: string, opts: { withLengths?: boolean } = {}): Promise<StorefrontProduct | null> {
     // Together, not one after the other. Neither needs the other's answer, and waiting for the
     // locations before even asking for the currency spent a whole round trip -- about a second
     // from here -- on nothing. That second is paid by a shopper waiting for the page.
@@ -561,7 +591,7 @@ export class StorefrontCatalogueService {
     const scoped = new Set(locationIds);
 
     const p = await prisma.product.findFirst({
-      where: { clientId: scope.clientId, productCode, ...ELIGIBLE_PRODUCT },
+      where: { clientId: scope.clientId, productCode, ...(opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT) },
       select: PRODUCT_SELECT
     });
     if (!p) return null;
@@ -580,7 +610,7 @@ export class StorefrontCatalogueService {
       where: { id: variantId, clientId: scope.clientId },
       select: {
         sku: true,
-        product: { select: { productCode: true, status: true, trashedAt: true, isService: true } },
+        product: { select: { productCode: true, status: true, trashedAt: true, isService: true, soldBy: true } },
         stocks: { select: { locationId: true, quantity: true, reservedQty: true } },
         locationProfiles: { select: { locationId: true, isAvailable: true, priceOverride: true } }
       }

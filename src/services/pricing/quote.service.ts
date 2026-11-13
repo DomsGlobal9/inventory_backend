@@ -107,7 +107,7 @@ export class PricingQuoteService {
       where: { id: { in: variantIds }, clientId },
       include: {
         locationProfiles: true,
-        product: { select: { id: true, title: true, category: true, dressType: true, basePrice: true } }
+        product: { select: { id: true, title: true, category: true, dressType: true, basePrice: true, soldBy: true } }
       }
     });
 
@@ -144,7 +144,9 @@ export class PricingQuoteService {
         quantity,
         listUnitPriceMinor: toMinor(resolved.price ?? 0),
         sku: variant.sku,
-        title: variant.product.title
+        title: variant.product.title,
+        // Sold by length or weight: only %-off offers, and one line counts as one in 'buy N' (PLAN-fabrics decision 2).
+        measured: variant.product.soldBy === 'METRE' || variant.product.soldBy === 'KILOGRAM'
       });
     }
 

@@ -207,7 +207,7 @@ export class InventoryService {
         ? await prisma.productVariant.findMany({
             where: { id: { in: pageIds } },
             include: {
-              product: { select: { title: true, category: true, status: true, basePrice: true } },
+              product: { select: { title: true, category: true, status: true, basePrice: true, soldBy: true, minCut: true } },
               stocks: true
             }
           })
@@ -224,7 +224,7 @@ export class InventoryService {
           skip,
           take: Number(limit),
           include: {
-            product: { select: { title: true, category: true, status: true, basePrice: true } },
+            product: { select: { title: true, category: true, status: true, basePrice: true, soldBy: true, minCut: true } },
             stocks: true
           }
         }),
@@ -278,6 +278,9 @@ export class InventoryService {
         productId: v.productId,
         sku: v.sku,
         productTitle: v.product.title,
+        // How it is sold (PLAN-fabrics.md): METRE rows are centimetres and per-centimetre costs; the screen shows metres.
+        soldBy: (v.product as any).soldBy ?? 'PIECE',
+        minCut: (v.product as any).minCut ?? null,
         category: v.product.category,
         quantity: qty,
         averageCost,

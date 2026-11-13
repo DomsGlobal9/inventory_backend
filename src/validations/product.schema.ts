@@ -41,6 +41,17 @@ export const createProductSchema = z.object({
   // price is often the last thing decided -- and every comparable catalogue (Shopify, Zoho)
   // lets you park one without it. Requiring it here meant Save as Draft could only ever
   // 400, since the review screen offers drafts before pricing is settled.
+  /*
+   * How it is sold (13 Nov 2026, PLAN-fabrics.md): PIECE (the default), METRE, PACKET. Checked in full by
+   * services/fabrics (the shop's switch, no unit change once there is stock or sales); the shape only here.
+   * Lengths are in base units: minCut and rollSize in centimetres for a metre product, widthCm in centimetres.
+   */
+  soldBy: z.string().optional(),
+  kind: z.string().nullable().optional(),
+  minCut: z.number().int().nullable().optional(),
+  widthCm: z.number().int().nullable().optional(),
+  rollSize: z.number().int().nullable().optional(),
+  cutReturnable: z.boolean().optional(),
   basePrice: z.number().nonnegative("Base price cannot be negative").max(99999999.99, 'That price is too large. The most a piece can cost is ₹9,99,99,999.').refine(isWholePaise, PAISA_MESSAGE),
   status: z.nativeEnum(ProductStatus).optional()
 }).superRefine((val, ctx) => {

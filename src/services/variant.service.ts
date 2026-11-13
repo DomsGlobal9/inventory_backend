@@ -11,6 +11,7 @@ import { notFound } from '../utils/httpError';
 import { conflict } from '../utils/httpError';
 import { isLive, notLiveReason } from '../utils/product-state-machine';
 import { markProductForShopify } from './shopify-products/dirty';
+import { isMeasured } from '../lib/units';
 
 /** A variant's size, colour or price changed: its product's Shopify copy (if any) is re-sent. */
 async function shopifyFollowVariants(variantIds: string[]) {
@@ -168,7 +169,8 @@ export class VariantService {
       size: data.size,
       colorName: data.colorName,
       hexCode: data.hexCode,
-      reorderLevel: data.reorderLevel,
+      // Cloth by the metre: the usual 5 would mean 5 cm, so a length starts at 10 m (PLAN-fabrics decision 5).
+      reorderLevel: isMeasured((product as any)?.soldBy) && (data.reorderLevel ?? 5) === 5 ? 1000 : data.reorderLevel,
       sellingPrice: data.sellingPrice,
       costPrice: data.costPrice
     };
@@ -236,7 +238,7 @@ export class VariantService {
             size: v.size,
             colorName: v.colorName,
             hexCode: v.hexCode,
-            reorderLevel: v.reorderLevel,
+            reorderLevel: isMeasured((product as any)?.soldBy) && (v.reorderLevel ?? 5) === 5 ? 1000 : v.reorderLevel,
             // Accepted by bulkCreateVariantSchema and then silently dropped here, so a
             // catalogue imported with costs and prices arrived with neither.
             sellingPrice: v.sellingPrice,

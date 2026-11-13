@@ -30,6 +30,7 @@ import dispatchRoutes from './dispatch.routes';
 import logisticsRoutes from './logistics.routes';
 import roleRoutes from './role.routes';
 import brandingRoutes from './branding.routes';
+import fabricsRoutes from './fabrics.routes';
 import productImportRoutes from './product-import.routes';
 import productPhotosRoutes from './product-photos.routes';
 import { returnsRoutes } from './returns.routes';
@@ -156,6 +157,8 @@ router.use('/inventory', hideCost, inventoryRoutes);
 router.use('/dashboard', hideCost, dashboardRoutes);
 // The shop's own name and logo. Readable by anyone signed in, changeable only by the owner.
 router.use('/branding', brandingRoutes);
+// Fabrics by the metre: the shop's switch and defaults (PLAN-fabrics.md).
+router.use('/fabrics', fabricsRoutes);
 router.use('/catalog', hideCost, catalogRoutes);
 router.use('/catalog-tryon', catalogTryOnRoutes);
 

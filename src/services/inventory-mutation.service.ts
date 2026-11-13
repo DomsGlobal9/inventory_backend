@@ -4,6 +4,7 @@ import { InventoryAlertService } from './inventory-alert.service';
 import { storefrontEventService } from './storefront-event.service';
 import { afterCommit } from '../lib/afterCommit';
 import { applyShelfLegs } from './shelves/legs';
+import { isMeasured, quantityProblem } from '../lib/units';
 
 /**
  * Fire-and-forget, on purpose, and only once the transaction has committed.
@@ -82,7 +83,7 @@ export class InventoryMutationService {
         where: { id: variantId },
         // product.title is copied onto the transaction below so the day book can name the
         // item without a second lookup per row.
-        include: { stocks: true, product: { select: { title: true, isService: true } } }
+        include: { stocks: true, product: { select: { title: true, isService: true, soldBy: true, minCut: true, cutReturnable: true } } }
       });
 
       // These three are USER errors, not server faults. Thrown bare they inherited
@@ -107,6 +108,22 @@ export class InventoryMutationService {
 
       // A service (fall & pico, stitching) keeps no stock: selling, returning or "adding" one moves nothing.
       if (variant.product.isService && !shelfMove) return null;
+
+      /*
+       * Cloth is SOLD in steps of its smallest cut (13 Nov 2026, PLAN-fabrics.md). Only a sale: what is received,
+       * counted, corrected or written off is whatever was measured (a roll end of 11.73 m is real), so those take
+       * any whole centimetre. Here, the one doorway, so a sale from the online shop, an order or (later) the till
+       * is held to it whichever path it took.
+       */
+      if (reason === 'SALE' && quantityDelta !== 0 && isMeasured(variant.product.soldBy)) {
+        const shop = await tx.clientSettings.findUnique({ where: { clientId }, select: { fabricMinCut: true } });
+        const why = quantityProblem(Math.abs(quantityDelta), variant.product, shop?.fabricMinCut ?? 25);
+        if (why) throw Object.assign(new Error(`${variant.product.title}: ${why}`), { statusCode: 400 });
+      }
+      // Cut cloth comes back only where the owner allows it for this product (decision 3): one place, every return path.
+      if (reason === 'CUSTOMER_RETURN' && quantityDelta > 0 && isMeasured(variant.product.soldBy) && !variant.product.cutReturnable) {
+        throw Object.assign(new Error(`${variant.product.title} is cut cloth and is not taken back. To allow returns of it, tick "Cut cloth can be returned" on the product.`), { statusCode: 409 });
+      }
 
       // Calculate global current quantity
       const globalQty = variant.stocks.reduce((acc, stock) => acc + stock.quantity, 0);

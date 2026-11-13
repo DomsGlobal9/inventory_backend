@@ -142,7 +142,7 @@ const words = (v: unknown, max: number): string | null => {
 export async function checkProduct(clientId: string, code: string) {
   const shop = await prisma.onlineShop.findUnique({ where: { clientId }, select: { locationIds: true } });
   const found = await storefrontCatalogueService
-    .getProduct({ clientId, locationIds: shop?.locationIds ?? [] }, code)
+    .getProduct({ clientId, locationIds: shop?.locationIds ?? [] }, code, { withLengths: true })
     .catch(() => null);
   if (!found) {
     throw new OnlineShopRuleError(

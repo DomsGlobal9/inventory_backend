@@ -14,6 +14,7 @@ import { whoIs } from './otp';
 import { paymentAccounts } from '../payments/account.service';
 import { paymentSummary } from '../payments/payment-rules';
 import { customerParcels, orderStateOf, progressOf } from './tracking';
+import { isMeasured, quantityProblem, formatQty } from '../../lib/units';
 
 /**
  * A customer buying from a shop's own online shop.
@@ -39,6 +40,8 @@ export const SHOP_SOURCE = 'SCALEEZY_SHOP';
  */
 const MAX_LINES = 20;
 const MAX_PER_LINE = 10;
+/** Cloth by the metre (PLAN-fabrics.md): up to 100 m on one line, in centimetres. Pieces keep MAX_PER_LINE. */
+const MAX_LENGTH_PER_LINE = 10_000;
 
 export type BasketLine = { variantCode: string; quantity: number };
 
@@ -79,8 +82,10 @@ function tidy(raw: unknown): BasketLine[] {
     const code = typeof row?.variantCode === 'string' ? row.variantCode.trim() : '';
     const qty = Number(row?.quantity);
     if (!code) throw new OnlineShopRuleError('Something in your bag could not be read. Empty it and try again.');
-    if (!Number.isInteger(qty) || qty <= 0) throw new OnlineShopRuleError('How many of each piece has to be a whole number.');
-    byCode.set(code, Math.min((byCode.get(code) ?? 0) + qty, MAX_PER_LINE));
+    if (!Number.isInteger(qty) || qty <= 0) throw new OnlineShopRuleError('How many of each piece has to be a whole number (a length in whole centimetres).');
+    // Capped per unit once the product is known (resolve): 10 pieces, or 100 m of cloth.
+    // Not capped to 100 m here: an asked-for 100.5 m is refused in words in resolve(), never quietly cut short.
+    byCode.set(code, Math.min((byCode.get(code) ?? 0) + qty, 1_000_000));
   }
 
   /*
@@ -115,7 +120,7 @@ async function resolve(clientId: string, lines: BasketLine[]): Promise<Resolved[
       id: true, variantCode: true, size: true, colorName: true, hexCode: true,
       product: {
         select: {
-          title: true, productCode: true, status: true, trashedAt: true,
+          title: true, productCode: true, status: true, trashedAt: true, soldBy: true, minCut: true,
           images: {
             where: { imageType: { in: ['COVER', 'GALLERY'] } },
             select: { url: true, isPrimary: true, variantId: true },
@@ -128,6 +133,7 @@ async function resolve(clientId: string, lines: BasketLine[]): Promise<Resolved[
     }
   });
   const byCode = new Map(rows.map(r => [r.variantCode, r]));
+  const shop = await prisma.clientSettings.findUnique({ where: { clientId }, select: { fabricMinCut: true, fabricsOn: true } });
 
   return lines.map(line => {
     const v = byCode.get(line.variantCode);
@@ -135,11 +141,22 @@ async function resolve(clientId: string, lines: BasketLine[]): Promise<Resolved[
     if (v.product.trashedAt || v.product.status !== 'ACTIVE') {
       throw new OnlineShopRuleError(`${v.product.title} is no longer sold. Take it out of your bag.`);
     }
+    // How much may be on this line, per unit (PLAN-fabrics.md): a length is checked against the smallest cut and
+    // 100 m; pieces stay at 10, as before (merged extras are quietly capped, exactly as they always were).
+    let quantity = line.quantity;
+    if (isMeasured(v.product.soldBy)) {
+      if (!shop?.fabricsOn) throw new OnlineShopRuleError(`${v.product.title} cannot be bought online right now. Take it out of your bag.`);
+      const why = quantityProblem(quantity, v.product, shop.fabricMinCut);
+      if (why) throw new OnlineShopRuleError(`${v.product.title}: ${why}`);
+      if (quantity > MAX_LENGTH_PER_LINE) throw new OnlineShopRuleError(`${v.product.title}: at most ${formatQty(MAX_LENGTH_PER_LINE, v.product.soldBy)} on one order.`);
+    } else {
+      quantity = Math.min(quantity, MAX_PER_LINE);
+    }
     const mine = v.product.images.filter(i => i.variantId === v.id);
     const photo = (mine.find(i => i.isPrimary) ?? mine[0]
       ?? v.product.images.find(i => i.isPrimary) ?? v.product.images[0])?.url ?? null;
     return {
-      variantId: v.id, variantCode: v.variantCode, quantity: line.quantity,
+      variantId: v.id, variantCode: v.variantCode, quantity,
       title: v.product.title, productCode: v.product.productCode,
       size: v.size ?? null, colour: v.colorName ?? null,
       colourHex: hex(v.hexCode), imageUrl: photo,
