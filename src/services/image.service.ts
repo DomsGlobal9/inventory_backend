@@ -138,6 +138,17 @@ export class ImageService {
       if (!source) throw { statusCode: 400, message: 'That photograph does not belong to this product.' };
     }
 
+    /*
+     * The same photograph again, for the same colour, is not a second photograph (13 Nov 2026).
+     *
+     * Swathy Reddy's shop had 16 sarees showing one photograph twice: the same camera file (DSC3031.JPG, same
+     * size) registered twice against the same variant a few seconds apart -- a photo that sat both in a slot and
+     * in the extras, or a save that ran twice. Whatever the path (the wizard, the Images tab, bulk photos), the
+     * answer is the photograph already there; the copy just uploaded is removed from storage unless something
+     * else uses it. Generated views are left alone: each generation is its own picture.
+     */
+    const known = !data.generated && !!data.fileName && Number.isFinite(Number(data.fileSize)) && Number(data.fileSize) > 0;
+
     const imageData: Prisma.ProductImageUncheckedCreateInput = {
       productId,
       variantId: data.variantId ?? null,
@@ -162,19 +173,43 @@ export class ImageService {
     // Scoped by variant now that a photograph can name a colour: clearing on productId alone
     // would mean setting the primary shot of the red saree un-set the primary shot of the
     // blue one, and a shop with five colours could only ever have one primary between them.
-    if (imageData.isPrimary) {
-      return prisma.$transaction(async (tx) => {
+    //
+    // One transaction with the repeat check above: saves of the SAME photograph for the same colour queue behind
+    // one another (a lock held for that photo only, released at commit), so three saves arriving together -- a
+    // double tap, a slow network retrying -- see each other instead of each finding nothing and each saving.
+    // Different photographs never wait for one another.
+    const outcome = await prisma.$transaction(async (tx) => {
+      if (known) {
+        const key = `photo|${productId}|${data.variantId ?? ''}|${String(data.fileName)}|${Number(data.fileSize)}`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+        const already = await tx.productImage.findFirst({
+          where: { productId, variantId: data.variantId ?? null, generated: false, fileName: String(data.fileName), fileSize: Number(data.fileSize) },
+          orderBy: { createdAt: 'asc' }
+        });
+        if (already) return { row: already, repeated: true };
+      }
+      if (imageData.isPrimary) {
         await tx.productImage.updateMany({
           where: { productId, variantId: imageData.variantId ?? null, isPrimary: true },
           data: { isPrimary: false }
         });
-        return tx.productImage.create({ data: imageData });
-      }).then(async (row) => { await markProductForShopify(productId); return row; });
-    }
+      }
+      return { row: await tx.productImage.create({ data: imageData }), repeated: false };
+    });
 
-    const created = await imageRepository.create(imageData);
+    if (outcome.repeated) {
+      // The copy just uploaded is not needed: removed from storage unless something else uses it.
+      if (data.storagePath && data.storagePath !== outcome.row.storagePath) {
+        const used = await prisma.productImage.count({ where: { storagePath: data.storagePath } });
+        if (used === 0) {
+          const { error } = await supabase.storage.from('inventory-images').remove([data.storagePath]);
+          if (error) console.warn('[images] could not remove a repeated upload; it stays as an unused file:', error.message);
+        }
+      }
+      return outcome.row;
+    }
     await markProductForShopify(productId);
-    return created;
+    return outcome.row;
   }
 
   async getImages(productId: string, clientId: string) {
