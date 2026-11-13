@@ -124,6 +124,25 @@ export async function link(input: { tenant: unknown; shopName?: unknown; linkCod
   return { clientId, tenant, linked: 'new' as const };
 }
 
+/** Is this boutique account already linked to a shop? */
+export async function boutiqueTaken(tenant: string) {
+  const l = await prisma.boutiqueLink.findUnique({ where: { tenant } });
+  return !!l && !l.unlinkedAt;
+}
+
+/**
+ * Link at onboarding, from the Platform Console (PLAN-onboarding-setup.md). The Console is ScaleEzy itself, so no
+ * owner's code is needed. Fabrics are switched on as for any boutique; the store is the shop's own.
+ */
+export async function linkTrusted(tenant: string, clientId: string, shopName: string | null) {
+  if (await boutiqueTaken(tenant)) throw problem(`The boutique account "${tenant}" is already linked to another shop.`, 409);
+  await prisma.$transaction(async tx => {
+    await tx.boutiqueLink.upsert({ where: { clientId }, create: { clientId, tenant, shopName }, update: { tenant, shopName, unlinkedAt: null, linkedAt: new Date() } });
+    await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true } as any, update: { fabricsOn: true } });
+  });
+  return { linked: true, tenant };
+}
+
 /** The shop a boutique is linked to, or a refusal. */
 export async function linkedShop(tenant: string) {
   const l = await prisma.boutiqueLink.findUnique({ where: { tenant } });

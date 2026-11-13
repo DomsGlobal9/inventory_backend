@@ -2537,6 +2537,10 @@ model ClientSettings {
   fabricRollSize  Int     @default(2500) @map("fabric_roll_size")
   /// Quick lengths on the online shop's length picker, in centimetres (1 m, 2.5 m blouse, 5.5 m saree).
   fabricQuickLengths Int[] @default([100, 250, 550]) @map("fabric_quick_lengths")
+  /// What the shop sells: READY_MADE, FABRICS or BOTH (null = not asked yet). PLAN-onboarding-setup.md.
+  sells       String?   @map("sells")
+  /// When the owner finished "Set up your shop" (null = show it to the owner once).
+  setupDoneAt DateTime? @map("setup_done_at")
 
   /// The shop's logo, shown wherever the shop identifies itself to its own staff.
   ///

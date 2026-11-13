@@ -32,6 +32,7 @@ import roleRoutes from './role.routes';
 import brandingRoutes from './branding.routes';
 import fabricsRoutes from './fabrics.routes';
 import boutiqueLinkRoutes from './boutique-link.routes';
+import shopSetupRoutes from './shop-setup.routes';
 import productImportRoutes from './product-import.routes';
 import productPhotosRoutes from './product-photos.routes';
 import { returnsRoutes } from './returns.routes';
@@ -162,6 +163,8 @@ router.use('/branding', brandingRoutes);
 router.use('/fabrics', fabricsRoutes);
 // The owner links a boutique to this shop (one-time code) or unlinks it.
 router.use('/boutique-link', boutiqueLinkRoutes);
+// "Set up your shop": what it sells and its details (PLAN-onboarding-setup.md).
+router.use('/setup', shopSetupRoutes);
 router.use('/catalog', hideCost, catalogRoutes);
 router.use('/catalog-tryon', catalogTryOnRoutes);
 

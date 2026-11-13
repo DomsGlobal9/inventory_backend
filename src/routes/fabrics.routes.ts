@@ -1,3 +1,4 @@
+import { prisma } from '../lib/prisma';
 import { Router, Request, Response, NextFunction } from 'express';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
@@ -24,6 +25,8 @@ const handle = (fn: (req: Request) => Promise<unknown>) => async (req: Request, 
 
 router.get('/', requirePermission('product:view'), handle(async req => ({
   ...(await fabricSettings(clientOf(req))),
+  // What the shop sells shapes Add product (PLAN-onboarding-setup.md); null = not asked yet.
+  sells: (await prisma.clientSettings.findUnique({ where: { clientId: clientOf(req) }, select: { sells: true } }))?.sells ?? null,
   units: SELLING_NOW.map(code => ({ code, ...UNITS[code] })),
   kinds: KINDS
 })));

@@ -1,3 +1,5 @@
+import { isSells } from '../services/shop-setup';
+import { boutiqueTaken } from '../services/boutique';
 import { normalisePhone } from '../lib/phone';
 import { Request, Response } from 'express';
 import { lockedFor, recordFailure, clearFailures, loginKey, tooManyMessage } from '../lib/loginThrottle';
@@ -123,6 +125,9 @@ export function readOnboardingForm(b: any) {
   if (pin && !/^[1-9][0-9]{5}$/.test(pin)) return { problem: 'A PIN code is 6 digits.' };
   let stateCode = text(b.stateCode, 2);
   if (stateCode && !STATE_CODE.test(stateCode)) return { problem: 'Choose the state from the list.' };
+  if (b.sells != null && b.sells !== '' && !isSells(b.sells)) return { problem: 'Choose what the shop sells: ready-made, fabrics, both, or let the owner choose.' };
+  const tenantIn = text(b.boutiqueTenant, 63).toLowerCase();
+  if (tenantIn && !/^[a-z0-9][a-z0-9_-]{1,62}$/.test(tenantIn)) return { problem: 'The boutique account is letters, numbers and dashes, like lakshmi-boutique.' };
   const gstin = text(b.gstin, 15).toUpperCase().replace(/\s/g, '');
   if (gstin) {
     if (!GSTIN.test(gstin)) return { problem: 'A GSTIN is 15 characters, like 37ABCDE1234F1Z5. Leave it blank if the shop is not registered.' };
@@ -138,7 +143,10 @@ export function readOnboardingForm(b: any) {
     stateCode: stateCode || null,
     pin: pin || null,
     storeName: text(b.storeName, 60) || null,
-    gstin: gstin || null
+    gstin: gstin || null,
+    // PLAN-onboarding-setup.md: what the shop sells (null = the owner chooses at first sign-in), and its boutique.
+    sells: isSells(b.sells) ? b.sells : null,
+    boutiqueTenant: text(b.boutiqueTenant, 63).toLowerCase() || null
   };
 }
 
@@ -147,6 +155,10 @@ export const onboardClient = async (req: Request, res: Response) => {
     const form = readOnboardingForm(req.body ?? {});
     if ('problem' in form) return res.status(400).json({ success: false, message: form.problem });
     const { companyName, adminName, adminEmail, ...more } = form;
+    // A boutique account already linked to another shop is refused before anything is made.
+    if (more.boutiqueTenant && await boutiqueTaken(more.boutiqueTenant)) {
+      return res.status(409).json({ success: false, message: `The boutique account "${more.boutiqueTenant}" is already linked to another shop. Check the name, or unlink it there first.` });
+    }
 
     const result = await platformAdminService.onboardClient(companyName, adminName, adminEmail, null, more);
 

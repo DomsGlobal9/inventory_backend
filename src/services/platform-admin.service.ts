@@ -1,3 +1,5 @@
+import { seedSells, type Sells } from './shop-setup';
+import { linkTrusted } from './boutique';
 import crypto from 'crypto';
 import { readablePassword } from '../lib/readablePassword';
 import { whatsappClient, whatsappConfigured } from './whatsapp/client';
@@ -331,6 +333,7 @@ export class PlatformAdminService {
   async onboardClient(companyName: string, adminName: string, adminEmail: string, businessPhone?: string | null, more: {
     ownerPhone?: string | null; shopPhone?: string | null; address?: string | null; city?: string | null;
     stateCode?: string | null; pin?: string | null; storeName?: string | null; gstin?: string | null;
+    sells?: Sells | null; boutiqueTenant?: string | null;
   } = {}) {
     // One line, as a bill prints it: "12-4-56, Main Bazaar, Vijayawada, Andhra Pradesh 520001".
     const stateName = more.stateCode ? GST_STATE_NAMES[more.stateCode] ?? null : null;
@@ -424,6 +427,10 @@ export class PlatformAdminService {
       }
     }
 
+    // What the shop sells, when we know it (the owner confirms at first sign-in), and its boutique, linked at once.
+    await seedSells(clientId, more.sells ?? null);
+    const boutique = more.boutiqueTenant ? await linkTrusted(more.boutiqueTenant, clientId, companyName.trim() || null) : null;
+
     const user = await prisma.user.create({
       data: { clientId, name: adminName, email: adminEmail, phone: more.ownerPhone ?? null, password: hashed, passwordEncrypted, status: 'ACTIVE' }
     });
@@ -449,7 +456,8 @@ export class PlatformAdminService {
 
     return {
       clientId, adminName, adminEmail, tempPassword, emailed: delivery.sent, emailReason: delivery.reason,
-      welcomed: welcome.sent, welcomeReason: welcome.reason
+      welcomed: welcome.sent, welcomeReason: welcome.reason,
+      sells: more.sells ?? null, boutique
     };
   }
 
