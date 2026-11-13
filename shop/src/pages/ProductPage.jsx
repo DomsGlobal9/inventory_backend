@@ -464,11 +464,24 @@ export default function ProductPage({ slug, shop }) {
     if (!img.variantCode) return 2;                                    // the piece as a whole
     return 3;                                                          // another colour, only ever
   };                                                                   // reached by the fallback
+  /*
+   * Each photograph once (13 Nov). One colour in four sizes is four variants, and the same three views are
+   * linked to every one of them -- so the rail showed each picture four times ("saree": 9 photos, 3 different).
+   * Kept: the first of each, after the ranking, so the best match for the chosen size and colour stays first.
+   * The same picture is the same address, whatever is after the `?`.
+   */
+  const seenPhoto = new Set();
   const photos = [...shown]
     .map((img, i) => ({ img, i, r: rank(img) }))
     // Stable inside each group, so the shop's own ordering is kept.
     .sort((a, b) => a.r - b.r || a.i - b.i)
-    .map(x => x.img);
+    .map(x => x.img)
+    .filter(img => {
+      const k = String(img.url ?? '').split('?')[0];
+      if (!k || seenPhoto.has(k)) return false;
+      seenPhoto.add(k);
+      return true;
+    });
 
   const currency = chosen?.currency ?? 'INR';
   const ask = askOnWhatsApp(shop?.whatsapp, shop?.name, p);
