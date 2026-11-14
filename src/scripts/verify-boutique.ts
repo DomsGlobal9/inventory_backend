@@ -147,10 +147,18 @@ async function main() {
   const rel = await call('POST', `/holds/${winner}/release`);
   check('an order cancelled before cutting lets its hold go', rel.status === 200 && (await stockOf(C1, 'KS-MAR')).held === 500, rel);
   check('releasing it again is refused', (await call('POST', `/holds/${winner}/release`)).status === 409);
-  const iss = await call('POST', `/holds/${h1.data.reservationId}/issue`, { quantity: 3 });
-  const after = await stockOf(C1, 'KS-MAR');
-  check('cutting 3 of the 5 m held: 3 m off the shelf, 2 m back on sale', iss.status === 200 && iss.data?.backOnSale === 2 && after.qty === 800 && after.held === 0, { iss, after: { qty: after.qty, held: after.held } });
-  check('issuing the same hold twice is refused', (await call('POST', `/holds/${h1.data.reservationId}/issue`)).status === 409);
+  // Cut in stages, as CRM-B does (issue keeps the rest held): 2 m now, part released, the last cut frees the rest.
+  const iss = await call('POST', `/holds/${h1.data.reservationId}/issue`, { quantity: 2 });
+  let after = await stockOf(C1, 'KS-MAR');
+  check('cutting 2 of the 5 m held: 2 m off the shelf, 3 m still held for the order', iss.status === 200 && iss.data?.stillHeld === 3 && iss.data?.status === 'ACTIVE' && after.qty === 900 && after.held === 300, { iss, after: { qty: after.qty, held: after.held } });
+  check('releasing more than is held is refused', (await call('POST', `/holds/${h1.data.reservationId}/release`, { quantity: 4 })).status === 400);
+  const part = await call('POST', `/holds/${h1.data.reservationId}/release`, { quantity: 0.5 });
+  after = await stockOf(C1, 'KS-MAR');
+  check('releasing 0.5 m of it: 2.5 m still held, 0.5 m back on sale', part.status === 200 && part.data?.stillHeld === 2.5 && after.held === 250, { part, held: after.held });
+  const last = await call('POST', `/holds/${h1.data.reservationId}/issue`, { quantity: 1, releaseRest: true });
+  after = await stockOf(C1, 'KS-MAR');
+  check('the last cut of 1 m with releaseRest: the hold ends, 1.5 m back on sale', last.status === 200 && last.data?.backOnSale === 1.5 && last.data?.status === 'ISSUED' && after.qty === 800 && after.held === 0, { last, after: { qty: after.qty, held: after.held } });
+  check('issuing from a finished hold is refused', (await call('POST', `/holds/${h1.data.reservationId}/issue`)).status === 409);
   check('a hold from another shop cannot be touched', (await call('POST', `/holds/00000000-0000-0000-0000-000000000000/issue`)).status === 404);
 
   console.log('\nCOUNTS, MOVES, RETURNS');

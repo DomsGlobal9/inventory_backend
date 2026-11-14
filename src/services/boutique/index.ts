@@ -469,32 +469,48 @@ async function heldOne(tx: Prisma.TransactionClient, clientId: string, reservati
   return r;
 }
 
-/** Let held cloth go back to being sellable (an order cancelled before cutting). */
-export async function release(tx: Db, actor: Actor, input: { reservationId: unknown }) {
+/**
+ * Let held cloth go back to being sellable: all of it (an order cancelled before cutting), or part (the order needs
+ * less). Matches CRM-B's release(item, quantity): a hold shrinks; it ends only when nothing is left in it.
+ */
+export async function release(tx: Db, actor: Actor, input: { reservationId: unknown; quantity?: unknown }) {
   if (!actor.can.includes('stitching:issue')) throw problem('This person may not release held cloth.', 403);
   {
     const r = await heldOne(tx, actor.clientId, input.reservationId);
-    await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: r.variantId, locationId: r.locationId } }, data: { reservedQty: { decrement: r.quantity } } });
-    await tx.boutiqueReservation.update({ where: { id: r.id }, data: { status: 'RELEASED' } });
-    return { status: 200, answer: { success: true, data: { reservationId: r.id, released: true } } };
+    const v = await tx.productVariant.findUnique({ where: { id: r.variantId }, include: { product: true } });
+    const qty = input.quantity == null ? r.quantity : baseQty(input.quantity, v!.product.soldBy as SoldBy);
+    if (qty <= 0 || qty > r.quantity) throw problem(`Release between ${formatQty(1, v!.product.soldBy)} and the ${formatQty(r.quantity, v!.product.soldBy)} held.`);
+    const left = r.quantity - qty;
+    await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: r.variantId, locationId: r.locationId } }, data: { reservedQty: { decrement: qty } } });
+    await tx.boutiqueReservation.update({ where: { id: r.id }, data: left === 0 ? { status: 'RELEASED', quantity: r.quantity } : { quantity: left } });
+    const f = factorOf(v!.product.soldBy);
+    return { status: 200, answer: { success: true, data: { reservationId: r.id, released: qty / f, stillHeld: left / f, status: left === 0 ? 'RELEASED' : 'ACTIVE' } } };
   }
 }
 
 /**
- * Cut and hand held cloth to the tailor: the hold ends and the stock comes off, recorded as ISSUE on the order.
- * Issuing less than was held lets the rest go back to being sellable.
+ * Cut held cloth and hand it to the tailor: the stock comes off, recorded as ISSUE on the order. Like CRM-B's
+ * issue(item, quantity), cutting can happen in stages: what is not issued stays held for the order, until a later
+ * issue or release. `releaseRest: true` ends the hold and puts whatever is left back on sale in the same step.
  */
-export async function issueHeld(tx: Db, actor: Actor, input: { reservationId: unknown; quantity?: unknown }) {
+export async function issueHeld(tx: Db, actor: Actor, input: { reservationId: unknown; quantity?: unknown; releaseRest?: unknown }) {
   if (!actor.can.includes('stitching:issue')) throw problem('This person may not issue cloth.', 403);
   {
     const r = await heldOne(tx, actor.clientId, input.reservationId);
     const v = await tx.productVariant.findUnique({ where: { id: r.variantId }, include: { product: true } });
     const qty = input.quantity == null ? r.quantity : baseQty(input.quantity, v!.product.soldBy as SoldBy);
     if (qty <= 0 || qty > r.quantity) throw problem(`Issue between ${formatQty(1, v!.product.soldBy)} and the ${formatQty(r.quantity, v!.product.soldBy)} held.`);
-    await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: r.variantId, locationId: r.locationId } }, data: { reservedQty: { decrement: r.quantity } } });
-    await tx.boutiqueReservation.update({ where: { id: r.id }, data: { status: 'ISSUED' } });
+    const rest = r.quantity - qty;
+    const freeRest = input.releaseRest === true;
+    await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: r.variantId, locationId: r.locationId } }, data: { reservedQty: { decrement: freeRest ? r.quantity : qty } } });
+    await tx.boutiqueReservation.update({ where: { id: r.id }, data: rest === 0 || freeRest ? { status: 'ISSUED' } : { quantity: rest } });
     await inventoryMutationService.applyMovement({ clientId: actor.clientId, variantId: r.variantId, locationId: r.locationId, movementType: 'OUT' as any, reason: 'MANUAL_ADJUSTMENT', quantityDelta: -qty, referenceType: 'BOUTIQUE', referenceId: r.orderRef, notes: `issued by ${actor.name}`, tx, boutique: { kind: 'ISSUE', orderRef: r.orderRef, actorName: actor.name } });
-    return { status: 200, answer: { success: true, data: { reservationId: r.id, issued: qty / factorOf(v!.product.soldBy), backOnSale: (r.quantity - qty) / factorOf(v!.product.soldBy) } } };
+    const f = factorOf(v!.product.soldBy);
+    return { status: 200, answer: { success: true, data: {
+      reservationId: r.id, issued: qty / f,
+      stillHeld: freeRest ? 0 : rest / f, backOnSale: freeRest ? rest / f : 0,
+      status: rest === 0 || freeRest ? 'ISSUED' : 'ACTIVE'
+    } } };
   }
 }
 

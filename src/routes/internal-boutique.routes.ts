@@ -119,8 +119,8 @@ router.post('/transfers', write((tx, a, req) => boutique.transfer(tx, a, req.bod
 
 // ── cloth held for a stitching order ─────────────────────────────────────────────────────────────
 router.post('/holds', write((tx, a, req) => boutique.reserve(tx, a, req.body ?? {})));
-router.post('/holds/:id/release', write((tx, a, req) => boutique.release(tx, a, { reservationId: req.params.id })));
-router.post('/holds/:id/issue', write((tx, a, req) => boutique.issueHeld(tx, a, { reservationId: req.params.id, quantity: req.body?.quantity })));
+router.post('/holds/:id/release', write((tx, a, req) => boutique.release(tx, a, { reservationId: req.params.id, quantity: req.body?.quantity })));
+router.post('/holds/:id/issue', write((tx, a, req) => boutique.issueHeld(tx, a, { reservationId: req.params.id, quantity: req.body?.quantity, releaseRest: req.body?.releaseRest })));
 router.get('/holds', read(async req => {
   const a = actorOf(req);
   const orderRef = req.query.orderRef ? String(req.query.orderRef) : undefined;
