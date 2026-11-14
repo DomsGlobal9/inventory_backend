@@ -80,7 +80,7 @@ export class PlatformAdminService {
   // 500s. It degraded linearly with every client onboarded -- i.e. it got worse precisely
   // as the product succeeded. Now it is 6 grouped queries regardless of tenant count.
   async listClients() {
-    const [tenants, userStats, activeUserStats, productCounts, activeProductCounts, alertCounts, valueSums, superAdmins] =
+    const [userTenants, userStats, activeUserStats, productCounts, activeProductCounts, alertCounts, valueSums, superAdmins, boutiqueLinks] =
       await Promise.all([
         prisma.user.findMany({ distinct: ['clientId'], select: { clientId: true } }),
         prisma.user.groupBy({
@@ -125,8 +125,16 @@ export class PlatformAdminService {
           where: { roles: { some: { role: { name: 'SUPER_ADMIN' } } } },
           select: { clientId: true, name: true, email: true },
           orderBy: { createdAt: 'asc' }
-        })
+        }),
+        // Connected boutiques (PLAN-boutique-sync.md). A boutique-only shop has nobody who signs in, so without this
+        // it never appeared here at all: ScaleEzy could not see it, enable it for a client, or remove it.
+        // Switched-off links stay in: a boutique-only shop whose boutique was disabled still holds stock, and the
+        // admin must be able to find it to enable it again or delete it.
+        prisma.boutiqueLink.findMany({ select: { clientId: true, tenant: true, shopName: true, unlinkedAt: true } })
       ]);
+    const madeByBoutique = new Map(boutiqueLinks.map(b => [b.clientId, b]));
+    const boutiques = new Map(boutiqueLinks.filter(b => !b.unlinkedAt).map(b => [b.clientId, b]));
+    const tenants = [...userTenants, ...boutiqueLinks.filter(b => !userTenants.some(u => u.clientId === b.clientId)).map(b => ({ clientId: b.clientId }))];
 
     const byClient = <T extends { clientId: string }>(rows: T[]) =>
       new Map(rows.map(r => [r.clientId, r]));
@@ -168,7 +176,14 @@ export class PlatformAdminService {
         onboardingStatus:
           productCount === 0 ? 'NOT_STARTED' : activeProductCount === 0 ? 'IN_PROGRESS' : 'ACTIVE',
         adminName: admin?.name || null,
-        adminEmail: admin?.email || null
+        adminEmail: admin?.email || null,
+        // A boutique-only shop keeps showing its account even while switched off, so the admin knows whose it is.
+        boutiqueAccount: (userCount === 0 ? madeByBoutique : boutiques).get(clientId)?.tenant ?? null,
+        // A shop a boutique made for itself: no logins, managed entirely from the boutique app.
+        boutiqueOnly: userCount === 0 && madeByBoutique.has(clientId),
+        // ...and its boutique has been switched off: nothing reaches it until it is enabled again.
+        boutiqueOff: userCount === 0 && madeByBoutique.has(clientId) && !boutiques.has(clientId),
+        boutiqueName: madeByBoutique.get(clientId)?.shopName ?? null
       };
     });
   }

@@ -188,11 +188,17 @@ export const getClient = async (req: Request, res: Response) => {
     // rendered a convincing but entirely fabricated overview (0 users, Rs 0, "Not
     // Started") complete with a live "View Inventory Data" button. This mirrors the guard
     // assumeClient already applies.
+    // The one exception: a shop a boutique made for itself has no logins at all, yet it is
+    // real (products, stock, a live boutique link). Its page must open so the admin can see
+    // and switch off the Boutique module.
+    let boutiqueOnly = false;
     if (summary.userCount === 0) {
-      return res.status(404).json({ success: false, message: 'Client not found' });
+      // Even when its boutique is switched off: the shop still holds stock and must stay reachable.
+      boutiqueOnly = !!(await prisma.boutiqueLink.findUnique({ where: { clientId }, select: { clientId: true } }));
+      if (!boutiqueOnly) return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    res.json({ success: true, data: { ...summary, users } });
+    res.json({ success: true, data: { ...summary, users, boutiqueOnly } });
   } catch (error: any) {
     return respondWithError(res, error, { status: 500, message: 'Failed to load client' });
   }

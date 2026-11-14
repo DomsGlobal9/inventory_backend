@@ -6,6 +6,7 @@
  */
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
+import { link as boutiqueLink, upsertItem } from '../services/boutique';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4036/api/v1';
 for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
@@ -136,6 +137,19 @@ async function main() {
   check('...the account is free again and can be enabled for another client', (await asConsole('GET', `/admin/boutique-accounts/${tB}`)).data?.state === 'free' && (await asConsole('PUT', `/admin/clients/${A.data.clientId}/boutique`, { tenant: tB })).status === 200);
   const linkedState = await asUser(await login(form('Case').adminEmail, cased.data.tempPassword))('GET', '/boutique-link');
   check('a shop linked at onboarding shows its boutique account', linkedState.data?.linked === true && linkedState.data?.tenant === caseT.toLowerCase(), linkedState.data);
+
+  console.log('\nA BOUTIQUE THAT RAN ON ITS OWN, THEN ONBOARDED WITH RETAIL');
+  const tSolo = `wc-solo-${S}`;
+  const solo = await boutiqueLink({ tenant: tSolo, shopName: 'Solo Boutique' });
+  made.push(solo.clientId);
+  await prisma.$transaction(tx => upsertItem(tx, { clientId: solo.clientId, name: 'Robot', can: ['products:write'] }, { itemCode: 'SOLO-1', name: 'Solo silk', category: 'FABRIC', sellingPrice: 300, sellInShop: true }));
+  check('the Console sees it as running on its own with 1 item', (await asConsole('GET', `/admin/boutique-accounts/${tSolo}`)).data?.items === 1);
+  const listedSolo = (await asConsole('GET', '/admin/clients')).data?.find((c: any) => c.clientId === solo.clientId);
+  check('...and lists it among the clients as "boutique only"', listedSolo?.boutiqueOnly === true && listedSolo?.boutiqueAccount === tSolo, listedSolo);
+  const R = await onboard('Retail', { sells: 'BOTH', boutiqueTenant: tSolo });
+  const movedIn = await prisma.productVariant.count({ where: { clientId: R.data?.clientId, boutiqueRef: 'SOLO-1' } });
+  check('onboarding a retail client with that account moves the boutique\'s item into the new shop', R.status === 201 && movedIn === 1 && (await prisma.boutiqueLink.findUnique({ where: { tenant: tSolo } }))?.clientId === R.data?.clientId, { status: R.status, movedIn, msg: R.message });
+  check('...and the boutique-only shop is gone from the list', !(await asConsole('GET', '/admin/clients')).data?.some((c: any) => c.clientId === solo.clientId));
 }
 
 async function cleanup() {

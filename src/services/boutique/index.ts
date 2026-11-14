@@ -173,14 +173,20 @@ export async function enableForClient(clientId: string, tenantIn: string, shopNa
       update: { tenant, shopName: shopName ?? theirs?.shopName ?? undefined, unlinkedAt: null, linkedAt: new Date() }
     });
     await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true } as any, update: { fabricsOn: true } });
+    // The boutique's items are priced by the boutique again (they were the shop's own while it was disabled).
+    await tx.product.updateMany({ where: { clientId, importKey: { startsWith: 'boutique:' } }, data: { priceOwner: 'BOUTIQUE' } });
     return { linked: true, tenant, moved, already: false };
   }, { timeout: 120_000, maxWait: 15_000 });
 }
 
 /** ScaleEzy turns the Boutique module off: the boutique can no longer reach the shop. Products and stock stay. */
 export async function disableForClient(clientId: string) {
-  const r = await prisma.boutiqueLink.updateMany({ where: { clientId, unlinkedAt: null }, data: { unlinkedAt: new Date() } });
-  return { linked: false, changed: r.count > 0 };
+  return prisma.$transaction(async tx => {
+    const r = await tx.boutiqueLink.updateMany({ where: { clientId, unlinkedAt: null }, data: { unlinkedAt: new Date() } });
+    // With no boutique to set them, its items' prices become the shop's to change (until it is enabled again).
+    const freed = r.count ? (await tx.product.updateMany({ where: { clientId, priceOwner: 'BOUTIQUE' }, data: { priceOwner: 'INVENTORY' } })).count : 0;
+    return { linked: false, changed: r.count > 0, pricesFreed: freed };
+  });
 }
 
 /** Kept for onboarding's older call: the same as enabling from the Console. */

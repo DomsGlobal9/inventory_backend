@@ -67,7 +67,9 @@ consoleRouter.get('/boutique-accounts/:tenant', async (req, res) => {
 consoleRouter.put('/clients/:clientId/boutique', async (req, res) => {
   try {
     const clientId = String(req.params.clientId);
-    const exists = await (await import('../lib/prisma')).prisma.user.count({ where: { clientId } });
+    // A client is real if it has logins, or if a boutique made it (a boutique-only shop has no logins at all).
+    const { prisma } = await import('../lib/prisma');
+    const exists = (await prisma.user.count({ where: { clientId } })) || (await prisma.boutiqueLink.count({ where: { clientId } }));
     if (!exists) return res.status(404).json({ success: false, message: 'No such client.' });
     res.json({ success: true, data: await boutique.enableForClient(clientId, String(req.body?.tenant ?? ''), req.body?.shopName ? String(req.body.shopName).slice(0, 120) : null) });
   } catch (e) { boutiqueFail(res, e); }

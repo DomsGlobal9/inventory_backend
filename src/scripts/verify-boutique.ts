@@ -15,6 +15,7 @@ import { ELIGIBLE_PRODUCT, FEED_PRODUCT } from '../services/storefront-catalogue
 import { accountState, enableForClient, disableForClient } from '../services/boutique';
 import { productService } from '../services/product.service';
 import { variantService } from '../services/variant.service';
+import { platformAdminService } from '../services/platform-admin.service';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4036/api/v1';
 for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
@@ -257,8 +258,18 @@ async function main() {
   check('once ScaleEzy disables it, the boutique can no longer reach the shop', (await call('GET', '/items', undefined, { tenant: T2 })).status === 403);
   const relink = await call('POST', '/link', { shopName: 'Sneaky' }, { tenant: T2 });
   check('...and connecting again from the boutique is refused, not given a new shop', relink.status === 403 && /disconnected by ScaleEzy/.test(relink.message ?? ''), relink);
+  const t2p = await prisma.product.findFirst({ where: { clientId: RETAIL, importKey: { startsWith: 'boutique:' } }, select: { id: true, priceOwner: true } });
+  const freedPrice = await productService.updateProduct(t2p!.id, RETAIL, { basePrice: 5.2 }).then(() => 'ok', (e: any) => e.message);
+  check('...with no boutique to set them, the shop can now change those items\' prices', t2p?.priceOwner === 'INVENTORY' && freedPrice === 'ok', { owner: t2p?.priceOwner, freedPrice });
   const reEnabled = await enableForClient(RETAIL, T2);
   check('ScaleEzy can enable it again; everything is still there', reEnabled.linked && (await call('GET', '/items/T2-SILK', undefined, { tenant: T2 })).data?.stock === 9);
+  const relocked = await productService.updateProduct(t2p!.id, RETAIL, { basePrice: 6 }).then(() => 'changed', (e: any) => e.message);
+  check('...and its prices come from the boutique again', /comes from your boutique/.test(relocked), relocked);
+  const listed = await platformAdminService.listClients();
+  const soloRow = listed.find((c: any) => c.clientId === C1);
+  const retailRow = listed.find((c: any) => c.clientId === RETAIL);
+  check('the Console client list shows a boutique-only shop, labelled as one', !!soloRow && (soloRow as any).boutiqueOnly === true && (soloRow as any).boutiqueAccount === T1, soloRow);
+  check('...and a retail client shows its boutique account', !retailRow || (retailRow as any).boutiqueAccount === T2, retailRow);
 
   console.log('\nEVERYTHING A BOUTIQUE STOCKS (CRM-B catalogue)');
   const lining = await call('PUT', '/items/LN-GOLD', { name: 'Satin lining, gold', category: 'LINING', sellingPrice: 90 });
