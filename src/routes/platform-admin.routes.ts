@@ -38,6 +38,7 @@ import {
   getTillHealth
 } from '../controllers/platform-admin.controller';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
+import * as boutique from '../services/boutique';
 import { platformAuditLogger } from '../middleware/platform-audit.middleware';
 
 const authRouter = Router();
@@ -54,6 +55,26 @@ consoleRouter.get('/clients', listClients);
 consoleRouter.post('/clients', onboardClient);
 consoleRouter.get('/users', listAllUsers);
 consoleRouter.get('/clients/:clientId', getClient);
+// The Boutique module for a client (PLAN-boutique-sync.md): only ScaleEzy turns it on or off. Enabling an account that
+// has been running as its own boutique-only shop moves everything it holds into this client's shop.
+const boutiqueFail = (res: any, e: any) => res.status(e?.statusCode ?? 500).json({ success: false, message: e?.statusCode ? e.message : 'The Boutique module could not be changed just now. Please try again.' });
+consoleRouter.get('/clients/:clientId/boutique', async (req, res) => {
+  try { res.json({ success: true, data: await boutique.linkState(String(req.params.clientId)) }); } catch (e) { boutiqueFail(res, e); }
+});
+consoleRouter.get('/boutique-accounts/:tenant', async (req, res) => {
+  try { res.json({ success: true, data: await boutique.accountState(String(req.params.tenant).trim().toLowerCase()) }); } catch (e) { boutiqueFail(res, e); }
+});
+consoleRouter.put('/clients/:clientId/boutique', async (req, res) => {
+  try {
+    const clientId = String(req.params.clientId);
+    const exists = await (await import('../lib/prisma')).prisma.user.count({ where: { clientId } });
+    if (!exists) return res.status(404).json({ success: false, message: 'No such client.' });
+    res.json({ success: true, data: await boutique.enableForClient(clientId, String(req.body?.tenant ?? ''), req.body?.shopName ? String(req.body.shopName).slice(0, 120) : null) });
+  } catch (e) { boutiqueFail(res, e); }
+});
+consoleRouter.delete('/clients/:clientId/boutique', async (req, res) => {
+  try { res.json({ success: true, data: await boutique.disableForClient(String(req.params.clientId)) }); } catch (e) { boutiqueFail(res, e); }
+});
 consoleRouter.post('/clients/:clientId/assume', assumeClient);
 // Cutting a client off, and erasing one. Kept next to each other deliberately: suspending is
 // the reversible answer to almost every reason someone reaches for deleting.

@@ -8,7 +8,7 @@
  *
  * Every write carries a request id: a repeat gets the first answer and changes nothing (once()).
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { inventoryMutationService } from '../inventory-mutation.service';
@@ -50,97 +50,143 @@ export function baseQty(q: unknown, soldBy: SoldBy, what = 'quantity'): number {
 
 const slug = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
 
-const hashCode = (code: string) => createHash('sha256').update(code.replace(/[^A-Z0-9]/gi, '').toUpperCase()).digest('hex');
-
-/**
- * The shop owner's one-time code for linking a boutique to THIS shop (a client with retail and a boutique).
- * Shown once; only its hash is kept; it works once, within 30 minutes. A new code replaces any unused one.
- */
-export async function makeLinkCode(clientId: string, userId: string) {
-  const raw = randomBytes(6).toString('base64').replace(/[^A-Z0-9]/gi, '').toUpperCase().padEnd(8, 'X').slice(0, 8);
-  const code = `${raw.slice(0, 4)}-${raw.slice(4)}`;
-  await prisma.$transaction([
-    prisma.boutiqueLinkCode.deleteMany({ where: { clientId, usedAt: null } }),
-    prisma.boutiqueLinkCode.create({ data: { codeHash: hashCode(code), clientId, createdBy: userId, expiresAt: new Date(Date.now() + 30 * 60_000) } })
-  ]);
-  return { code, expiresInMinutes: 30 };
-}
-
-/** Which boutique, if any, this shop is linked to (for the owner's Settings card). */
+/** Which boutique, if any, this shop is linked to (the owner's Settings card, the Console). */
 export async function linkState(clientId: string) {
   const l = await prisma.boutiqueLink.findUnique({ where: { clientId } });
   return l && !l.unlinkedAt ? { linked: true, tenant: l.tenant, shopName: l.shopName, linkedAt: l.linkedAt } : { linked: false };
 }
 
-/** The owner unlinks: the boutique can no longer read or change this shop. Products and stock stay. */
-export async function unlink(clientId: string) {
-  await prisma.boutiqueLink.updateMany({ where: { clientId, unlinkedAt: null }, data: { unlinkedAt: new Date() } });
-  return { linked: false };
+/** A shop made by a boutique's first link (boutique-only): its id starts `boutique-` and nobody ever signs in to it. */
+async function isBoutiqueOnlyShop(clientId: string, tx: Prisma.TransactionClient | typeof prisma = prisma) {
+  return clientId.startsWith('boutique-') && (await tx.user.count({ where: { clientId } })) === 0;
 }
 
 /**
- * Link a boutique account (the tenant named in its signed pass) to a ScaleEzy shop.
- *  - with the owner's one-time `linkCode`: joins that existing shop (a client with retail too);
- *  - without: a boutique-only shop is made -- just an id, a default store and fabrics on; no logins, emails or
- *    onboarding (decision 14).
- * Linking again is the same link. The boutique can never pick a shop id itself.
+ * The boutique app connects (POST /link). Turning the boutique on for a ScaleEzy shop is ScaleEzy's job (the Platform
+ * Console), so this only ever:
+ *  - answers "already" for an account that is connected;
+ *  - refuses an account ScaleEzy disconnected (it is not quietly given a new shop);
+ *  - for a brand-new account, makes its boutique-only shop: an id, one store "Boutique", fabrics on, no logins or emails.
  */
 export async function link(input: { tenant: unknown; shopName?: unknown; linkCode?: unknown }) {
   const tenant = String(input.tenant ?? '').trim();
   if (!/^[a-z0-9][a-z0-9_-]{1,62}$/i.test(tenant)) throw problem('Give the boutique account (tenant) as letters, numbers and dashes.');
+  if (input.linkCode) throw problem('Connecting a boutique to an existing ScaleEzy shop is done by ScaleEzy. Ask ScaleEzy to enable the Boutique module for that shop.', 403);
   const existing = await prisma.boutiqueLink.findUnique({ where: { tenant } });
-  if (existing && !existing.unlinkedAt && !input.linkCode) return { clientId: existing.clientId, tenant, linked: 'already' as const };
-  let clientId: string;
-  let codeHash: string | null = null;
-  if (input.linkCode) {
-    codeHash = hashCode(String(input.linkCode));
-    const c = await prisma.boutiqueLinkCode.findUnique({ where: { codeHash } });
-    if (!c || c.usedAt || c.expiresAt < new Date()) throw problem('That link code is wrong, used or older than 30 minutes. Ask the shop owner for a new one (Settings → Boutique).', 403);
-    if (existing && !existing.unlinkedAt && existing.clientId !== c.clientId) throw problem('This boutique is already linked to another shop. Unlink it there first.', 409);
-    clientId = c.clientId;
-  } else {
-    clientId = `boutique-${slug(tenant)}`;
-    const taken = await prisma.boutiqueLink.findUnique({ where: { clientId } });
-    if (taken && taken.tenant !== tenant) clientId = `${clientId}-${randomBytes(3).toString('hex')}`;
-  }
-  const other = await prisma.boutiqueLink.findUnique({ where: { clientId } });
-  if (other && other.tenant !== tenant && !other.unlinkedAt) throw problem('That shop is already linked to another boutique.', 409);
-  await prisma.$transaction(async tx => {
-    if (codeHash) {
-      const used = await tx.boutiqueLinkCode.updateMany({ where: { codeHash, usedAt: null }, data: { usedAt: new Date() } });
-      if (used.count !== 1) throw problem('That link code was just used. Ask the shop owner for a new one.', 409);
-    }
-    if (existing && existing.clientId !== clientId) await tx.boutiqueLink.delete({ where: { clientId: existing.clientId } });
-    await tx.boutiqueLink.upsert({
-      where: { clientId },
-      create: { clientId, tenant, shopName: input.shopName ? String(input.shopName).slice(0, 120) : null },
-      update: { tenant, unlinkedAt: null, shopName: input.shopName ? String(input.shopName).slice(0, 120) : undefined }
+  if (existing && !existing.unlinkedAt) return { clientId: existing.clientId, tenant, linked: 'already' as const };
+  if (existing) throw problem('This boutique account was disconnected by ScaleEzy. Contact ScaleEzy to connect it again.', 403);
+  let clientId = `boutique-${slug(tenant)}`;
+  if (await prisma.boutiqueLink.findUnique({ where: { clientId } })) clientId = `${clientId}-${randomBytes(3).toString('hex')}`;
+  try {
+    await prisma.$transaction(async tx => {
+      await tx.boutiqueLink.create({ data: { clientId, tenant, shopName: input.shopName ? String(input.shopName).slice(0, 120) : null } });
+      // Cloth by the metre is how a boutique counts most of its stock.
+      await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true } as any, update: { fabricsOn: true } });
+      const store = await tx.stockLocation.findFirst({ where: { clientId, active: true } });
+      if (!store) await tx.stockLocation.create({ data: { clientId, name: 'Boutique', code: `BTQ-${slug(tenant)}`.slice(0, 40), type: 'STORE' as any, active: true } });
     });
-    // Cloth by the metre is how a boutique counts most of its stock.
-    await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true } as any, update: { fabricsOn: true } });
-    const store = await tx.stockLocation.findFirst({ where: { clientId, active: true } });
-    if (!store) await tx.stockLocation.create({ data: { clientId, name: 'Boutique', code: `BTQ-${slug(tenant)}`.slice(0, 40), type: 'STORE' as any, active: true } });
-  });
+  } catch (e: any) {
+    // Two first links at the same moment: the other one made the shop; this is the same link.
+    const now = await prisma.boutiqueLink.findUnique({ where: { tenant } });
+    if (now && !now.unlinkedAt) return { clientId: now.clientId, tenant, linked: 'already' as const };
+    throw e;
+  }
   return { clientId, tenant, linked: 'new' as const };
 }
 
-/** Is this boutique account already linked to a shop? */
-export async function boutiqueTaken(tenant: string) {
+/** What the Console shows before enabling: is this boutique account free, already a shop of its own, or taken? */
+export async function accountState(tenant: string) {
   const l = await prisma.boutiqueLink.findUnique({ where: { tenant } });
-  return !!l && !l.unlinkedAt;
+  if (!l) return { tenant, state: 'new' as const };
+  if (l.unlinkedAt) return { tenant, state: 'free' as const, wasClientId: l.clientId };
+  if (await isBoutiqueOnlyShop(l.clientId)) {
+    const items = await prisma.productVariant.count({ where: { clientId: l.clientId, boutiqueRef: { not: null } } });
+    return { tenant, state: 'boutique-only' as const, clientId: l.clientId, items };
+  }
+  return { tenant, state: 'taken' as const, clientId: l.clientId };
+}
+
+/** Is this boutique account linked to a real ScaleEzy shop (not just its own boutique-only shop)? */
+export async function boutiqueTaken(tenant: string) {
+  const s = await accountState(tenant);
+  return s.state === 'taken';
+}
+
+/** Tables a boutique-only shop's rows are NOT moved through: settings, links and logins are handled one by one. */
+const NOT_MOVED = new Set(['client_settings', 'boutique_links', 'boutique_link_codes', 'users']);
+
+/**
+ * Move everything a boutique-only shop holds -- items, stock, holds, history, places, request records -- into a real
+ * ScaleEzy shop, inside the caller's transaction. Refused, before anything moves, when an item code or SKU already
+ * exists in the target shop. Derived rows that clash (daily totals and the like) are left behind and removed.
+ */
+async function absorb(tx: Prisma.TransactionClient, fromClientId: string, intoClientId: string) {
+  const clash = await tx.$queryRaw<{ sku: string }[]>`
+    SELECT a.sku FROM inventory_product_variants a JOIN inventory_product_variants b ON b.sku = a.sku
+    WHERE a.client_id = ${fromClientId} AND b.client_id = ${intoClientId} LIMIT 5`;
+  if (clash.length) throw problem(`The shop already has items with the boutique's codes (${clash.map(c => c.sku).join(', ')}). Rename them in one place first.`, 409);
+  const tables = await tx.$queryRaw<{ table_name: string }[]>`
+    SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'client_id'`;
+  let moved = 0;
+  for (const { table_name: t } of tables) {
+    if (NOT_MOVED.has(t)) continue;
+    await tx.$executeRawUnsafe('SAVEPOINT absorb_t');
+    try {
+      moved += await tx.$executeRawUnsafe(`UPDATE "${t}" SET client_id = $1 WHERE client_id = $2`, intoClientId, fromClientId);
+      await tx.$executeRawUnsafe('RELEASE SAVEPOINT absorb_t');
+    } catch {
+      // A clash on a derived row (one per shop per day, say): keep the target's, drop the boutique-only shop's.
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT absorb_t');
+      if (['inventory_products', 'inventory_product_variants', 'inventory_stocks', 'inventory_transactions', 'boutique_reservations'].includes(t)) {
+        throw problem(`The boutique's ${t.replace(/_/g, ' ')} could not be moved into the shop. Nothing was changed.`, 409);
+      }
+      await tx.$executeRawUnsafe(`DELETE FROM "${t}" WHERE client_id = $1`, fromClientId);
+    }
+  }
+  await tx.clientSettings.deleteMany({ where: { clientId: fromClientId } });
+  return moved;
 }
 
 /**
- * Link at onboarding, from the Platform Console (PLAN-onboarding-setup.md). The Console is ScaleEzy itself, so no
- * owner's code is needed. Fabrics are switched on as for any boutique; the store is the shop's own.
+ * ScaleEzy turns the Boutique module on for a shop (the Platform Console, or onboarding): the boutique account is
+ * connected to this shop at once. An account that has been running as its own boutique-only shop brings everything
+ * with it. Refused when the shop already has another boutique, or the account belongs to another real shop.
  */
-export async function linkTrusted(tenant: string, clientId: string, shopName: string | null) {
-  if (await boutiqueTaken(tenant)) throw problem(`The boutique account "${tenant}" is already linked to another shop.`, 409);
-  await prisma.$transaction(async tx => {
-    await tx.boutiqueLink.upsert({ where: { clientId }, create: { clientId, tenant, shopName }, update: { tenant, shopName, unlinkedAt: null, linkedAt: new Date() } });
+export async function enableForClient(clientId: string, tenantIn: string, shopName: string | null = null) {
+  const tenant = String(tenantIn ?? '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{1,62}$/.test(tenant)) throw problem('The boutique account is letters, numbers and hyphens, like lakshmi-boutique.');
+  return prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-enable|${tenant}`}))`;
+    const mine = await tx.boutiqueLink.findUnique({ where: { clientId } });
+    if (mine && !mine.unlinkedAt && mine.tenant !== tenant) throw problem(`This shop already uses the boutique "${mine.tenant}". Disable it first.`, 409);
+    if (mine && !mine.unlinkedAt && mine.tenant === tenant) return { linked: true, tenant, moved: 0, already: true };
+    const theirs = await tx.boutiqueLink.findUnique({ where: { tenant } });
+    let moved = 0;
+    if (theirs && theirs.clientId !== clientId) {
+      if (!theirs.unlinkedAt && !(await isBoutiqueOnlyShop(theirs.clientId, tx))) throw problem(`The boutique account "${tenant}" is already used by another shop.`, 409);
+      if (await isBoutiqueOnlyShop(theirs.clientId, tx)) moved = await absorb(tx, theirs.clientId, clientId);
+      await tx.boutiqueLink.delete({ where: { clientId: theirs.clientId } });
+    }
+    await tx.boutiqueLink.upsert({
+      where: { clientId },
+      create: { clientId, tenant, shopName: shopName ?? theirs?.shopName ?? null },
+      update: { tenant, shopName: shopName ?? theirs?.shopName ?? undefined, unlinkedAt: null, linkedAt: new Date() }
+    });
     await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true } as any, update: { fabricsOn: true } });
-  });
-  return { linked: true, tenant };
+    return { linked: true, tenant, moved, already: false };
+  }, { timeout: 120_000, maxWait: 15_000 });
+}
+
+/** ScaleEzy turns the Boutique module off: the boutique can no longer reach the shop. Products and stock stay. */
+export async function disableForClient(clientId: string) {
+  const r = await prisma.boutiqueLink.updateMany({ where: { clientId, unlinkedAt: null }, data: { unlinkedAt: new Date() } });
+  return { linked: false, changed: r.count > 0 };
+}
+
+/** Kept for onboarding's older call: the same as enabling from the Console. */
+export async function linkTrusted(tenant: string, clientId: string, shopName: string | null) {
+  const r = await enableForClient(clientId, tenant, shopName);
+  return { linked: true, tenant: r.tenant, moved: r.moved };
 }
 
 /** The shop a boutique is linked to, or a refusal. */

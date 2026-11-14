@@ -159,7 +159,7 @@ export const onboardClient = async (req: Request, res: Response) => {
     const { companyName, adminName, adminEmail, ...more } = form;
     // A boutique account already linked to another shop is refused before anything is made.
     if (more.boutiqueTenant && await boutiqueTaken(more.boutiqueTenant)) {
-      return res.status(409).json({ success: false, message: `The boutique account "${more.boutiqueTenant}" is already linked to another shop. Check the name, or unlink it there first.` });
+      return res.status(409).json({ success: false, message: `The boutique account "${more.boutiqueTenant}" is already used by another shop. Check the name, or disable it there first.` });
     }
 
     const result = await platformAdminService.onboardClient(companyName, adminName, adminEmail, null, more);
