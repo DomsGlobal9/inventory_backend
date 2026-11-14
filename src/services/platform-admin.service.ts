@@ -126,15 +126,13 @@ export class PlatformAdminService {
           select: { clientId: true, name: true, email: true },
           orderBy: { createdAt: 'asc' }
         }),
-        // Connected boutiques (PLAN-boutique-sync.md). A boutique-only shop has nobody who signs in, so without this
-        // it never appeared here at all: ScaleEzy could not see it, enable it for a client, or remove it.
-        // Switched-off links stay in: a boutique-only shop whose boutique was disabled still holds stock, and the
-        // admin must be able to find it to enable it again or delete it.
-        prisma.boutiqueLink.findMany({ select: { clientId: true, tenant: true, shopName: true, unlinkedAt: true } })
+        // Which of our clients have the Boutique module on. Only clients with logins are listed: a boutique-only shop
+        // (made by the boutique app, no logins) is the boutique's, not ours, and the Console shows nothing about it
+        // (owner, 14 Nov 2026).
+        prisma.boutiqueLink.findMany({ where: { unlinkedAt: null }, select: { clientId: true, tenant: true } })
       ]);
-    const madeByBoutique = new Map(boutiqueLinks.map(b => [b.clientId, b]));
-    const boutiques = new Map(boutiqueLinks.filter(b => !b.unlinkedAt).map(b => [b.clientId, b]));
-    const tenants = [...userTenants, ...boutiqueLinks.filter(b => !userTenants.some(u => u.clientId === b.clientId)).map(b => ({ clientId: b.clientId }))];
+    const boutiques = new Map(boutiqueLinks.map(b => [b.clientId, b]));
+    const tenants = userTenants;
 
     const byClient = <T extends { clientId: string }>(rows: T[]) =>
       new Map(rows.map(r => [r.clientId, r]));
@@ -177,13 +175,8 @@ export class PlatformAdminService {
           productCount === 0 ? 'NOT_STARTED' : activeProductCount === 0 ? 'IN_PROGRESS' : 'ACTIVE',
         adminName: admin?.name || null,
         adminEmail: admin?.email || null,
-        // A boutique-only shop keeps showing its account even while switched off, so the admin knows whose it is.
-        boutiqueAccount: (userCount === 0 ? madeByBoutique : boutiques).get(clientId)?.tenant ?? null,
-        // A shop a boutique made for itself: no logins, managed entirely from the boutique app.
-        boutiqueOnly: userCount === 0 && madeByBoutique.has(clientId),
-        // ...and its boutique has been switched off: nothing reaches it until it is enabled again.
-        boutiqueOff: userCount === 0 && madeByBoutique.has(clientId) && !boutiques.has(clientId),
-        boutiqueName: madeByBoutique.get(clientId)?.shopName ?? null
+        // The boutique account, when this client has the Boutique module on.
+        boutiqueAccount: boutiques.get(clientId)?.tenant ?? null
       };
     });
   }
@@ -546,6 +539,10 @@ export class PlatformAdminService {
         prisma.offerRedemption.count({ where: { clientId } }),
         prisma.shopifyOrderInbox.count({ where: { clientId, resolvedAt: null } })
       ]);
+    // A boutique-only shop is the boutique app's: the Console does not show it or count it.
+    if (users === 0 && await prisma.boutiqueLink.count({ where: { clientId } })) {
+      throw Object.assign(new Error('No such client, or it has already been deleted'), { statusCode: 404 });
+    }
 
     return { clientId, users, products, variants, orders, payments, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting };
   }
@@ -605,6 +602,11 @@ export class PlatformAdminService {
       prisma.supplier.count({ where: { clientId } })
     ]);
     if (users + products + locations + customers + suppliers === 0) {
+      throw Object.assign(new Error('No such client, or it has already been deleted'), { statusCode: 404 });
+    }
+    // A boutique-only shop is the boutique app's (its fabrics and stock serve that boutique's customers); the Console
+    // does not show it, and must not erase it either.
+    if (users === 0 && await prisma.boutiqueLink.count({ where: { clientId } })) {
       throw Object.assign(new Error('No such client, or it has already been deleted'), { statusCode: 404 });
     }
 

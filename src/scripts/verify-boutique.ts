@@ -268,7 +268,9 @@ async function main() {
   const listed = await platformAdminService.listClients();
   const soloRow = listed.find((c: any) => c.clientId === C1);
   const retailRow = listed.find((c: any) => c.clientId === RETAIL);
-  check('the Console client list shows a boutique-only shop, labelled as one', !!soloRow && (soloRow as any).boutiqueOnly === true && (soloRow as any).boutiqueAccount === T1, soloRow);
+  check('the Console client list does NOT show a boutique-only shop (it is the boutique app\'s)', !soloRow, soloRow);
+  const soloPreview = await platformAdminService.previewClientDeletion(C1).then(() => 'counted', (e: any) => e.statusCode);
+  check('...and cannot count it for deleting', soloPreview === 404, soloPreview);
   check('...and a retail client shows its boutique account', !retailRow || (retailRow as any).boutiqueAccount === T2, retailRow);
 
   console.log('\nEVERYTHING A BOUTIQUE STOCKS (CRM-B catalogue)');

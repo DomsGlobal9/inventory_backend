@@ -58,8 +58,15 @@ consoleRouter.get('/clients/:clientId', getClient);
 // The Boutique module for a client (PLAN-boutique-sync.md): only ScaleEzy turns it on or off. Enabling an account that
 // has been running as its own boutique-only shop moves everything it holds into this client's shop.
 const boutiqueFail = (res: any, e: any) => res.status(e?.statusCode ?? 500).json({ success: false, message: e?.statusCode ? e.message : 'The Boutique module could not be changed just now. Please try again.' });
+// The Boutique module is switched on and off for OUR clients only (people sign in). A boutique-only shop belongs to the
+// boutique app: the Console neither shows nor changes it.
+const ourClient = async (clientId: string) => (await (await import('../lib/prisma')).prisma.user.count({ where: { clientId } })) > 0;
+const notOurs = (res: any) => res.status(404).json({ success: false, message: 'No such client.' });
 consoleRouter.get('/clients/:clientId/boutique', async (req, res) => {
-  try { res.json({ success: true, data: await boutique.linkState(String(req.params.clientId)) }); } catch (e) { boutiqueFail(res, e); }
+  try {
+    if (!(await ourClient(String(req.params.clientId)))) return notOurs(res);
+    res.json({ success: true, data: await boutique.linkState(String(req.params.clientId)) });
+  } catch (e) { boutiqueFail(res, e); }
 });
 consoleRouter.get('/boutique-accounts/:tenant', async (req, res) => {
   try { res.json({ success: true, data: await boutique.accountState(String(req.params.tenant).trim().toLowerCase()) }); } catch (e) { boutiqueFail(res, e); }
@@ -67,15 +74,15 @@ consoleRouter.get('/boutique-accounts/:tenant', async (req, res) => {
 consoleRouter.put('/clients/:clientId/boutique', async (req, res) => {
   try {
     const clientId = String(req.params.clientId);
-    // A client is real if it has logins, or if a boutique made it (a boutique-only shop has no logins at all).
-    const { prisma } = await import('../lib/prisma');
-    const exists = (await prisma.user.count({ where: { clientId } })) || (await prisma.boutiqueLink.count({ where: { clientId } }));
-    if (!exists) return res.status(404).json({ success: false, message: 'No such client.' });
+    if (!(await ourClient(clientId))) return notOurs(res);
     res.json({ success: true, data: await boutique.enableForClient(clientId, String(req.body?.tenant ?? ''), req.body?.shopName ? String(req.body.shopName).slice(0, 120) : null) });
   } catch (e) { boutiqueFail(res, e); }
 });
 consoleRouter.delete('/clients/:clientId/boutique', async (req, res) => {
-  try { res.json({ success: true, data: await boutique.disableForClient(String(req.params.clientId)) }); } catch (e) { boutiqueFail(res, e); }
+  try {
+    if (!(await ourClient(String(req.params.clientId)))) return notOurs(res);
+    res.json({ success: true, data: await boutique.disableForClient(String(req.params.clientId)) });
+  } catch (e) { boutiqueFail(res, e); }
 });
 consoleRouter.post('/clients/:clientId/assume', assumeClient);
 // Cutting a client off, and erasing one. Kept next to each other deliberately: suspending is

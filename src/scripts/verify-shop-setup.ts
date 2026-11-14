@@ -145,7 +145,18 @@ async function main() {
   await prisma.$transaction(tx => upsertItem(tx, { clientId: solo.clientId, name: 'Robot', can: ['products:write'] }, { itemCode: 'SOLO-1', name: 'Solo silk', category: 'FABRIC', sellingPrice: 300, sellInShop: true }));
   check('the Console sees it as running on its own with 1 item', (await asConsole('GET', `/admin/boutique-accounts/${tSolo}`)).data?.items === 1);
   const listedSolo = (await asConsole('GET', '/admin/clients')).data?.find((c: any) => c.clientId === solo.clientId);
-  check('...and lists it among the clients as "boutique only"', listedSolo?.boutiqueOnly === true && listedSolo?.boutiqueAccount === tSolo, listedSolo);
+  // A boutique-only shop is the boutique app's: the Console shows nothing about it and cannot change or erase it.
+  check('...but the Console client list does NOT show the boutique-only shop', !listedSolo, listedSolo);
+  check('...its client page says not found', (await asConsole('GET', `/admin/clients/${solo.clientId}`)).status === 404);
+  check('...its Boutique card cannot be read, switched on or switched off from the Console',
+    (await asConsole('GET', `/admin/clients/${solo.clientId}/boutique`)).status === 404
+    && (await asConsole('PUT', `/admin/clients/${solo.clientId}/boutique`, { tenant: tSolo })).status === 404
+    && (await asConsole('DELETE', `/admin/clients/${solo.clientId}/boutique`)).status === 404);
+  const eraseTry = await asConsole('DELETE', `/admin/clients/${solo.clientId}`, { confirmation: solo.clientId });
+  check('...and the Console cannot count or erase it; its stock is untouched',
+    (await asConsole('GET', `/admin/clients/${solo.clientId}/deletion-preview`)).status === 404 && eraseTry.status === 404
+    && await prisma.productVariant.count({ where: { clientId: solo.clientId, boutiqueRef: 'SOLO-1' } }) === 1, eraseTry);
+  check('...while the boutique itself still reaches its shop', (await prisma.boutiqueLink.findUnique({ where: { clientId: solo.clientId } }))?.unlinkedAt === null);
   const R = await onboard('Retail', { sells: 'BOTH', boutiqueTenant: tSolo });
   const movedIn = await prisma.productVariant.count({ where: { clientId: R.data?.clientId, boutiqueRef: 'SOLO-1' } });
   check('onboarding a retail client with that account moves the boutique\'s item into the new shop', R.status === 201 && movedIn === 1 && (await prisma.boutiqueLink.findUnique({ where: { tenant: tSolo } }))?.clientId === R.data?.clientId, { status: R.status, movedIn, msg: R.message });
