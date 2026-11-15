@@ -109,10 +109,15 @@ async function tiedUpPart(clientId: string, locationId: string | undefined, now:
 /** Last 30 days against the 30 before, day by day for the last 30, and month by month. */
 async function salesPart(real: Prisma.Sql, istDay: Prisma.Sql, online: Prisma.Sql, now: Date) {
   const from60 = new Date(now.getTime() - 60 * DAY), from30 = new Date(now.getTime() - 30 * DAY);
-  const [[win], dayRows, monthRows] = await Promise.all([prisma.$queryRaw<{ last30: unknown; prev30: unknown; orders30: bigint }[]>(Prisma.sql`
+  // The till / online split is summed over the same 30 days as the total. It used to be added up from the daily
+  // chart, whose 30 India days start at midnight -- a sale on the morning edge (found 15 Nov on sphl: SO-000064, ₹1,499)
+  // was in the total and in neither part, so the card's two parts did not add up to its headline.
+  const [[win], dayRows, monthRows] = await Promise.all([prisma.$queryRaw<{ last30: unknown; prev30: unknown; orders30: bigint; till30: unknown; online30: unknown }[]>(Prisma.sql`
     SELECT COALESCE(SUM(so.total) FILTER (WHERE so.created_at > ${from30}), 0) AS last30,
            COALESCE(SUM(so.total) FILTER (WHERE so.created_at <= ${from30}), 0) AS prev30,
-           COUNT(*) FILTER (WHERE so.created_at > ${from30}) AS orders30
+           COUNT(*) FILTER (WHERE so.created_at > ${from30}) AS orders30,
+           COALESCE(SUM(so.total) FILTER (WHERE so.created_at > ${from30} AND NOT ${online}), 0) AS till30,
+           COALESCE(SUM(so.total) FILTER (WHERE so.created_at > ${from30} AND ${online}), 0) AS online30
     FROM sales_orders so WHERE ${real} AND so.created_at > ${from60} AND so.created_at <= ${now}`),
   prisma.$queryRaw<{ d: Date; till: unknown; online: unknown }[]>(Prisma.sql`
     SELECT ${istDay} AS d, COALESCE(SUM(so.total) FILTER (WHERE NOT ${online}), 0) AS till, COALESCE(SUM(so.total) FILTER (WHERE ${online}), 0) AS online
@@ -137,7 +142,7 @@ async function salesPart(real: Prisma.Sql, istDay: Prisma.Sql, online: Prisma.Sq
     const k = d.toISOString().slice(0, 7), r = byMonth.get(k);
     return { month: k, till: n(r?.till), online: n(r?.online), orders: Number(r?.orders ?? 0) };
   });
-  return { last30: n(win?.last30), prev30: n(win?.prev30), orders30: Number(win?.orders30 ?? 0), daily, monthly };
+  return { last30: n(win?.last30), prev30: n(win?.prev30), orders30: Number(win?.orders30 ?? 0), till30: n(win?.till30), online30: n(win?.online30), daily, monthly };
 }
 
 /** Pieces on hand, colours (variants) plenty / low / sold out, and the lowest few. */

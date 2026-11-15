@@ -96,6 +96,24 @@ async function main() {
   check('what sold: Saree 3,000, Fabric 900 (the fabric by its kind)', JSON.stringify(s30.categories) === JSON.stringify([{ name: 'Saree', sales: 3000 }, { name: 'Fabric', sales: 900 }]), s30.categories);
   const dash = await dashboardOverview(C, { permissions: ['*'] }, undefined, now);
   check('the same 30 days as the dashboard card: 3,900 against 3,000 before, 3 orders', dash.sales?.last30 === 3900 && dash.sales?.prev30 === 3000 && dash.sales?.orders30 === 3, dash.sales && { last30: dash.sales.last30, prev30: dash.sales.prev30 });
+  check('the card\'s till and online parts add up to its total: 3,000 + 900', dash.sales?.till30 === 3000 && dash.sales?.online30 === 900, dash.sales && { till30: dash.sales.till30, online30: dash.sales.online30 });
+
+  // A till sale at 11:59 pm on the 30th India day back: inside the 30 days (by the clock) but before the daily chart's
+  // first midnight. Found on sphl 15 Nov: SO-000064 was in the total and in neither part. (Only between 11:59 pm and
+  // midnight is this sale outside the 30 days; the check still holds then.)
+  const istToday = new Date(now.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10);
+  const edgeAt = new Date(Date.parse(`${istToday}T00:00:00Z`) - 5.5 * 3600_000 - 29 * DAY - 60_000);
+  const inWindow = edgeAt.getTime() > now.getTime() - 30 * DAY;
+  const edge = await order({ at: edgeAt, loc: A, total: 777, lines: [[P4.v, 1, 777]] });
+  const dashEdge = await dashboardOverview(C, { permissions: ['*'] }, undefined, now);
+  const e = dashEdge.sales!;
+  check('a till sale just before day 30\'s midnight: in the total, and in the till part, so the parts still add up',
+    e.last30 === (inWindow ? 4677 : 3900) && e.till30 === (inWindow ? 3777 : 3000) && e.online30 === 900 && near(e.till30 + e.online30, e.last30),
+    { last30: e.last30, till30: e.till30, online30: e.online30, inWindow });
+  check('...while the daily chart, which starts at midnight, leaves it out (the case the split had missed)',
+    near(e.daily.reduce((x, d) => x + d.till, 0), 3000), e.daily.reduce((x, d) => x + d.till, 0));
+  await prisma.salesOrderItem.deleteMany({ where: { salesOrderId: edge.id } });
+  await prisma.salesOrder.delete({ where: { id: edge.id } });
 
   console.log('\nSALES, OTHER PERIODS AND ONE STORE');
   const main = await salesPage(C, { period: '30d', locationId: A.id }, now);
