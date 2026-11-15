@@ -196,6 +196,11 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'campaign:send',   group: 'Selling', label: 'Write and send WhatsApp campaigns to customers',
     implies: ['campaign:view'], sensitive: true },
 
+  // Reel links (PLAN-reel-links.md): the pieces from an Instagram reel, behind one link to the online shop.
+  { key: 'reel_link:view',   group: 'Selling', label: 'See reel links and how many people opened them' },
+  { key: 'reel_link:manage', group: 'Selling', label: 'Make reel links, change their pieces, and switch them off',
+    implies: ['reel_link:view', 'product:view'] },
+
   // ── Money ─────────────────────────────────────────────────────────────────
   // The split that makes the rest of this meaningful. Before it, dashboard:view carried the
   // shop's whole financial position and every seeded role held it, including SALES.

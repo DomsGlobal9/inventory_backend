@@ -15,7 +15,8 @@ export function saving(now, was) {
   return Math.round(((b - a) / b) * 100);
 }
 
-export default function Tile({ slug, p }) {
+/** `to`: where the tile opens, when not the plain product page (a reel link opens the colour worn in the reel). */
+export default function Tile({ slug, p, to }) {
   const photo = p.images?.find(i => i.isPrimary) ?? p.images?.[0] ?? null;
   const sellable = (p.variants ?? []).some(v => v.sellable);
 
@@ -35,7 +36,7 @@ export default function Tile({ slug, p }) {
   }
 
   return (
-    <Link className={`tile${sellable ? '' : ' gone'}`} to={`/${slug}/p/${encodeURIComponent(p.productCode)}`}>
+    <Link className={`tile${sellable ? '' : ' gone'}`} to={to ?? `/${slug}/p/${encodeURIComponent(p.productCode)}`}>
       <Shot src={photo?.url} alt={p.title}>
         {/*
           Stacked rather than laid on top of each other. A piece can be marked down AND carry an

@@ -32,7 +32,7 @@ export const RBAC_DATA = {
         'offer:publish_external', 'offer:manual_discount_unlimited', 'offer:settings',
         'dashboard:view', 'report:financial', 'cost:manage', 'tryon:generate',
         'admin:locations', 'admin:catalog', 'admin:users', 'team:view_password', 'whatsapp:manage',
-        'loyalty:manage', 'campaign:send', 'return:counter', 'voucher:manage'
+        'loyalty:manage', 'campaign:send', 'return:counter', 'voucher:manage', 'reel_link:manage'
       ]
     },
 

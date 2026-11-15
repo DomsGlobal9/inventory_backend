@@ -18,6 +18,8 @@ export { LinkRuleError, newRecipientRef } from './rules';
 export type { TargetType } from './rules';
 
 export const MAX_LINKS_PER_CALL = 1000;
+/** The end date of a link made `forever`: far enough that nothing alive today will reach it. */
+export const NO_END = new Date('2100-01-01T00:00:00.000Z');
 /** Tap rows are kept this long (the same as the security log); the counts on the link stay. */
 export const TAP_RETENTION_DAYS = 180;
 /** A test send's link is removed this long after it expired. Real links stay for the history. */
@@ -109,6 +111,12 @@ export async function makeLinks(input: {
   owner: Owner;
   links: NewLink[];
   days?: number | null;
+  /**
+   * No end date (16 Nov, reel links): a reel stays on Instagram for years, and a link that died after
+   * a year would leave every old reel pointing at an error. Only for a module that switches its own
+   * links off itself (reel links: off, deleted). Ignores `days`.
+   */
+  forever?: boolean;
   isTest?: boolean;
   createdById?: string | null;
   now?: Date;
@@ -143,7 +151,7 @@ export async function makeLinks(input: {
     }
   });
   const now = input.now ?? new Date();
-  const expiresAt = expiryFor(now, input.days);
+  const expiresAt = input.forever === true ? NO_END : expiryFor(now, input.days);
   const ownerRef = owner.ref ?? null;
 
   // A shared link (no recipient) is never looked up again: nothing identifies "the same" one.

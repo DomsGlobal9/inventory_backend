@@ -6,6 +6,7 @@ import * as onlinePayments from '../services/payments/online-payment.service';
 import { prisma } from '../lib/prisma';
 import * as shopViews from '../services/shop-views';
 import { NumberNeededError } from '../services/shopper-tryon/who.service';
+import * as reelLinks from '../services/reel-links';
 
 /**
  * What a shopper's browser asks for at `shop.scaleezy.com/<slug>`.
@@ -126,6 +127,53 @@ const notOpen = (res: Response, state: 'UNKNOWN' | 'CLOSED', name?: string) =>
   state === 'CLOSED'
     ? res.status(503).json({ success: false, state, message: `${name ?? 'This shop'} is not open just now.` })
     : res.status(404).json({ success: false, state, message: 'There is no shop at this address.' });
+
+/*
+ * ── Reel links (PLAN-reel-links.md) ───────────────────────────────────────────────────────
+ *
+ * A short link goes to /_look/<code>, which does not know the shop's address -- a shop may change it while closed, and
+ * every reel it ever posted must keep working. This answers where the reel lives now; the page server sends the
+ * shopper there (and the app does the same while developing).
+ */
+router.get('/_look/:code', async (req: Request, res: Response) => {
+  const slug = await reelLinks.slugForCode(req.params.code).catch(() => null);
+  if (!slug) return res.status(404).json({ success: false, message: 'This link is not available.' });
+  res.json({ success: true, data: { slug } });
+});
+
+/** Sold out last, keeping the shop's own order inside each half: the reel showed them, so they stay on the page. */
+const soldOutLast = (pieces: any[]) => {
+  const can = (p: any) => (p.variants ?? []).some((v: any) => v.sellable);
+  return [...pieces.filter(can), ...pieces.filter(p => !can(p))];
+};
+
+/** New arrivals, for a reel link that is no longer available: never a dead end. */
+const newArrivals = async (shop: Parameters<typeof onlineShop.publicProducts>[0]) =>
+  (await onlineShop.publicProducts(shop, { sort: 'NEW', limit: 8 }).catch(() => ({ products: [] as any[] })))
+    .products.filter((p: any) => (p.variants ?? []).some((v: any) => v.sellable)).slice(0, 6);
+
+/** One reel link's page: its title and pieces, each with the colour worn in the reel. */
+router.get('/:slug/looks/:code', async (req: Request, res: Response) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') return notOpen(res, shop.state, (shop as { name?: string }).name);
+  const look = await reelLinks.forShopper(shop.clientId, req.params.code);
+  if (!look) return res.status(404).json({ success: false, message: 'This link is not one of this shop\'s reels.' });
+  if (look.available) {
+    const products = await onlineShop.publicPieces(shop, look.pieces.map(p => p.productCode));
+    const colourOf = new Map(look.pieces.map(p => [p.productCode, p.colour]));
+    const pieces = soldOutLast(products.map((p: any) => ({ ...p, reelColour: colourOf.get(p.productCode) ?? null })));
+    // Every piece gone from the shop since (deleted, unpublished): the same kind page as a switched-off link.
+    if (pieces.length) return res.json({ success: true, data: { available: true, title: look.title, pieces } });
+  }
+  res.json({ success: true, data: { available: false, title: null, pieces: [], newArrivals: await newArrivals(shop) } });
+});
+
+/** The bio page: every switched-on reel link of the shop, newest first. */
+router.get('/:slug/reels', async (req: Request, res: Response) => {
+  const shop = await onlineShop.publicShop(req.params.slug);
+  if (shop.state !== 'OPEN') return notOpen(res, shop.state, (shop as { name?: string }).name);
+  res.json({ success: true, data: { reels: await reelLinks.bioForShopper(shop.clientId) } });
+});
 
 /** The shop itself: who it is, what it looks like, and the seller details the law requires. */
 router.get('/:slug', async (req: Request, res: Response) => {

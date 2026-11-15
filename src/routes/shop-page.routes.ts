@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { onlineShop } from '../services/online-shop';
 import shopPublicRoutes from './shop-public.routes';
+import * as reelLinks from '../services/reel-links';
 
 /**
  * Serving the shop a customer sees, at `shop.scaleezy.com/<slug>`.
@@ -136,6 +137,21 @@ async function page(req: Request, res: Response) {
    */
   let image = shop.banners?.[0]?.imageUrl ?? shop.bannerUrl ?? shop.logoUrl ?? '';
 
+  // A reel link (PLAN-reel-links.md): its title, and the first piece's photograph, which is what the reel showed.
+  const lookCode = String(req.params.lookCode ?? '');
+  if (lookCode) {
+    const look = await reelLinks.forShopper(shop.clientId, lookCode).catch(() => null);
+    if (look?.available) {
+      const first = (await onlineShop.publicPieces(shop, look.pieces.slice(0, 1).map(p => p.productCode)).catch(() => []))[0] as any;
+      title = `${look.title} · ${shop.name}`;
+      description = `${look.pieces.length} ${look.pieces.length === 1 ? 'piece' : 'pieces'} from our reel. Shop them at ${shop.name}.`;
+      image = first?.images?.find((i: { isPrimary?: boolean }) => i.isPrimary)?.url ?? first?.images?.[0]?.url ?? image;
+    }
+  } else if (req.params.reels) {
+    title = `Shop our reels · ${shop.name}`;
+    description = `Every piece from ${shop.name}'s reels, reel by reel.`;
+  }
+
   if (code) {
     const product = await onlineShop.publicProduct(shop, code).catch(() => null);
     if (product) {
@@ -216,8 +232,23 @@ router.get('/', (_req, res) => {
   );
 });
 
+/*
+ * A reel's short link lands here (PLAN-reel-links.md). The reel link knows its shop, not the shop's address, so this
+ * sends the shopper -- and WhatsApp's or Instagram's preview robot, which follows redirects -- to wherever the shop
+ * lives now. An unknown code still gets the app, which says the link is not available.
+ */
+router.get('/_look/:code', async (req: Request, res: Response) => {
+  const slug = await reelLinks.slugForCode(req.params.code).catch(() => null);
+  if (!slug) return page(req, res);
+  // ?sz= (which short link was tapped) travels on: it is how an order is later put down to the reel.
+  const sz = typeof req.query.sz === 'string' && /^[A-Za-z0-9]{7}$/.test(req.query.sz) ? `?sz=${req.query.sz}` : '';
+  res.set('Cache-Control', 'no-store').redirect(302, `/${slug}/look/${encodeURIComponent(String(req.params.code))}${sz}`);
+});
+
 router.get('/:slug', page);
 router.get('/:slug/p/:productCode', page);
+router.get('/:slug/look/:lookCode', page);
+router.get('/:slug/:reels(reels)', page);
 /*
  * Any other path inside a shop is still that shop's app -- the bag, the checkout, a customer's own
  * order -- and the app decides what to show.

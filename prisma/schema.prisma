@@ -644,6 +644,7 @@ model Product {
   shopViews      ShopProductView[]
   photoJobs      PhotoJob[]
   shopifyMirrors ShopifyProductMirror[]
+  reelLinkItems  ReelLinkItem[]
 
   // Soft Delete & Timestamps
   trashedAt      DateTime?      @map("trashed_at")
@@ -5474,4 +5475,50 @@ model BoutiqueLinkCode {
 
   @@index([clientId])
   @@map("boutique_link_codes")
+}
+
+// ── Reel links (PLAN-reel-links.md, 16 Nov) ───────────────────────────────────────────────────
+// The pieces shown in one Instagram reel, behind one link. A module of its own (services/reel-links):
+// it only READS products, stock and prices. The link points at the reel link, never at products, so
+// changing the pieces never changes the link a shop has already posted.
+
+model ReelLink {
+  id       String @id @default(uuid())
+  clientId String @map("client_id")
+  /// 7 random letters and digits. The shop address /<slug>/look/<code>; never changes, never reused.
+  code     String @unique
+  title    String
+  /// The Instagram (or other) address of the reel. For the shop only; never shown to a shopper.
+  reelUrl  String? @map("reel_url") @db.Text
+  /// Off: the page says "no longer available" and shows new arrivals. The link itself keeps working.
+  active   Boolean @default(true)
+  /// The go.scaleezy.com code, once made. Null while short links are not set up on this server.
+  shortCode String? @map("short_code")
+
+  createdById String?   @map("created_by_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  /// Deleted by the shop: gone from its list and from the bio page; the link shows "no longer available".
+  deletedAt   DateTime? @map("deleted_at")
+
+  items ReelLinkItem[]
+
+  @@index([clientId, createdAt])
+  @@map("reel_links")
+}
+
+model ReelLinkItem {
+  id         String   @id @default(uuid())
+  reelLinkId String   @map("reel_link_id")
+  reelLink   ReelLink @relation(fields: [reelLinkId], references: [id], onDelete: Cascade)
+  productId  String   @map("product_id")
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  /// The colour worn in the reel, opened first for the shopper. Null: the product's own first colour.
+  colour     String?
+  /// The shop's order, from 0.
+  position   Int
+
+  @@unique([reelLinkId, productId])
+  @@index([productId])
+  @@map("reel_link_items")
 }

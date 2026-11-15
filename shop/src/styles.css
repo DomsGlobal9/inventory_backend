@@ -4663,3 +4663,23 @@ a.shot { display: block; }
 .lp-note, .lp-width { margin: 0; font-size: 12.5px; color: var(--muted); }
 .lp-total { display: flex; justify-content: space-between; align-items: baseline; margin: 0; font-size: 14px; }
 .lp-total strong { font-size: 17px; }
+
+/* ── Reel links (PLAN-reel-links.md): one reel's pieces, and the bio page of all reels ─────────── */
+.look { padding: 18px 0 30px; }
+.look-title { font-size: 22px; font-weight: 750; letter-spacing: -.01em; margin: 0 0 4px; line-height: 1.25; }
+.look-sub { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+.look-piece { display: flex; flex-direction: column; gap: 8px; }
+.look-wa { display: block; text-align: center; border: 1.5px solid #1f8f4e; color: #1f8f4e; border-radius: 10px;
+  padding: 9px 8px; font-weight: 650; font-size: 13px; text-decoration: none; }
+.look-actions { display: grid; gap: 10px; margin-top: 22px; max-width: 460px; }
+.look-actions .go { flex: none; width: 100%; text-decoration: none; }
+.look-added { border: 1.5px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 8px; }
+.look-added p { margin: 0; font-size: 14px; }
+.look-added a:not(.go) { color: var(--accent); font-weight: 600; }
+.reels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
+@media (min-width: 620px) { .reels { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 940px) { .reels { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.reel { display: block; color: inherit; text-decoration: none; }
+.reel-shot { display: block; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; background: var(--soft); border: 1px solid var(--line); }
+.reel-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.reel-name { display: block; font-size: 13.5px; font-weight: 600; margin-top: 7px; line-height: 1.3; }

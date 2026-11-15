@@ -1,8 +1,10 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, useParams, Navigate, useLocation, useNavigationType } from 'react-router-dom';
-import { getShop } from './api';
+import { BrowserRouter, Routes, Route, useParams, Navigate, useLocation, useNavigationType, useNavigate } from 'react-router-dom';
+import { getShop, findLook } from './api';
 import ShopHome from './pages/ShopHome';
 import ProductPage from './pages/ProductPage';
+import LookPage from './pages/LookPage';
+import ReelsPage from './pages/ReelsPage';
 /*
  * Split off, because most shoppers never open them.
  *
@@ -34,7 +36,7 @@ import { Problem, Say, GridSkeleton } from './components/States';
 
 /** One shop, whichever page of it is being looked at. */
 function Shop({ page }) {
-  const { slug } = useParams();
+  const { slug, code } = useParams();
   const [state, setState] = useState({ loading: true, error: null, shop: null });
   const [nonce, setNonce] = useState(0);
 
@@ -121,6 +123,8 @@ function Shop({ page }) {
             milliseconds and a spinner for that long is worse than a quiet pause. */}
         <Suspense fallback={<div className="bone" style={{ height: 320, borderRadius: 14, margin: '20px 0' }} />}>
           {page === 'product' ? <ProductPage slug={slug} shop={shop} />
+            : page === 'look' ? <LookPage slug={slug} code={code} shop={shop} />
+            : page === 'reels' ? <ReelsPage slug={slug} shop={shop} />
             : page === 'bag' ? <BagPage shop={shop} />
             : page === 'checkout' ? <CheckoutPage shop={shop} />
             : page === 'order' ? <OrderPage shop={shop} />
@@ -136,6 +140,26 @@ function Shop({ page }) {
       <Footer shop={shop} />
     </>
   );
+}
+
+/**
+ * /_look/<code>: where a reel's short link lands. The server sends it on to the shop's current address before this app
+ * loads; this is the same step for the development server, which has no such route.
+ */
+function LookRedirect() {
+  const { code } = useParams();
+  const nav = useNavigate();
+  const { search } = useLocation();
+  const [gone, setGone] = useState(false);
+  useEffect(() => {
+    const ac = new AbortController();
+    findLook(code, { signal: ac.signal })
+      .then(d => nav(`/${d.slug}/look/${encodeURIComponent(code)}${search}`, { replace: true }))
+      .catch(e => { if (e?.name !== 'AbortError') setGone(true); });
+    return () => ac.abort();
+  }, [code]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!gone) return <div className="wrap"><GridSkeleton count={4} /></div>;
+  return <div className="wrap"><Say title="This link is not available">The shop may have removed it. Open the shop from its Instagram profile.</Say></div>;
 }
 
 /** Somebody who opened shop.scaleezy.com with no shop after it. */
@@ -154,6 +178,9 @@ export default function App() {
         <Route path="/" element={<Root />} />
         <Route path="/:slug" element={<Shop page="home" />} />
         <Route path="/:slug/p/:code" element={<Shop page="product" />} />
+        <Route path="/_look/:code" element={<LookRedirect />} />
+        <Route path="/:slug/look/:code" element={<Shop page="look" />} />
+        <Route path="/:slug/reels" element={<Shop page="reels" />} />
         <Route path="/:slug/bag" element={<Shop page="bag" />} />
         <Route path="/:slug/checkout" element={<Shop page="checkout" />} />
         <Route path="/:slug/orders" element={<Shop page="orders" />} />

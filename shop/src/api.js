@@ -73,6 +73,16 @@ export const getProducts = (slug, query, opts) => {
   return get(`/shop/${encodeURIComponent(slug)}/products${qs ? `?${qs}` : ''}`, opts);
 };
 
+/** A reel link's page: its title and pieces (PLAN-reel-links.md), or `available: false` with new arrivals. */
+export const getLook = (slug, code, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/looks/${encodeURIComponent(code)}`, opts);
+
+/** The bio page: every switched-on reel link of the shop, newest first. */
+export const getReels = (slug, opts) => get(`/shop/${encodeURIComponent(slug)}/reels`, opts);
+
+/** /_look/<code> while developing: which shop address the reel link lives at now. */
+export const findLook = (code, opts) => get(`/shop/_look/${encodeURIComponent(code)}`, opts);
+
 export const getProduct = (slug, code, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/products/${encodeURIComponent(code)}`, opts);
 

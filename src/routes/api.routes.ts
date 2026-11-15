@@ -60,6 +60,7 @@ import reorderRoutes from './reorder.routes';
 import dayBookRoutes from './daybook.routes';
 import whatsappRoutes, { whatsappEvents } from './whatsapp.routes';
 import campaignRoutes from './campaign.routes';
+import reelLinkRoutes from './reel-links.routes';
 import onlineShopRoutes from './online-shop.routes';
 import loyaltyRoutes from './loyalty.routes';
 import counterReturnRoutes from './counter-return.routes';
@@ -233,6 +234,8 @@ router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);
 router.use('/whatsapp', whatsappRoutes);
 router.use('/campaigns', campaignRoutes);
+// Reel links: the pieces from an Instagram reel behind one link (PLAN-reel-links.md).
+router.use('/reel-links', reelLinkRoutes);
 router.use('/online-shop', onlineShopRoutes);
 router.use('/loyalty', loyaltyRoutes);
 // Returns taken back at the counter, and store credit. Money only, never what the shop paid.

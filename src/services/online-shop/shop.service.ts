@@ -663,6 +663,25 @@ export async function publicProduct(
   return withOffers(forShopper(p, shop.showFewLeft !== false), await windowOffers(shop));
 }
 
+/**
+ * Several products by code, as their own pages would show them, in the order asked (reel links, 16 Nov). Offers are
+ * read once for all of them, and the products side by side. A code that is no longer a product a shopper may see is
+ * simply left out.
+ */
+export async function publicPieces(
+  shop: { clientId: string; locationIds: string[]; showFewLeft?: boolean },
+  codes: string[]
+) {
+  const wanted = codes.filter(c => typeof c === 'string' && c.trim()).slice(0, 24);
+  if (!wanted.length) return [];
+  const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false };
+  const [offers, rows] = await Promise.all([
+    windowOffers(shop),
+    Promise.all(wanted.map(c => storefrontCatalogueService.getProduct(scope, c, { withLengths: true })))
+  ]);
+  return rows.filter(Boolean).map(p => withOffers(forShopper(p!, shop.showFewLeft !== false), offers));
+}
+
 /** How many tiles "Customers who bought this also bought" shows at most. */
 const ALSO_BOUGHT_TILES = 8;
 
