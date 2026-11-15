@@ -178,11 +178,12 @@ async function describePieces(clientId: string, productIds: string[]) {
   const rows = await prisma.product.findMany({
     where: { clientId, id: { in: productIds } },
     select: {
-      id: true, title: true, productCode: true, status: true, trashedAt: true, sellInShop: true, soldBy: true,
+      id: true, title: true, productCode: true, status: true, trashedAt: true, sellInShop: true, soldBy: true, basePrice: true,
       images: PHOTO_SELECT,
       variants: {
         select: {
           colorName: true, size: true, sellingPrice: true,
+          locationProfiles: { where: { priceOverride: { not: null }, ...(locations ? { locationId: { in: locations } } : {}) }, select: { priceOverride: true } },
           images: PHOTO_SELECT,
           stocks: { where: locations ? { locationId: { in: locations } } : {}, select: { quantity: true, reservedQty: true } }
         }
@@ -191,7 +192,13 @@ async function describePieces(clientId: string, productIds: string[]) {
   });
   const out = new Map<string, any>();
   for (const p of rows) {
-    const prices = p.variants.map(v => Number(v.sellingPrice)).filter(n => Number.isFinite(n) && n > 0);
+    // The price the shopper is shown, by the shop's own rule (storefront resolvePrice): a store's own price (the
+    // lowest), else the piece's selling price, else the product's base price. Reading only the selling price showed
+    // "No price" on a piece the shop was selling at ₹11,500 (found live on sphl, 16 Nov).
+    const priceOf = (v: typeof p.variants[number]) => v.locationProfiles.length
+      ? Math.min(...v.locationProfiles.map(l => Number(l.priceOverride)))
+      : v.sellingPrice !== null ? Number(v.sellingPrice) : Number(p.basePrice);
+    const prices = p.variants.map(priceOf).filter(n => Number.isFinite(n) && n > 0);
     const free = p.variants.reduce((t, v) => t + v.stocks.reduce((s, st) => s + Math.max(0, st.quantity - st.reservedQty), 0), 0);
     const colours: string[] = [];
     for (const v of p.variants) if (v.colorName && !colours.some(c => c.toLowerCase() === v.colorName!.toLowerCase())) colours.push(v.colorName);

@@ -90,6 +90,22 @@ async function main() {
   check('a full reel of 12 pieces is made', twelve.status === 201 && twelve.data.pieces.length === 12, twelve.message);
   const page12 = (await shop(`/_api/shop/${SLUG}/looks/${twelve.data.code}`)).data?.data;
   check('...and the shopper sees all 12', page12?.pieces?.length === 12, page12?.pieces?.length);
+  // The shop's screen and the shopper must show the same price (found live on sphl: "No price" on screen, ₹11,500 in
+  // the shop, for a piece with no selling price of its own).
+  const v0 = pieces[0].variants[0];
+  const vWas = await prisma.productVariant.findUnique({ where: { id: v0.id }, select: { sellingPrice: true } });
+  restore.push(() => prisma.productVariant.update({ where: { id: v0.id }, data: { sellingPrice: vWas!.sellingPrice } }));
+  await prisma.productVariant.update({ where: { id: v0.id }, data: { sellingPrice: null } });
+  const onScreen = (await api('GET', `/reel-links/${twelve.data.id}`)).data.pieces as any[];
+  const inShop = ((await shop(`/_api/shop/${SLUG}/looks/${twelve.data.code}`)).data?.data?.pieces ?? []) as any[];
+  const mismatch = onScreen.map(p => {
+    const s = inShop.find(x => x.productCode === p.productCode);
+    const lo = s ? Math.min(...s.variants.map((v: any) => Number(v.price))) : null;
+    return { code: p.productCode, screen: p.priceFrom, shop: lo };
+  }).filter(m => m.shop !== null && m.screen !== m.shop);
+  check('every piece: the price on the shop\'s screen is the price the shopper sees (one with no selling price of its own too)', onScreen.length === 12 && mismatch.length === 0, mismatch);
+  await restore.pop()!();
+
   const bio = (await shop(`/_api/shop/${SLUG}/reels`)).data?.data?.reels ?? [];
   check('the bio page lists them all, newest first', bio.slice(0, 3).map((r: any) => r.code).join() === [twelve.data.code, t2.data.code, t1.data.code].join(), bio.slice(0, 3));
 
