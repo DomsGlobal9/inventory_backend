@@ -112,8 +112,35 @@ async function main() {
     { last30: e.last30, till30: e.till30, online30: e.online30, inWindow });
   check('...while the daily chart, which starts at midnight, leaves it out (the case the split had missed)',
     near(e.daily.reduce((x, d) => x + d.till, 0), 3000), e.daily.reduce((x, d) => x + d.till, 0));
-  await prisma.salesOrderItem.deleteMany({ where: { salesOrderId: edge.id } });
-  await prisma.salesOrder.delete({ where: { id: edge.id } });
+
+  // Every other kind of sale at the same edge, and the ones that must stay out (15 Nov, "test all cases").
+  const extra = [
+    await order({ at: edgeAt, loc: A, channel: 'ONLINE', total: 50, lines: [[P4.v, 1, 50]] }),         // online part
+    await order({ at: edgeAt, loc: B, channel: 'MARKETPLACE', total: 20, lines: [[P4.v, 1, 20]] }),    // online part (Shopify comes in as these)
+    await order({ at: edgeAt, loc: B, channel: 'MANUAL', total: 3, lines: [[P4.v, 1, 3]] }),           // till part
+    await order({ at: edgeAt, loc: A, status: 'CANCELLED', total: 1000, lines: [[P4.v, 1, 1000]] }),   // out
+    await order({ at: edgeAt, loc: A, status: 'DRAFT', total: 2000, lines: [[P4.v, 1, 2000]] }),       // out
+    await order({ at: edgeAt, loc: A, deleted: true, total: 4000, lines: [[P4.v, 1, 4000]] }),         // out
+    await order({ at: new Date(now.getTime() - 30 * DAY), loc: A, total: 8000, lines: [[P4.v, 1, 8000]] }) // exactly 30 days: the 30 before
+  ];
+  const w = inWindow ? 1 : 0;
+  const all = (await dashboardOverview(C, { permissions: ['*'] }, undefined, now)).sales!;
+  check('every channel at the edge: till 3,000 + 777 + 3 (manual), online 900 + 50 + 20 (marketplace); cancelled, draft and deleted left out',
+    all.till30 === 3000 + w * 780 && all.online30 === 900 + w * 70 && all.last30 === 3900 + w * 850 && near(all.till30 + all.online30, all.last30),
+    { till30: all.till30, online30: all.online30, last30: all.last30, inWindow });
+  check('a sale exactly 30 days ago belongs to the 30 days before, in the total and the split alike', all.prev30 === 3000 + 8000 + (inWindow ? 0 : 850), { prev30: all.prev30 });
+  const atMain = (await dashboardOverview(C, { permissions: ['*'] }, A.id, now)).sales!;
+  check('one store chosen (Main): its own split, adding up to its own total',
+    atMain.till30 === 2000 + w * 777 && atMain.online30 === 900 + w * 50 && near(atMain.till30 + atMain.online30, atMain.last30), { till30: atMain.till30, online30: atMain.online30, last30: atMain.last30 });
+  const atEmpty = (await dashboardOverview(C, { permissions: ['*'] }, Cst.id, now)).sales!;
+  check('a store with no sales: 0 and 0, total 0', atEmpty.till30 === 0 && atEmpty.online30 === 0 && atEmpty.last30 === 0, atEmpty);
+  const viewer = (await dashboardOverview(C, { permissions: ['analytics:sales'] }, undefined, now)).sales;
+  check('someone given only the Sales page gets the same split on the card', viewer?.till30 === all.till30 && viewer?.online30 === all.online30, viewer && { till30: viewer.till30 });
+  const noSales = (await dashboardOverview(C, { permissions: ['inventory:view'] }, undefined, now)).sales;
+  check('someone without sales rights gets no sales figures at all (no split either)', noSales == null, noSales);
+  const page30 = await salesPage(C, { period: '30d' }, now);
+  check('the Sales page it opens shows the same till and online as the card', page30.totals.till === all.till30 && page30.totals.online === all.online30, { page: [page30.totals.till, page30.totals.online], card: [all.till30, all.online30] });
+  for (const so of [edge, ...extra]) { await prisma.salesOrderItem.deleteMany({ where: { salesOrderId: so.id } }); await prisma.salesOrder.delete({ where: { id: so.id } }); }
 
   console.log('\nSALES, OTHER PERIODS AND ONE STORE');
   const main = await salesPage(C, { period: '30d', locationId: A.id }, now);
