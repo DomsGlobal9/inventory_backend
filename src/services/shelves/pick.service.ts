@@ -163,7 +163,7 @@ export const pickService = {
     if (!Number.isInteger(missing) || missing < 1 || missing > 100000) throw badRequest('Say how many pieces are missing, at least one.');
     const spot = await prisma.storageSpot.findFirst({ where: { id: body.spotId, clientId }, select: { id: true, address: true, locationId: true } });
     if (!spot) throw notFound('That shelf was not found.');
-    const variant = await prisma.productVariant.findFirst({ where: { id: body.variantId, clientId }, select: { id: true, sku: true, product: { select: { title: true } } } });
+    const variant = await prisma.productVariant.findFirst({ where: { id: body.variantId, clientId }, select: { id: true, sku: true, product: { select: { title: true, soldBy: true } } } });
     if (!variant) throw notFound('That item was not found.');
     const recorded = (await prisma.spotStock.findUnique({ where: { spotId_variantId: { spotId: spot.id, variantId: variant.id } } }))?.quantity ?? 0;
     const name = `${variant.product.title} (${variant.sku})`;

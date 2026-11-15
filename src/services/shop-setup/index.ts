@@ -58,6 +58,9 @@ export async function getSetup(clientId: string) {
  */
 async function applySells(clientId: string, sells: Sells, fabricMinCut?: unknown) {
   if (sells === 'READY_MADE') {
+    if (await prisma.boutiqueLink.count({ where: { clientId, unlinkedAt: null } })) {
+      throw problem('Your boutique adds fabrics and materials to this shop, so it sells both. To sell ready-made garments only, ask ScaleEzy to turn off the Boutique module first.', 409);
+    }
     const now = await fabricSettings(clientId);
     if (now.fabricsOn) {
       try { await setFabricSettings(clientId, { fabricsOn: false }); }

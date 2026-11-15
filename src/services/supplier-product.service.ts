@@ -102,7 +102,7 @@ export class SupplierProductService {
         update: { ...fields, isPreferred, updatedBy: userId },
         include: {
           supplier: { select: { id: true, name: true, supplierCode: true, phone: true, email: true } },
-          variant: { select: { id: true, sku: true, size: true, colorName: true, product: { select: { title: true } } } }
+          variant: { select: { id: true, sku: true, size: true, colorName: true, product: { select: { title: true, soldBy: true } } } }
         }
       });
     }, {

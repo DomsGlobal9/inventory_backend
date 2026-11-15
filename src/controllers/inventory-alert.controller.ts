@@ -63,7 +63,7 @@ export const getAlerts = async (req: Request, res: Response) => {
             size: true,
             reorderLevel: true,
             productId: true,
-            product: { select: { title: true } }
+            product: { select: { title: true, soldBy: true } }
           }
         },
         location: {
@@ -124,6 +124,8 @@ export const getAlerts = async (req: Request, res: Response) => {
         variantId: alert.variant?.id,
         variantName: alert.variant?.product?.title || alert.variant?.sku,
         productTitle: alert.variant?.product?.title,
+        // Fabric is counted in centimetres: the screen shows metres, and offers Stock in rather than a purchase order.
+        soldBy: (alert.variant?.product as any)?.soldBy ?? 'PIECE',
         productId: alert.variant?.productId,
         sku: alert.variant?.sku,
         variantCode: alert.variant?.variantCode,

@@ -21,7 +21,7 @@ export const shelfIssueService = {
         take: size,
         include: {
           location: { select: { id: true, name: true } },
-          variant: { select: { id: true, sku: true, size: true, colorName: true, product: { select: { title: true } } } },
+          variant: { select: { id: true, sku: true, size: true, colorName: true, product: { select: { title: true, soldBy: true } } } },
           spot: { select: { id: true, address: true, name: true } }
         }
       }),

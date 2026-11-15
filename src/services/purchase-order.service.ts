@@ -5,6 +5,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { mailService } from './mail.service';
 import { getShopSettings } from '../lib/clientSettings';
+import { isMeasured } from '../lib/units';
 
 /**
  * Every rejection below carries an explicit statusCode. Thrown bare they inherited
@@ -57,6 +58,10 @@ export class PurchaseOrderService {
     });
     const missingVariant = variantIds.find(vid => !variants.some(v => v.id === vid));
     if (missingVariant) throw refuse(`Variant ${missingVariant} not found`, 404);
+    // Purchase orders count whole pieces. Fabric is kept in centimetres, so "10" here would be 10 cm: refused, with
+    // the way that works (Stock in on the Inventory page takes metres).
+    const measured = variants.find(v => isMeasured((v.product as any)?.soldBy));
+    if (measured) throw refuse(`${measured.product.title} is sold by the metre. Purchase orders count whole pieces, so add it with Stock in on the Inventory page instead.`, 400);
 
     // Numbered once the supplier and store are known to be good, so a refused order uses no number.
     const poNumber = await generateSequentialCode(clientId, 'PO', 'PURCHASE_ORDER');

@@ -123,7 +123,7 @@ export class TransactionRepository {
               sku: true,
               size: true,
               colorName: true,
-              product: { select: { title: true } }
+              product: { select: { title: true, soldBy: true } }
             }
           }
         }

@@ -69,14 +69,16 @@ async function isBoutiqueOnlyShop(clientId: string, tx: Prisma.TransactionClient
  *  - for a brand-new account, makes its boutique-only shop: an id, one store "Boutique", fabrics on, no logins or emails.
  */
 export async function link(input: { tenant: unknown; shopName?: unknown; linkCode?: unknown }) {
-  const tenant = String(input.tenant ?? '').trim();
+  // Always small letters: "Lakshmi-Boutique" from the boutique app and "lakshmi-boutique" typed in the Console are one account.
+  const tenant = String(input.tenant ?? '').trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9_-]{1,62}$/i.test(tenant)) throw problem('Give the boutique account (tenant) as letters, numbers and dashes.');
   if (input.linkCode) throw problem('Connecting a boutique to an existing ScaleEzy shop is done by ScaleEzy. Ask ScaleEzy to enable the Boutique module for that shop.', 403);
   const existing = await prisma.boutiqueLink.findUnique({ where: { tenant } });
   if (existing && !existing.unlinkedAt) return { clientId: existing.clientId, tenant, linked: 'already' as const };
   if (existing) throw problem('This boutique account was disconnected by ScaleEzy. Contact ScaleEzy to connect it again.', 403);
   let clientId = `boutique-${slug(tenant)}`;
-  if (await prisma.boutiqueLink.findUnique({ where: { clientId } })) clientId = `${clientId}-${randomBytes(3).toString('hex')}`;
+  // Free everywhere: a ScaleEzy client may already be called "boutique-lakshmi" (company "Boutique Lakshmi").
+  while (await clientIdInUse(clientId)) clientId = `boutique-${slug(tenant)}-${randomBytes(3).toString('hex')}`;
   try {
     await prisma.$transaction(async tx => {
       await tx.boutiqueLink.create({ data: { clientId, tenant, shopName: input.shopName ? String(input.shopName).slice(0, 120) : null } });
@@ -173,6 +175,8 @@ export async function enableForClient(clientId: string, tenantIn: string, shopNa
       update: { tenant, shopName: shopName ?? theirs?.shopName ?? undefined, unlinkedAt: null, linkedAt: new Date() }
     });
     await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true } as any, update: { fabricsOn: true } });
+    // The boutique adds fabrics and materials, so a ready-made-only shop now sells both (Add product then asks garment or fabric).
+    await tx.clientSettings.updateMany({ where: { clientId, sells: 'READY_MADE' }, data: { sells: 'BOTH' } });
     // The boutique's items are priced by the boutique again (they were the shop's own while it was disabled).
     await tx.product.updateMany({ where: { clientId, importKey: { startsWith: 'boutique:' } }, data: { priceOwner: 'BOUTIQUE' } });
     return { linked: true, tenant, moved, already: false };
@@ -185,8 +189,27 @@ export async function disableForClient(clientId: string) {
     const r = await tx.boutiqueLink.updateMany({ where: { clientId, unlinkedAt: null }, data: { unlinkedAt: new Date() } });
     // With no boutique to set them, its items' prices become the shop's to change (until it is enabled again).
     const freed = r.count ? (await tx.product.updateMany({ where: { clientId, priceOwner: 'BOUTIQUE' }, data: { priceOwner: 'INVENTORY' } })).count : 0;
-    return { linked: false, changed: r.count > 0, pricesFreed: freed };
+    // Cloth held for its stitching orders goes back on sale: with the boutique gone, nobody could ever cut or release it.
+    let holdsFreed = 0;
+    if (r.count) {
+      const holds = await tx.boutiqueReservation.findMany({ where: { clientId, status: 'ACTIVE' } });
+      for (const h of holds) {
+        await tx.inventoryStock.updateMany({ where: { variantId: h.variantId, locationId: h.locationId }, data: { reservedQty: { decrement: h.quantity } } });
+        await tx.boutiqueReservation.update({ where: { id: h.id }, data: { status: 'RELEASED' } });
+        holdsFreed++;
+      }
+    }
+    return { linked: false, changed: r.count > 0, pricesFreed: freed, holdsFreed };
   });
+}
+
+/** Is this id used by anything at all: a login, a shop's settings, a store, a product or a boutique link? */
+export async function clientIdInUse(clientId: string, db: Db | typeof prisma = prisma) {
+  const [links, users, settings, stores, products] = await Promise.all([
+    db.boutiqueLink.count({ where: { clientId } }), db.user.count({ where: { clientId } }), db.clientSettings.count({ where: { clientId } }),
+    db.stockLocation.count({ where: { clientId } }), db.product.count({ where: { clientId } })
+  ]);
+  return links + users + settings + stores + products > 0;
 }
 
 /** Kept for onboarding's older call: the same as enabling from the Console. */
@@ -197,7 +220,7 @@ export async function linkTrusted(tenant: string, clientId: string, shopName: st
 
 /** The shop a boutique is linked to, or a refusal. */
 export async function linkedShop(tenant: string) {
-  const l = await prisma.boutiqueLink.findUnique({ where: { tenant } });
+  const l = await prisma.boutiqueLink.findUnique({ where: { tenant: String(tenant).trim().toLowerCase() } });
   if (!l || l.unlinkedAt) throw problem('This boutique is not linked to a ScaleEzy shop yet.', 403);
   return l.clientId;
 }

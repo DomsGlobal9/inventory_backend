@@ -10,7 +10,7 @@ async function describeVariant(tx: any, clientId: string, variantId: string, loc
   const [variant, store] = await Promise.all([
     tx.productVariant.findFirst({
       where: { id: variantId, clientId },
-      select: { sku: true, colorName: true, size: true, product: { select: { title: true } } }
+      select: { sku: true, colorName: true, size: true, product: { select: { title: true, soldBy: true } } }
     }),
     tx.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { name: true } })
   ]);

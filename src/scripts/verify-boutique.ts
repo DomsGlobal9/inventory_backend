@@ -13,6 +13,8 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import { ELIGIBLE_PRODUCT, FEED_PRODUCT } from '../services/storefront-catalogue.service';
 import { accountState, enableForClient, disableForClient } from '../services/boutique';
+import { saveSetup } from '../services/shop-setup';
+import { filterProducts, productFilterQuery } from '../services/product-filters';
 import { productService } from '../services/product.service';
 import { variantService } from '../services/variant.service';
 import { platformAdminService } from '../services/platform-admin.service';
@@ -28,6 +30,7 @@ const STAMP = Date.now().toString(36);
 const T1 = `btqtest-${STAMP}`;            // a boutique-only client
 const T2 = `btqtest2-${STAMP}`;           // a boutique that also has retail on ScaleEzy
 const RETAIL = `btqretail-${STAMP}`;      // that client's existing ScaleEzy shop
+const EXTRA: string[] = [];                // more throwaway shops, removed at the end
 let bad = 0;
 const check = (name: string, ok: boolean, detail: unknown = '') => { if (!ok) bad++; console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : ` :: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`}`); };
 const ALL = ['products:write', 'stock:write', 'stitching:issue'];
@@ -308,11 +311,88 @@ async function main() {
   const arc = await call('DELETE', '/items/THR-RED');
   const thrP = await prisma.product.findUnique({ where: { id: thrV.productId } });
   check('an archived item stops being offered, its history stays', arc.status === 200 && thrP?.status === 'ARCHIVED', { arc, status: thrP?.status });
+
+  console.log('\nGAPS FOUND 15 NOV');
+  // 1. Names: a boutique's new shop never takes an id a ScaleEzy client already has, and the other way round.
+  const T3 = `btqtest3-${STAMP}`;
+  const ours = `boutique-btqtest3-${STAMP}`;          // our client "Boutique btqtest3 ..." already has this id
+  EXTRA.push(ours);
+  await prisma.stockLocation.create({ data: { clientId: ours, name: 'Our shop', code: `OS-${STAMP}`, type: 'STORE' } as any });
+  const l3 = await call('POST', '/link', { shopName: 'Clash' }, { tenant: T3 });
+  check('a boutique whose shop name matches one of our clients gets a different shop', l3.status === 201 && l3.data?.clientId !== ours && String(l3.data?.clientId).startsWith('boutique-btqtest3-'), l3);
+  check('...and our client is untouched (no boutique link, still one store)', !(await prisma.boutiqueLink.findUnique({ where: { clientId: ours } })) && (await prisma.stockLocation.count({ where: { clientId: ours } })) === 1);
+  const newId = await (platformAdminService as any).generateClientId(`Boutique btqtest3 ${STAMP}`);
+  check('our onboarding never gives a new client the id of a boutique-only shop or any existing shop', newId !== ours && newId !== l3.data?.clientId, newId);
+
+  // 2. Capital letters: the same account.
+  const caps = await call('GET', '/stores', undefined, { tenant: T1.toUpperCase() });
+  const capsLink = await call('POST', '/link', { shopName: 'Test Boutique' }, { tenant: T1.toUpperCase() });
+  check('the boutique account in capital letters reaches the same shop', caps.status === 200 && capsLink.status === 200 && capsLink.data?.clientId === C1, { caps: caps.status, capsLink });
+  check('...and accountState treats it as the same account', (await accountState(T1)).state !== 'new');
+
+  // 3. A ready-made-only client that gets the boutique now sells both, and cannot go back to ready-made only.
+  const R2 = `btqretail-b-${STAMP}`;
+  const T5 = `btqtest5-${STAMP}`;
+  EXTRA.push(R2);
+  const r2Store = await prisma.stockLocation.create({ data: { clientId: R2, name: 'R2 shop', code: `R2-${STAMP}`, type: 'STORE' } as any });
+  await prisma.clientSettings.create({ data: { clientId: R2, sells: 'READY_MADE', fabricsOn: false } as any });
+  await enableForClient(R2, T5);
+  const r2s = await prisma.clientSettings.findUnique({ where: { clientId: R2 } });
+  check('enabling the boutique for a ready-made-only shop makes it sell both, with fabrics on', (r2s as any)?.sells === 'BOTH' && (r2s as any)?.fabricsOn === true, r2s);
+  const backToRm = await saveSetup(R2, { sells: 'READY_MADE' }).then(() => 'saved', (e: any) => `${e.statusCode} ${e.message}`);
+  check('...and "ready-made only" is refused in words while the boutique is connected', /^409 Your boutique adds fabrics/.test(backToRm), backToRm);
+
+  // 4. Turning the boutique off frees the cloth it held.
+  await call('PUT', '/items/R2-SILK', { name: 'R2 silk', kind: 'FABRIC', unit: 'METER', sellingPrice: 300 }, { tenant: T5 });
+  await call('POST', '/movements', { itemCode: 'R2-SILK', kind: 'PURCHASE', quantity: 20 }, { tenant: T5 });
+  const r2Hold = await call('POST', '/holds', { itemCode: 'R2-SILK', quantity: 3, orderRef: 'R2-ORD' }, { tenant: T5 });
+  const heldBefore = (await prisma.inventoryStock.findFirst({ where: { locationId: r2Store.id } }))?.reservedQty;
+  const off = await disableForClient(R2);
+  const heldAfter = (await prisma.inventoryStock.findFirst({ where: { locationId: r2Store.id } }))?.reservedQty;
+  const r2Res = await prisma.boutiqueReservation.findFirst({ where: { clientId: R2 } });
+  check('turning the boutique off frees the 3 m it held (back on sale)', r2Hold.status === 201 && heldBefore === 300 && heldAfter === 0 && r2Res?.status === 'RELEASED' && (off as any).holdsFreed === 1, { hold: r2Hold.status, heldBefore, heldAfter, status: r2Res?.status, off });
+
+  // 5. A suspended shop refuses the boutique too.
+  await enableForClient(R2, T5);
+  await prisma.user.create({ data: { clientId: R2, name: 'R2 owner', email: `r2-${STAMP}@example.invalid`, password: 'x', status: 'INACTIVE' } as any });
+  const paused = await call('GET', '/items', undefined, { tenant: T5 });
+  check('a shop ScaleEzy suspended refuses the boutique, in words', paused.status === 403 && /paused this shop/.test(paused.message ?? ''), paused);
+  await prisma.user.updateMany({ where: { clientId: R2 }, data: { status: 'ACTIVE' } });
+  check('...and works again once reinstated', (await call('GET', '/items', undefined, { tenant: T5 })).status === 200);
+
+  // 6. Deleting a client with a boutique: warned first, and the boutique is told plainly afterwards.
+  const preview = await platformAdminService.previewClientDeletion(R2);
+  check('the delete preview names the connected boutique', (preview as any).boutiqueAccount === T5, preview);
+  await platformAdminService.deleteClientCompletely(R2, R2);
+  const afterDelete = await call('POST', '/link', { shopName: 'Again' }, { tenant: T5 });
+  check('after the delete the boutique app is told to contact ScaleEzy (not quietly given an empty shop)', afterDelete.status === 403 && /disconnected by ScaleEzy/.test(afterDelete.message ?? ''), afterDelete);
+  check('...and ScaleEzy can enable that account for a client again', (await accountState(T5)).state === 'free');
+
+  // 7 and 10. "Most stock" compares metres with pieces; search finds the kind.
+  const R3 = `btqretail-c-${STAMP}`;
+  EXTRA.push(R3);
+  const r3Store = await prisma.stockLocation.create({ data: { clientId: R3, name: 'R3 shop', code: `R3-${STAMP}`, type: 'STORE' } as any });
+  const mk = async (title: string, soldBy: string, kind: string | null, qty: number) => {
+    const p = await prisma.product.create({ data: { clientId: R3, productCode: `R3-${title.slice(0, 3)}-${STAMP}`, slug: `r3-${title.slice(0, 3).toLowerCase()}-${STAMP}`, title, category: 'WOMEN', productType: 'READY_TO_WEAR', status: 'ACTIVE', basePrice: 100, soldBy, kind } as any });
+    const v = await prisma.productVariant.create({ data: { clientId: R3, productId: p.id, sku: `R3-${title.slice(0, 3)}-${STAMP}`, variantCode: `R3V-${title.slice(0, 3)}-${STAMP}`, size: 'Free', sellingPrice: 100 } as any });
+    await prisma.inventoryStock.create({ data: { clientId: R3, variantId: v.id, locationId: r3Store.id, quantity: qty } as any });
+    return p.id;
+  };
+  const saree = await mk('Saree pile', 'PIECE', null, 900);
+  const silkRoll = await mk('Silk roll', 'METRE', 'FABRIC', 2500);       // 25 m
+  const liningP = await mk('Satin gold', 'METRE', 'LINING', 500);     // 5 m, "lining" only in its kind
+  const most = await filterProducts(R3, productFilterQuery.parse({ sort: 'qhi' }));
+  check('"most stock" puts 900 sarees above 25 m of silk (metres, not centimetres)', most.data[0]?.id === saree && most.data[1]?.id === silkRoll, most.data.map((p: any) => p.title));
+  const least = await filterProducts(R3, productFilterQuery.parse({ sort: 'qlo' }));
+  check('"least stock" starts with the 5 m lining', least.data[0]?.id === liningP, least.data.map((p: any) => p.title));
+  const found = await filterProducts(R3, productFilterQuery.parse({ q: 'lining' }));
+  check('searching "lining" finds a product whose kind is Lining', found.meta.total === 1 && found.data[0]?.id === liningP, found.meta);
+  check('...and "lace" finds nothing here (no lace)', (await filterProducts(R3, productFilterQuery.parse({ q: 'lace' }))).meta.total === 0);
 }
 
 async function cleanup() {
   const ids = (await prisma.boutiqueLink.findMany({ where: { tenant: { startsWith: 'btqtest' } }, select: { clientId: true } })).map(r => r.clientId).filter(c => c.startsWith('boutique-btqtest') || c.startsWith('btqretail-'));
-  ids.push(RETAIL);
+  ids.push(RETAIL, ...EXTRA);
   const tables = await prisma.$queryRaw<{ table_name: string }[]>`SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'client_id'`;
   // Children first; repeat until nothing is left (foreign keys decide the order).
   await prisma.$executeRawUnsafe(`DELETE FROM inventory_product_images WHERE product_id IN (SELECT id FROM inventory_products WHERE client_id = ANY($1))`, ids).catch(() => undefined);

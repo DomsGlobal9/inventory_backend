@@ -314,7 +314,7 @@ export class ReportService {
     // cost chain, binned products left out. It used average cost alone and kept binned products, so
     // the moment a shop had dead stock the list would not have added up to the tile.
     const rawRows = await prisma.$queryRaw<any[]>`
-      SELECT v.id, v.sku, p.id as "productId", COALESCE(s.qty, 0) as quantity, COALESCE(s.qty, 0) * ${UNIT_COST} as inventory_value, v.last_movement_at, p.title as "productTitle", p.category
+      SELECT v.id, v.sku, p.id as "productId", COALESCE(s.qty, 0) as quantity, COALESCE(s.qty, 0) * ${UNIT_COST} as inventory_value, v.last_movement_at, p.title as "productTitle", p.category, p.sold_by as "soldBy"
       FROM "inventory_product_variants" v
       JOIN "inventory_products" p ON v.product_id = p.id
       LEFT JOIN (SELECT variant_id, SUM(quantity) as qty FROM inventory_stocks WHERE client_id = ${clientId} ${stockJoinFilter} GROUP BY variant_id) s ON s.variant_id = v.id
@@ -339,6 +339,7 @@ export class ReportService {
       // endpoint returns 500 for exactly the tenants it is meant to help -- the ones that
       // actually have dead stock -- and 200 for the ones that have none.
       quantity: Number(item.quantity),
+      soldBy: item.soldBy ?? 'PIECE',
       inventoryValue: Number(item.inventory_value),
       daysSinceLastMovement: item.last_movement_at ? Math.floor((new Date().getTime() - new Date(item.last_movement_at).getTime()) / (1000 * 3600 * 24)) : null
     }));
@@ -413,7 +414,7 @@ export class ReportService {
         variant: {
           include: {
             product: {
-              select: { title: true }
+              select: { title: true, soldBy: true }
             }
           }
         }
@@ -425,6 +426,8 @@ export class ReportService {
       date: tx.createdAt,
       type: tx.type,
       product: tx.variant?.product?.title || 'Unknown Product',
+      // Fabric is stored in centimetres: the screen shows it in metres.
+      soldBy: (tx.variant?.product as any)?.soldBy ?? 'PIECE',
       sku: tx.variant?.sku || 'N/A',
       quantity: tx.quantity
     }));

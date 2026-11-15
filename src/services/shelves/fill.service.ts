@@ -161,7 +161,7 @@ export const fillService = {
 
     const rows = await prisma.spotStock.findMany({
       where: { clientId, spotId },
-      select: { quantity: true, variantId: true, variant: { select: { id: true, sku: true, colorName: true, size: true, product: { select: { title: true } } } } }
+      select: { quantity: true, variantId: true, variant: { select: { id: true, sku: true, colorName: true, size: true, product: { select: { title: true, soldBy: true } } } } }
     });
     return {
       spot: {
@@ -240,7 +240,7 @@ export const fillService = {
             createdBy: userId ?? undefined
           });
         } catch (error: any) {
-          const variant = await tx.productVariant.findFirst({ where: { id: line.variantId, clientId }, select: { sku: true, product: { select: { title: true } } } });
+          const variant = await tx.productVariant.findFirst({ where: { id: line.variantId, clientId }, select: { sku: true, product: { select: { title: true, soldBy: true } } } });
           const free = await freeToShelve(tx, clientId, spot.locationId, line.variantId);
           problems.push({
             variantId: line.variantId,

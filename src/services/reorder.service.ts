@@ -1,6 +1,7 @@
 import { PurchaseOrderStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { purchaseOrderService } from './purchase-order.service';
+import { isMeasured } from '../lib/units';
 
 /**
  * Turns "what is running out" into "what to order from whom".
@@ -112,7 +113,7 @@ export class ReorderService {
       select: {
         id: true, sku: true, size: true, colorName: true,
         reorderLevel: true, reorderQty: true, averageCost: true, lastPurchaseCost: true, costPrice: true,
-        product: { select: { title: true, status: true } },
+        product: { select: { title: true, status: true, soldBy: true } },
         stocks: { where: location ? { locationId: location.id } : {}, select: { quantity: true } },
         // Whether it has been held anywhere at all, and whether it is switched off for this
         // store: together they tell "run out here" from "never carried here". See below.
@@ -147,6 +148,8 @@ export class ReorderService {
       // Trashed and archived products should not generate purchase suggestions -- nobody
       // wants an order for something they have deliberately taken out of the catalogue.
       if (variant.product?.status === 'TRASHED' || variant.product?.status === 'ARCHIVED') continue;
+      // Fabric by the metre is not ordered on a purchase order (those count pieces); its low stock still raises an alert.
+      if (isMeasured((variant.product as any)?.soldBy)) continue;
 
       const currentStock = variant.stocks.reduce((sum, s) => sum + s.quantity, 0);
       if (currentStock > variant.reorderLevel) continue;

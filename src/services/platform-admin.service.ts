@@ -1,5 +1,5 @@
 import { seedSells, type Sells } from './shop-setup';
-import { linkTrusted } from './boutique';
+import { linkTrusted, clientIdInUse } from './boutique';
 import crypto from 'crypto';
 import { readablePassword } from '../lib/readablePassword';
 import { whatsappClient, whatsappConfigured } from './whatsapp/client';
@@ -320,14 +320,12 @@ export class PlatformAdminService {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '') || 'client';
 
-    const existing = new Set(
-      (await prisma.user.findMany({ distinct: ['clientId'], select: { clientId: true } })).map(u => u.clientId)
-    );
-
-    if (!existing.has(base)) return base;
+    // Free everywhere, not just among logins: a boutique-only shop (no logins) may already be "boutique-lakshmi",
+    // and a new client given that id would open the boutique's stock.
+    if (!(await clientIdInUse(base))) return base;
 
     let suffix = 2;
-    while (existing.has(`${base}-${suffix}`)) suffix++;
+    while (await clientIdInUse(`${base}-${suffix}`)) suffix++;
     return `${base}-${suffix}`;
   }
 
@@ -544,7 +542,9 @@ export class PlatformAdminService {
       throw Object.assign(new Error('No such client, or it has already been deleted'), { statusCode: 404 });
     }
 
-    return { clientId, users, products, variants, orders, payments, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting };
+    // A connected boutique loses its items too: say so before anyone confirms.
+    const boutiqueLink = await prisma.boutiqueLink.findFirst({ where: { clientId, unlinkedAt: null }, select: { tenant: true } });
+    return { clientId, users, products, variants, orders, payments, purchaseOrders, locations, suppliers, transactions, offers, offerUses, shopifyOrdersWaiting, boutiqueAccount: boutiqueLink?.tenant ?? null };
   }
 
   /**
@@ -609,6 +609,7 @@ export class PlatformAdminService {
     if (users === 0 && await prisma.boutiqueLink.count({ where: { clientId } })) {
       throw Object.assign(new Error('No such client, or it has already been deleted'), { statusCode: 404 });
     }
+    const boutiqueWas = await prisma.boutiqueLink.findUnique({ where: { clientId } });
 
     // Read before deleting: once the rows are gone so are the storage paths, and the images
     // would sit in Supabase forever with nothing pointing at them.
@@ -832,6 +833,10 @@ export class PlatformAdminService {
       maxWait: 20_000,
       timeout: 120_000
     });
+
+    // The boutique account stays known as disconnected: the boutique app is told "contact ScaleEzy" instead of
+    // quietly getting a new, empty shop. ScaleEzy can enable it again for any client.
+    if (boutiqueWas) await prisma.boutiqueLink.create({ data: { clientId, tenant: boutiqueWas.tenant, shopName: boutiqueWas.shopName, linkedAt: boutiqueWas.linkedAt, unlinkedAt: new Date() } }).catch(() => undefined);
 
     // Only once the rows are certainly gone. Doing this first would delete a shop's photographs
     // and then fail the transaction, leaving records pointing at images that no longer exist.

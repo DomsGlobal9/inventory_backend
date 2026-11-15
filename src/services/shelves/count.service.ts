@@ -59,7 +59,7 @@ export const shelfCountService = {
 
     const variants = await prisma.productVariant.findMany({
       where: { clientId, id: { in: lines.map(l => l.variantId) } },
-      select: { id: true, sku: true, product: { select: { title: true } } }
+      select: { id: true, sku: true, product: { select: { title: true, soldBy: true } } }
     });
     if (variants.length !== lines.length) {
       const known = new Set(variants.map(v => v.id));

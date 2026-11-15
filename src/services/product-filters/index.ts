@@ -4,6 +4,9 @@ import { prisma } from '../../lib/prisma';
 import { isLowStock } from '../../lib/lowStock';
 import { colourFamily } from '../customer-card/colours';
 import { productRepository } from '../../repositories/product.repository';
+import { factorOf, KINDS } from '../../lib/units';
+
+const KIND_LABEL = new Map(KINDS.map(k => [k.key, k.label.toLowerCase()]));
 
 /**
  * THE PRODUCTS PAGE'S SEARCH, FILTERS AND SORT.
@@ -109,7 +112,7 @@ export async function filterProducts(clientId: string, query: ProductFilterQuery
       if (query.min !== undefined && v.price < query.min) return false;
       if (query.max !== undefined && v.price > query.max) return false;
     }
-    if (q && ![v.title, v.code, v.sku, v.barcode, v.colour, v.fam, v.type, v.fabric, v.craft, v.brand].some(x => String(x ?? '').toLowerCase().includes(q))) return false;
+    if (q && ![v.title, v.code, v.sku, v.barcode, v.colour, v.fam, v.type, v.fabric, v.craft, v.brand, v.kind && KIND_LABEL.get(v.kind)].some(x => String(x ?? '').toLowerCase().includes(q))) return false;
     return true;
   };
 
@@ -134,7 +137,8 @@ export async function filterProducts(clientId: string, query: ProductFilterQuery
   for (const v of variants) if (passes(v)) { if (!byProduct.has(v.pid)) byProduct.set(v.pid, []); byProduct.get(v.pid)!.push(v); }
   const found = [...byProduct.entries()].map(([pid, vs]) => ({
     pid, title: vs[0].title, created: new Date(vs[0].created).getTime(),
-    price: Math.min(...vs.map(v => v.price)), qty: vs.reduce((t, v) => t + v.qty, 0),
+    // In the unit the shop counts in (25 m is 25, not 2,500 cm), so "most stock" does not put every fabric first.
+    price: Math.min(...vs.map(v => v.price)), qty: vs.reduce((t, v) => t + v.qty, 0) / factorOf(vs[0].soldby),
     matches: vs.map(v => v.vid).filter(Boolean) as string[]
   }));
   const by: Record<typeof query.sort, (a: typeof found[0], b: typeof found[0]) => number> = {

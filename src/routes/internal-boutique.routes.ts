@@ -1,3 +1,4 @@
+import { platformAdminService } from '../services/platform-admin.service';
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import * as boutique from '../services/boutique';
@@ -54,6 +55,7 @@ router.use(async (req: Request, res: Response, next: NextFunction) => {
     const p = pass(req);
     const clientId = await boutique.linkedShop(p.tenant!);
     if (p.clientId && p.clientId !== clientId) return fail(res, 403, 'This pass is for another shop.');
+    if (await platformAdminService.isClientSuspended(clientId)) return fail(res, 403, 'ScaleEzy has paused this shop. Contact ScaleEzy.');
     (req as any).boutiqueActor = { clientId, name: p.onBehalfOf!.name!.trim().slice(0, 80), can: p.onBehalfOf!.can!.filter(c => KNOWN_CAN.includes(c)) } satisfies Actor;
     next();
   } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }

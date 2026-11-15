@@ -28,7 +28,7 @@ export class StockCountService {
               select: {
                 stocks: { select: { locationId: true, quantity: true } },
                 product: {
-                  select: { title: true }
+                  select: { title: true, soldBy: true }
                 }
               }
             }
