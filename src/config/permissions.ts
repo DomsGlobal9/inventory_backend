@@ -210,6 +210,15 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'report:financial', group: 'Money', label: 'See money reports — stock value, profit, supplier spend',
     implies: ['report:view', 'cost:view'], exposesCost: true, sensitive: true },
 
+  // The full pages behind the dashboard cards (15 Nov 2026). No role template holds them: only the owner, until
+  // the owner ticks them for a role. Each guards its own route in routes/analytics.routes.ts.
+  { key: 'analytics:sales', group: 'Money', label: 'See the full Sales page — every store, best sellers, payments',
+    implies: ['report:view'], sensitive: true },
+  { key: 'analytics:stock_value', group: 'Money', label: 'See stock value in every store, at cost and at selling price',
+    implies: ['inventory:view', 'cost:view'], exposesCost: true, sensitive: true },
+  { key: 'analytics:stock', group: 'Stock', label: 'See stock in every store and the full running-low list',
+    implies: ['inventory:view'] },
+
   // ── The shop ──────────────────────────────────────────────────────────────
   { key: 'dashboard:view', group: 'The shop', label: 'See the dashboard' },
 

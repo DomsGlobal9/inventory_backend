@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { prisma } from '../lib/prisma';
-import { ALL_PERMISSION_KEYS, expandPermissions } from '../config/permissions';
+import { ALL_PERMISSION_KEYS, expandPermissions, getPermission } from '../config/permissions';
 import { RBAC_DATA } from '../services/rbac-seed.service';
 
 let passed = 0, failed = 0;
@@ -51,14 +51,18 @@ async function main() {
   const frontendKeys = keysIn(walk(path.resolve(__dirname, '../../../frontend/src'), ['.js', '.jsx', '.ts', '.tsx']));
   // Not permission keys: things that look like one (a SKU-ish pair, a TS type) -- none expected; listed if any.
   console.log('\nA. SERVER CHECKS');
-  const missingBe = [...backendKeys].filter(([k]) => !catalogue.has(k));
+  // The boutique's own pass says what its staff may do (KNOWN_CAN in internal-boutique.routes): signed by the
+  // boutique, never a ScaleEzy role, so never on the Roles screen.
+  const BOUTIQUE_PASS = new Set(['products:write', 'stock:write', 'stitching:issue']);
+  const missingBe = [...backendKeys].filter(([k, file]) => !catalogue.has(k) && !(BOUTIQUE_PASS.has(k) && /boutique/.test(file)));
   check(`all ${backendKeys.size} keys the server checks are on the Roles screen`, missingBe.length === 0, missingBe);
   console.log('\nB. SCREEN CHECKS');
   const missingFe = [...frontendKeys].filter(([k]) => !catalogue.has(k));
   check(`all ${frontendKeys.size} keys the screens check are on the Roles screen`, missingFe.length === 0, missingFe);
   console.log('\nC. UNUSED KEYS');
   const used = new Set([...backendKeys.keys(), ...frontendKeys.keys()]);
-  const unused = [...catalogue].filter(k => !used.has(k));
+  // A key of another module (CRM) is checked on that module's own server, not here (PermissionDef.module).
+  const unused = [...catalogue].filter(k => !used.has(k) && !getPermission(k)?.module);
   check('every key on the Roles screen is checked somewhere', unused.length === 0, unused);
   console.log('\nD. BUILT-IN ROLE TEMPLATES');
   for (const [name, r] of Object.entries(RBAC_DATA.roles)) {

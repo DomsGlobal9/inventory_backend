@@ -39,6 +39,9 @@ export async function dashboardOverview(clientId: string, user: User, locationId
   const stockOk = may('inventory:view');
   const topOk = money || may('report:view');
   const ordersOk = may('sales_order:view');
+  // Somebody given a full page (analytics:*) also gets the card that opens it, or the page would have no way in.
+  const salesOk = money || may('analytics:sales');
+  const valueOk = money || may('analytics:stock_value');
 
   const here = locationId ? Prisma.sql`AND so.location_id = ${locationId}` : Prisma.empty;
   const real = Prisma.sql`so.client_id = ${clientId} AND so.deleted_at IS NULL AND so.status::text NOT IN ('CANCELLED', 'DRAFT') ${here}`;
@@ -51,8 +54,8 @@ export async function dashboardOverview(clientId: string, user: User, locationId
     prisma.$queryRaw<{ orders: bigint; total: unknown }[]>(Prisma.sql`
       SELECT COUNT(*) AS orders, COALESCE(SUM(so.total), 0) AS total FROM sales_orders so
       WHERE ${real} AND ${istDay} = ((${now}::timestamp AT TIME ZONE 'UTC') AT TIME ZONE ${TZ})::date`),
-    money ? salesPart(real, istDay, online, now) : null,
-    stockOk ? stockPart(clientId, locationId, money, now) : null,
+    salesOk ? salesPart(real, istDay, online, now) : null,
+    stockOk ? stockPart(clientId, locationId, valueOk, now) : null,
     topOk ? topPart(real, now, money) : null,
     ordersOk ? latestPart(clientId, locationId) : null,
     money ? tiedUpPart(clientId, locationId, now) : null

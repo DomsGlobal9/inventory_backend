@@ -9,6 +9,7 @@ import productRoutes from './product.routes';
 import variantRoutes from './variant.routes';
 import inventoryRoutes from './inventory.routes';
 import dashboardRoutes from './dashboard.routes';
+import analyticsRoutes from './analytics.routes';
 import transactionRoutes from './transaction.routes';
 import catalogRoutes from './catalog.routes';
 import catalogTryOnRoutes from './catalog-tryon.routes';
@@ -157,6 +158,8 @@ router.use('/inventory/transactions', hideCost, transactionRoutes);
 router.use('/inventory/alerts', hideCost, inventoryAlertRoutes);
 router.use('/inventory', hideCost, inventoryRoutes);
 router.use('/dashboard', hideCost, dashboardRoutes);
+// The full pages behind the dashboard cards. Stock value is about cost by design (analytics:stock_value implies cost:view).
+router.use('/analytics', hideCost, analyticsRoutes);
 // The shop's own name and logo. Readable by anyone signed in, changeable only by the owner.
 router.use('/branding', brandingRoutes);
 // Fabrics by the metre: the shop's switch and defaults (PLAN-fabrics.md).
