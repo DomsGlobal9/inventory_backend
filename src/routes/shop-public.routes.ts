@@ -161,7 +161,12 @@ router.get('/:slug/looks/:code', async (req: Request, res: Response) => {
   if (look.available) {
     const products = await onlineShop.publicPieces(shop, look.pieces.map(p => p.productCode));
     const colourOf = new Map(look.pieces.map(p => [p.productCode, p.colour]));
-    const pieces = soldOutLast(products.map((p: any) => ({ ...p, reelColour: colourOf.get(p.productCode) ?? null })));
+    // The reel's colour only while the piece still comes in it (in its own spelling); otherwise the piece's own first.
+    const reelColour = (p: any) => {
+      const want = colourOf.get(p.productCode);
+      return want ? (p.variants ?? []).find((v: any) => (v.colour ?? '').toLowerCase() === want.toLowerCase())?.colour ?? null : null;
+    };
+    const pieces = soldOutLast(products.map((p: any) => ({ ...p, reelColour: reelColour(p) })));
     // Every piece gone from the shop since (deleted, unpublished): the same kind page as a switched-off link.
     if (pieces.length) return res.json({ success: true, data: { available: true, title: look.title, pieces } });
   }

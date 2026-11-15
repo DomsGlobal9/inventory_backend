@@ -17,6 +17,7 @@ import { env } from '../../config/env';
 import { links } from '../links';
 import { newCode, CODE_SHAPE } from '../links/rules';
 import { ELIGIBLE_PRODUCT } from '../storefront-catalogue.service';
+import { literal } from '../../utils/likeText';
 
 export const MAX_PIECES = 12;
 const TITLE_MAX = 80;
@@ -212,14 +213,17 @@ async function describePieces(clientId: string, productIds: string[]) {
 /** Search for pieces to add: the shop's published, for-sale products, by name, code or SKU. */
 export async function searchPieces(clientId: string, raw: unknown) {
   const q = typeof raw === 'string' ? raw.trim().slice(0, 80) : '';
+  // Prisma's `contains`, and `equals` with mode 'insensitive', are an ILIKE that does not escape: "%" or "_" matched
+  // everything, and a backslash at the end broke the query.
+  const like = literal(q);
   const rows = await prisma.product.findMany({
     where: {
       clientId, ...ELIGIBLE_PRODUCT,
       ...(q ? {
         OR: [
-          { title: { contains: q, mode: 'insensitive' } },
-          { productCode: { contains: q, mode: 'insensitive' } },
-          { variants: { some: { OR: [{ sku: { equals: q, mode: 'insensitive' } }, { sku: { contains: q, mode: 'insensitive' } }, { barcode: q }] } } }
+          { title: { contains: like, mode: 'insensitive' } },
+          { productCode: { contains: like, mode: 'insensitive' } },
+          { variants: { some: { OR: [{ sku: { equals: like, mode: 'insensitive' } }, { sku: { contains: like, mode: 'insensitive' } }, { barcode: q }] } } }
         ]
       } : {})
     },
@@ -283,7 +287,13 @@ export async function get(clientId: string, id: string) {
     id: r.id, code: r.code, title: r.title, reelUrl: r.reelUrl, active: r.active, createdAt: r.createdAt,
     shortUrl: shortUrlOf(shortCode), pageUrl: lookUrl(shop?.slug ?? null, r.code),
     opened: stats.get(r.id)?.totalTaps ?? 0,
-    pieces: items.map(i => ({ ...described.get(i.productId), colour: i.colour })).filter(p => p.productId)
+    // A colour the piece no longer comes in (renamed, or its last variant removed) falls back to none, so the reel
+    // link can still be saved; the screen then shows the piece's own first colour.
+    pieces: items.map(i => {
+      const d = described.get(i.productId);
+      const colour = i.colour && d ? d.colours.find((c: string) => c.toLowerCase() === i.colour!.toLowerCase()) ?? null : null;
+      return { ...d, colour };
+    }).filter(p => p.productId)
   };
 }
 

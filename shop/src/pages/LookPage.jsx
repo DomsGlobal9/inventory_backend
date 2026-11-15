@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getLook } from '../api';
-import { addToBag } from '../bag';
+import { addToBag, getBag } from '../bag';
 import Tile from '../components/Tile';
 import { Problem, Say, GridSkeleton } from '../components/States';
 
@@ -66,12 +66,18 @@ export default function LookPage({ slug, code, shop }) {
   const ready = look.pieces.filter(p => canBuy(p) && onlyChoice(p));
   const choose = look.pieces.filter(p => canBuy(p) && !onlyChoice(p));
 
+  // A piece already in the bag stays as it is: pressing this again (after a reload, or a second visit) must not
+  // turn one saree into two.
   const addLook = () => {
+    const inBag = new Set(getBag(slug).map(l => l.variantCode));
+    let count = 0, already = 0;
     for (const p of ready) {
       const v = onlyChoice(p);
+      if (inBag.has(v.variantCode)) { already++; continue; }
       addToBag(slug, v.variantCode, 1, { title: p.title, size: v.size, colour: v.colour, colourHex: v.colourHex });
+      count++;
     }
-    setAdded({ count: ready.length, choose });
+    setAdded({ count, already, choose });
   };
 
   // The message is written for them: which reel, which piece, which colour.
@@ -103,7 +109,9 @@ export default function LookPage({ slug, code, shop }) {
         )}
         {added && (
           <div className="look-added" role="status">
-            <p><b>Added {added.count} {added.count === 1 ? 'piece' : 'pieces'} to your bag.</b></p>
+            {added.count > 0
+              ? <p><b>Added {added.count} {added.count === 1 ? 'piece' : 'pieces'} to your bag.</b>{added.already ? ` ${added.already} ${added.already === 1 ? 'was' : 'were'} already in it.` : ''}</p>
+              : <p><b>{added.already === 1 ? 'This piece is' : 'These pieces are'} already in your bag.</b></p>}
             {added.choose.length > 0 && (
               <p>Choose a size or length for: {added.choose.map((p, i) => (
                 <React.Fragment key={p.productCode}>{i ? ', ' : ''}<Link to={pieceUrl(slug, p)}>{p.title}</Link></React.Fragment>
