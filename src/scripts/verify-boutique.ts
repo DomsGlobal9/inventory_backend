@@ -85,6 +85,48 @@ async function main() {
   const sneaky = await call('POST', '/link', { linkCode: 'AAAA-BBBB' });
   check('a made-up link code cannot attach it to some other shop', sneaky.status === 403, sneaky);
 
+  console.log('\nTHE BOUTIQUE KEY CAN DO BOUTIQUE CALLS ONLY (15 Nov)');
+  // The test server registers the boutique test key the way the real one is registered on Render:
+  // { key, scopes: ["modules:boutique"] } (btq-1 as a file path, btq-inline as the key text itself). btq-open is the
+  // SAME key as a plain entry, the way our own modules are registered -- it shows what the limit changes.
+  const raw = (kid: string, scope: unknown[], o: { iss?: string; tenant?: boolean } = {}) => jwt.sign({
+    sub: 'crm-b', scope, ...(o.tenant === false ? {} : { tenant: T1 }), clientId: C1,
+    onBehalfOf: { userId: 'staff-7', name: 'Lakshmi (cutting)', can: ALL }
+  }, privateKey, { algorithm: 'RS256', audience: 'inventory', issuer: o.iss ?? 'scaleezy-boutique-test', keyid: kid, expiresIn: '5m' });
+  const hit = async (path: string, token: string) => {
+    const r = await axios.get(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` }, validateStatus: () => true, timeout: 60_000 });
+    return { status: r.status, message: r.data?.message as string | undefined, data: r.data?.data, success: r.data?.success };
+  };
+  const limitMsg = (r: { message?: string }, s: string) => new RegExp(`This key may not ask for ${s}`).test(r.message ?? '');
+  const crmAsk = await hit('/internal/test', raw('btq-1', ['modules:crm']));
+  check('the boutique key asking for CRM access is refused, and says why', crmAsk.status === 403 && limitMsg(crmAsk, 'modules:crm'), crmAsk);
+  const crmShop = await hit(`/internal/modules/crm/shops/${C1}/locations`, raw('btq-1', ['modules:crm']));
+  check('...on a real CRM route too (refused by the key limit, nothing read)', crmShop.status === 403 && limitMsg(crmShop, 'modules:crm') && crmShop.data === undefined, crmShop);
+  const both = await hit('/internal/boutique/items', raw('btq-1', ['modules:boutique', 'modules:crm']));
+  check('boutique plus CRM in one pass: the whole pass is refused, even for a boutique call', both.status === 403 && limitMsg(both, 'modules:crm') && both.data === undefined, both);
+  const links = await hit('/links-api/links', raw('btq-1', ['modules:boutique', 'links:read']));
+  check('asking for short-link access is refused', links.status === 403 && limitMsg(links, 'links:read'), links);
+  const odd = await hit('/internal/boutique/items', raw('btq-1', [{ scope: 'modules:boutique' }]));
+  check('a scope that is not a word is refused', odd.status === 403, odd);
+  const okInline = await hit('/internal/boutique/items', raw('btq-inline', ['modules:boutique']));
+  check('the key pasted as text (how Render holds it) works for boutique calls', okInline.status === 200 && okInline.success === true, okInline);
+  const crmInline = await hit('/internal/test', raw('btq-inline', ['modules:crm']));
+  check('...and is refused CRM access the same way', crmInline.status === 403 && limitMsg(crmInline, 'modules:crm'), crmInline);
+  const noList = await hit('/internal/boutique/items', raw('btq-nolist', ['modules:boutique']));
+  check('a key set up without its list is refused (never trusted with everything)', noList.status === 401 && /set up wrongly/.test(noList.message ?? ''), noList);
+  const emptyList = await hit('/internal/boutique/items', raw('btq-emptylist', ['modules:boutique']));
+  check('a key set up with an empty list is refused too', emptyList.status === 401 && /set up wrongly/.test(emptyList.message ?? ''), emptyList);
+  const open = await hit('/internal/test', raw('btq-open', ['modules:crm']));
+  check('a plain entry (our own modules) is unchanged: trusted with what it asks for', open.status === 200 && open.data === undefined && open.success === true, open);
+  const borrow = await hit('/internal/test', raw('test-1', ['modules:crm'], { iss: 'scaleezy-crm-test' }));
+  check('the boutique key cannot pass itself off as the CRM (CRM name, boutique signature)', borrow.status === 401, borrow);
+  for (const kid of ['nope', '__proto__', 'constructor', 'toString']) {
+    const r = await hit('/internal/boutique/items', raw(kid, ['modules:boutique']));
+    check(`an unknown key id (${kid}) is refused, not a crash`, r.status === 401, r);
+  }
+  const protoIss = await hit('/internal/boutique/items', raw('btq-1', ['modules:boutique'], { iss: '__proto__' }));
+  check('an issuer named __proto__ is refused, not a crash', protoIss.status === 401, protoIss);
+
   console.log('\nITEMS');
   const silk = { name: 'Kanchi silk, maroon', designGroup: 'KANCHI-01', kind: 'FABRIC', unit: 'METER', color: 'Maroon', colorHex: '#800000', widthCm: 112, sellingPrice: 450, purchasePrice: 280, gstPercent: 5, hsnCode: '5007', sellInShop: true };
   const a1 = await call('PUT', '/items/KS-MAR', silk);
