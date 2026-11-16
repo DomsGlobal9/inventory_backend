@@ -34,13 +34,13 @@ export default function ReelsPage({ slug, shop }) {
     <section className="look">
       <h1 className="look-title">Shop our reels</h1>
       <p className="look-sub">Tap a reel to see its pieces</p>
-      <div className="reels">
+      <div className="bio-reels">
         {state.reels.map(r => (
-          <Link key={r.code} className="reel" to={`/${slug}/look/${r.code}`}>
-            <span className="reel-shot">
+          <Link key={r.code} className="bio-reel" to={`/${slug}/look/${r.code}`}>
+            <span className="bio-reel-shot">
               {r.cover ? <img src={r.cover} alt="" loading="lazy" /> : null}
             </span>
-            <span className="reel-name">{r.title}</span>
+            <span className="bio-reel-name">{r.title}</span>
           </Link>
         ))}
       </div>

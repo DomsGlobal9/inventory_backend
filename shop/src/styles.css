@@ -4676,10 +4676,11 @@ a.shot { display: block; }
 .look-added { border: 1.5px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 8px; }
 .look-added p { margin: 0; font-size: 14px; }
 .look-added a:not(.go) { color: var(--accent); font-weight: 600; }
-.reels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
-@media (min-width: 620px) { .reels { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (min-width: 940px) { .reels { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-.reel { display: block; color: inherit; text-decoration: none; }
-.reel-shot { display: block; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; background: var(--soft); border: 1px solid var(--line); }
-.reel-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.reel-name { overflow-wrap: anywhere; display: block; font-size: 13.5px; font-weight: 600; margin-top: 7px; line-height: 1.3; }
+/* "bio-" names: .reel is already the sideways photo row under a product (Similar, Also bought, Recently viewed). */
+.bio-reels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
+@media (min-width: 620px) { .bio-reels { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 940px) { .bio-reels { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.bio-reel { display: block; color: inherit; text-decoration: none; }
+.bio-reel-shot { display: block; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; background: var(--soft); border: 1px solid var(--line); }
+.bio-reel-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bio-reel-name { overflow-wrap: anywhere; display: block; font-size: 13.5px; font-weight: 600; margin-top: 7px; line-height: 1.3; }
