@@ -1031,6 +1031,9 @@ a.announce:hover { text-decoration: underline; }
    * outweigh the price and the buttons again -- the fault the 72vh cap was originally added for.
    */
   .gallery { max-width: clamp(420px, calc((100vh - var(--bar) - 200px) * 3 / 4), 560px); }
+  /* No photograph yet: nothing inside gives the `auto` column a width, so it shrank to the words "Image coming soon"
+     (16 Nov, reported on sphl's Mangalagiri saree). The same size a photograph would get. */
+  .gallery[data-empty='true'] { width: clamp(420px, calc((100vh - var(--bar) - 200px) * 3 / 4), 560px); }
   .swipe > figure { max-height: none; }
 
   /* `contain`, so a photograph that is NOT 3:4 -- a shop's own landscape close-up, say -- is shown
@@ -4684,3 +4687,73 @@ a.shot { display: block; }
 .bio-reel-shot { display: block; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; background: var(--soft); border: 1px solid var(--line); }
 .bio-reel-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .bio-reel-name { overflow-wrap: anywhere; display: block; font-size: 13.5px; font-weight: 600; margin-top: 7px; line-height: 1.3; }
+
+/* ── Reel link page, "A. Product grid" (16 Nov 2026, PLAN-reel-look-mockups-2.html) ───────────────────────
+   "lk-" only, everything: this is one global sheet, and on 16 Nov a short name (.reel) restyled every product page. */
+.lk { padding: 12px 0 40px; }
+.lk-head { display: flex; gap: 12px; align-items: center; padding: 6px 0 14px; }
+.lk-thumb { width: 56px; flex: none; border-radius: 8px; overflow: hidden; }
+.lk-headtext { min-width: 0; display: grid; gap: 1px; }
+.lk-kicker { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.lk-title { margin: 0; font-size: 20px; line-height: 1.25; font-weight: 750; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.lk-sub { font-size: 13px; color: var(--muted); }
+.lk-sortbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 14px; font-size: 13.5px; color: var(--muted); }
+.lk-wrap { display: block; }
+.lk-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 12px; }
+.lk-card { min-width: 0; display: flex; flex-direction: column; }
+.lk-photo { position: relative; border-radius: 10px; overflow: hidden; background: var(--soft); }
+.lk-photo > a { display: block; }
+.lk-num { position: absolute; top: 8px; left: 8px; min-width: 24px; height: 24px; padding: 0 7px; border-radius: 6px; background: var(--card); color: var(--ink); font-size: 12.5px; font-weight: 750; display: inline-flex; align-items: center; justify-content: center; }
+.lk-heart { position: absolute; top: 6px; right: 6px; }
+.lk-heart .heart { width: 36px; height: 36px; background: var(--card); }
+.lk-heart .heart svg { width: 19px; height: 19px; }
+.lk-band { position: absolute; left: 0; right: 0; bottom: 0; padding: 7px 8px; text-align: center; font-size: 12px; font-weight: 700; letter-spacing: .02em; background: var(--card); color: var(--muted); opacity: .94; }
+.lk-card.gone .lk-photo .shot { filter: grayscale(1); opacity: .6; }
+.lk-info { display: flex; flex-direction: column; gap: 2px; padding-top: 8px; flex: 1; }
+.lk-name { font-weight: 650; font-size: 14px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.lk-meta { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lk-price { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; font-size: 14px; margin-top: 2px; }
+.lk-price b { font-weight: 750; }
+.lk-price s { color: var(--faint); font-size: 12.5px; }
+.lk-off { color: var(--save); font-weight: 700; font-size: 12.5px; }
+.lk-few { font-size: 12.5px; font-weight: 650; color: var(--accent); }
+.lk-act { margin-top: auto; padding-top: 10px; }
+.lk-add { display: flex; align-items: center; justify-content: center; min-height: 40px; border-radius: 8px; border: 1px solid var(--ink); background: var(--card); color: var(--ink); font-weight: 700; font-size: 13px; letter-spacing: .02em; text-transform: uppercase; cursor: pointer; text-align: center; padding: 0 8px; }
+.lk-add.on { background: var(--ink); color: var(--bg); }
+.lk-add:disabled { border-color: var(--line); color: var(--faint); cursor: default; }
+.lk-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lk-bar { position: sticky; bottom: 0; z-index: 20; margin: 18px -14px 0; padding: 10px 14px calc(12px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); display: flex; gap: 12px; align-items: center; }
+.lk-bar .go { flex: none; width: auto; min-width: 150px; margin: 0; }
+.lk-bartext { flex: 1; display: grid; font-size: 12.5px; color: var(--muted); }
+.lk-bartext b { font-size: 17px; color: var(--ink); }
+.lk-said { min-height: 1px; margin: 8px 0 0; font-size: 13px; color: var(--muted); text-align: center; }
+.lk-more { margin-top: 18px; display: flex; justify-content: center; }
+.lk-more .go { max-width: 360px; }
+/* the choose sheet */
+.lk-sheetwrap { position: fixed; inset: 0; z-index: 80; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-end; justify-content: center; }
+.lk-sheet { width: 100%; max-width: 520px; background: var(--card); color: var(--ink); border-radius: 16px 16px 0 0; padding: 10px 16px calc(18px + env(safe-area-inset-bottom)); outline: none; max-height: 85vh; overflow-y: auto; }
+.lk-grab { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 12px; }
+.lk-sheethead { display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: center; margin-bottom: 6px; }
+.lk-sheetshot { border-radius: 6px; overflow: hidden; }
+.lk-x { width: 40px; height: 40px; border: 0; background: transparent; color: var(--muted); font-size: 26px; line-height: 1; cursor: pointer; }
+.lk-label { font-size: 13px; font-weight: 700; margin: 12px 0 8px; }
+.lk-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.lk-chip { min-height: 38px; padding: 0 14px; border-radius: 19px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.lk-chip i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(0, 0, 0, .15); }
+.lk-chip.on { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.lk-chip.x { color: var(--faint); text-decoration: line-through; }
+.lk-chip:disabled { cursor: default; }
+.lk-sheetgo { margin-top: 16px; width: 100%; }
+.lk-sheetgo:disabled { opacity: .5; }
+@media (min-width: 620px) { .lk-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .lk-sheetwrap { align-items: center; } .lk-sheet { border-radius: 16px; } }
+@media (min-width: 940px) {
+  .lk-title { font-size: 24px; }
+  .lk-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 18px; }
+}
+/* a laptop: the bag from this reel sits beside the pieces instead of under them */
+@media (min-width: 1100px) {
+  .lk-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; align-items: start; }
+  .lk-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lk-bar { position: sticky; top: calc(var(--bar) + 16px); bottom: auto; margin: 0; flex-direction: column; align-items: stretch; border: 1px solid var(--line); border-radius: var(--r); padding: 16px; }
+  .lk-bar .go { width: 100%; }
+}

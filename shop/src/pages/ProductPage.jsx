@@ -216,7 +216,7 @@ function Gallery({ photos, title, actions = null }) {
 
   if (!photos.length) {
     return (
-      <div className="gallery">
+      <div className="gallery" data-empty="true">
         <div className="frame">
           <div className="swipe">
             <figure style={{ display: 'grid', placeItems: 'center', color: 'var(--faint)', fontSize: 13 }}>
