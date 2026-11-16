@@ -10,8 +10,10 @@
  */
 import { randomBytes } from 'node:crypto';
 import { literal } from '../../utils/likeText';
-import { Prisma } from '@prisma/client';
+import { Prisma, StorefrontEventType } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
+import { afterCommit } from '../../lib/afterCommit';
+import { storefrontEventService } from '../storefront-event.service';
 import { inventoryMutationService } from '../inventory-mutation.service';
 import { factorOf, isMeasured, KIND_KEYS, storedPrice, pricePerUnit, formatQty, type SoldBy } from '../../lib/units';
 
@@ -254,6 +256,8 @@ export type ItemInput = {
   imageUrls?: unknown; sellInShop?: unknown;
   /** The boutique's group and sort of thing (CRM-B Category / CatalogItem.item_type), and its other details. */
   category?: unknown; itemType?: unknown; brand?: unknown; materialType?: unknown; reorderLevel?: unknown;
+  /** true archives the item, false brings it back on sale, left out keeps it as it is. */
+  archived?: unknown;
 };
 
 /**
@@ -315,38 +319,147 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
   const size = input.size ? String(input.size).trim().slice(0, 30) : 'Free';
   const images = Array.isArray(input.imageUrls) ? input.imageUrls.filter((u): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 10) : [];
 
+  const wantArchived = input.archived == null ? null : input.archived;
+  if (wantArchived !== null && typeof wantArchived !== 'boolean') throw problem(`${itemCode}: "archived" is true or false.`);
+
   {
-    let product = await tx.product.findUnique({ where: { clientId_importKey: { clientId: actor.clientId, importKey } } });
-    if (product && product.soldBy !== soldBy) {
-      const has = await tx.inventoryStock.aggregate({ where: { clientId: actor.clientId, variant: { productId: product.id } }, _sum: { quantity: true } });
-      if ((has._sum.quantity ?? 0) !== 0) throw problem(`${itemCode}: this design already has stock in ${product.soldBy.toLowerCase()}s, so its unit cannot change to ${soldBy.toLowerCase()}.`, 409);
+    const existing = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, boutiqueRef: itemCode }, include: { product: true } });
+    // A colour's stock is counted in its design's unit; moving it to a design sold another way would misread it.
+    if (existing && existing.product.soldBy !== soldBy) {
+      const own = await tx.inventoryStock.aggregate({ where: { variantId: existing.id }, _sum: { quantity: true } });
+      if ((own._sum.quantity ?? 0) !== 0) throw problem(`${itemCode}: this item already has stock in ${existing.product.soldBy.toLowerCase()}s, so its unit cannot change to ${soldBy.toLowerCase()}.`, 409);
     }
     const productData = {
       title: name.slice(0, 200), soldBy, kind, widthCm: width, sellInShop, priceOwner: 'BOUTIQUE',
       basePrice: price, hsnCode: hsn, taxRateBps: gst, productType: productType as any,
       boutiqueCategory: category, itemType, ...(brand ? { brand } : {}), ...(material ? { fabric: material } : {})
     };
-    if (!product) {
-      const n = await tx.product.count({ where: { clientId: actor.clientId } });
-      const code = `BTQ-${String(n + 1).padStart(5, '0')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-      product = await tx.product.create({ data: { clientId: actor.clientId, importKey, productCode: code, slug: code.toLowerCase(), category: 'WOMEN' as any, status: 'ACTIVE' as any, publishedAt: new Date(), ...productData } as any });
+    const touched: Touched = new Map();
+    if (existing) touched.set(existing.productId, onSale(existing.product));
+    let product: any;
+    if (existing && isShelf(existing.product) && existing.product.status === 'ARCHIVED' && wantArchived !== false) {
+      // An archived colour lives on a shelf of its own (archiveColour); it is changed there and stays archived.
+      product = await tx.product.update({ where: { id: existing.productId }, data: productData as any });
     } else {
-      product = await tx.product.update({ where: { id: product.id }, data: productData as any });
+      product = await tx.product.findUnique({ where: { clientId_importKey: { clientId: actor.clientId, importKey } } });
+      if (product && !touched.has(product.id)) touched.set(product.id, onSale(product));
+      if (product && product.soldBy !== soldBy) {
+        const has = await tx.inventoryStock.aggregate({ where: { clientId: actor.clientId, variant: { productId: product.id } }, _sum: { quantity: true } });
+        if ((has._sum.quantity ?? 0) !== 0) throw problem(`${itemCode}: this design already has stock in ${product.soldBy.toLowerCase()}s, so its unit cannot change to ${soldBy.toLowerCase()}.`, 409);
+      }
+      if (!product) {
+        const code = await newProductCode(tx, actor.clientId);
+        product = await tx.product.create({ data: { clientId: actor.clientId, importKey, productCode: code, slug: code.toLowerCase(), category: 'WOMEN' as any, status: 'ACTIVE' as any, publishedAt: new Date(), ...productData } as any });
+      } else {
+        product = await tx.product.update({ where: { id: product.id }, data: productData as any });
+      }
+      // A live colour joining an archived design (a new colour, one brought back, or one moved in) brings the
+      // design back -- but only that colour: the design's archived colours go to shelves of their own first.
+      const comingIn = !existing || existing.productId !== product.id;
+      if (product.status === 'ARCHIVED' && wantArchived !== true && (comingIn || wantArchived === false)) {
+        product = await reviveDesign(tx, actor.clientId, product, existing?.id);
+      }
     }
-    const existing = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, boutiqueRef: itemCode } });
     const reorder = input.reorderLevel == null || input.reorderLevel === '' ? null : baseQty(input.reorderLevel, soldBy, 'reorder level');
     if (reorder !== null && reorder < 0) throw problem(`${itemCode}: the reorder level cannot be below 0.`);
     const variantData = { colorName: colour, hexCode: hex(input.colorHex), size, sellingPrice: price, ...(cost !== null ? { costPrice: cost } : {}), ...(reorder !== null ? { reorderLevel: reorder } : {}) };
     const variant = existing
       ? await tx.productVariant.update({ where: { id: existing.id }, data: { ...variantData, productId: product.id } })
       : await tx.productVariant.create({ data: { clientId: actor.clientId, productId: product.id, boutiqueRef: itemCode, sku: `${itemCode}`.slice(0, 60), variantCode: `BV-${itemCode}`.slice(0, 60), reorderLevel: isMeasured(soldBy) ? 1000 : (itemType === 'MACHINE' || itemType === 'ASSET' ? 0 : 5), ...variantData } as any });
+    if (existing && existing.productId !== product.id) {
+      await carryColour(tx, existing.id, product.id);
+      // A shelf left empty by a colour brought back goes to the bin; archiving it again takes it out.
+      if (isShelf(existing.product)) await tx.product.update({ where: { id: existing.productId }, data: { trashedAt: new Date(), previousStatus: existing.product.status } });
+    }
     if (images.length) {
       const have = new Set((await tx.productImage.findMany({ where: { productId: product.id, variantId: variant.id }, select: { url: true } })).map(i => i.url));
       let order = have.size;
       for (const url of images) if (!have.has(url)) await tx.productImage.create({ data: { productId: product.id, variantId: variant.id, url, imageType: 'GALLERY' as any, orderIndex: order++, isPrimary: order === 1 } });
     }
-    return { status: existing ? 200 : 201, answer: { success: true, data: { ...itemView(product, variant), ...(kindNote ? { note: kindNote } : {}) } } };
+    if (wantArchived === true) await archiveColour(tx, actor.clientId, variant, touched);
+    const now = await tx.productVariant.findUniqueOrThrow({ where: { id: variant.id }, include: { product: true } });
+    if (!touched.has(now.productId)) touched.set(now.productId, false);
+    tellShops(actor.clientId, touched);
+    return { status: existing ? 200 : 201, answer: { success: true, data: { ...itemView(now.product, now), ...(kindNote ? { note: kindNote } : {}) } } };
   }
+}
+
+/*
+ * Archiving one colour. A colour has no archived mark of its own -- every sales channel (the online shop, the
+ * till, Shopify, the feed, reel links) decides on the PRODUCT's status. So an archived colour of a design that
+ * still has live colours moves to a "shelf": a one-colour product of its own (import key boutique-archived:<code>),
+ * a copy of the design, ARCHIVED. Its stock, holds and history are on the colour, so they go with it. The last
+ * live colour of a design archives the design itself. Before 16 Nov a design with two colours could never be
+ * archived: the colour stayed on sale and the answer still said archived.
+ */
+const SHELF = 'boutique-archived:';
+type Touched = Map<string, boolean>; // product id -> was it on sale before this change
+const isShelf = (p: { importKey: string | null }) => !!p.importKey?.startsWith(SHELF);
+const onSale = (p: { status: string; sellInShop: boolean; trashedAt: Date | null }) => p.status === 'ACTIVE' && p.sellInShop && !p.trashedAt;
+
+async function newProductCode(tx: Db, clientId: string) {
+  const n = await tx.product.count({ where: { clientId } });
+  return `BTQ-${String(n + 1).padStart(5, '0')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+/** The archived one-colour copy of a design for this colour: made the first time, reused after. */
+async function shelfFor(tx: Db, clientId: string, design: any, ref: string) {
+  const key = `${SHELF}${ref}`.slice(0, 120);
+  const { id: _id, productCode: _c, slug: _s, importKey: _k, createdAt: _a, updatedAt: _u, status: _st, trashedAt: _t, previousStatus: _p, ...details } = design;
+  const found = await tx.product.findUnique({ where: { clientId_importKey: { clientId, importKey: key } } });
+  if (found) return tx.product.update({ where: { id: found.id }, data: { ...details, status: 'ARCHIVED' as any, trashedAt: null, previousStatus: null } });
+  const code = await newProductCode(tx, clientId);
+  return tx.product.create({ data: { ...details, clientId, importKey: key, productCode: code, slug: code.toLowerCase(), status: 'ARCHIVED' as any } });
+}
+
+/** A colour changed product: its photos go with it, and its Shopify link is dropped (the next push puts it right). */
+async function carryColour(tx: Db, variantId: string, productId: string) {
+  await tx.productImage.updateMany({ where: { variantId }, data: { productId } });
+  await tx.shopifyIdMap.deleteMany({ where: { variantId } });
+}
+
+async function archiveColour(tx: Db, clientId: string, seen: { id: string; productId: string }, touched: Touched): Promise<void> {
+  // The design is locked first, then read again: two of its last colours archived at the same moment would
+  // otherwise each see the other still live, both move to shelves, and leave an empty design on sale.
+  await tx.$queryRaw`SELECT id FROM inventory_products WHERE id = ${seen.productId} FOR UPDATE`;
+  const v = await tx.productVariant.findUniqueOrThrow({ where: { id: seen.id }, include: { product: true } });
+  if (v.productId !== seen.productId) return archiveColour(tx, clientId, v, touched); // it moved while we waited
+  if (v.product.status === 'ARCHIVED') return; // already archived: nothing to do, and the answer is the same
+  if (!touched.has(v.productId)) touched.set(v.productId, onSale(v.product));
+  const others = await tx.productVariant.count({ where: { productId: v.productId, id: { not: v.id } } });
+  if (others === 0) {
+    await tx.product.update({ where: { id: v.productId }, data: { status: 'ARCHIVED' as any } });
+    return;
+  }
+  const shelf = await shelfFor(tx, clientId, v.product, v.boutiqueRef ?? v.id);
+  touched.set(shelf.id, false);
+  await tx.productVariant.update({ where: { id: v.id }, data: { productId: shelf.id } });
+  await carryColour(tx, v.id, shelf.id);
+}
+
+/** An archived design comes back for one colour: every other colour on it is still archived, so each gets a shelf. */
+async function reviveDesign(tx: Db, clientId: string, design: any, keepId?: string) {
+  const rest = await tx.productVariant.findMany({ where: { productId: design.id, ...(keepId ? { id: { not: keepId } } : {}) }, select: { id: true, boutiqueRef: true } });
+  for (const o of rest) {
+    const shelf = await shelfFor(tx, clientId, design, o.boutiqueRef ?? o.id);
+    await tx.productVariant.update({ where: { id: o.id }, data: { productId: shelf.id } });
+    await carryColour(tx, o.id, shelf.id);
+  }
+  return tx.product.update({ where: { id: design.id }, data: { status: 'ACTIVE' as any } });
+}
+
+/** Once the change has committed, the shop's other channels hear about every design it touched that is or was on sale. */
+function tellShops(clientId: string, touched: Touched) {
+  afterCommit(() => {
+    void (async () => {
+      for (const [productId, was] of touched) {
+        const p = await prisma.product.findUnique({ where: { id: productId }, select: { status: true, sellInShop: true, trashedAt: true } });
+        const is = !!p && onSale(p as any);
+        if (!was && !is) continue; // materials, and archived on both sides: no channel ever had it
+        await storefrontEventService.productChanged(clientId, productId, is ? StorefrontEventType.PRODUCT_UPDATED : StorefrontEventType.PRODUCT_UNPUBLISHED);
+      }
+    })().catch(err => console.error('[boutique] could not tell the shop channels', err));
+  });
 }
 
 /** Archive an item: it stops being sold and offered, but stays for its history and any open order. */
@@ -354,8 +467,9 @@ export async function archiveItem(tx: Db, actor: Actor, itemCode: string) {
   if (!actor.can.includes('products:write')) throw problem('This person may not archive items.', 403);
   const v = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, boutiqueRef: itemCode }, include: { product: true } });
   if (!v) throw problem(`No item ${itemCode} in this shop.`, 404);
-  const others = await tx.productVariant.count({ where: { productId: v.productId, id: { not: v.id }, boutiqueRef: { not: null } } });
-  if (others === 0) await tx.product.update({ where: { id: v.productId }, data: { status: 'ARCHIVED' as any } });
+  const touched: Touched = new Map();
+  await archiveColour(tx, actor.clientId, v, touched);
+  tellShops(actor.clientId, touched);
   return { status: 200, answer: { success: true, data: { itemCode, archived: true } } };
 }
 
