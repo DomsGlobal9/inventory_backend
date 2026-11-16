@@ -15,7 +15,7 @@ import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 
-const BASE = 'http://localhost:4006/api/v1';
+const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 let passed = 0, failed = 0;
 const failures: string[] = [];
 const check = (name: string, ok: boolean, detail?: string) => {

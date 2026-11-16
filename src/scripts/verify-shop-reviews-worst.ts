@@ -13,6 +13,9 @@
  * LOCAL DATABASE AND STORAGE STAND-IN ONLY. Needs reviews-backend-4026.mjs (it trusts CRM_KEY's public half).
  */
 const LOCAL = 'localhost:55433';
+// The server's port: from VERIFY_API_URL when given (16 Nov 2026), else 4026 as before.
+const PORT = Number(new URL(process.env.VERIFY_API_URL || 'http://localhost:4026/api/v1').port);
+
 if (!String(process.env.DATABASE_URL || '').includes(LOCAL) || !String(process.env.DIRECT_URL || '').includes(LOCAL)) { console.error('Refusing: local database only.'); process.exit(2); }
 if (!String(process.env.SUPABASE_URL || '').includes('127.0.0.1:18200')) { console.error('Refusing: the storage stand-in only.'); process.exit(2); }
 import fs from 'node:fs';
@@ -42,14 +45,14 @@ const P1 = num(1), P2 = num(2), P3 = num(3), P4 = num(4);
 const privateKey = fs.readFileSync(process.env.CRM_KEY as string, 'utf8');
 
 const raw = (path: string, method: string, body: string | undefined, headers: Record<string, string>) => new Promise<{ status: number; body: any; text: string }>((resolve, reject) => {
-  const req = http.request({ host: '127.0.0.1', port: 4026, path, method, headers: { ...headers, ...(body ? { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) } : {}) } }, (res) => {
+  const req = http.request({ host: '127.0.0.1', port: PORT, path, method, headers: { ...headers, ...(body ? { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) } : {}) } }, (res) => {
     let t = ''; res.on('data', c => { t += c; });
     res.on('end', () => { let b = null; try { b = JSON.parse(t); } catch { /* not JSON */ } resolve({ status: res.statusCode ?? 0, body: b, text: t }); });
   });
   req.on('error', reject); if (body) req.write(body); req.end();
 });
-const call = (path: string, body?: unknown) => raw(`/_api/shop/${SLUG}${path}`, body === undefined ? 'GET' : 'POST', body === undefined ? undefined : JSON.stringify(body), { host: 'shop.localhost:4006' });
-const api = (path: string, method = 'POST', body?: unknown) => raw(`/api/v1${path}`, method, body === undefined ? undefined : JSON.stringify(body), { host: '127.0.0.1:4026' });
+const call = (path: string, body?: unknown) => raw(`/_api/shop/${SLUG}${path}`, body === undefined ? 'GET' : 'POST', body === undefined ? undefined : JSON.stringify(body), { host: `shop.localhost:${PORT}` });
+const api = (path: string, method = 'POST', body?: unknown) => raw(`/api/v1${path}`, method, body === undefined ? undefined : JSON.stringify(body), { host: `127.0.0.1:${PORT}` });
 const sent = (phone: string) => fs.readFileSync(CODES, 'utf8').trim().split('\n').filter(Boolean).filter(l => String(JSON.parse(l).to).endsWith(phone)).length;
 const codeFor = async (phone: string, after: number) => {
   for (let i = 0; i < 80; i++) {
@@ -130,7 +133,7 @@ async function main() {
       row = await prisma.shopReview.findFirstOrThrow({ where: { productId: A.id } });
       check(`tags ${JSON.stringify(tags).slice(0, 24)}: only real tags, once each`, r.status === 200 && row.tags.every(t => t === 'Good quality') && row.tags.length <= 1, row.tags);
     }
-    r = await raw(`/_api/shop/${SLUG}/products/${A.code}/reviews`, 'POST', JSON.stringify({ token: t1, rating: 5, body: 'y'.repeat(40_000) }), { host: 'shop.localhost:4006' });
+    r = await raw(`/_api/shop/${SLUG}/products/${A.code}/reviews`, 'POST', JSON.stringify({ token: t1, rating: 5, body: 'y'.repeat(40_000) }), { host: `shop.localhost:${PORT}` });
     check('a 40KB request: refused, no crash', r.status === 413 || r.status === 400, r.status);
 
     console.log('\nB. WHAT IS UPLOADED');
@@ -147,7 +150,7 @@ async function main() {
     const bomb = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(Buffer.alloc(1000))), chunk('IEND', Buffer.alloc(0))]);
     r = await up(A.code, t1, dataUrl(bomb, 'image/png'));
     check(`a picture bomb (400 megapixels in ${bomb.length} bytes): refused, the server stays up`, r.status === 400 && calm(r), r.body ?? r.status);
-    r = await raw(`/_api/shop/${SLUG}/products/${A.code}/reviews/photo`, 'POST', JSON.stringify({ token: t1, photo: `data:image/jpeg;base64,${'A'.repeat(13 * 1024 * 1024)}` }), { host: 'shop.localhost:4006' });
+    r = await raw(`/_api/shop/${SLUG}/products/${A.code}/reviews/photo`, 'POST', JSON.stringify({ token: t1, photo: `data:image/jpeg;base64,${'A'.repeat(13 * 1024 * 1024)}` }), { host: `shop.localhost:${PORT}` });
     check('13MB: refused with a sentence about the size', r.status === 413 && /too large/.test(r.body?.message), r.body ?? r.status);
     const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><script>alert(1)</script><rect width="100" height="100" fill="red"/></svg>');
     r = await up(A.code, t1, dataUrl(svg, 'image/svg+xml'));
@@ -259,7 +262,7 @@ async function main() {
     const outsider = await prisma.user.findFirst({ where: { clientId: { not: C }, status: 'ACTIVE' }, select: { id: true } });
     const hadSub = await prisma.moduleSubscription.findFirst({ where: { clientId: C, module: 'crm' } });
     const bearer = (claims: any = {}, signWith = privateKey) => ({ Authorization: `Bearer ${jwt.sign({ sub: 'scaleezy-crm-test', scope: claims.scope ?? ['modules:crm'], ...(claims.clientId ? { clientId: claims.clientId } : {}), ...(claims.userId ? { onBehalfOf: { userId: claims.userId } } : {}) }, signWith, { algorithm: 'RS256', audience: 'inventory', issuer: 'scaleezy-crm-test', keyid: 'test-1', expiresIn: '5m' })}` });
-    const crm = (path: string, method = 'GET', headers: Record<string, string> = bearer(), body?: unknown) => raw(`/api/v1/internal/modules/crm/shops/${C}${path}`, method, body === undefined ? undefined : JSON.stringify(body), { host: '127.0.0.1:4026', ...headers });
+    const crm = (path: string, method = 'GET', headers: Record<string, string> = bearer(), body?: unknown) => raw(`/api/v1/internal/modules/crm/shops/${C}${path}`, method, body === undefined ? undefined : JSON.stringify(body), { host: `127.0.0.1:${PORT}`, ...headers });
     const asOwner = bearer({ clientId: C, userId: owner.id });
     r = await crm('/reviews');
     if (!hadSub) check('CRM not switched on for the shop: refused', r.status === 404, r.status);
@@ -281,7 +284,7 @@ async function main() {
     r = await crm(`/reviews/${target.id}/hide`, 'POST', bearer({ clientId: C, userId: nobody.id }), { reason: 'SPAM' });
     check('a person without the permission: refused', r.status === 403, r.status);
     if (outsider) { r = await crm(`/reviews/${target.id}/hide`, 'POST', bearer({ clientId: C, userId: outsider.id }), { reason: 'SPAM' }); check('a person from another shop: refused', r.status === 403, r.status); }
-    r = await raw(`/api/v1/internal/modules/crm/shops/some-other-shop/reviews`, 'GET', undefined, { host: '127.0.0.1:4026', ...bearer() });
+    r = await raw(`/api/v1/internal/modules/crm/shops/some-other-shop/reviews`, 'GET', undefined, { host: `127.0.0.1:${PORT}`, ...bearer() });
     check('another shop that has not switched CRM on: refused', r.status === 404, r.status);
     for (const reason of ['', 'LOW_RATING', 'constructor', 'toString', '__proto__', null, 5]) {
       r = await crm(`/reviews/${target.id}/hide`, 'POST', asOwner, { reason });

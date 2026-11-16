@@ -23,7 +23,7 @@ if (!String(process.env.DATABASE_URL || '').includes(LOCAL)) {
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 
-const API = 'http://localhost:4016/api/v1';
+const API = process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1';
 const PHONE = '9848011122';   // Meena Iyer, in both CRM test shops
 let passed = 0, failed = 0;
 const failures: string[] = [];

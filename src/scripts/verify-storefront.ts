@@ -24,7 +24,7 @@ import { ensureTestTenant } from './support/testTenant';
 import { storefrontConnectionService } from '../services/storefront-connection.service';
 import { storefrontEventService } from '../services/storefront-event.service';
 import { StorefrontDispatcherService } from '../services/storefront-dispatcher.service';
-import { storefrontCatalogueService } from '../services/storefront-catalogue.service';
+import { storefrontCatalogueService, FEED_PRODUCT } from '../services/storefront-catalogue.service';
 import { generateCredential, credentialMatches, hashCredential, prefixOf } from '../utils/storefrontCredential';
 import { sign, verify, TIMESTAMP_TOLERANCE_SECONDS } from '../utils/storefrontSignature';
 import { checkUrlShape, checkUrlDestination } from '../utils/storefrontUrl';
@@ -269,8 +269,11 @@ async function main() {
       where: { id: { in: [connA.id, connB.id] } }, data: { status: 'ACTIVE' }
     });
 
+    // A piece the feed carries (FEED_PRODUCT): a metre fabric or a material sends no event to other websites, and an
+    // unordered findFirst picked the test shop's metre fabric on 16 Nov (0 deliveries, a test fault, not a bug).
     const variant = await prisma.productVariant.findFirst({
-      where: { clientId, product: { status: 'ACTIVE', trashedAt: null } },
+      where: { clientId, product: { ...FEED_PRODUCT } },
+      orderBy: { createdAt: 'asc' },
       select: { id: true, sku: true }
     });
     if (!variant) throw new Error('This test needs a published product with a variant');

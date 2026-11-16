@@ -26,8 +26,8 @@ import fs from 'node:fs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 
-const API = 'http://localhost:4016/api/v1/internal';
-const KEY = fs.readFileSync('C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/00d435a0-68b0-4933-9758-bcc19e3e6522/scratchpad/test-logistics-keys/private.pem');
+const API = `${process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1'}/internal`;
+const KEY = fs.readFileSync(`${process.env.TEST_SCRATCHPAD || 'C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/00d435a0-68b0-4933-9758-bcc19e3e6522/scratchpad'}/test-logistics-keys/private.pem`);
 const STAMP = Date.now();
 const C = `logi-a-${STAMP}`;   // registered for GST, Logistics switched on
 const D = `logi-b-${STAMP}`;   // charges no GST

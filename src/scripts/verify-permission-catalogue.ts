@@ -53,7 +53,12 @@ async function main() {
   console.log('\nA. SERVER CHECKS');
   // The boutique's own pass says what its staff may do (KNOWN_CAN in internal-boutique.routes): signed by the
   // boutique, never a ScaleEzy role, so never on the Roles screen.
-  const BOUTIQUE_PASS = new Set(['products:write', 'stock:write', 'stitching:issue']);
+  // Read from the route itself, not copied here: a copy went stale on 16 Nov (stock:transfer, suppliers:write,
+  // reports:view were added to KNOWN_CAN and this list was not), and the suite failed on words that were right.
+  const boutiqueRoutes = fs.readFileSync(path.resolve(__dirname, '..', 'routes', 'internal-boutique.routes.ts'), 'utf8');
+  const knownCan = boutiqueRoutes.match(/const KNOWN_CAN = \[([^\]]*)\]/);
+  if (!knownCan) throw new Error('KNOWN_CAN not found in internal-boutique.routes.ts: update this suite');
+  const BOUTIQUE_PASS = new Set([...knownCan[1].matchAll(/'([^']+)'/g)].map(m => m[1]));
   const missingBe = [...backendKeys].filter(([k, file]) => !catalogue.has(k) && !(BOUTIQUE_PASS.has(k) && /boutique/.test(file)));
   check(`all ${backendKeys.size} keys the server checks are on the Roles screen`, missingBe.length === 0, missingBe);
   console.log('\nB. SCREEN CHECKS');

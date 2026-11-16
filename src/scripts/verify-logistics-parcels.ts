@@ -38,8 +38,9 @@ const check = (name: string, ok: boolean, detail?: unknown) => {
 };
 const eq = (name: string, got: unknown, want: unknown) => check(name, JSON.stringify(got) === JSON.stringify(want), { got, want });
 
-const API = 'http://localhost:4016/api/v1';
-const SP = 'C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/00d435a0-68b0-4933-9758-bcc19e3e6522/scratchpad';
+const API = process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1';
+// The local test keys' folder: TEST_SCRATCHPAD when given (16 Nov 2026), else the old one.
+const SP = process.env.TEST_SCRATCHPAD || 'C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/00d435a0-68b0-4933-9758-bcc19e3e6522/scratchpad';
 const KEY = fs.readFileSync(`${SP}/test-logistics-keys/private.pem`);
 const tokens: Record<string, string> = JSON.parse(fs.readFileSync(process.env.ROLE_TOKENS!, 'utf8'));
 const ids = JSON.parse(fs.readFileSync(process.env.IDS!, 'utf8'));

@@ -15,7 +15,7 @@ import { prisma } from '../lib/prisma';
 import { generateCredential } from '../utils/storefrontCredential';
 import { POS_BASE_URL } from '../utils/posConnection';
 
-const BASE = 'http://localhost:4006/api/v1/pos/v1';
+const BASE = `${process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1'}/pos/v1`;
 const CLIENT = `pos-ep-${Date.now()}`;
 
 let passed = 0, failed = 0;

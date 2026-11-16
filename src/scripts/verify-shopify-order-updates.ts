@@ -296,7 +296,7 @@ class StandInShopify {
     const crypto = await import('node:crypto');
     const hookBody = Buffer.from(JSON.stringify({ id: 1, previous: OLD_SCOPES.split(','), current: ALL_SCOPES.split(','), updated_at: new Date().toISOString() }));
     const secret = process.env.SHOPIFY_API_SECRET ?? 'verify-local-secret';
-    const send = (sig: string, id: string) => fetch('http://localhost:4016/api/v1/shopify/webhooks', { method: 'POST', body: hookBody, headers: {
+    const send = (sig: string, id: string) => fetch(`${process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1'}/shopify/webhooks`, { method: 'POST', body: hookBody, headers: {
       'Content-Type': 'application/json', 'X-Shopify-Topic': 'app/scopes_update', 'X-Shopify-Shop-Domain': SHOP, 'X-Shopify-Webhook-Id': id, 'X-Shopify-Hmac-Sha256': sig
     } });
     eq('a forged app/scopes_update is refused', (await send('not-it', `forged-${STAMP}`)).status, 401);

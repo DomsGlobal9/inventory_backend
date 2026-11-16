@@ -20,7 +20,7 @@ if (!String(process.env.DATABASE_URL).includes(LOCAL) || !String(process.env.DIR
 }
 const C = 'verify-suites-tenant';
 const SHOP = 'reconnect-uitest.myshopify.com';
-const API = 'http://localhost:4016/api/v1';
+const API = process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1';
 let passed = 0, failed = 0;
 const check = (n: string, ok: boolean, d?: unknown) => { ok ? passed++ : failed++; console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${n}${ok || d === undefined ? '' : ' -- ' + JSON.stringify(d).slice(0, 300)}`); };
 

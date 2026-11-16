@@ -82,7 +82,7 @@ async function main() {
   r = await call('PUT', crm(`/customers/${meena.id}/offers`), tokenFor(), { agreed: true });
   check('a change with nobody named: refused', r.status === 403 && /Say who this is for/.test(r.data?.message), brief(r));
   r = await call('PUT', crm(`/customers/${meena.id}/offers`), as(store), { agreed: true });
-  check('a storekeeper (no customer:update): refused, naming the permission', r.status === 403 && r.data?.message === 'That person may not do this in Inventory (needs customer:update).', brief(r));
+  check('a storekeeper (no customer:update): refused, naming the permission', r.status === 403 && r.data?.message === 'That person may not do this in Inventory (needs customer:update or crm:customer:update).', brief(r));
   r = await call('PUT', crm(`/customers/${meena.id}/offers`), as(sales), { agreed: 'yes' });
   check('"yes" as text: the app\'s own words', r.status === 400 && r.data?.message === 'Say whether the customer agreed.', brief(r));
   r = await call('PUT', crm(`/customers/${meena.id}/offers`), as(sales), { agreed: true });

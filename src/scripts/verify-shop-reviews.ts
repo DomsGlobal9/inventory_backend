@@ -12,6 +12,9 @@
  *   Needs reviews-backend-4026.mjs and the storage stand-in on 18200 running.
  */
 const LOCAL = 'localhost:55433';
+// The server's port: from VERIFY_API_URL when given (16 Nov 2026), else 4026 as before.
+const PORT = Number(new URL(process.env.VERIFY_API_URL || 'http://localhost:4026/api/v1').port);
+
 if (!String(process.env.DATABASE_URL || '').includes(LOCAL) || !String(process.env.DIRECT_URL || '').includes(LOCAL)) {
   console.error(`Refusing to run: DATABASE_URL and DIRECT_URL must both point at the local copy (${LOCAL}).`);
   process.exit(2);
@@ -43,8 +46,8 @@ const plus = (p: string) => `+91${p}`;
 /** Through the shop's own host, as a browser reaches it: fetch cannot set Host. */
 const call = (path: string, body?: unknown) => new Promise<{ status: number; body: any }>((resolve, reject) => {
   const payload = body === undefined ? undefined : JSON.stringify(body);
-  const req = http.request({ host: '127.0.0.1', port: 4026, path: `/_api/shop/${SLUG}${path}`, method: body === undefined ? 'GET' : 'POST',
-    headers: { host: 'shop.localhost:4006', ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}) } }, (res) => {
+  const req = http.request({ host: '127.0.0.1', port: PORT, path: `/_api/shop/${SLUG}${path}`, method: body === undefined ? 'GET' : 'POST',
+    headers: { host: `shop.localhost:${PORT}`, ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}) } }, (res) => {
     let raw = ''; res.on('data', c => { raw += c; });
     res.on('end', () => { let parsed = null; try { parsed = JSON.parse(raw); } catch { /* not JSON */ } resolve({ status: res.statusCode ?? 0, body: parsed }); });
   });

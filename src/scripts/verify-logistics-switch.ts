@@ -13,8 +13,9 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 
 const C = 'verify-suites-tenant';
-const API = 'http://localhost:4016/api/v1';
-const SP = 'C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/00d435a0-68b0-4933-9758-bcc19e3e6522/scratchpad';
+const API = process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1';
+// The local test keys' folder: TEST_SCRATCHPAD when given (16 Nov 2026), else the old one.
+const SP = process.env.TEST_SCRATCHPAD || 'C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/00d435a0-68b0-4933-9758-bcc19e3e6522/scratchpad';
 const tokens: Record<string, string> = JSON.parse(fs.readFileSync(process.env.ROLE_TOKENS || `${SP}/local-tokens.json`, 'utf8'));
 const KEY = fs.readFileSync(`${SP}/test-logistics-keys/private.pem`);
 let passed = 0, failed = 0;
@@ -64,10 +65,18 @@ const sub = () => prisma.moduleSubscription.findUnique({ where: { clientId_modul
     await prisma.logisticsParcel.updateMany({ where: { clientId: C }, data: { status: 'IN_TRANSIT' } });
     const out = parcels.length;
     r = await asShop('SUPER_ADMIN', 'PUT', '/logistics/on', { on: false });
-    check(`refused (409), saying how many (${out}) and what to wait for`, r.status === 409 && r.body?.message === `${out} parcel${out === 1 ? ' is' : 's are'} still with Logistics. Switch off once ${out === 1 ? 'it has' : 'they have'} been delivered or returned.`, r.body);
-    check('...and it stays on', !!(await sub()));
-    r = await asShop('SUPER_ADMIN', 'GET', '/logistics');
-    check('the owner sees how many are out', r.body?.data?.openParcels === out, r.body?.data);
+    if (out > 0) {
+      check(`refused (409), saying how many (${out}) and what to wait for`, r.status === 409 && r.body?.message === `${out} parcel${out === 1 ? ' is' : 's are'} still with Logistics. Switch off once ${out === 1 ? 'it has' : 'they have'} been delivered or returned.`, r.body);
+      check('...and it stays on', !!(await sub()));
+      r = await asShop('SUPER_ADMIN', 'GET', '/logistics');
+      check('the owner sees how many are out', r.body?.data?.openParcels === out, r.body?.data);
+    } else {
+      // The test shop holds no parcels now (verify-logistics-parcels removes its own, 16 Nov): with none out, off is
+      // what SHOULD happen. Switched back on for the rest of the run.
+      check('no parcels out: switching off is allowed (200, off)', r.status === 200 && r.body?.data?.on === false && !(await sub()), r.body);
+      r = await asShop('SUPER_ADMIN', 'PUT', '/logistics/on', { on: true });
+      check('...and back on for the rest', r.status === 200 && !!(await sub()), r.body);
+    }
 
     console.log('\nAll delivered or returned: off works');
     const ids = parcels.map(p => p.id);
