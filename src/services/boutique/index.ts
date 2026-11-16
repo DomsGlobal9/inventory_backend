@@ -18,7 +18,7 @@ import { inventoryMutationService } from '../inventory-mutation.service';
 import { factorOf, isMeasured, KIND_KEYS, storedPrice, pricePerUnit, formatQty, type SoldBy } from '../../lib/units';
 
 export type Actor = { clientId: string; name: string; can: string[] };
-const problem = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode, message });
+export const problem = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode, message });
 
 /* ── units: the boutique's codes to ours ─────────────────────────────────────────────────────────── */
 
@@ -258,6 +258,11 @@ export type ItemInput = {
   category?: unknown; itemType?: unknown; brand?: unknown; materialType?: unknown; reorderLevel?: unknown;
   /** true archives the item, false brings it back on sale, left out keeps it as it is. */
   archived?: unknown;
+  /** CRM-B's status words: ACTIVE is archived:false, INACTIVE is archived:true. */
+  status?: unknown;
+  subCategory?: unknown; description?: unknown; minStock?: unknown; rackLocation?: unknown;
+  /** true: only add, never change -- an item code already in use is refused (two people taking the same next code). */
+  ifNew?: unknown;
 };
 
 /**
@@ -319,11 +324,22 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
   const size = input.size ? String(input.size).trim().slice(0, 30) : 'Free';
   const images = Array.isArray(input.imageUrls) ? input.imageUrls.filter((u): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 10) : [];
 
-  const wantArchived = input.archived == null ? null : input.archived;
+  let wantArchived: unknown = input.archived == null ? null : input.archived;
   if (wantArchived !== null && typeof wantArchived !== 'boolean') throw problem(`${itemCode}: "archived" is true or false.`);
+  if (input.status != null && input.status !== '') {
+    const st = String(input.status).trim().toUpperCase();
+    if (st !== 'ACTIVE' && st !== 'INACTIVE') throw problem(`${itemCode}: the status is ACTIVE or INACTIVE.`);
+    const asked = st === 'INACTIVE';
+    if (wantArchived !== null && wantArchived !== asked) throw problem(`${itemCode}: "status" and "archived" disagree.`);
+    wantArchived = asked;
+  }
+  const subCategory = input.subCategory ? String(input.subCategory).trim().slice(0, 100) : null;
+  const description = input.description ? String(input.description).trim().slice(0, 5000) : null;
+  const rack = input.rackLocation ? String(input.rackLocation).trim().slice(0, 100) : null;
 
   {
     const existing = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, boutiqueRef: itemCode }, include: { product: true } });
+    if (existing && input.ifNew === true) throw problem(`${itemCode}: this item code is already in use. Ask for the next code again.`, 409);
     // A colour's stock is counted in its design's unit; moving it to a design sold another way would misread it.
     if (existing && existing.product.soldBy !== soldBy) {
       const own = await tx.inventoryStock.aggregate({ where: { variantId: existing.id }, _sum: { quantity: true } });
@@ -332,7 +348,8 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
     const productData = {
       title: name.slice(0, 200), soldBy, kind, widthCm: width, sellInShop, priceOwner: 'BOUTIQUE',
       basePrice: price, hsnCode: hsn, taxRateBps: gst, productType: productType as any,
-      boutiqueCategory: category, itemType, ...(brand ? { brand } : {}), ...(material ? { fabric: material } : {})
+      boutiqueCategory: category, itemType, ...(brand ? { brand } : {}), ...(material ? { fabric: material } : {}),
+      boutiqueDesign: design, ...(subCategory ? { boutiqueSubCategory: subCategory } : {}), ...(description ? { description } : {})
     };
     const touched: Touched = new Map();
     if (existing) touched.set(existing.productId, onSale(existing.product));
@@ -362,7 +379,10 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
     }
     const reorder = input.reorderLevel == null || input.reorderLevel === '' ? null : baseQty(input.reorderLevel, soldBy, 'reorder level');
     if (reorder !== null && reorder < 0) throw problem(`${itemCode}: the reorder level cannot be below 0.`);
-    const variantData = { colorName: colour, hexCode: hex(input.colorHex), size, sellingPrice: price, ...(cost !== null ? { costPrice: cost } : {}), ...(reorder !== null ? { reorderLevel: reorder } : {}) };
+    const minimum = input.minStock == null || input.minStock === '' ? null : baseQty(input.minStock, soldBy, 'minimum stock');
+    if (minimum !== null && minimum < 0) throw problem(`${itemCode}: the minimum stock cannot be below 0.`);
+    const variantData = { colorName: colour, hexCode: hex(input.colorHex), size, sellingPrice: price, ...(cost !== null ? { costPrice: cost } : {}), ...(reorder !== null ? { reorderLevel: reorder } : {}),
+      ...(minimum !== null ? { minStock: minimum } : {}), ...(rack ? { rackNote: rack } : {}) };
     const variant = existing
       ? await tx.productVariant.update({ where: { id: existing.id }, data: { ...variantData, productId: product.id } })
       : await tx.productVariant.create({ data: { clientId: actor.clientId, productId: product.id, boutiqueRef: itemCode, sku: `${itemCode}`.slice(0, 60), variantCode: `BV-${itemCode}`.slice(0, 60), reorderLevel: isMeasured(soldBy) ? 1000 : (itemType === 'MACHINE' || itemType === 'ASSET' ? 0 : 5), ...variantData } as any });
@@ -473,15 +493,57 @@ export async function archiveItem(tx: Db, actor: Actor, itemCode: string) {
   return { status: 200, answer: { success: true, data: { itemCode, archived: true } } };
 }
 
-function itemView(p: any, v: any, stock?: { quantity: number; reserved: number }) {
-  return {
+type StockRow = { locationId: string; quantity: number; reservedQty: number; location?: { name: string } | null };
+type ItemExtra = { stocks: StockRow[]; heldForOrders: number; images?: string[] };
+
+/**
+ * One item as the boutique sees it. With `extra`, its stock: the total, per place, what is held -- split into the
+ * boutique's own holds for stitching orders and what the shop holds for its online orders -- what is free, and the
+ * reorder flags (free at or below the reorder level; free below the minimum stock).
+ */
+export function itemView(p: any, v: any, extra?: ItemExtra) {
+  const f = factorOf(p.soldBy);
+  const base = {
     itemCode: v.boutiqueRef, productCode: p.productCode, name: p.title, kind: p.kind, unit: p.soldBy,
     colour: v.colorName, colourHex: v.hexCode, size: v.size, widthCm: p.widthCm,
     sellingPrice: pricePerUnit(Number(v.sellingPrice ?? p.basePrice ?? 0), p.soldBy),
     purchasePrice: v.costPrice != null ? pricePerUnit(Number(v.costPrice), p.soldBy) : null,
-    sellInShop: p.sellInShop, status: p.status, category: p.boutiqueCategory ?? null, itemType: p.itemType ?? null, productType: p.productType,
-    ...(stock ? { stock: stock.quantity / factorOf(p.soldBy), reserved: stock.reserved / factorOf(p.soldBy), free: (stock.quantity - stock.reserved) / factorOf(p.soldBy), stockText: formatQty(stock.quantity, p.soldBy) } : {})
+    gstPercent: p.taxRateBps != null ? p.taxRateBps / 100 : null, hsnCode: p.hsnCode ?? null,
+    sellInShop: p.sellInShop, status: p.status, category: p.boutiqueCategory ?? null, subCategory: p.boutiqueSubCategory ?? null,
+    itemType: p.itemType ?? null, productType: p.productType, designGroup: p.boutiqueDesign ?? (p.importKey?.startsWith('boutique:') ? p.importKey.slice(9) : null),
+    description: p.description ?? null, brand: p.brand ?? null, materialType: p.fabric ?? null,
+    reorderLevel: (v.reorderLevel ?? 0) / f, minStock: v.minStock != null ? v.minStock / f : null, rackLocation: v.rackNote ?? null
   };
+  if (!extra) return base;
+  const quantity = extra.stocks.reduce((n, s) => n + s.quantity, 0);
+  const reserved = extra.stocks.reduce((n, s) => n + s.reservedQty, 0);
+  const free = quantity - reserved;
+  return {
+    ...base,
+    ...(extra.images ? { imageUrls: extra.images } : {}),
+    stock: quantity / f, reserved: reserved / f, free: free / f, stockText: formatQty(quantity, p.soldBy),
+    heldForOrders: extra.heldForOrders / f, heldByShop: Math.max(0, reserved - extra.heldForOrders) / f,
+    outOfStock: free <= 0, reorderDue: free <= (v.reorderLevel ?? 0), belowMinimum: v.minStock != null && free < v.minStock,
+    byLocation: extra.stocks.filter(s => s.quantity !== 0 || s.reservedQty !== 0).map(s => ({
+      locationId: s.locationId, name: s.location?.name ?? null, stock: s.quantity / f, reserved: s.reservedQty / f, free: (s.quantity - s.reservedQty) / f
+    }))
+  };
+}
+
+/** Each of these colours' stock, photos and the boutique's own active holds, for itemView. */
+async function extrasFor(clientId: string, variantIds: string[]) {
+  if (!variantIds.length) return new Map<string, ItemExtra>();
+  const [stocks, holds, images] = await Promise.all([
+    prisma.inventoryStock.findMany({ where: { variantId: { in: variantIds } }, include: { location: { select: { name: true } } }, orderBy: { createdAt: 'asc' } }),
+    prisma.boutiqueReservation.groupBy({ by: ['variantId'], where: { clientId, variantId: { in: variantIds }, status: 'ACTIVE' }, _sum: { quantity: true } }),
+    prisma.productImage.findMany({ where: { variantId: { in: variantIds } }, orderBy: [{ orderIndex: 'asc' }], select: { variantId: true, url: true } })
+  ]);
+  const out = new Map<string, ItemExtra>();
+  for (const id of variantIds) out.set(id, { stocks: [], heldForOrders: 0, images: [] });
+  for (const s of stocks) out.get(s.variantId)!.stocks.push(s as any);
+  for (const h of holds) out.get(h.variantId)!.heldForOrders = h._sum.quantity ?? 0;
+  for (const i of images) out.get(i.variantId!)?.images!.push(i.url);
+  return out;
 }
 
 /** Items with their stock (all stores), searched by name or code, a page at a time. */
@@ -496,23 +558,68 @@ const wholeAtLeast1 = (v: unknown) => { const n = Number(v); return Number.isInt
  * on the time an item was added (a bulk import adds many in one moment) are broken by its id, so no item ever shows
  * on two pages or on none. A page past the end is an empty page, not an error.
  */
-export async function listItems(actor: Actor, q: { search?: unknown; page?: unknown; limit?: unknown; itemCode?: unknown }) {
-  const limit = Math.min(MAX_PER_PAGE, wholeAtLeast1(q.limit) ?? ITEMS_PER_PAGE);
-  const page = wholeAtLeast1(q.page) ?? 1;
+const listOf = (v: unknown) => (Array.isArray(v) ? v : String(v ?? '').split(',')).map(x => String(x).trim().toUpperCase()).filter(Boolean);
+const yes = (v: unknown) => v === true || v === 'true' || v === '1';
+
+/** The colour ids whose free stock (all places) is at or below their reorder level. */
+async function reorderDueIds(clientId: string) {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT v.id FROM inventory_product_variants v LEFT JOIN inventory_stocks s ON s.variant_id = v.id
+    WHERE v.client_id = ${clientId} AND v.boutique_ref IS NOT NULL
+    GROUP BY v.id, v.reorder_level HAVING COALESCE(SUM(s.quantity - s.reserved_qty), 0) <= v.reorder_level`;
+  return rows.map(r => r.id);
+}
+
+export type ItemQuery = {
+  search?: unknown; page?: unknown; limit?: unknown; itemCode?: unknown; itemCodes?: string[];
+  category?: unknown; itemType?: unknown; status?: unknown; reorderDue?: unknown; locationId?: unknown;
+};
+
+/** The where-clause every item list and count shares: the boutique's items, narrowed by the filters asked for. */
+export async function itemWhere(actor: Actor, q: ItemQuery): Promise<Prisma.ProductVariantWhereInput> {
   const search = String(q.search ?? '').trim().slice(0, 100);
   // Prisma's `contains` is a LIKE that does not escape: "%" or "_" typed would match everything.
   const like = literal(search);
-  const where: Prisma.ProductVariantWhereInput = {
-    clientId: actor.clientId, boutiqueRef: q.itemCode ? String(q.itemCode) : { not: null },
-    ...(search ? { OR: [{ boutiqueRef: { contains: like, mode: 'insensitive' } }, { product: { title: { contains: like, mode: 'insensitive' } } }] } : {})
+  const categories = listOf(q.category), types = listOf(q.itemType);
+  const status = String(q.status ?? '').toUpperCase();
+  if (status && !['ACTIVE', 'ARCHIVED'].includes(status)) throw problem('status is ACTIVE or ARCHIVED.');
+  const and: Prisma.ProductVariantWhereInput[] = [];
+  if (search) and.push({ OR: [
+    { boutiqueRef: { contains: like, mode: 'insensitive' } }, { colorName: { contains: like, mode: 'insensitive' } },
+    { product: { title: { contains: like, mode: 'insensitive' } } }
+  ] });
+  if (categories.length) and.push({ product: { boutiqueCategory: { in: categories } } });
+  if (types.length) and.push({ product: { itemType: { in: types } } });
+  if (status) and.push({ product: { status: status as any } });
+  if (yes(q.reorderDue)) and.push({ id: { in: await reorderDueIds(actor.clientId) } });
+  if (q.locationId) and.push({ stocks: { some: { locationId: String(q.locationId), quantity: { gt: 0 } } } });
+  return {
+    clientId: actor.clientId,
+    boutiqueRef: q.itemCodes ? { in: q.itemCodes } : q.itemCode ? String(q.itemCode) : { not: null },
+    ...(and.length ? { AND: and } : {})
   };
+}
+
+/**
+ * The boutique's items, a page at a time: 20 a page unless `limit` says otherwise (1 to 100), oldest first, with the
+ * total and the number of pages, so a screen can draw page buttons. Same items in the same order on every call: ties
+ * on the time an item was added (a bulk import adds many in one moment) are broken by its id, so no item ever shows
+ * on two pages or on none. A page past the end is an empty page, not an error.
+ * Filters (16 Nov, CRM-B's checklist): search also matches the colour; category and itemType (one or a comma list);
+ * status ACTIVE or ARCHIVED; reorderDue=1; locationId (only what has stock there).
+ */
+export async function listItems(actor: Actor, q: ItemQuery) {
+  const limit = Math.min(MAX_PER_PAGE, wholeAtLeast1(q.limit) ?? ITEMS_PER_PAGE);
+  const page = wholeAtLeast1(q.page) ?? 1;
+  const where = await itemWhere(actor, q);
   const [rows, total] = await Promise.all([
-    prisma.productVariant.findMany({ where, include: { product: true, stocks: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], skip: (page - 1) * limit, take: limit }),
+    prisma.productVariant.findMany({ where, include: { product: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], skip: (page - 1) * limit, take: limit }),
     prisma.productVariant.count({ where })
   ]);
+  const extras = await extrasFor(actor.clientId, rows.map(r => r.id));
   const totalPages = Math.ceil(total / limit);
   return {
-    items: rows.map(v => itemView(v.product, v, { quantity: v.stocks.reduce((n, s) => n + s.quantity, 0), reserved: v.stocks.reduce((n, s) => n + s.reservedQty, 0) })),
+    items: rows.map(v => itemView(v.product, v, extras.get(v.id))),
     page, limit, total, totalPages, hasMore: page < totalPages
   };
 }
@@ -536,15 +643,42 @@ const KINDS: Record<string, { reason: any; sign: 1 | -1; perm: string }> = {
   CONSUMPTION: { reason: 'MANUAL_ADJUSTMENT', sign: -1, perm: 'stitching:issue' },
   RETURN: { reason: 'MANUAL_ADJUSTMENT', sign: 1, perm: 'stitching:issue' },
   SUPPLIER_RETURN: { reason: 'RETURN_TO_VENDOR', sign: -1, perm: 'stock:write' },
+  // The quantity a new item starts with (CRM-B's "Opening stock").
+  OPENING_STOCK: { reason: 'INITIAL_STOCK', sign: 1, perm: 'stock:write' },
 };
+/** Going out for an order: with an orderRef these take that order's holds on the item first (CRM-B "from the hold first"). */
+const FROM_HOLD_FIRST = new Set(['ISSUE', 'CONSUME', 'CONSUMPTION', 'WASTE']);
+
+/** The order's active holds on this colour at this place give up to `want`, oldest first. Returns how much they gave. */
+async function takeFromHolds(tx: Db, clientId: string, variantId: string, locationId: string, orderRef: string, want: number) {
+  const holds = await tx.boutiqueReservation.findMany({ where: { clientId, variantId, locationId, orderRef, status: 'ACTIVE' }, orderBy: { createdAt: 'asc' } });
+  let taken = 0;
+  for (const h of holds) {
+    if (taken >= want) break;
+    const t = Math.min(h.quantity, want - taken);
+    taken += t;
+    await tx.boutiqueReservation.update({ where: { id: h.id }, data: t === h.quantity ? { status: 'ISSUED' } : { quantity: h.quantity - t } });
+  }
+  if (taken) await tx.inventoryStock.update({ where: { variantId_locationId: { variantId, locationId } }, data: { reservedQty: { decrement: taken } } });
+  return taken;
+}
+
+/** Stage, garment and remarks the boutique sends with a movement, kept on the movement row. */
+function metaOf(input: { stage?: unknown; garmentRef?: unknown; notes?: unknown }) {
+  const m: Record<string, string> = {};
+  if (input.stage) m.stage = String(input.stage).trim().slice(0, 60);
+  if (input.garmentRef) m.garmentRef = String(input.garmentRef).trim().slice(0, 80);
+  if (input.notes) m.remarks = String(input.notes).trim().slice(0, 500);
+  return Object.keys(m).length ? m : undefined;
+}
 export const MOVEMENT_KINDS = Object.keys(KINDS);
 
-async function variantOf(clientId: string, itemCode: unknown, tx: Prisma.TransactionClient = prisma) {
+export async function variantOf(clientId: string, itemCode: unknown, tx: Prisma.TransactionClient = prisma) {
   const v = await tx.productVariant.findFirst({ where: { clientId, boutiqueRef: String(itemCode ?? '') }, include: { product: true } });
   if (!v) throw problem(`No item ${String(itemCode ?? '')} in this shop. Add it first.`, 404);
   return v;
 }
-async function storeOf(clientId: string, locationId: unknown, tx: Prisma.TransactionClient = prisma) {
+export async function storeOf(clientId: string, locationId: unknown, tx: Prisma.TransactionClient = prisma) {
   if (locationId) {
     const l = await tx.stockLocation.findFirst({ where: { id: String(locationId), clientId } });
     if (!l) throw problem('That store is not in this shop.', 404);
@@ -557,7 +691,7 @@ async function storeOf(clientId: string, locationId: unknown, tx: Prisma.Transac
 
 
 /** One stock movement from the boutique, through the one doorway. Quantity in the item's unit (12.5 m). */
-export async function move(tx: Db, actor: Actor, input: { itemCode: unknown; kind: unknown; quantity: unknown; locationId?: unknown; orderRef?: unknown; unitCost?: unknown; notes?: unknown }) {
+export async function move(tx: Db, actor: Actor, input: { itemCode: unknown; kind: unknown; quantity: unknown; locationId?: unknown; orderRef?: unknown; unitCost?: unknown; notes?: unknown; stage?: unknown; garmentRef?: unknown }) {
   const kind = String(input.kind ?? '').toUpperCase();
   const k = KINDS[kind];
   if (!k) throw problem(`The movement "${input.kind}" is not known. Use ${MOVEMENT_KINDS.join(', ')}.`);
@@ -567,22 +701,27 @@ export async function move(tx: Db, actor: Actor, input: { itemCode: unknown; kin
     const qty = baseQty(input.quantity, v.product.soldBy as SoldBy);
     if (qty <= 0) throw problem('The quantity must be more than 0.');
     const locationId = await storeOf(actor.clientId, input.locationId, tx);
+    const orderRef = input.orderRef ? String(input.orderRef).slice(0, 80) : null;
+    let fromHold = 0;
     if (k.sign < 0) {
       await tx.$queryRaw`SELECT id FROM inventory_product_variants WHERE id = ${v.id} FOR UPDATE`;
-      const row = await tx.inventoryStock.findUnique({ where: { variantId_locationId: { variantId: v.id, locationId } } });
+      const before = await tx.inventoryStock.findUnique({ where: { variantId_locationId: { variantId: v.id, locationId } } });
+      // Only what the stock can give: a hold larger than the stock cannot pay out more than is there.
+      if (orderRef && FROM_HOLD_FIRST.has(kind)) fromHold = await takeFromHolds(tx, actor.clientId, v.id, locationId, orderRef, Math.min(qty, before?.quantity ?? 0));
+      const row = fromHold ? await tx.inventoryStock.findUnique({ where: { variantId_locationId: { variantId: v.id, locationId } } }) : before;
       const free = (row?.quantity ?? 0) - (row?.reservedQty ?? 0);
       if (qty > free) throw problem(`Only ${formatQty(Math.max(0, free), v.product.soldBy)} of ${v.product.title} is free here${row?.reservedQty ? ` (${formatQty(row.reservedQty, v.product.soldBy)} is held for orders)` : ''}.`, 409);
     }
-    const orderRef = input.orderRef ? String(input.orderRef).slice(0, 80) : null;
     const unitCost = input.unitCost == null || input.unitCost === '' ? undefined : storedPrice(input.unitCost, v.product.soldBy);
     if (unitCost === null) throw problem('The cost must be in whole rupees per metre for cloth.');
     const r = await inventoryMutationService.applyMovement({
       clientId: actor.clientId, variantId: v.id, locationId, movementType: (k.sign > 0 ? 'IN' : 'OUT') as any, reason: k.reason,
       quantityDelta: k.sign * qty, unitCost: unitCost ?? undefined, referenceType: 'BOUTIQUE', referenceId: orderRef ?? undefined,
       notes: `${kind.toLowerCase().replace('_', ' ')} by ${actor.name}${input.notes ? `: ${String(input.notes).slice(0, 200)}` : ''}`, tx,
-      boutique: { kind, orderRef, actorName: actor.name }
+      boutique: { kind, orderRef, actorName: actor.name, meta: metaOf(input) }
     });
-    return { status: 200, answer: { success: true, data: { itemCode: v.boutiqueRef, kind, quantity: qty / factorOf(v.product.soldBy), stockHere: (r?.quantity ?? 0) / factorOf(v.product.soldBy), stockText: formatQty(r?.quantity ?? 0, v.product.soldBy) } } };
+    const f = factorOf(v.product.soldBy);
+    return { status: 200, answer: { success: true, data: { itemCode: v.boutiqueRef, kind, quantity: qty / f, fromHold: fromHold / f, stockHere: (r?.quantity ?? 0) / f, stockText: formatQty(r?.quantity ?? 0, v.product.soldBy) } } };
   }
 }
 
@@ -599,13 +738,29 @@ export async function count(tx: Db, actor: Actor, input: { itemCode: unknown; co
     if (delta !== 0) {
       await inventoryMutationService.applyMovement({ clientId: actor.clientId, variantId: v.id, locationId, movementType: 'ADJUSTMENT' as any, reason: 'AUDIT_CORRECTION', quantityDelta: delta, referenceType: 'BOUTIQUE', notes: `count by ${actor.name}`, tx, boutique: { kind: 'COUNT', actorName: actor.name } });
     }
-    return { status: 200, answer: { success: true, data: { itemCode: v.boutiqueRef, counted: counted / factorOf(v.product.soldBy), difference: delta / factorOf(v.product.soldBy) } } };
+    // Fewer found than the boutique holds here: its holds are cut to what is there, newest first, and said so
+    // (CRM-B: "the hold is cut to stock and noted"). The shop's own holds for online orders are not touched.
+    let holdsCut = 0;
+    const mine = await tx.boutiqueReservation.findMany({ where: { clientId: actor.clientId, variantId: v.id, locationId, status: 'ACTIVE' }, orderBy: { createdAt: 'desc' } });
+    let over = mine.reduce((n, h) => n + h.quantity, 0) - counted;
+    for (const h of mine) {
+      if (over <= 0) break;
+      const cut = Math.min(h.quantity, over);
+      over -= cut; holdsCut += cut;
+      await tx.boutiqueReservation.update({ where: { id: h.id }, data: cut === h.quantity ? { status: 'RELEASED' } : { quantity: h.quantity - cut } });
+    }
+    if (holdsCut) await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: v.id, locationId } }, data: { reservedQty: { decrement: holdsCut } } });
+    const f = factorOf(v.product.soldBy);
+    return { status: 200, answer: { success: true, data: {
+      itemCode: v.boutiqueRef, counted: counted / f, difference: delta / f,
+      ...(holdsCut ? { holdsCut: holdsCut / f, note: `Fewer were found than were held, so the holds for orders were cut by ${formatQty(holdsCut, v.product.soldBy)}.` } : {})
+    } } };
   }
 }
 
 /** Move stock between two stores of the shop (to a tailor's place, say). */
 export async function transfer(tx: Db, actor: Actor, input: { itemCode: unknown; quantity: unknown; fromLocationId: unknown; toLocationId: unknown; orderRef?: unknown }) {
-  if (!actor.can.includes('stock:write') && !actor.can.includes('stitching:issue')) throw problem('This person may not move stock.', 403);
+  if (!['stock:write', 'stitching:issue', 'stock:transfer'].some(c => actor.can.includes(c))) throw problem('This person may not move stock.', 403);
   {
     const v = await variantOf(actor.clientId, input.itemCode, tx);
     const qty = baseQty(input.quantity, v.product.soldBy as SoldBy);
@@ -649,7 +804,7 @@ export async function addStore(tx: Db, actor: Actor, input: { name: unknown; kin
  * Hold cloth for a boutique order: it stays on the shelf but the online shop and the till cannot sell it. Refused
  * when not enough is free (in stock and not already held).
  */
-export async function reserve(tx: Db, actor: Actor, input: { itemCode: unknown; quantity: unknown; orderRef: unknown; locationId?: unknown }) {
+export async function reserve(tx: Db, actor: Actor, input: { itemCode: unknown; quantity: unknown; orderRef: unknown; locationId?: unknown; allowShort?: unknown }) {
   if (!actor.can.includes('stitching:issue')) throw problem('This person may not hold cloth for orders.', 403);
   const orderRef = String(input.orderRef ?? '').trim().slice(0, 80);
   if (!orderRef) throw problem('Say which order the cloth is held for.');
@@ -660,11 +815,15 @@ export async function reserve(tx: Db, actor: Actor, input: { itemCode: unknown; 
     if (qty <= 0) throw problem('The quantity must be more than 0.');
     const locationId = await storeOf(actor.clientId, input.locationId, tx);
     const row = await tx.inventoryStock.findUnique({ where: { variantId_locationId: { variantId: v.id, locationId } } });
-    const free = (row?.quantity ?? 0) - (row?.reservedQty ?? 0);
-    if (qty > free) throw problem(`Only ${formatQty(Math.max(0, free), v.product.soldBy)} of ${v.product.title} is free to hold here.`, 409);
-    await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: v.id, locationId } }, data: { reservedQty: { increment: qty } } });
-    const res = await tx.boutiqueReservation.create({ data: { clientId: actor.clientId, variantId: v.id, locationId, orderRef, quantity: qty, actorName: actor.name.slice(0, 80) } });
-    return { status: 201, answer: { success: true, data: { reservationId: res.id, itemCode: v.boutiqueRef, orderRef, held: qty / factorOf(v.product.soldBy) } } };
+    const free = Math.max(0, (row?.quantity ?? 0) - (row?.reservedQty ?? 0));
+    const f = factorOf(v.product.soldBy);
+    // allowShort (CRM-B's default at order confirmation): hold what is free and say what is short, instead of refusing.
+    const held = input.allowShort === true ? Math.min(qty, free) : qty;
+    if (held > free) throw problem(`Only ${formatQty(free, v.product.soldBy)} of ${v.product.title} is free to hold here.`, 409);
+    if (held === 0) return { status: 200, answer: { success: true, data: { reservationId: null, itemCode: v.boutiqueRef, orderRef, held: 0, short: qty / f } } };
+    await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: v.id, locationId } }, data: { reservedQty: { increment: held } } });
+    const res = await tx.boutiqueReservation.create({ data: { clientId: actor.clientId, variantId: v.id, locationId, orderRef, quantity: held, actorName: actor.name.slice(0, 80) } });
+    return { status: 201, answer: { success: true, data: { reservationId: res.id, itemCode: v.boutiqueRef, orderRef, held: held / f, short: (qty - held) / f } } };
   }
 }
 
@@ -724,7 +883,28 @@ export async function issueHeld(tx: Db, actor: Actor, input: { reservationId: un
 /** An item's movements, newest first, with the boutique's names for them. */
 export async function history(actor: Actor, itemCode: string, limit = 50) {
   const v = await variantOf(actor.clientId, itemCode);
-  const rows = await prisma.inventoryTransaction.findMany({ where: { clientId: actor.clientId, variantId: v.id }, orderBy: { createdAt: 'desc' }, take: Math.min(200, Math.max(1, limit)) });
-  const f = factorOf(v.product.soldBy);
-  return rows.map((t: any) => ({ at: t.createdAt, kind: t.boutiqueKind ?? t.reason, quantity: t.quantity / f, orderRef: t.boutiqueOrderRef ?? null, by: t.actorName ?? null, notes: t.notes ?? null }));
+  const rows = await prisma.inventoryTransaction.findMany({ where: { clientId: actor.clientId, variantId: v.id }, include: { location: { select: { name: true } } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: Math.min(200, Math.max(1, limit)) });
+  return rows.map(t => movementView(t, v.boutiqueRef, v.product.soldBy));
+}
+
+/** Where a movement came from, in the boutique's words: its own calls, or ScaleEzy (till, online shop, Shopify, the owner). */
+export function sourceOf(t: { referenceType: string | null; reason: string }) {
+  if (t.referenceType === 'BOUTIQUE') return 'BOUTIQUE';
+  if (t.referenceType === 'ORDER' || t.referenceType === 'DISPATCH' || t.reason === 'SALE') return 'SCALEEZY_SALE';
+  if (t.referenceType === 'SALES_RETURN' || t.reason === 'CUSTOMER_RETURN') return 'SCALEEZY_RETURN';
+  if (t.referenceType === 'PO' || t.reason === 'PURCHASE_RECEIPT' || t.reason === 'SUPPLIER_DELIVERY') return 'SCALEEZY_PURCHASE';
+  return 'SCALEEZY';
+}
+
+/** One movement row, quantities in the item's unit, with stock before and after at that place. */
+export function movementView(t: any, itemCode: string | null, soldBy: string) {
+  const f = factorOf(soldBy as SoldBy);
+  const meta = (t.metadata && typeof t.metadata === 'object') ? t.metadata as Record<string, unknown> : {};
+  return {
+    id: t.id, at: t.createdAt, itemCode, kind: t.boutiqueKind ?? t.reason, source: sourceOf(t),
+    quantity: t.quantity / f, stockBefore: t.balanceBefore / f, stockAfter: t.balanceAfter / f,
+    locationId: t.locationId, location: t.location?.name ?? null,
+    orderRef: t.boutiqueOrderRef ?? null, stage: meta.stage ?? null, garmentRef: meta.garmentRef ?? null,
+    by: t.actorName ?? (t.referenceType === 'BOUTIQUE' ? null : 'ScaleEzy'), remarks: meta.remarks ?? null, notes: t.notes ?? null
+  };
 }

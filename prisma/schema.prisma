@@ -632,6 +632,9 @@ model Product {
   /// The boutique's group for an item it created (FABRIC, BORDER, LINING, EMBELLISHMENT, STITCHING, PACKAGING, MAGGAM,
   /// FINISHED, OTHER) and what sort of thing it is (MATERIAL, CONSUMABLE, TOOL, MACHINE, ASSET). Empty for our own.
   boutiqueCategory String? @map("boutique_category")
+  /// The boutique's own sub-category and design group (CRM-B), kept as it sent them.
+  boutiqueSubCategory String? @map("boutique_sub_category")
+  boutiqueDesign      String? @map("boutique_design")
   itemType         String? @map("item_type")
   status           ProductStatus @default(DRAFT)
   publishedAt      DateTime?     @map("published_at")
@@ -674,6 +677,9 @@ model ProductVariant {
   sku         String
   /// The boutique's item code for a colour it created (unique per shop): a repeated item lands once.
   boutiqueRef String? @map("boutique_ref")
+  /// The boutique's minimum stock and its free-text rack note for this colour (CRM-B); unused by retail.
+  minStock Int?    @map("min_stock")
+  rackNote String? @map("rack_note")
 
   /// Overrides the product, for a style whose variants are not all the same thing -- a saree sold
   /// with a stitched blouse. Null means "use the product's".

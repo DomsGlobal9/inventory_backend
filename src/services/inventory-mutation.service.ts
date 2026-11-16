@@ -48,7 +48,7 @@ interface MovementInput {
    */
   spots?: { spotId: string; quantity: number }[];
   /** A boutique movement: what the boutique called it, its order and the person (PLAN-boutique-sync.md). */
-  boutique?: { kind: string; orderRef?: string | null; actorName?: string | null };
+  boutique?: { kind: string; orderRef?: string | null; actorName?: string | null; meta?: Record<string, unknown> };
 }
 
 export class InventoryMutationService {
@@ -281,7 +281,7 @@ export class InventoryMutationService {
           productTitle: variant.product?.title ?? null,
           variantCode: variant.variantCode,
           barcode: variant.barcode,
-          ...(boutique ? { boutiqueKind: boutique.kind, boutiqueOrderRef: boutique.orderRef ?? null, actorName: boutique.actorName?.slice(0, 80) ?? null } : {})
+          ...(boutique ? { boutiqueKind: boutique.kind, boutiqueOrderRef: boutique.orderRef ?? null, actorName: boutique.actorName?.slice(0, 80) ?? null, ...(boutique.meta ? { metadata: boutique.meta as any } : {}) } : {})
         },
         select: { id: true }
       });
