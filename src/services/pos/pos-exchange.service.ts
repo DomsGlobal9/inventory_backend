@@ -28,7 +28,7 @@ import { fromMinor, toMinor } from '../pricing';
 import { returnService } from '../return.service';
 import { writeRefund, creditShare, type RefundMethod } from '../counter-return/counter-return.service';
 import {
-  POS_SOURCE, writeSaleInTransaction, dateFromTill, type PosEventResult, type PosLine, type PosSaleEvent
+  POS_SOURCE, writeSaleInTransaction, dateFromTill, resolveItems, lengthsRefusal, type PosEventResult, type PosLine, type PosSaleEvent
 } from './pos-events.service';
 import { planReturnLines } from './pos-returns.service';
 
@@ -109,20 +109,21 @@ export async function applyExchange(
   const { order, taking } = planned;
 
   // What goes out has to be in this shop's catalogue before anything is written.
+  // The same lookup and the same refusals as a sale (16 Nov 2026): an exchange's new pieces ARE a sale, and before
+  // this a material or a length could go out through an exchange that a bill would have refused.
   const wanted = [...new Set(event.sold!.map(l => l.itemCode))];
-  const variants = await prisma.productVariant.findMany({
-    where: { clientId, OR: [{ variantCode: { in: wanted } }, { sku: { in: wanted } }] },
-    select: { id: true, variantCode: true, sku: true }
-  });
-  const byCode = new Map<string, string>();
-  for (const v of variants) {
-    byCode.set(v.variantCode, v.id);
-    if (!byCode.has(v.sku)) byCode.set(v.sku, v.id);
-  }
+  const found = await resolveItems(clientId, wanted);
+  const { byCode } = found;
   const missing = wanted.filter(c => !byCode.has(c));
   if (missing.length) {
     return { answer: 'UNKNOWN_ITEM', detail: `Not in this shop's catalogue: ${missing.join(', ')}.` };
   }
+  const notForSale = [...new Set(wanted.filter(c => found.materials.has(c)).map(c => found.materials.get(c)))];
+  if (notForSale.length) {
+    return { answer: 'UNKNOWN_ITEM', detail: `A material, not for sale: ${notForSale.join(', ')}. Switch "Sell in shop" on for it in ScaleEzy if you do sell it.` };
+  }
+  const lengthProblem = await lengthsRefusal(clientId, event.sold!, found, (event as any).units);
+  if (lengthProblem) return lengthProblem;
 
   const soldMinor = event.sold!.reduce((a, l) => a + l.lineTotalPaise, 0);
   const where = locationId || order.locationId;

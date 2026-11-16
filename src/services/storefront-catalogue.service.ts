@@ -425,7 +425,12 @@ export class StorefrontCatalogueService {
    * none of these; rows shift between pages as the catalogue changes and items are silently
    * skipped.
    */
-  async listProducts(scope: CatalogueScope, opts: { cursor?: string; limit?: number; since?: Date } = {}) {
+  /**
+   * `withLengths`: also the products sold by the metre or kilogram (ELIGIBLE_PRODUCT instead of FEED_PRODUCT). Only for
+   * a reader that said it understands units -- a POS till sending `X-Pos-Units: 1` (16 Nov 2026, PLAN-fabrics.md 4.5).
+   * Every other reader, and every till that did not say so, keeps the pieces-only feed it has always had.
+   */
+  async listProducts(scope: CatalogueScope, opts: { cursor?: string; limit?: number; since?: Date; withLengths?: boolean } = {}) {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
     // Together, not one after the other. Neither needs the other's answer, and waiting for the
     // locations before even asking for the currency spent a whole round trip -- about a second
@@ -440,7 +445,7 @@ export class StorefrontCatalogueService {
 
     const where: Prisma.ProductWhereInput = {
       clientId: scope.clientId,
-      ...FEED_PRODUCT,
+      ...(opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT),
       ...(opts.since ? { updatedAt: { gte: opts.since } } : {}),
       ...(decoded
         ? {

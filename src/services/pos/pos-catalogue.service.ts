@@ -25,6 +25,7 @@
 import { prisma } from '../../lib/prisma';
 import { storefrontCatalogueService, type CatalogueScope } from '../storefront-catalogue.service';
 import { toMinor } from '../pricing/money';
+import { isMeasured, unitOf, factorOf } from '../../lib/units';
 
 export interface PosVariantTax {
   hsn: string | null;
@@ -69,9 +70,11 @@ async function taxByVariantCode(
 /** One page of the catalogue, with tax and integer paise on every variant. */
 export async function listForPos(
   scope: CatalogueScope,
-  paging: { cursor?: string; limit?: number; since?: Date }
+  paging: { cursor?: string; limit?: number; since?: Date },
+  /** The till said it understands units (X-Pos-Units: 1): metre and kilogram products are in, with their unit. */
+  opts: { units?: boolean } = {}
 ) {
-  const page = await storefrontCatalogueService.listProducts(scope, paging);
+  const page = await storefrontCatalogueService.listProducts(scope, { ...paging, withLengths: !!opts.units });
 
   const codes = page.products.flatMap((p: any) => p.variants.map((v: any) => v.variantCode));
   const tax = await taxByVariantCode(scope.clientId, codes);
@@ -91,6 +94,16 @@ export async function listForPos(
          */
         pricePaise: toMinor(v.price),
         compareAtPricePaise: v.compareAtPrice == null ? null : toMinor(v.compareAtPrice),
+        /*
+         * Sold by length or weight (only for a till that sent X-Pos-Units: 1). pricePaise above is per BASE unit --
+         * per centimetre for METRE (Rs 450/m = 450 paise per cm) -- so qty (in cm) x pricePaise is the line, the same
+         * arithmetic as pieces. pricePerUnitPaise is the per-metre figure to SHOW ("Rs 450 / m").
+         */
+        ...(opts.units && isMeasured(p.soldBy) ? {
+          // returnable: the owner's "Cut cloth can be returned" on the product, so the till can say no before trying.
+          unit: { soldBy: p.soldBy, base: unitOf(p.soldBy).base, factor: factorOf(p.soldBy), minCut: p.minCut ?? null, returnable: !!p.cutReturnable },
+          pricePerUnitPaise: toMinor(v.price) * factorOf(p.soldBy)
+        } : {}),
         hsn: t.hsn,
         taxRateBps: t.taxRateBps,
         taxSlabbed: t.taxSlabbed,

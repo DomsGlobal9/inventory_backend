@@ -36,6 +36,17 @@ const router = Router();
 router.use(authenticateStorefront, onlyPos);
 
 /**
+ * Does this till understand units -- lengths and weights (16 Nov 2026, PLAN-fabrics.md 4.5)?
+ *
+ * A till says so on each call: the header `X-Pos-Units: 1`, or `units=1` in the query, or `units: 1` in an event's
+ * body. Said: its catalogue carries the products sold by the metre (quantities in cm, price per cm) and its bills
+ * may sell them. Not said: exactly what every till got before -- pieces only, and a bill naming a metre product is
+ * refused -- because a till that does not know the field would read 225 cm as 225 pieces.
+ */
+const understandsUnits = (req: Request) =>
+  String(req.get('x-pos-units') ?? req.query.units ?? '').trim() === '1' || req.body?.units === 1 || req.body?.units === true;
+
+/**
  * One page of the catalogue.
  *
  * `since` makes it incremental: a till that synced this morning asks for what changed, not for
@@ -80,9 +91,11 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
       }
     }
 
+    const units = understandsUnits(req);
     const page = await listForPos(
       { clientId: ctx.clientId, locationIds: ctx.locationIds },
-      { cursor: req.query.cursor ? String(req.query.cursor) : undefined, limit, since }
+      { cursor: req.query.cursor ? String(req.query.cursor) : undefined, limit, since },
+      { units }
     );
 
     /*
@@ -91,17 +104,23 @@ router.get('/catalogue', async (req: Request, res: Response, next: NextFunction)
      * into that column would turn the owner's choice into its opposite (contract, catalogue
      * addition). Measured by the till on the manual part of a bill only, never on an offer.
      */
-    const [{ manualDiscountMaxPercent: max }, gst, store, payAccount, payReady, vouchers] = await Promise.all([
+    const [{ manualDiscountMaxPercent: max }, gst, store, payAccount, payReady, vouchers, fabrics] = await Promise.all([
       getShopSettings(ctx.clientId),
       prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { gstRegistration: true, gstStateCode: true, gstNumber: true, logoUrl: true, businessName: true, businessAddress: true, businessPhone: true, receiptFooter: true, returnWindowDays: true, counterReturnMax: true } }),
       prisma.stockLocation.findFirst({ where: { clientId: ctx.clientId, id: { in: ctx.locationIds } }, select: { address: true, phone: true } }),
       prisma.shopPaymentAccount.findUnique({ where: { clientId: ctx.clientId }, select: { upiQrEnabled: true } }),
       paymentAccounts.readiness(ctx.clientId),
-      giftVouchers.getSettings(ctx.clientId)
+      giftVouchers.getSettings(ctx.clientId),
+      units ? prisma.clientSettings.findUnique({ where: { clientId: ctx.clientId }, select: { fabricsOn: true, fabricMinCut: true } }) : Promise.resolve(null)
     ]);
     if (gst?.logoUrl) printLogo(gst.logoUrl).catch(() => undefined);
     res.json({ success: true, data: {
       ...page,
+      /*
+       * Only for a till that sent X-Pos-Units: 1. The shop's smallest cut in cm (a product's own unit.minCut wins
+       * when set): a length is sold in steps of it (2.25 m with a 25 cm cut; 2.30 m is refused with a reason).
+       */
+      ...(units ? { lengths: { on: !!fabrics?.fabricsOn, minCutCm: fabrics?.fabricMinCut ?? 25 } } : {}),
       manualDiscount: max == null ? { unlimited: true } : { maxPercent: max },
       // REGULAR charges GST (a missing rate on an item is a gap to fill before it sells);
       // COMPOSITION and UNREGISTERED charge none, so a missing rate changes nothing there.
@@ -307,6 +326,8 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
 
     const event = req.body ?? {};
     const kind = String(event.kind ?? '');
+    // Stamped ON the event, because the worker applies it later from the stored copy and never sees this request.
+    if (understandsUnits(req)) event.units = 1;
 
     if (kind === 'sale.returned') {
       /*

@@ -35,6 +35,7 @@ import { settleSale } from '../loyalty';
 import { settleOnSale as settleHolds, customerForTill } from './pos-holds.service';
 import { registrationInForce } from '../pricing/tax';
 import { recordOffersConsent, POS_TILL_CONSENT } from '../campaigns/consent';
+import { quantityProblem } from '../../lib/units';
 
 export const POS_SOURCE = 'SCALEEZY_POS';
 
@@ -161,6 +162,11 @@ export interface PosSaleEvent {
   lines: PosLine[];
   totals: { roundOffPaise?: number };
   /**
+   * 1: the till understands units (it sent X-Pos-Units: 1; the route stamps it here). Then a line of a product sold
+   * by the metre carries qty in CENTIMETRES and unitPricePaise per cm. Without it, such a line is refused.
+   */
+  units?: number | boolean;
+  /**
    * What the customer actually handed over. Recorded here because Inventory's day book is the
    * whole business and the POS day close is one drawer -- two documents, not a double count.
    */
@@ -236,9 +242,11 @@ export async function resolveItems(clientId: string, codes: string[]) {
     select: {
       id: true, variantCode: true, sku: true, taxRateBps: true,
       // trashedAt and title: so a bill for a product deleted here can say so (see applySale).
-      product: { select: { taxRateBps: true, trashedAt: true, title: true, soldBy: true, sellInShop: true } }
+      product: { select: { taxRateBps: true, trashedAt: true, title: true, soldBy: true, sellInShop: true, minCut: true } }
     }
   });
+  // Per code, for a till that sells lengths: the product's unit and smallest cut, to check a length before it is written.
+  const lengthOf = new Map<string, { title: string; soldBy: string; minCut: number | null }>();
 
   const byCode = new Map<string, string>();
   // Sold by the metre or kilogram: the till cannot sell those yet (PLAN-fabrics.md 4.5), so a bill naming one is refused.
@@ -249,7 +257,11 @@ export async function resolveItems(clientId: string, codes: string[]) {
   for (const v of found) {
     byCode.set(v.variantCode, v.id);
     if (!byCode.has(v.sku)) byCode.set(v.sku, v.id);
-    if (v.product.soldBy === 'METRE' || v.product.soldBy === 'KILOGRAM') { measured.set(v.variantCode, v.product.title); measured.set(v.sku, v.product.title); }
+    if (v.product.soldBy === 'METRE' || v.product.soldBy === 'KILOGRAM') {
+      measured.set(v.variantCode, v.product.title); measured.set(v.sku, v.product.title);
+      const info = { title: v.product.title, soldBy: v.product.soldBy, minCut: v.product.minCut };
+      lengthOf.set(v.variantCode, info); if (!lengthOf.has(v.sku)) lengthOf.set(v.sku, info);
+    }
     if (v.product.sellInShop === false) { materials.set(v.variantCode, v.product.title); materials.set(v.sku, v.product.title); }
 
     // The variant's own rate wins over the product's -- a variant is the more specific answer.
@@ -260,7 +272,35 @@ export async function resolveItems(clientId: string, codes: string[]) {
     taxByCode.set(v.variantCode, standing);
     if (!taxByCode.has(v.sku)) taxByCode.set(v.sku, standing);
   }
-  return { byCode, taxByCode, measured, materials };
+  return { byCode, taxByCode, measured, materials, lengthOf };
+}
+
+/**
+ * The till may sell lengths only when it said it understands units. Then each length must be a step of the product's
+ * smallest cut (the same rule, from lib/units, as the online shop and applyMovement) -- checked HERE, before anything
+ * is written, so the cashier reads a reason instead of a bill failing halfway inside the transaction.
+ * Returns a refusal, or null when the lines may go ahead.
+ */
+export async function lengthsRefusal(
+  clientId: string,
+  lines: { itemCode: string; qty: number }[],
+  found: { measured: Map<string, string>; lengthOf: Map<string, { title: string; soldBy: string; minCut: number | null }> },
+  units: unknown
+): Promise<PosEventResult | null> {
+  const codes = lines.map(l => l.itemCode).filter(c => found.measured.has(c));
+  if (!codes.length) return null;
+  if (!(units === 1 || units === true)) {
+    const names = [...new Set(codes.map(c => found.measured.get(c)))];
+    return { answer: 'UNKNOWN_ITEM', detail: `Sold by the metre, which this till cannot sell yet: ${names.join(', ')}. Update the till to sell lengths, or sell it in the online shop.` };
+  }
+  const shop = await prisma.clientSettings.findUnique({ where: { clientId }, select: { fabricMinCut: true } });
+  for (const l of lines) {
+    const info = found.lengthOf.get(l.itemCode);
+    if (!info) continue;
+    const why = quantityProblem(l.qty, info, shop?.fabricMinCut ?? 25);
+    if (why) return { answer: 'BAD_PAYLOAD', detail: `${info.title}: ${why} (the till sends the length in centimetres).` };
+  }
+  return null;
 }
 
 /** The order this event is about, if Inventory has already seen it. */
@@ -591,7 +631,7 @@ export async function applySale(
    * its own pooled connection, so two queries cost one query's wait. A repeat invoice does throw
    * away the variant read, but a repeat is the rare path and it costs no extra wall-clock time.
    */
-  const [already, { byCode, taxByCode, measured, materials }] = await Promise.all([
+  const [already, { byCode, taxByCode, measured, materials, lengthOf }] = await Promise.all([
     findByExternal(clientId, event.invoiceNo),
     resolveItems(clientId, event.lines.map(l => l.itemCode))
   ]);
@@ -605,10 +645,8 @@ export async function applySale(
   if (notForSale.length) {
     return { answer: 'UNKNOWN_ITEM', detail: `A material, not for sale: ${notForSale.join(', ')}. Switch "Sell in shop" on for it in ScaleEzy if you do sell it.` };
   }
-  const lengths = [...new Set(event.lines.map(l => l.itemCode).filter(c => measured.has(c)).map(c => measured.get(c)))];
-  if (lengths.length) {
-    return { answer: 'UNKNOWN_ITEM', detail: `Sold by the metre, which the till cannot sell yet: ${lengths.join(', ')}. Sell it in ScaleEzy or the online shop.` };
-  }
+  const lengthProblem = await lengthsRefusal(clientId, event.lines, { measured, lengthOf }, event.units);
+  if (lengthProblem) return lengthProblem;
 
   /*
    * What the count said BEFORE this sale, so the warning can name what it became. Read outside
