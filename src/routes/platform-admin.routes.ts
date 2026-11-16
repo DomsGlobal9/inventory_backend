@@ -37,8 +37,11 @@ import {
   getOffersHealth,
   getTillHealth
 } from '../controllers/platform-admin.controller';
+import { readOnboardingForm } from '../controllers/platform-admin.controller';
+import { platformAdminService } from '../services/platform-admin.service';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 import * as boutique from '../services/boutique';
+import * as join from '../services/boutique/join';
 import { platformAuditLogger } from '../middleware/platform-audit.middleware';
 
 const authRouter = Router();
@@ -124,6 +127,29 @@ consoleRouter.patch('/support-tickets/:id', updateSupportTicketStatus);
 // hierarchy guard applies (unlike team.routes.ts's equivalent, client-scoped endpoints).
 consoleRouter.post('/users/:id/password/view', viewUserPassword);
 consoleRouter.post('/users/:id/password', setUserPassword);
+
+// Boutique clients asking to join ScaleEzy Inventory from the boutique app (16 Nov). Accepting runs this Console's own
+// onboarding with the boutique account, so the client is made exactly as the Onboarding screen makes one.
+const joinAction = (fn: (req: any, res: any) => Promise<unknown>, status = 200) => async (req: any, res: any) => {
+  try {
+    res.status(status).json({ success: true, data: await fn(req, res) });
+  } catch (e: any) {
+    if (e instanceof join.JoinError || e?.statusCode) return res.status(e.statusCode).json({ success: false, message: e.message });
+    console.error('[boutique join] failed:', e?.message);
+    res.status(500).json({ success: false, message: 'That could not be done just now. Nothing was changed; try again.' });
+  }
+};
+consoleRouter.get('/boutique-join-requests', joinAction(req => join.listForConsole(req.query.status)));
+consoleRouter.get('/boutique-join-requests/count', joinAction(async () => ({ waiting: await join.waitingCount() })));
+consoleRouter.post('/boutique-join-requests/:id/accept', joinAction(async (req, res) => {
+  const made = await join.accept(String(req.params.id), req.platformAdmin.id, req.body ?? {},
+    (f: any) => { const { companyName, adminName, adminEmail, ...more } = f; return platformAdminService.onboardClient(companyName, adminName, adminEmail, null, more); },
+    readOnboardingForm);
+  res.locals.auditTargetId = made.clientId;
+  res.locals.auditTargetLabel = `boutique join: ${made.clientId}`;
+  return made;
+}));
+consoleRouter.post('/boutique-join-requests/:id/decline', joinAction(req => join.decline(String(req.params.id), req.platformAdmin.id, req.body?.reason)));
 
 // Signup enquiries. Reading and triaging them is ordinary console work; converting one runs
 // the same onboarding as the Onboarding screen and is the only path that creates a tenant

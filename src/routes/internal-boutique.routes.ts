@@ -1,4 +1,5 @@
 import { platformAdminService } from '../services/platform-admin.service';
+import * as join from '../services/boutique/join';
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import * as boutique from '../services/boutique';
@@ -47,6 +48,28 @@ router.post('/link', async (req, res) => {
     const r = await boutique.link({ tenant: p.tenant, shopName: req.body?.shopName, linkCode: req.body?.linkCode });
     res.status(r.linked === 'new' ? 201 : 200).json({ success: true, data: r });
   } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
+});
+
+/*
+ * A boutique-only client asks to join ScaleEzy Inventory (16 Nov). Before the "linked shop" gate: a client can ask
+ * whether or not it was ever linked. The account comes from the pass, never the body; ScaleEzy accepts or declines in
+ * the Platform Console.
+ */
+const joinFail = (res: Response, e: any) => (e instanceof join.JoinError
+  ? fail(res, e.statusCode, e.message)
+  : respondWithError(res, e, { status: 500 }));
+router.post('/join-request', async (req, res) => {
+  try {
+    const p = pass(req);
+    const r = await join.ask(p.tenant, p.onBehalfOf?.name ?? null, req.body ?? {});
+    res.status(r.already ? 200 : 201).json({ success: true, data: r });
+  } catch (e) { joinFail(res, e); }
+});
+router.get('/join-request', async (req, res) => {
+  try { res.json({ success: true, data: await join.statusFor(pass(req).tenant) }); } catch (e) { joinFail(res, e); }
+});
+router.delete('/join-request', async (req, res) => {
+  try { res.json({ success: true, data: await join.cancel(pass(req).tenant) }); } catch (e) { joinFail(res, e); }
 });
 
 /** Everything else: the linked shop, and the person. */

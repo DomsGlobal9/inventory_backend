@@ -5522,3 +5522,35 @@ model ReelLinkItem {
   @@index([productId])
   @@map("reel_link_items")
 }
+
+// ── Boutique client asks to join ScaleEzy Inventory (16 Nov) ───────────────────────────────────
+// CRM-B's own console sends the request for a boutique-only client; our Platform Console shows it as a waiting card;
+// ScaleEzy accepts (the client is onboarded with an owner login and the boutique-only shop's items, stock and history
+// move in) or declines with a reason CRM-B can show. Status is a word, not an enum (shared-DB enum hazard).
+model BoutiqueJoinRequest {
+  id          String    @id @default(uuid())
+  /// The boutique account (tenant), always small letters.
+  tenant      String
+  shopName    String    @map("shop_name")
+  ownerName   String    @map("owner_name")
+  ownerEmail  String    @map("owner_email")
+  ownerPhone  String    @map("owner_phone")
+  city        String?
+  note        String?   @db.Text
+  /// Who in the boutique app sent it (the pass's person).
+  requestedBy String?   @map("requested_by")
+  /// WAITING, ACCEPTING (being onboarded), ACCEPTED, DECLINED, CANCELLED.
+  status      String    @default("WAITING")
+  /// Declined: why (shown to the boutique). A failed accept: what went wrong (shown in the Console).
+  reason      String?   @db.Text
+  /// Accepted: the client it became.
+  clientId    String?   @map("client_id")
+  decidedById String?   @map("decided_by_id")
+  decidedAt   DateTime? @map("decided_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([tenant, createdAt])
+  @@index([status, createdAt])
+  @@map("boutique_join_requests")
+}
