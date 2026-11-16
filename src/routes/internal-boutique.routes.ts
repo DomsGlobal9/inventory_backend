@@ -1,6 +1,7 @@
 import { platformAdminService } from '../services/platform-admin.service';
 import * as join from '../services/boutique/join';
 import { Router, Request, Response, NextFunction } from 'express';
+import rateLimit from 'express-rate-limit';
 import { prisma } from '../lib/prisma';
 import * as boutique from '../services/boutique';
 import * as extra from '../services/boutique/more';
@@ -44,6 +45,34 @@ router.use((req, res, next) => {
   if (!who?.userId || typeof who.name !== 'string' || !who.name.trim()) return fail(res, 401, 'Say who this is: onBehalfOf needs userId and name.');
   if (!Array.isArray(who.can) || who.can.some(c => typeof c !== 'string')) return fail(res, 401, 'onBehalfOf.can must list what this person may do.');
   next();
+});
+
+/**
+ * Each boutique its own share (16 Nov): every CRM-B boutique comes through one service, so one busy boutique (a
+ * first import, a stuck loop) must not use up the others' calls. Per tenant, per minute.
+ */
+export const BOUTIQUE_PER_MINUTE = Number(process.env.BOUTIQUE_TENANT_RATE_LIMIT_MAX) > 0 ? Number(process.env.BOUTIQUE_TENANT_RATE_LIMIT_MAX) : 1500;
+router.use(rateLimit({
+  windowMs: 60 * 1000,
+  max: BOUTIQUE_PER_MINUTE,
+  keyGenerator: (req) => `boutique-tenant:${String(pass(req).tenant).trim().toLowerCase()}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests from this boutique in one minute. Wait a few seconds and send it again with the same request id.' }
+}));
+
+/**
+ * Is ScaleEzy Inventory up, right now? For CRM-B to check before an order screen that needs us (and for a status
+ * page). Needs a valid pass but no linked shop. Answers 200 with the database reached, or 503.
+ */
+router.get('/status', async (_req, res) => {
+  const started = Date.now();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ success: true, data: { up: true, database: 'connected', answeredInMs: Date.now() - started, time: new Date().toISOString(), build: process.env.RENDER_GIT_COMMIT?.slice(0, 7) ?? null, perMinuteLimit: BOUTIQUE_PER_MINUTE } });
+  } catch {
+    res.status(503).json({ success: false, message: 'ScaleEzy Inventory cannot reach its database just now. Try again in a minute.' });
+  }
 });
 
 /** Link this boutique account to a shop (new boutique-only shop, or an existing one with the owner's code). */
@@ -96,7 +125,7 @@ const read = (fn: (req: Request) => Promise<unknown>) => async (req: Request, re
 const write = (fn: (tx: boutique.Db, actor: Actor, req: Request) => Promise<{ status: number; answer: unknown }>) => async (req: Request, res: Response) => {
   try {
     const a = actorOf(req);
-    const r = await boutique.once(a.clientId, requestIdOf(req), tx => fn(tx, a, req));
+    const r = await boutique.once(a.clientId, requestIdOf(req), tx => fn(tx, a, req), boutique.fingerprintOf(req.method, req.path, req.body));
     res.status(r.status).set('Idempotent-Replay', r.repeat ? 'true' : 'false').json(r.answer);
   } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
 };
@@ -126,7 +155,11 @@ router.put('/stores/:id', write((tx, a, req) => extra.updateStore(tx, a, String(
 router.delete('/stores/:id', write((tx, a, req) => extra.removeStore(tx, a, String(req.params.id))));
 
 // ── items ────────────────────────────────────────────────────────────────────────────────────────
-router.put('/items/:itemCode', write((tx, a, req) => withOpening(tx, a, { ...(req.body ?? {}), itemCode: req.params.itemCode })));
+// Photos from our own storage are checked first (this shop's, uploaded, at most 10 MB), outside the transaction.
+router.put('/items/:itemCode', async (req, res, next) => {
+  try { await extra.checkOwnPhotos(actorOf(req).clientId, req.body?.imageUrls); next(); }
+  catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
+}, write((tx, a, req) => withOpening(tx, a, { ...(req.body ?? {}), itemCode: req.params.itemCode })));
 router.delete('/items/:itemCode', write((tx, a, req) => boutique.archiveItem(tx, a, String(req.params.itemCode))));
 
 /**
@@ -142,12 +175,15 @@ router.post('/items/import', async (req, res) => {
     if (!items || !items.length || items.length > 200) return fail(res, 400, 'Send 1 to 200 items as "items".');
     const results: { row: number; itemCode: unknown; ok: boolean; message?: string }[] = [];
     for (let i = 0; i < items.length; i++) {
+      const row = items[i] && typeof items[i] === 'object' ? { ...items[i], itemCode: String(items[i].itemCode ?? '').trim() } : {};
       try {
-        const r = await boutique.once(a.clientId, `${base}:${i}`, tx => withOpening(tx, a, items[i] ?? {}));
-        results.push({ row: i + 1, itemCode: items[i]?.itemCode, ok: (r.answer as any)?.success === true });
+        await extra.checkOwnPhotos(a.clientId, row.imageUrls);
+        const r = await boutique.once(a.clientId, `${base}:${i}`, tx => withOpening(tx, a, row), boutique.fingerprintOf('POST', '/items/import#row', row));
+        results.push({ row: i + 1, itemCode: row.itemCode, ok: (r.answer as any)?.success === true });
       } catch (e: any) {
-        if (!e?.statusCode) throw e;
-        results.push({ row: i + 1, itemCode: items[i]?.itemCode, ok: false, message: e.message });
+        // A refusal says why; anything else is still only this row's failure -- the rest of the batch goes on.
+        if (!e?.statusCode) console.error('[boutique import] row failed', e);
+        results.push({ row: i + 1, itemCode: row.itemCode, ok: false, message: e?.statusCode ? e.message : 'This row could not be saved just now. Send it again.' });
       }
     }
     res.json({ success: true, data: { added: results.filter(r => r.ok).length, refused: results.filter(r => !r.ok).length, results } });
@@ -159,7 +195,9 @@ router.post('/items/import', async (req, res) => {
  * item never exists without the stock it was created with. For an item that already exists the opening stock is
  * not added again (a second import of the same list) and the answer says so.
  */
-async function withOpening(tx: boutique.Db, a: Actor, row: any) {
+async function withOpening(tx: boutique.Db, a: Actor, rowIn: any) {
+  // The code as it is kept: " ABC-1" and "ABC-1" are one item, for the supplier and the opening stock too.
+  const row = { ...(rowIn ?? {}), itemCode: String(rowIn?.itemCode ?? '').trim() };
   const r = await boutique.upsertItem(tx, a, row);
   // supplierId: the item's supplier (null clears it); left out keeps it.
   if (row?.supplierId !== undefined) await buying.setItemSupplier(tx, a, String(row.itemCode), row.supplierId);
@@ -167,7 +205,8 @@ async function withOpening(tx: boutique.Db, a: Actor, row: any) {
   if (opening == null) return r;
   if (!Array.isArray(opening) || opening.length > 20) throw Object.assign(new Error('openingStock is a list of up to 20 { quantity, locationId }.'), { statusCode: 400 });
   if (r.status !== 201) return { ...r, answer: { ...(r.answer as any), data: { ...(r.answer as any).data, openingStock: 'not added: the item already existed' } } };
-  for (const o of opening) await boutique.move(tx, a, { itemCode: row.itemCode, kind: 'OPENING_STOCK', quantity: o?.quantity, locationId: o?.locationId });
+  // A line of 0 (nothing there yet) is simply nothing to add, not a refusal of the item.
+  for (const o of opening) if (Number(o?.quantity) !== 0) await boutique.move(tx, a, { itemCode: row.itemCode, kind: 'OPENING_STOCK', quantity: o?.quantity, locationId: o?.locationId });
   // Read inside this transaction: the stock just added is not committed yet.
   const v = await tx.productVariant.findFirst({ where: { clientId: a.clientId, boutiqueRef: String(row.itemCode) }, include: { product: { select: { soldBy: true } } } });
   const sum = await tx.inventoryStock.aggregate({ where: { variantId: v!.id }, _sum: { quantity: true } });
@@ -188,7 +227,10 @@ router.post('/holds/:id/issue', write((tx, a, req) => boutique.issueHeld(tx, a, 
 router.get('/holds', read(async req => {
   const a = actorOf(req);
   const orderRef = req.query.orderRef ? String(req.query.orderRef) : undefined;
-  const rows = await prisma.boutiqueReservation.findMany({ where: { clientId: a.clientId, ...(orderRef ? { orderRef } : {}), status: req.query.all ? undefined : 'ACTIVE' }, orderBy: { createdAt: 'desc' }, take: 200 });
+  const all = req.query.all === '1' || req.query.all === 'true';
+  const limit = Math.min(500, Math.max(1, Number.parseInt(String(req.query.limit ?? '200'), 10) || 200));
+  const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
+  const rows = await prisma.boutiqueReservation.findMany({ where: { clientId: a.clientId, ...(orderRef ? { orderRef } : {}), ...(all ? {} : { status: 'ACTIVE' }) }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], skip: (page - 1) * limit, take: limit });
   const variants = await prisma.productVariant.findMany({ where: { id: { in: rows.map(r => r.variantId) } }, include: { product: { select: { soldBy: true, title: true } } } });
   const byId = new Map(variants.map(v => [v.id, v]));
   return rows.map(r => { const v = byId.get(r.variantId); const f = factorOf((v?.product.soldBy ?? 'PIECE') as any); return { reservationId: r.id, itemCode: v?.boutiqueRef, name: v?.product.title, orderRef: r.orderRef, quantity: r.quantity / f, status: r.status, by: r.actorName, at: r.createdAt }; });
@@ -196,7 +238,11 @@ router.get('/holds', read(async req => {
 
 // ── suppliers and purchase orders (CRM-B checklist section 4) ─────────────────────────────────────
 router.get('/suppliers', read(req => buying.listSuppliers(actorOf(req), req.query as any)));
-router.get('/suppliers/performance', read(req => buying.supplierPerformance(actorOf(req), req.query.supplierId ? String(req.query.supplierId) : undefined)));
+router.get('/suppliers/performance', read(req => {
+  const a = actorOf(req);
+  if (!a.can.includes('suppliers:write') && !a.can.includes('reports:view')) throw Object.assign(new Error('This person may not see supplier performance.'), { statusCode: 403 });
+  return buying.supplierPerformance(a, req.query.supplierId ? String(req.query.supplierId) : undefined);
+}));
 router.post('/suppliers', write((tx, a, req) => buying.addSupplier(tx, a, req.body ?? {})));
 router.put('/suppliers/:id', write((tx, a, req) => buying.changeSupplier(tx, a, String(req.params.id), req.body ?? {})));
 router.get('/purchase-orders', read(req => buying.listOrders(actorOf(req), req.query as any)));
@@ -209,7 +255,7 @@ const viaLedger = (fn: (a: Actor, req: Request, key: string) => Promise<unknown>
   try {
     const a = actorOf(req);
     const key = String(requestIdOf(req) ?? '');
-    const r = await boutique.once(a.clientId, key, async () => ({ status, answer: { success: true, data: await fn(a, req, key) } }));
+    const r = await boutique.onceOutside(a.clientId, key, boutique.fingerprintOf(req.method, req.path, req.body), async () => ({ status, answer: { success: true, data: await fn(a, req, key) } }));
     res.status(r.status).set('Idempotent-Replay', r.repeat ? 'true' : 'false').json(r.answer);
   } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
 };

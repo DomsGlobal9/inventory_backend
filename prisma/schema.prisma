@@ -5455,6 +5455,8 @@ model BoutiqueRequest {
   requestId String   @map("request_id")
   status    Int
   answer    Json
+  /// What the id was used for (method, path, body; hashed): the same id for a different change is refused.
+  fingerprint String?
   createdAt DateTime @default(now()) @map("created_at")
 
   @@id([clientId, requestId])

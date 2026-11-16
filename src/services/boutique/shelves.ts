@@ -74,7 +74,7 @@ async function inBoutiqueUnits<T>(clientId: string, value: T): Promise<T> {
 /* ── racks: set-up ──────────────────────────────────────────────────────────────────────────────── */
 
 export async function tree(actor: Actor, locationId: string) {
-  await storeOf(actor.clientId, locationId);
+  await storeOf(actor.clientId, locationId, undefined, true);
   return shelf(() => spotService.tree(actor.clientId, locationId));
 }
 export async function addSpot(actor: Actor, locationId: string, body: unknown) {
@@ -104,7 +104,7 @@ export async function removeSpot(actor: Actor, spotId: string) {
 }
 /** QR labels: each spot's fixed label code (never changes when renamed) and what its QR holds. */
 export async function labels(actor: Actor, locationId: string, spotIds?: string[]) {
-  await storeOf(actor.clientId, locationId);
+  await storeOf(actor.clientId, locationId, undefined, true);
   return shelf(() => spotService.labels(actor.clientId, locationId, spotIds));
 }
 
@@ -139,7 +139,7 @@ export async function find(actor: Actor, search: unknown, locationId?: string) {
   return inBoutiqueUnits(actor.clientId, r);
 }
 export async function notShelved(actor: Actor, locationId: string, page: unknown) {
-  await storeOf(actor.clientId, locationId);
+  await storeOf(actor.clientId, locationId, undefined, true);
   return inBoutiqueUnits(actor.clientId, await shelf(() => shelfStockService.notShelved(actor.clientId, locationId, Math.max(1, Number(page) || 1))));
 }
 export async function spotHistory(actor: Actor, spotId: string) {
@@ -190,11 +190,18 @@ export async function countShelf(actor: Actor, spotId: string, body: any) {
     if (q < 0) throw problem('A count cannot be below 0.');
     counts.push({ variantId: v.id, counted: q });
   }
+  // The boutique counts only its own items. On a shelf it shares with the shop's own pieces, "the whole shelf"
+  // would count those as 0 and raise false problems: they are kept at what is recorded.
+  if (body.complete === true) {
+    const named = new Set(counts.map(c => c.variantId));
+    const others = await prisma.spotStock.findMany({ where: { clientId: actor.clientId, spotId, variant: { boutiqueRef: null } }, select: { variantId: true, quantity: true } });
+    for (const o of others) if (!named.has(o.variantId)) counts.push({ variantId: o.variantId, counted: o.quantity });
+  }
   return inBoutiqueUnits(actor.clientId, await shelf(() => shelfCountService.count(actor.clientId, null, spotId, { counts, complete: body.complete === true })));
 }
 /** Shelves to count next: least recently counted first (never counted first of all), only shelves that hold stock. */
 export async function countQueue(actor: Actor, locationId: string) {
-  await storeOf(actor.clientId, locationId);
+  await storeOf(actor.clientId, locationId, undefined, true);
   const spots = await prisma.storageSpot.findMany({
     where: { clientId: actor.clientId, locationId, active: true, children: { none: {} } },
     select: { id: true, address: true, name: true, lastCountedAt: true, isShopFloor: true },

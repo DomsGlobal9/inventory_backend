@@ -401,6 +401,10 @@ class ProductImportService {
             errors.push({ rowNumber: row.rowNumber, message: `${sku}: its price comes from your boutique. Change it there, or leave SellingPrice empty.` });
             continue;
           }
+          if (existing.product?.priceOwner === 'BOUTIQUE' && this.num(row.costPrice) !== undefined && Number(existing.costPrice ?? NaN) !== this.num(row.costPrice)) {
+            errors.push({ rowNumber: row.rowNumber, message: `${sku}: its purchase price comes from your boutique. Change it there, or leave CostPrice empty.` });
+            continue;
+          }
           const changes =
             (this.num(row.sellingPrice) !== undefined && Number(existing.sellingPrice ?? NaN) !== this.num(row.sellingPrice)) ||
             (this.num(row.costPrice) !== undefined && Number(existing.costPrice ?? NaN) !== this.num(row.costPrice)) ||

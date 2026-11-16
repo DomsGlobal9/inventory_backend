@@ -24,6 +24,7 @@ import { AuthService } from '../services/auth.service';
 import { purchaseOrderService } from '../services/purchase-order.service';
 import { platformAdminService } from '../services/platform-admin.service';
 import { forgetShopSettings } from '../lib/clientSettings';
+import { ensureDemoClient } from './support/demoClient';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 const CLIENT = 'demo-client';
@@ -69,6 +70,8 @@ const stockAt = async (variantId: string, locationId: string) =>
 const key = (n: number) => `grn-verify-${STAMP}-${n}`;
 
 async function main() {
+  // demo-client is made on demand if it is missing (a fresh local copy has none), as support/demoClient.ts intends.
+  await ensureDemoClient();
   const main = await prisma.stockLocation.findFirstOrThrow({ where: { clientId: CLIENT, code: 'MAIN-STORE' } });
   const store = await prisma.stockLocation.create({ data: { clientId: CLIENT, name: `GRN Back Room ${STAMP}`, code: `GRN-${STAMP}`, type: 'WAREHOUSE', active: true } as any });
   made.locationId = store.id;

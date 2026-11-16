@@ -180,8 +180,9 @@ async function main() {
         AND COALESCE(s.qty, 0) > 0
         AND v.last_movement_at IS NOT NULL
         AND v.last_movement_at < NOW() - make_interval(days => ${days}::int)`;
+    // The list is the 50 most valuable dead items (LIMIT 50 in getDeadStock), so a shop with more shows 50.
     check(`dead stock at ${days} day(s) matches the database`,
-      api.length === expected[0].c, `api ${api.length} vs database ${expected[0].c}`);
+      api.length === Math.min(50, expected[0].c), `api ${api.length} vs database ${expected[0].c} (list capped at 50)`);
     check(`every item listed at ${days} day(s) really has sat still that long`,
       api.every((r: any) => r.daysSinceLastMovement === null || r.daysSinceLastMovement >= days),
       JSON.stringify(api.map((r: any) => r.daysSinceLastMovement)));

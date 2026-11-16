@@ -116,15 +116,16 @@ async function main() {
   const low = (await call('GET', '/reports/low-stock')).data ?? [];
   check('low stock: silk, 21 m short (30 - 9), from Ravi Silks', low.find((l: any) => l.itemCode === SILK)?.shortBy === 21 && low.find((l: any) => l.itemCode === SILK)?.supplier?.name === 'Ravi Silks', low);
   const con = (await call('GET', '/reports/consumption')).data;
-  check('consumption: silk 2 m used = 560', con?.items?.length === 1 && con.items[0].quantity === 2 && con.items[0].value === 560, con);
+  // Used 2 m, 0.5 m came back unused: 1.5 m really used (16 Nov review: returns are netted out).
+  check('consumption: silk 2 m used - 0.5 m returned = 1.5 m = 420', con?.items?.length === 1 && con.items[0].quantity === 1.5 && con.items[0].value === 420, con);
   check('consumption narrowed to EMBELLISHMENT: nothing', (await call('GET', '/reports/consumption?category=EMBELLISHMENT')).data?.items?.length === 0);
   const loss = (await call('GET', '/reports/loss-rates')).data;
   const ls = loss?.items?.find((i: any) => i.itemCode === SILK);
   check('loss rates: waste 0.5 / (2 + 0.5) = 20%; damage 1 / 12.5 received = 8%', ls?.wastePercent === 20 && ls.damagePercent === 8, ls);
   const cpo = (await call('GET', '/reports/cost-per-order')).data;
-  check('cost per order: ORD-9 used 560 + waste 140 = 700', cpo?.orders?.length === 1 && cpo.orders[0].orderRef === 'ORD-9' && cpo.orders[0].usedValue === 560 && cpo.orders[0].wasteValue === 140 && cpo.orders[0].total === 700, cpo);
+  check('cost per order: ORD-9 used 1.5 m = 420 + waste 140 = 560', cpo?.orders?.length === 1 && cpo.orders[0].orderRef === 'ORD-9' && cpo.orders[0].usedValue === 420 && cpo.orders[0].wasteValue === 140 && cpo.orders[0].total === 560, cpo);
   const ou = (await call('GET', '/reports/order-usage?orderRef=ORD-9')).data;
-  check('order usage ORD-9: held now 0.5, used 2, wasted 0.5, returned 0.5, cost 700', ou?.lines?.[0]?.heldNow === 0.5 && ou.lines[0].used === 2 && ou.lines[0].wasted === 0.5 && ou.lines[0].returned === 0.5 && ou.totalCost === 700, ou);
+  check('order usage ORD-9: held now 0.5, used 2, returned 0.5 (net 1.5), wasted 0.5, cost 560', ou?.lines?.[0]?.heldNow === 0.5 && ou.lines[0].used === 2 && ou.lines[0].returned === 0.5 && ou.lines[0].netUsed === 1.5 && ou.lines[0].wasted === 0.5 && ou.totalCost === 560, ou);
   const ms = (await call('GET', '/reports/movement-summary')).data;
   const kind = (k: string) => ms?.kinds?.find((x: any) => x.kind === k);
   check('movement summary: 1 CONSUME of 2 m, 1 WASTE of -0.5 m, 1 DAMAGE', kind('CONSUME')?.count === 1 && kind('CONSUME').byUnit.METRE === -2 && kind('WASTE')?.byUnit.METRE === -0.5 && kind('DAMAGE')?.count === 1, ms);

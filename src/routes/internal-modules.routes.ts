@@ -36,7 +36,11 @@ const ownModule = (req: Request, res: Response, next: () => void) =>
 
 router.use(rateLimit({
   windowMs: 60 * 1000,
-  max: Number(process.env.INTERNAL_RATE_LIMIT_MAX) > 0 ? Number(process.env.INTERNAL_RATE_LIMIT_MAX) : 6000,
+  // The boutique service carries every CRM-B boutique, so it gets more in all (each boutique also has its own
+  // limit, in internal-boutique.routes.ts); every other service keeps the old figure.
+  max: (req: Request) => service(req)?.scopes?.includes('modules:boutique')
+    ? (Number(process.env.BOUTIQUE_SERVICE_RATE_LIMIT_MAX) > 0 ? Number(process.env.BOUTIQUE_SERVICE_RATE_LIMIT_MAX) : 20000)
+    : (Number(process.env.INTERNAL_RATE_LIMIT_MAX) > 0 ? Number(process.env.INTERNAL_RATE_LIMIT_MAX) : 6000),
   keyGenerator: (req) => `service:${service(req)?.id ?? 'unknown'}`,
   standardHeaders: true,
   legacyHeaders: false,

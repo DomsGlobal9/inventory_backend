@@ -9,10 +9,11 @@ import axios, { AxiosInstance } from 'axios';
 import * as dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
+import { ensureDemoClient } from './support/demoClient';
 dotenv.config();
 
 const prisma = new PrismaClient();
-const BASE = 'http://localhost:4006/api/v1';
+const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_v1';
 
 let passed = 0, failed = 0;
@@ -28,6 +29,8 @@ function unwrap(r: any) { return r.data?.data !== undefined ? r.data.data : r.da
 
 async function run() {
   console.log('\n=== LOCATION FLOW VERIFICATION ===\n');
+  // demo-client is made on demand if it is missing (a fresh local copy has none), as support/demoClient.ts intends.
+  await ensureDemoClient();
   const user = await prisma.user.findFirst({
     where: { status: 'ACTIVE', clientId: 'demo-client', email: 'admin@example.com' }
   });

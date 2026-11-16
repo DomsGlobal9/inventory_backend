@@ -64,6 +64,8 @@ async function refuseTakenName(tx: Db, clientId: string, name: string, notId?: s
 export async function addSupplier(tx: Db, actor: Actor, input: any) {
   mustSupply(actor);
   const data = supplierFields(input, false);
+  // Supplier names have no unique index: two adds of "Ravi Silks" at the same moment are queued, so the second sees the first.
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-supplier|${actor.clientId}`}))::text`;
   await refuseTakenName(tx, actor.clientId, data.name as string);
   const supplierCode = await generateSequentialCode(actor.clientId, 'SUP', 'SUPPLIER', tx as any);
   const s = await tx.supplier.create({ data: { clientId: actor.clientId, supplierCode, ...(data as any) } });
@@ -76,7 +78,10 @@ export async function changeSupplier(tx: Db, actor: Actor, id: string, input: an
   if (!s) throw problem('That supplier is not in this shop.', 404);
   const data = supplierFields(input, true);
   if (!Object.keys(data).length) throw problem('Nothing to change.');
-  if (data.name) await refuseTakenName(tx, actor.clientId, data.name as string, id);
+  if (data.name) {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-supplier|${actor.clientId}`}))::text`;
+    await refuseTakenName(tx, actor.clientId, data.name as string, id);
+  }
   const u = await tx.supplier.update({ where: { id }, data: data as any });
   return { status: 200, answer: { success: true, data: supplierView(u) } };
 }
@@ -144,7 +149,8 @@ const PAYMENT = ['UNPAID', 'PARTIAL', 'PAID'];
 function money(v: unknown, what: string) {
   if (v == null || v === '') return null;
   const n = Number(v);
-  if (!Number.isFinite(n) || n < 0 || Math.round(n * 100) !== n * 100) throw problem(`${what} is rupees, to 2 decimals.`);
+  if (!Number.isFinite(n) || n < 0 || Math.abs(Math.round(n * 100) - n * 100) > 1e-6) throw problem(`${what} is rupees, to 2 decimals.`);
+  if (n > 100_000_000) throw problem(`${what} is too large.`);
   return n;
 }
 function paymentOf(v: unknown) {
@@ -197,8 +203,12 @@ export async function createOrder(actor: Actor, input: any) {
   const tax = money(input.tax, 'The tax'), payment = paymentOf(input.paymentStatus);
   const items: { variantId: string; orderedQty: number; unitPrice: number }[] = [];
   const batches: (string | null)[] = [];
+  const seenItems = new Set<string>();
   for (const [i, l] of (input.lines as any[]).entries()) {
     const v = await variantOf(actor.clientId, l?.itemCode).catch(e => { throw problem(`Line ${i + 1}: ${e.message}`, e.statusCode); });
+    // One line per item: receiving "by item code" must know which line it means.
+    if (seenItems.has(v.id)) throw problem(`Line ${i + 1}: ${v.boutiqueRef} is already on this order. Add the quantities together on one line.`);
+    seenItems.add(v.id);
     const soldBy = v.product.soldBy as SoldBy;
     const qty = baseQty(l?.quantity, soldBy);
     if (qty <= 0) throw problem(`Line ${i + 1}: the quantity must be more than 0.`);
@@ -211,6 +221,7 @@ export async function createOrder(actor: Actor, input: any) {
   }
   const supplier = await prisma.supplier.findFirst({ where: { id: String(input.supplierId ?? ''), clientId: actor.clientId } });
   if (!supplier) throw problem('That supplier is not in this shop.', 404);
+  if (!supplier.isActive) throw problem(`${supplier.name} is switched off. Switch the supplier back on to order from them.`, 409);
   const locationId = input.locationId ? await storeOf(actor.clientId, input.locationId) : null;
   const po = await purchaseOrderService.createPO(actor.clientId, {
     supplierId: supplier.id, locationId, expectedDeliveryDate: dayOf(input.expectedDate), notes: text(input.notes, 2000) ?? undefined, items
@@ -262,10 +273,17 @@ export async function receiveOrder(actor: Actor, id: string, input: any, request
     receipts.push({ poItemId: line.id, quantityReceived: q });
   }
   const locationId = input.locationId ? await storeOf(actor.clientId, input.locationId) : null;
+  const started = new Date(Date.now() - 1000);
   await purchaseOrderService.receiveGoods(actor.clientId, id, {
     receipts, locationId, receivedByName: actor.name, supplierReference: text(input.invoiceNumber, 60), notes: text(input.notes, 500), requestKey: `boutique:${requestKey}`
   }, { name: actor.name });
   if (input.invoiceNumber) await prisma.purchaseOrder.update({ where: { id }, data: { invoiceNumber: text(input.invoiceNumber, 60) } });
+  // These stock rows were the boutique's own receipt: marked so, the change feed does not hand them back to CRM-B
+  // as if ScaleEzy had made them, and the history says who received them.
+  await prisma.inventoryTransaction.updateMany({
+    where: { clientId: actor.clientId, referenceType: 'PO', referenceId: po.poNumber, boutiqueKind: null, createdBy: actor.name, createdAt: { gte: started } },
+    data: { boutiqueKind: 'GOODS_RECEIPT', actorName: actor.name.slice(0, 80) }
+  });
   return poView(id, actor.clientId);
 }
 
@@ -290,7 +308,9 @@ export const getOrder = (actor: Actor, id: string) => poView(id, actor.clientId)
 
 /** Committed buying (ordered, partly received, received) by order date: CRM-B's "inventory cost" for Profit & Costs. */
 export async function purchaseSpend(actor: Actor, q: { from?: unknown; to?: unknown }) {
-  const from = q.from ? dayOf(q.from) : undefined, to = q.to ? dayOf(q.to) : undefined;
+  // Days are India days, as in every other report.
+  const ist = (v: unknown) => { const d = dayOf(v); return d && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? new Date(`${v}T00:00:00+05:30`) : d; };
+  const from = q.from ? ist(q.from) : undefined, to = q.to ? ist(q.to) : undefined;
   const rows = await prisma.purchaseOrder.findMany({
     where: { clientId: actor.clientId, status: { in: ['SENT', 'PARTIALLY_RECEIVED', 'RECEIVED'] }, ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lt: new Date(to.getTime() + 86_400_000) } : {}) } } : {}) },
     select: { totalAmount: true, taxAmount: true, createdAt: true }
@@ -300,7 +320,7 @@ export async function purchaseSpend(actor: Actor, q: { from?: unknown; to?: unkn
   for (const r of rows) {
     const t = Number(r.totalAmount ?? 0) + Number(r.taxAmount ?? 0);
     total += t;
-    const d = r.createdAt.toISOString().slice(0, 10);
+    const d = new Date(r.createdAt.getTime() + 5.5 * 3_600_000).toISOString().slice(0, 10);
     byDay.set(d, (byDay.get(d) ?? 0) + t);
   }
   return { total: Math.round(total * 100) / 100, orders: rows.length, byDay: [...byDay.entries()].sort().map(([day, amount]) => ({ day, amount: Math.round(amount * 100) / 100 })) };

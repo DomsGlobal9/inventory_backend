@@ -8,7 +8,7 @@
  *
  * Every write carries a request id: a repeat gets the first answer and changes nothing (once()).
  */
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { literal } from '../../utils/likeText';
 import { Prisma, StorefrontEventType } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
@@ -39,10 +39,14 @@ export function soldByOf(boutiqueUnit: unknown): SoldBy {
  * not a whole number of base units (12.505 m is not whole centimetres; 1.5 buttons is not a whole piece).
  */
 export function baseQty(q: unknown, soldBy: SoldBy, what = 'quantity'): number {
-  const n = Number(String(q ?? '').trim().replace(',', '.'));
+  // Blank is not 0: a count sent without its number must not write the stock off (16 Nov review).
+  if (q == null || (typeof q === 'string' && q.trim() === '') || (typeof q !== 'number' && typeof q !== 'string')) throw problem(`Give the ${what}.`);
+  const n = Number(String(q).trim().replace(',', '.'));
   if (!Number.isFinite(n)) throw problem(`The ${what} is not a number.`);
   const f = factorOf(soldBy);
   const base = Math.round(n * f);
+  // CRM-B's own limit (under 1,000,000,000) and safely inside the database's whole numbers, whatever the unit.
+  if (Math.abs(base) > 1_000_000_000 || Math.abs(n) >= 1_000_000_000) throw problem(`The ${what} is too large.`);
   if (Math.abs(n * f - base) > 1e-6) {
     throw problem(f === 1 ? `The ${what} must be a whole number (${n} is not).` : `The ${what} must be in whole ${f === 100 ? 'centimetres' : 'grams'} (${n} is not).`);
   }
@@ -117,6 +121,42 @@ export async function boutiqueTaken(tenant: string) {
   return s.state === 'taken';
 }
 
+/**
+ * What the boutique really holds: these move whole or the switch-on is refused (nothing changed). Anything else that
+ * clashes is a derived row (a day's totals) and is dropped. Since 16 Nov a boutique-only shop can also have suppliers,
+ * purchase orders, receipts, places and shelves -- dropping those on a clash lost the boutique's buying history.
+ */
+const MUST_MOVE = [
+  'inventory_products', 'inventory_product_variants', 'inventory_stocks', 'inventory_transactions', 'boutique_reservations',
+  'inventory_locations', 'suppliers', 'supplier_products', 'purchase_orders', 'purchase_receipts', 'storage_spots', 'spot_stocks'
+];
+
+/**
+ * Numbers that count per shop (SUP-, PO-, GRN-) would clash with the shop's own, and the shop's counters would later
+ * hand out numbers the boutique's rows already have. So before moving, every such row of the boutique gets the next
+ * number from the SHOP's counter, and the boutique's counters are dropped; a clashing place code gets a suffix.
+ */
+async function renumberForMove(tx: Prisma.TransactionClient, fromClientId: string, intoClientId: string) {
+  const { generateSequentialCode } = await import('../../utils/codeGenerator');
+  for (const s of await tx.supplier.findMany({ where: { clientId: fromClientId }, orderBy: { createdAt: 'asc' }, select: { id: true } })) {
+    await tx.supplier.update({ where: { id: s.id }, data: { supplierCode: await generateSequentialCode(intoClientId, 'SUP', 'SUPPLIER', tx as any) } });
+  }
+  for (const o of await tx.purchaseOrder.findMany({ where: { clientId: fromClientId }, orderBy: { createdAt: 'asc' }, select: { id: true, poNumber: true } })) {
+    const poNumber = await generateSequentialCode(intoClientId, 'PO', 'PURCHASE_ORDER', tx as any);
+    await tx.purchaseOrder.update({ where: { id: o.id }, data: { poNumber } });
+    // Stock rows name their order by number: keep them pointing at it.
+    await tx.inventoryTransaction.updateMany({ where: { clientId: fromClientId, referenceType: 'PO', referenceId: o.poNumber }, data: { referenceId: poNumber } });
+  }
+  for (const r of await tx.purchaseReceipt.findMany({ where: { clientId: fromClientId }, orderBy: { createdAt: 'asc' }, select: { id: true } })) {
+    await tx.purchaseReceipt.update({ where: { id: r.id }, data: { receiptNumber: await generateSequentialCode(intoClientId, 'GRN', 'PURCHASE_RECEIPT', tx as any) } });
+  }
+  await tx.clientSequence.deleteMany({ where: { clientId: fromClientId } });
+  const theirs = new Set((await tx.stockLocation.findMany({ where: { clientId: intoClientId }, select: { code: true } })).map(l => l.code));
+  for (const l of await tx.stockLocation.findMany({ where: { clientId: fromClientId }, select: { id: true, code: true } })) {
+    if (theirs.has(l.code)) await tx.stockLocation.update({ where: { id: l.id }, data: { code: `${l.code}-B${randomBytes(2).toString('hex')}`.slice(0, 50) } });
+  }
+}
+
 /** Tables a boutique-only shop's rows are NOT moved through: settings, links and logins are handled one by one. */
 const NOT_MOVED = new Set(['client_settings', 'boutique_links', 'boutique_link_codes', 'users']);
 
@@ -130,6 +170,7 @@ async function absorb(tx: Prisma.TransactionClient, fromClientId: string, intoCl
     SELECT a.sku FROM inventory_product_variants a JOIN inventory_product_variants b ON b.sku = a.sku
     WHERE a.client_id = ${fromClientId} AND b.client_id = ${intoClientId} LIMIT 5`;
   if (clash.length) throw problem(`The shop already has items with the boutique's codes (${clash.map(c => c.sku).join(', ')}). Rename them in one place first.`, 409);
+  await renumberForMove(tx, fromClientId, intoClientId);
   const tables = await tx.$queryRaw<{ table_name: string }[]>`
     SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'client_id'`;
   let moved = 0;
@@ -142,7 +183,7 @@ async function absorb(tx: Prisma.TransactionClient, fromClientId: string, intoCl
     } catch {
       // A clash on a derived row (one per shop per day, say): keep the target's, drop the boutique-only shop's.
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT absorb_t');
-      if (['inventory_products', 'inventory_product_variants', 'inventory_stocks', 'inventory_transactions', 'boutique_reservations'].includes(t)) {
+      if (MUST_MOVE.includes(t)) {
         throw problem(`The boutique's ${t.replace(/_/g, ' ')} could not be moved into the shop. Nothing was changed.`, 409);
       }
       await tx.$executeRawUnsafe(`DELETE FROM "${t}" WHERE client_id = $1`, fromClientId);
@@ -233,18 +274,66 @@ export async function linkedShop(tenant: string) {
  * Two copies arriving at the same moment queue on a lock for that id, so the second always sees the first.
  */
 export type Db = Prisma.TransactionClient;
-export async function once<T>(clientId: string, requestId: unknown, run: (tx: Db) => Promise<{ status: number; answer: T }>) {
+const requestIdOk = (requestId: unknown) => {
   const id = String(requestId ?? '').trim();
   if (!/^[A-Za-z0-9._:-]{8,100}$/.test(id)) throw problem('Every change needs a request id (8 to 100 letters, numbers, dots, dashes or colons), new for each change.');
+  return id;
+};
+const PENDING = 102;
+const reused = () => problem('This request id was already used for a different change. Use a new request id for a new change; send the same id only to repeat the same change.', 409);
+/** A request id's fingerprint: the call and its body, keys in a fixed order, hashed. */
+export function fingerprintOf(method: string, path: string, body: unknown) {
+  const stable = (v: any): any => Array.isArray(v) ? v.map(stable) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, stable(v[k])])) : v;
+  return createHash('sha256').update(`${method.toUpperCase()} ${path} ${JSON.stringify(stable(body ?? null))}`).digest('hex').slice(0, 40);
+}
+
+export async function once<T>(clientId: string, requestId: unknown, run: (tx: Db) => Promise<{ status: number; answer: T }>, fingerprint?: string) {
+  const id = requestIdOk(requestId);
   return prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique|${clientId}|${id}`}))`;
     const seen = await tx.boutiqueRequest.findUnique({ where: { clientId_requestId: { clientId, requestId: id } } });
-    if (seen) return { status: seen.status, answer: seen.answer as T, repeat: true };
+    if (seen) {
+      if (seen.fingerprint && fingerprint && seen.fingerprint !== fingerprint) throw reused();
+      if (seen.status === PENDING) throw problem('This change is still being saved. Ask again in a moment with the same request id.', 409);
+      return { status: seen.status, answer: seen.answer as T, repeat: true };
+    }
     // A refusal throws and rolls everything back, unrecorded, so the corrected retry can still go through.
     const result = await run(tx);
-    await tx.boutiqueRequest.create({ data: { clientId, requestId: id, status: result.status, answer: result.answer as any } });
+    await tx.boutiqueRequest.create({ data: { clientId, requestId: id, status: result.status, answer: result.answer as any, fingerprint: fingerprint ?? null } });
     return { ...result, repeat: false };
-  }, { timeout: 30_000, maxWait: 15_000 });
+    // Long batches (100 hold lines, a row with many opening places) on a far database need more than 30 s.
+  }, { timeout: 120_000, maxWait: 20_000 });
+}
+
+/**
+ * For changes made by code that keeps its own transactions (purchase orders, shelves): the request id is claimed
+ * first (PENDING), the change runs, then its answer is stored. A retry while it runs is told to wait; a refusal or a
+ * crash frees the id; a claim left by a server that stopped mid-change is freed after 5 minutes.
+ */
+export async function onceOutside<T>(clientId: string, requestId: unknown, fingerprint: string, run: () => Promise<{ status: number; answer: T }>) {
+  const id = requestIdOk(requestId);
+  const key = { clientId_requestId: { clientId, requestId: id } };
+  const claimed = await prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique|${clientId}|${id}`}))`;
+    const seen = await tx.boutiqueRequest.findUnique({ where: key });
+    if (seen) {
+      if (seen.fingerprint && seen.fingerprint !== fingerprint) throw reused();
+      if (seen.status !== PENDING) return { status: seen.status, answer: seen.answer as T, repeat: true };
+      if (Date.now() - seen.createdAt.getTime() < 5 * 60_000) throw problem('This change is still being saved. Ask again in a moment with the same request id.', 409);
+      await tx.boutiqueRequest.delete({ where: key });
+    }
+    await tx.boutiqueRequest.create({ data: { clientId, requestId: id, status: PENDING, answer: { pending: true }, fingerprint } });
+    return null;
+  });
+  if (claimed) return claimed;
+  try {
+    const result = await run();
+    await prisma.boutiqueRequest.update({ where: key, data: { status: result.status, answer: result.answer as any } });
+    return { ...result, repeat: false };
+  } catch (e) {
+    await prisma.boutiqueRequest.delete({ where: key }).catch(() => undefined);
+    throw e;
+  }
 }
 
 /* ── items ───────────────────────────────────────────────────────────────────────────────────────── */
@@ -291,37 +380,61 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
   if (!actor.can.includes('products:write')) throw problem('This person may not add or change items.', 403);
   const itemCode = String(input.itemCode ?? '').trim();
   if (!/^[A-Za-z0-9._/-]{1,50}$/.test(itemCode)) throw problem('Every item needs its item code (letters, numbers, dots, dashes or slashes).');
-  const name = String(input.name ?? '').trim();
+  // Given = the field was sent (null or "" included, which clears it where clearing makes sense).
+  const given = (k: keyof ItemInput) => input[k] !== undefined;
+
+  // The same item code saved twice at the same moment: queued, so the second sees the first -- an update, or
+  // "already in use" with ifNew -- never a duplicate-key crash. The design is locked below, once it is known.
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-item|${actor.clientId}|${itemCode}`}))::text`;
+  const existing = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, boutiqueRef: itemCode }, include: { product: true } });
+  if (existing && input.ifNew === true) throw problem(`${itemCode}: this item code is already in use. Ask for the next code again.`, 409);
+  const P: any = existing?.product;
+
+  /*
+   * 16 Nov: a field left out of a save KEEPS its value for an item that exists (it used to fall back to the
+   * default: a save without sellingPrice set the price to 0, one without unit turned cloth into pieces). The
+   * defaults below apply to new items only.
+   */
+  const name = given('name') ? String(input.name ?? '').trim() : (P?.title ?? '');
   if (!name) throw problem(`${itemCode}: give the item a name.`);
   const askedCategory = input.category ? String(input.category).trim().toUpperCase() : null;
-  const category = askedCategory ? (askedCategory in BOUTIQUE_CATEGORIES ? askedCategory : 'OTHER') : null;
-  const itemType = input.itemType ? String(input.itemType).trim().toUpperCase() : 'MATERIAL';
+  const category = askedCategory ? (askedCategory in BOUTIQUE_CATEGORIES ? askedCategory : 'OTHER') : (P?.boutiqueCategory ?? null);
+  const itemType = input.itemType ? String(input.itemType).trim().toUpperCase() : (P?.itemType ?? 'MATERIAL');
   if (NOT_STOCK_ITEM_TYPES.includes(itemType)) throw problem(`${itemCode}: a ${itemType.toLowerCase().replace('_', ' ')} is not kept as stock, so it is not added here.`);
   if (!STOCK_ITEM_TYPES.includes(itemType)) throw problem(`${itemCode}: the sort of item "${input.itemType}" is not known. Use ${STOCK_ITEM_TYPES.join(', ')}.`);
-  const soldBy = soldByOf(input.unit ?? (category ? BOUTIQUE_CATEGORIES[category] : undefined));
+  const soldBy: SoldBy = input.unit != null && input.unit !== '' ? soldByOf(input.unit) : P ? P.soldBy : soldByOf(category ? BOUTIQUE_CATEGORIES[category] : undefined);
   // A finished garment is ready to wear; cloth, trims and everything used to make one is not a garment yet.
-  const productType = category === 'FINISHED' ? 'READY_TO_WEAR' : 'UNSTITCHED';
+  const productType = askedCategory ? (category === 'FINISHED' ? 'READY_TO_WEAR' : 'UNSTITCHED') : (P?.productType ?? (category === 'FINISHED' ? 'READY_TO_WEAR' : 'UNSTITCHED'));
   const brand = input.brand ? String(input.brand).trim().slice(0, 100) : null;
   const material = input.materialType ? String(input.materialType).trim().slice(0, 100) : null;
   // A kind we do not know yet (the boutique added one) is kept as OTHER rather than refusing the item.
-  const askedKind = input.kind ? String(input.kind).trim().toUpperCase().replace(/[\s/-]+/g, '_') : (category ? KIND_OF_CATEGORY[category] ?? null : null);
-  const kind = askedKind && !KIND_KEYS.includes(askedKind) ? 'OTHER' : askedKind;
+  const askedKind = input.kind ? String(input.kind).trim().toUpperCase().replace(/[\s/-]+/g, '_') : (P ? null : (category ? KIND_OF_CATEGORY[category] ?? null : null));
+  const kind = askedKind ? (KIND_KEYS.includes(askedKind) ? askedKind : 'OTHER') : (P ? P.kind : null);
   const kindNote = askedKind && kind !== askedKind ? `The kind "${input.kind}" is not known here yet, so it is kept as Other.` : undefined;
-  const price = input.sellingPrice == null || input.sellingPrice === '' ? 0 : storedPrice(input.sellingPrice, soldBy);
-  if (price === null) throw problem(`${itemCode}: a price per ${soldBy === 'METRE' ? 'metre' : 'unit'} must be in whole rupees for this unit (${input.sellingPrice} is not).`);
+  for (const [k, v] of [['selling price', input.sellingPrice], ['purchase price', input.purchasePrice]] as const) {
+    if (v != null && v !== '' && !(Number(v) >= 0 && Number(v) <= 10_000_000)) throw problem(`${itemCode}: the ${k} must be between 0 and 1,00,00,000 rupees.`);
+  }
+  const unitWord = soldBy === 'METRE' ? 'metre' : soldBy === 'KILOGRAM' ? 'kilogram' : 'unit';
+  // Prices are kept per base unit to the paisa: whole rupees a metre (per cm), multiples of 10 rupees a kilogram (per g).
+  const priceRule = soldBy === 'METRE' ? 'in whole rupees' : soldBy === 'KILOGRAM' ? 'a multiple of 10 rupees' : 'in rupees, to 2 decimals';
+  const priceGiven = input.sellingPrice != null && input.sellingPrice !== '';
+  const price = priceGiven ? storedPrice(input.sellingPrice, soldBy) : null;
+  if (priceGiven && price === null) throw problem(`${itemCode}: a price per ${unitWord} must be ${priceRule} (${input.sellingPrice} is not).`);
   const cost = input.purchasePrice == null || input.purchasePrice === '' ? null : storedPrice(input.purchasePrice, soldBy);
-  if (cost === null && input.purchasePrice != null && input.purchasePrice !== '') throw problem(`${itemCode}: the purchase price must be in whole rupees per ${soldBy === 'METRE' ? 'metre' : 'unit'}.`);
+  if (cost === null && input.purchasePrice != null && input.purchasePrice !== '') throw problem(`${itemCode}: the purchase price per ${unitWord} must be ${priceRule}.`);
   const gst = input.gstPercent == null || input.gstPercent === '' ? null : Math.round(Number(input.gstPercent) * 100);
   if (gst !== null && !(Number.isInteger(gst) && gst >= 0 && gst <= 10000)) throw problem(`${itemCode}: GST must be between 0 and 100%.`);
   const hsn = input.hsnCode ? String(input.hsnCode).trim() : null;
   if (hsn && !/^\d{4}$|^\d{6}$|^\d{8}$/.test(hsn)) throw problem(`${itemCode}: an HSN code is 4, 6 or 8 digits.`);
   const width = input.widthCm == null || input.widthCm === '' ? null : Math.round(Number(input.widthCm));
   if (width !== null && !(width > 0 && width < 1000)) throw problem(`${itemCode}: the width is in centimetres, above 0.`);
-  const sellInShop = input.sellInShop === true;
-  const design = String(input.designGroup ?? '').trim() || itemCode;
+  if (given('sellInShop') && typeof input.sellInShop !== 'boolean') throw problem(`${itemCode}: "sellInShop" is true or false.`);
+  const sellInShop = typeof input.sellInShop === 'boolean' ? input.sellInShop : (P ? P.sellInShop : false);
+  const keptDesign = P ? (P.boutiqueDesign ?? (P.importKey?.startsWith('boutique:') ? P.importKey.slice(9) : null)) : null;
+  const design = String(input.designGroup ?? '').trim() || keptDesign || itemCode;
   const importKey = `boutique:${design}`.slice(0, 120);
-  const colour = input.color ? String(input.color).trim().slice(0, 50) : 'Default';
-  const size = input.size ? String(input.size).trim().slice(0, 30) : 'Free';
+  const colour = input.color ? String(input.color).trim().slice(0, 50) : (existing?.colorName ?? 'Default');
+  const size = input.size ? String(input.size).trim().slice(0, 30) : (existing?.size ?? 'Free');
   const images = Array.isArray(input.imageUrls) ? input.imageUrls.filter((u): u is string => typeof u === 'string' && /^https:\/\//.test(u)).slice(0, 10) : [];
 
   let wantArchived: unknown = input.archived == null ? null : input.archived;
@@ -338,18 +451,35 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
   const rack = input.rackLocation ? String(input.rackLocation).trim().slice(0, 100) : null;
 
   {
-    const existing = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, boutiqueRef: itemCode }, include: { product: true } });
-    if (existing && input.ifNew === true) throw problem(`${itemCode}: this item code is already in use. Ask for the next code again.`, 409);
-    // A colour's stock is counted in its design's unit; moving it to a design sold another way would misread it.
-    if (existing && existing.product.soldBy !== soldBy) {
-      const own = await tx.inventoryStock.aggregate({ where: { variantId: existing.id }, _sum: { quantity: true } });
-      if ((own._sum.quantity ?? 0) !== 0) throw problem(`${itemCode}: this item already has stock in ${existing.product.soldBy.toLowerCase()}s, so its unit cannot change to ${soldBy.toLowerCase()}.`, 409);
+    // Two new colours of one new design saved at the same moment make one design, not two.
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-design|${actor.clientId}|${importKey}`}))::text`;
+    // A new code must not be a code the shop already uses for an item of its own (a SKU): that is a clash, said so.
+    if (!existing) {
+      const taken = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, OR: [{ sku: itemCode.slice(0, 60) }, { variantCode: `BV-${itemCode}`.slice(0, 60) }] }, select: { sku: true } });
+      if (taken) throw problem(`${itemCode}: the shop already uses this code for an item of its own. Give this item a different code.`, 409);
+    }
+    // The unit of an existing item: its stock, holds, orders and every stored number are in that unit.
+    let convert: ((base: number) => number) | null = null, convertPrice: ((perBase: number) => number) | null = null;
+    if (existing && P.soldBy !== soldBy) {
+      const own = await tx.inventoryStock.aggregate({ where: { variantId: existing.id }, _sum: { quantity: true, reservedQty: true } });
+      if ((own._sum.quantity ?? 0) !== 0 || (own._sum.reservedQty ?? 0) !== 0) throw problem(`${itemCode}: this item already has stock in ${P.soldBy.toLowerCase()}s, so its unit cannot change to ${soldBy.toLowerCase()}.`, 409);
+      const siblings = await tx.productVariant.count({ where: { productId: existing.productId, id: { not: existing.id } } });
+      const openLines = await tx.purchaseOrderItem.count({ where: { variantId: existing.id, po: { status: { in: ['DRAFT', 'SENT', 'PARTIALLY_RECEIVED'] } } } });
+      if (siblings || openLines) throw problem(`${itemCode}: its unit cannot change while ${siblings ? 'its design has other colours' : 'a purchase order for it is open'}. Make a new item in the new unit instead.`, 409);
+      // Same figure in the item's own unit: 10 m reorder level stays 10 (pieces now), 450 a metre stays 450 a piece.
+      const from = factorOf(P.soldBy), to = factorOf(soldBy);
+      convert = (base: number) => Math.round((base / from) * to);
+      convertPrice = (perBase: number) => Math.round(perBase * from / to * 100) / 100;
     }
     const productData = {
-      title: name.slice(0, 200), soldBy, kind, widthCm: width, sellInShop, priceOwner: 'BOUTIQUE',
-      basePrice: price, hsnCode: hsn, taxRateBps: gst, productType: productType as any,
-      boutiqueCategory: category, itemType, ...(brand ? { brand } : {}), ...(material ? { fabric: material } : {}),
-      boutiqueDesign: design, ...(subCategory ? { boutiqueSubCategory: subCategory } : {}), ...(description ? { description } : {})
+      title: name.slice(0, 200), soldBy, kind, sellInShop, priceOwner: 'BOUTIQUE', productType: productType as any,
+      boutiqueCategory: category, itemType, boutiqueDesign: design,
+      ...(price !== null ? { basePrice: price } : !existing ? { basePrice: 0 } : convertPrice ? { basePrice: convertPrice(Number(P.basePrice ?? 0)) } : {}),
+      ...(given('widthCm') || !existing ? { widthCm: width } : {}),
+      ...(given('hsnCode') || !existing ? { hsnCode: hsn } : {}),
+      ...(given('gstPercent') || !existing ? { taxRateBps: gst } : {}),
+      ...(brand ? { brand } : {}), ...(material ? { fabric: material } : {}),
+      ...(subCategory ? { boutiqueSubCategory: subCategory } : {}), ...(description ? { description } : {})
     };
     const touched: Touched = new Map();
     if (existing) touched.set(existing.productId, onSale(existing.product));
@@ -360,13 +490,16 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
     } else {
       product = await tx.product.findUnique({ where: { clientId_importKey: { clientId: actor.clientId, importKey } } });
       if (product && !touched.has(product.id)) touched.set(product.id, onSale(product));
-      if (product && product.soldBy !== soldBy) {
+      if (product && product.soldBy !== soldBy && product.id !== existing?.productId) {
         const has = await tx.inventoryStock.aggregate({ where: { clientId: actor.clientId, variant: { productId: product.id } }, _sum: { quantity: true } });
         if ((has._sum.quantity ?? 0) !== 0) throw problem(`${itemCode}: this design already has stock in ${product.soldBy.toLowerCase()}s, so its unit cannot change to ${soldBy.toLowerCase()}.`, 409);
       }
       if (!product) {
         const code = await newProductCode(tx, actor.clientId);
-        product = await tx.product.create({ data: { clientId: actor.clientId, importKey, productCode: code, slug: code.toLowerCase(), category: 'WOMEN' as any, status: 'ACTIVE' as any, publishedAt: new Date(), ...productData } as any });
+        // A colour moving to a design that does not exist yet: the new design starts from its old design's price,
+        // width, GST and HSN (fields left out keep their values), then anything sent now.
+        const carried = P ? { basePrice: P.basePrice ?? 0, widthCm: P.widthCm, hsnCode: P.hsnCode, taxRateBps: P.taxRateBps, brand: P.brand, fabric: P.fabric, description: P.description, boutiqueSubCategory: P.boutiqueSubCategory } : {};
+        product = await tx.product.create({ data: { clientId: actor.clientId, importKey, productCode: code, slug: code.toLowerCase(), category: 'WOMEN' as any, status: 'ACTIVE' as any, publishedAt: new Date(), ...carried, ...productData } as any });
       } else {
         product = await tx.product.update({ where: { id: product.id }, data: productData as any });
       }
@@ -381,15 +514,25 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
     if (reorder !== null && reorder < 0) throw problem(`${itemCode}: the reorder level cannot be below 0.`);
     const minimum = input.minStock == null || input.minStock === '' ? null : baseQty(input.minStock, soldBy, 'minimum stock');
     if (minimum !== null && minimum < 0) throw problem(`${itemCode}: the minimum stock cannot be below 0.`);
-    const variantData = { colorName: colour, hexCode: hex(input.colorHex), size, sellingPrice: price, ...(cost !== null ? { costPrice: cost } : {}), ...(reorder !== null ? { reorderLevel: reorder } : {}),
-      ...(minimum !== null ? { minStock: minimum } : {}), ...(rack ? { rackNote: rack } : {}) };
+    const variantData = {
+      colorName: colour, size,
+      ...(given('colorHex') || !existing ? { hexCode: hex(input.colorHex) } : {}),
+      ...(price !== null ? { sellingPrice: price } : !existing ? { sellingPrice: 0 } : convertPrice ? { sellingPrice: convertPrice(Number(existing.sellingPrice ?? 0)) } : {}),
+      ...(cost !== null ? { costPrice: cost } : convertPrice && existing?.costPrice != null ? { costPrice: convertPrice(Number(existing.costPrice)) } : {}),
+      ...(reorder !== null ? { reorderLevel: reorder } : convert && existing ? { reorderLevel: convert(existing.reorderLevel ?? 0) } : {}),
+      ...(minimum !== null ? { minStock: minimum } : convert && existing?.minStock != null ? { minStock: convert(existing.minStock) } : {}),
+      ...(convertPrice && existing ? { averageCost: convertPrice(Number(existing.averageCost ?? 0)) } : {}),
+      ...(rack ? { rackNote: rack } : {})
+    };
     const variant = existing
-      ? await tx.productVariant.update({ where: { id: existing.id }, data: { ...variantData, productId: product.id } })
+      ? await tx.productVariant.update({ where: { id: existing.id }, data: { ...variantData, productId: product.id } as any })
       : await tx.productVariant.create({ data: { clientId: actor.clientId, productId: product.id, boutiqueRef: itemCode, sku: `${itemCode}`.slice(0, 60), variantCode: `BV-${itemCode}`.slice(0, 60), reorderLevel: isMeasured(soldBy) ? 1000 : (itemType === 'MACHINE' || itemType === 'ASSET' ? 0 : 5), ...variantData } as any });
     if (existing && existing.productId !== product.id) {
       await carryColour(tx, existing.id, product.id);
       // A shelf left empty by a colour brought back goes to the bin; archiving it again takes it out.
       if (isShelf(existing.product)) await tx.product.update({ where: { id: existing.productId }, data: { trashedAt: new Date(), previousStatus: existing.product.status } });
+      // A design whose last colour moved to another design is archived: a design on sale with no colours is nothing to sell.
+      else if (!(await tx.productVariant.count({ where: { productId: existing.productId } }))) await tx.product.update({ where: { id: existing.productId }, data: { status: 'ARCHIVED' as any } });
     }
     if (images.length) {
       const have = new Set((await tx.productImage.findMany({ where: { productId: product.id, variantId: variant.id }, select: { url: true } })).map(i => i.url));
@@ -509,7 +652,8 @@ export function itemView(p: any, v: any, extra?: ItemExtra) {
     sellingPrice: pricePerUnit(Number(v.sellingPrice ?? p.basePrice ?? 0), p.soldBy),
     purchasePrice: v.costPrice != null ? pricePerUnit(Number(v.costPrice), p.soldBy) : null,
     gstPercent: p.taxRateBps != null ? p.taxRateBps / 100 : null, hsnCode: p.hsnCode ?? null,
-    sellInShop: p.sellInShop, status: p.status, category: p.boutiqueCategory ?? null, subCategory: p.boutiqueSubCategory ?? null,
+    // The owner may put an item in ScaleEzy's bin: it is off sale there, so it is IN_BIN here, whatever its status was.
+    sellInShop: p.sellInShop, status: p.trashedAt ? 'IN_BIN' : p.status, inBin: !!p.trashedAt, category: p.boutiqueCategory ?? null, subCategory: p.boutiqueSubCategory ?? null,
     itemType: p.itemType ?? null, productType: p.productType, designGroup: p.boutiqueDesign ?? (p.importKey?.startsWith('boutique:') ? p.importKey.slice(9) : null),
     description: p.description ?? null, brand: p.brand ?? null, materialType: p.fabric ?? null,
     reorderLevel: (v.reorderLevel ?? 0) / f, minStock: v.minStock != null ? v.minStock / f : null, rackLocation: v.rackNote ?? null
@@ -569,7 +713,8 @@ const yes = (v: unknown) => v === true || v === 'true' || v === '1';
 async function reorderDueIds(clientId: string) {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
     SELECT v.id FROM inventory_product_variants v LEFT JOIN inventory_stocks s ON s.variant_id = v.id
-    WHERE v.client_id = ${clientId} AND v.boutique_ref IS NOT NULL
+    JOIN inventory_products p ON p.id = v.product_id
+    WHERE v.client_id = ${clientId} AND v.boutique_ref IS NOT NULL AND p.trashed_at IS NULL
     GROUP BY v.id, v.reorder_level HAVING COALESCE(SUM(s.quantity - s.reserved_qty), 0) <= v.reorder_level`;
   return rows.map(r => r.id);
 }
@@ -586,7 +731,7 @@ export async function itemWhere(actor: Actor, q: ItemQuery): Promise<Prisma.Prod
   const like = literal(search);
   const categories = listOf(q.category), types = listOf(q.itemType);
   const status = String(q.status ?? '').toUpperCase();
-  if (status && !['ACTIVE', 'ARCHIVED'].includes(status)) throw problem('status is ACTIVE or ARCHIVED.');
+  if (status && !['ACTIVE', 'ARCHIVED', 'IN_BIN'].includes(status)) throw problem('status is ACTIVE, ARCHIVED or IN_BIN.');
   const and: Prisma.ProductVariantWhereInput[] = [];
   if (search) and.push({ OR: [
     { boutiqueRef: { contains: like, mode: 'insensitive' } }, { colorName: { contains: like, mode: 'insensitive' } },
@@ -594,7 +739,8 @@ export async function itemWhere(actor: Actor, q: ItemQuery): Promise<Prisma.Prod
   ] });
   if (categories.length) and.push({ product: { boutiqueCategory: { in: categories } } });
   if (types.length) and.push({ product: { itemType: { in: types } } });
-  if (status) and.push({ product: { status: status as any } });
+  if (status === 'IN_BIN') and.push({ product: { trashedAt: { not: null } } });
+  else if (status) and.push({ product: { status: status as any, trashedAt: null } });
   if (yes(q.reorderDue)) and.push({ id: { in: await reorderDueIds(actor.clientId) } });
   if (q.locationId) and.push({ stocks: { some: { locationId: String(q.locationId), quantity: { gt: 0 } } } });
   return {
@@ -682,10 +828,12 @@ export async function variantOf(clientId: string, itemCode: unknown, tx: Prisma.
   if (!v) throw problem(`No item ${String(itemCode ?? '')} in this shop. Add it first.`, 404);
   return v;
 }
-export async function storeOf(clientId: string, locationId: unknown, tx: Prisma.TransactionClient = prisma) {
+export async function storeOf(clientId: string, locationId: unknown, tx: Prisma.TransactionClient = prisma, allowSwitchedOff = false) {
   if (locationId) {
     const l = await tx.stockLocation.findFirst({ where: { id: String(locationId), clientId } });
     if (!l) throw problem('That store is not in this shop.', 404);
+    // A removed place is kept only for its history: nothing goes in or out of it.
+    if (!l.active && !allowSwitchedOff) throw problem(`${l.name} has been removed. Choose another place, or add it back first.`, 409);
     return l.id;
   }
   const l = await tx.stockLocation.findFirst({ where: { clientId, active: true }, orderBy: { createdAt: 'asc' } });
@@ -737,6 +885,8 @@ export async function count(tx: Db, actor: Actor, input: { itemCode: unknown; co
     const counted = baseQty(input.counted, v.product.soldBy as SoldBy, 'count');
     if (counted < 0) throw problem('A count cannot be below 0.');
     const locationId = await storeOf(actor.clientId, input.locationId, tx);
+    // Locked before reading: a till sale between the read and the write would otherwise land the count on the wrong figure.
+    await tx.$queryRaw`SELECT id FROM inventory_product_variants WHERE id = ${v.id} FOR UPDATE`;
     const row = await tx.inventoryStock.findUnique({ where: { variantId_locationId: { variantId: v.id, locationId } } });
     const delta = counted - (row?.quantity ?? 0);
     if (delta !== 0) {
@@ -773,9 +923,37 @@ export async function transfer(tx: Db, actor: Actor, input: { itemCode: unknown;
     const to = await storeOf(actor.clientId, input.toLocationId, tx);
     if (from === to) throw problem('Choose two different stores.');
     const orderRef = input.orderRef ? String(input.orderRef).slice(0, 80) : undefined;
+    await tx.$queryRaw`SELECT id FROM inventory_product_variants WHERE id = ${v.id} FOR UPDATE`;
+    /*
+     * Cloth held for an order goes to the tailor WITH its hold (16 Nov review): with the order named, that order's
+     * holds here travel with the cloth, up to the quantity moved -- a whole hold keeps its id, a part becomes a new
+     * hold at the new place. Without it, only free cloth can move (held cloth stays put, refused in words).
+     */
+    let carry = 0;
+    const carried: { reservationId: string; quantity: number }[] = [];
+    if (orderRef) {
+      const holds = await tx.boutiqueReservation.findMany({ where: { clientId: actor.clientId, variantId: v.id, locationId: from, orderRef, status: 'ACTIVE' }, orderBy: { createdAt: 'asc' } });
+      for (const h of holds) {
+        if (carry >= qty) break;
+        const part = Math.min(h.quantity, qty - carry);
+        carry += part;
+        if (part === h.quantity) { await tx.boutiqueReservation.update({ where: { id: h.id }, data: { locationId: to } }); carried.push({ reservationId: h.id, quantity: part }); }
+        else {
+          await tx.boutiqueReservation.update({ where: { id: h.id }, data: { quantity: h.quantity - part } });
+          const made = await tx.boutiqueReservation.create({ data: { clientId: actor.clientId, variantId: v.id, locationId: to, orderRef, quantity: part, actorName: actor.name.slice(0, 80) } });
+          carried.push({ reservationId: made.id, quantity: part });
+        }
+      }
+      if (carry) await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: v.id, locationId: from } }, data: { reservedQty: { decrement: carry } } });
+    }
+    const row = await tx.inventoryStock.findUnique({ where: { variantId_locationId: { variantId: v.id, locationId: from } } });
+    const free = (row?.quantity ?? 0) - (row?.reservedQty ?? 0);
+    if (qty > free) throw problem(`Only ${formatQty(Math.max(0, free), v.product.soldBy)} of ${v.product.title} can move from here${row?.reservedQty ? ` (${formatQty(row.reservedQty, v.product.soldBy)} is held for orders; name the order to move its cloth)` : ''}.`, 409);
     await inventoryMutationService.applyMovement({ clientId: actor.clientId, variantId: v.id, locationId: from, movementType: 'OUT' as any, reason: 'TRANSFER', quantityDelta: -qty, referenceType: 'BOUTIQUE', referenceId: orderRef, notes: `moved by ${actor.name}`, tx, boutique: { kind: 'TRANSFER', orderRef: orderRef ?? null, actorName: actor.name } });
     await inventoryMutationService.applyMovement({ clientId: actor.clientId, variantId: v.id, locationId: to, movementType: 'IN' as any, reason: 'TRANSFER', quantityDelta: qty, referenceType: 'BOUTIQUE', referenceId: orderRef, notes: `moved by ${actor.name}`, tx, boutique: { kind: 'TRANSFER', orderRef: orderRef ?? null, actorName: actor.name } });
-    return { status: 200, answer: { success: true, data: { itemCode: v.boutiqueRef, moved: qty / factorOf(v.product.soldBy) } } };
+    if (carry) await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: v.id, locationId: to } }, data: { reservedQty: { increment: carry } } });
+    const f = factorOf(v.product.soldBy);
+    return { status: 200, answer: { success: true, data: { itemCode: v.boutiqueRef, moved: qty / f, ...(carried.length ? { holdsMoved: carried.map(c => ({ ...c, quantity: c.quantity / f })) } : {}) } } };
   }
 }
 
@@ -796,6 +974,10 @@ export async function addStore(tx: Db, actor: Actor, input: { name: unknown; kin
   const type = STORE_KINDS[kind];
   if (!type) throw problem(`The kind of place "${input.kind}" is not known. Use ${Object.keys(STORE_KINDS).join(', ')}.`);
   const same = await tx.stockLocation.findFirst({ where: { clientId: actor.clientId, name: { equals: name, mode: 'insensitive' } } });
+  if (same && !same.active) {
+    const back = await tx.stockLocation.update({ where: { id: same.id }, data: { active: true } });
+    return { status: 200, answer: { success: true, data: { id: back.id, name: back.name, type: back.type, broughtBack: true } } };
+  }
   if (same) return { status: 200, answer: { success: true, data: { id: same.id, name: same.name, type: same.type } } };
   const code = `${kind.slice(0, 3)}-${name.toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 12)}-${randomBytes(2).toString('hex')}`;
   const l = await tx.stockLocation.create({ data: { clientId: actor.clientId, name, code, type, active: true } });
@@ -832,10 +1014,12 @@ export async function reserve(tx: Db, actor: Actor, input: { itemCode: unknown; 
 }
 
 async function heldOne(tx: Prisma.TransactionClient, clientId: string, reservationId: unknown) {
-  const r = await tx.boutiqueReservation.findFirst({ where: { id: String(reservationId ?? ''), clientId } });
-  if (!r) throw problem('That hold was not found.', 404);
+  const seen = await tx.boutiqueReservation.findFirst({ where: { id: String(reservationId ?? ''), clientId } });
+  if (!seen) throw problem('That hold was not found.', 404);
+  await tx.$queryRaw`SELECT id FROM inventory_product_variants WHERE id = ${seen.variantId} FOR UPDATE`;
+  // Read again under the lock: a release and a cut of the same hold at the same moment must not both pay out.
+  const r = (await tx.boutiqueReservation.findUnique({ where: { id: seen.id } }))!;
   if (r.status !== 'ACTIVE') throw problem(`That hold is already ${r.status.toLowerCase()}.`, 409);
-  await tx.$queryRaw`SELECT id FROM inventory_product_variants WHERE id = ${r.variantId} FOR UPDATE`;
   return r;
 }
 
@@ -873,7 +1057,8 @@ export async function issueHeld(tx: Db, actor: Actor, input: { reservationId: un
     const rest = r.quantity - qty;
     const freeRest = input.releaseRest === true;
     await tx.inventoryStock.update({ where: { variantId_locationId: { variantId: r.variantId, locationId: r.locationId } }, data: { reservedQty: { decrement: freeRest ? r.quantity : qty } } });
-    await tx.boutiqueReservation.update({ where: { id: r.id }, data: rest === 0 || freeRest ? { status: 'ISSUED' } : { quantity: rest } });
+    // Finished (all cut, or the rest let go): it keeps the quantity that was cut, so GET /holds?all=1 tells the truth.
+    await tx.boutiqueReservation.update({ where: { id: r.id }, data: rest === 0 || freeRest ? { status: 'ISSUED', quantity: qty } : { quantity: rest } });
     await inventoryMutationService.applyMovement({ clientId: actor.clientId, variantId: r.variantId, locationId: r.locationId, movementType: 'OUT' as any, reason: 'MANUAL_ADJUSTMENT', quantityDelta: -qty, referenceType: 'BOUTIQUE', referenceId: r.orderRef, notes: `issued by ${actor.name}`, tx, boutique: { kind: 'ISSUE', orderRef: r.orderRef, actorName: actor.name } });
     const f = factorOf(v!.product.soldBy);
     return { status: 200, answer: { success: true, data: {
@@ -892,8 +1077,8 @@ export async function history(actor: Actor, itemCode: string, limit = 50) {
 }
 
 /** Where a movement came from, in the boutique's words: its own calls, or ScaleEzy (till, online shop, Shopify, the owner). */
-export function sourceOf(t: { referenceType: string | null; reason: string }) {
-  if (t.referenceType === 'BOUTIQUE') return 'BOUTIQUE';
+export function sourceOf(t: { referenceType: string | null; reason: string; boutiqueKind?: string | null }) {
+  if (t.referenceType === 'BOUTIQUE' || t.boutiqueKind) return 'BOUTIQUE';
   if (t.referenceType === 'ORDER' || t.referenceType === 'DISPATCH' || t.reason === 'SALE') return 'SCALEEZY_SALE';
   if (t.referenceType === 'SALES_RETURN' || t.reason === 'CUSTOMER_RETURN') return 'SCALEEZY_RETURN';
   if (t.referenceType === 'PO' || t.reason === 'PURCHASE_RECEIPT' || t.reason === 'SUPPLIER_DELIVERY') return 'SCALEEZY_PURCHASE';

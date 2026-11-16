@@ -26,6 +26,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
+import { ensureDemoClient } from './support/demoClient';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 const CLIENT = 'demo-client';
@@ -62,6 +63,8 @@ const at = (locationId: string) => ({ headers: { 'x-location-id': locationId } }
 const poNumberOf = (n: string) => Number(n.replace(/\D/g, ''));
 
 async function main() {
+  // demo-client is made on demand if it is missing (a fresh local copy has none), as support/demoClient.ts intends.
+  await ensureDemoClient();
   const admin = await person('manager', 'ADMIN');
   const sales = await person('sales', 'SALES');
   const main = await prisma.stockLocation.findFirstOrThrow({ where: { clientId: CLIENT, code: 'MAIN-STORE' } });

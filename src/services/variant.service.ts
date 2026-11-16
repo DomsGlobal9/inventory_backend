@@ -1,4 +1,4 @@
-import { guardVariantPrice } from './boutique/price-lock';
+import { guardVariantPrice, guardColourDelete, guardNewColours } from './boutique/price-lock';
 import { variantRepository } from '../repositories/variant.repository';
 import { productRepository } from '../repositories/product.repository';
 import { Prisma } from '@prisma/client';
@@ -156,6 +156,7 @@ export class VariantService {
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
     assertCanTakeVariants(product);
+    guardNewColours(product as any);
 
     const variantCode = await generateSequentialCode(clientId, 'VAR', 'VARIANT');
     const barcode = await generateUniqueCode('SVM', 8, async (code) => variantRepository.barcodeExists(code));
@@ -191,6 +192,7 @@ export class VariantService {
     const product = await productRepository.findById(productId, clientId);
     if (!product) throw { statusCode: 404, message: "Product not found" };
     assertCanTakeVariants(product);
+    guardNewColours(product as any);
 
     const locationIds = await this.resolveInitialStockLocationIds(clientId, locationId, applyToAllLocations);
 
@@ -365,7 +367,7 @@ export class VariantService {
         });
 
         if (!variant) throw notFound(`SKU not found`);
-        await guardVariantPrice(clientId, { id: variant.id }, { sellingPrice, priceOverride });
+        await guardVariantPrice(clientId, { id: variant.id }, { sellingPrice, priceOverride, costPrice });
 
         return prisma.$transaction(async (tx) => {
           let dataToUpdate: Prisma.ProductVariantUpdateInput = {};
@@ -592,6 +594,7 @@ export class VariantService {
   }
 
   async deleteVariant(id: string, clientId: string) {
+    await guardColourDelete(clientId, id);
     // Read before it goes: afterwards there is no way back to its product.
     const before = await prisma.productVariant.findFirst({ where: { id, clientId }, select: { productId: true } });
     const result = await variantRepository.delete(id, clientId);

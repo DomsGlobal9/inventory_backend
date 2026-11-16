@@ -40,7 +40,7 @@ async function boutiqueVariants(clientId: string, ids?: string[]) {
   const rows = await prisma.productVariant.findMany({
     where: { clientId, boutiqueRef: { not: null }, ...(ids ? { id: { in: ids } } : {}) },
     select: { id: true, boutiqueRef: true, colorName: true, costPrice: true, inventoryValue: true, reorderLevel: true, minStock: true, lastMovementAt: true,
-      product: { select: { title: true, soldBy: true, boutiqueCategory: true, status: true } }, stocks: { select: { quantity: true, reservedQty: true } } }
+      product: { select: { title: true, soldBy: true, boutiqueCategory: true, status: true, trashedAt: true } }, stocks: { select: { quantity: true, reservedQty: true } } }
   });
   return new Map(rows.map(v => [v.id, v]));
 }
@@ -58,7 +58,8 @@ export async function stockSummary(actor: Actor, q: { deadDays?: unknown }) {
   mustReport(actor);
   const deadDays = Math.min(3650, Math.max(1, Number(q.deadDays) || 90));
   const deadBefore = Date.now() - deadDays * 86_400_000;
-  const vs = [...(await boutiqueVariants(actor.clientId)).values()].filter(v => v.product.status !== 'ARCHIVED');
+  // Not archived and not in the shop's bin -- the same items the lists, alerts and reorder count.
+  const vs = [...(await boutiqueVariants(actor.clientId)).values()].filter(v => v.product.status !== 'ARCHIVED' && !v.product.trashedAt);
   const perUnit: Record<string, { onHand: number; held: number; available: number }> = {};
   let value = 0, avg = 0, out = 0, due = 0, belowMin = 0, dead = 0;
   for (const v of vs) {
@@ -93,7 +94,8 @@ export async function lowStock(actor: Actor) {
 export async function consumption(actor: Actor, q: { from?: unknown; to?: unknown; category?: unknown }) {
   mustReport(actor);
   const { from, to, where } = range(q);
-  const rows = await moved(actor.clientId, where, USED);
+  // Used minus what came back unused (RETURN_UNUSED): issued 5 m, 1 m returned = 4 m used.
+  const rows = await moved(actor.clientId, where, [...USED, ...RETURNED]);
   const vs = await boutiqueVariants(actor.clientId, [...new Set(rows.map(r => r.variantId))]);
   const cats = q.category ? String(q.category).toUpperCase().split(',') : null;
   const per = new Map<string, { itemCode: string; name: string; colour: string | null; category: string | null; unit: string; quantity: number; value: number }>();
@@ -145,7 +147,7 @@ export async function costPerOrder(actor: Actor, q: { from?: unknown; to?: unkno
   mustReport(actor);
   const { from, to, where } = range(q);
   const rows = await prisma.inventoryTransaction.findMany({
-    where: { clientId: actor.clientId, boutiqueKind: { in: [...USED, ...WASTED] }, boutiqueOrderRef: q.orderRef ? String(q.orderRef) : { not: null }, ...where },
+    where: { clientId: actor.clientId, boutiqueKind: { in: [...USED, ...WASTED, ...RETURNED] }, boutiqueOrderRef: q.orderRef ? String(q.orderRef) : { not: null }, ...where },
     select: { variantId: true, boutiqueKind: true, boutiqueOrderRef: true, quantity: true }
   });
   const vs = await boutiqueVariants(actor.clientId, [...new Set(rows.map(r => r.variantId))]);
@@ -153,7 +155,7 @@ export async function costPerOrder(actor: Actor, q: { from?: unknown; to?: unkno
   for (const r of rows) {
     const e = per.get(r.boutiqueOrderRef!) ?? { orderRef: r.boutiqueOrderRef!, usedValue: 0, wasteValue: 0 };
     const v = Math.abs(r.quantity) * Number(vs.get(r.variantId)?.costPrice ?? 0);
-    if (WASTED.includes(r.boutiqueKind ?? '')) e.wasteValue += v; else e.usedValue += v;
+    if (WASTED.includes(r.boutiqueKind ?? '')) e.wasteValue += v; else if (RETURNED.includes(r.boutiqueKind ?? '')) e.usedValue -= v; else e.usedValue += v;
     per.set(e.orderRef, e);
   }
   const orders = [...per.values()].map(e => ({ orderRef: e.orderRef, usedValue: r2(e.usedValue), wasteValue: r2(e.wasteValue), total: r2(e.usedValue + e.wasteValue) })).sort((a, b) => b.total - a.total);
@@ -174,7 +176,7 @@ export async function orderUsage(actor: Actor, orderRef: string) {
     const v = vs.get(id)!, f = factorOf(v.product.soldBy as SoldBy), c = Number(v.costPrice ?? 0);
     const sum = (ks: string[]) => Math.abs(rows.filter(r => r.variantId === id && ks.includes(r.boutiqueKind ?? '')).reduce((n, r) => n + (r._sum.quantity ?? 0), 0));
     const used = sum(USED), waste = sum(WASTED), returned = sum(RETURNED), held = holds.find(h => h.variantId === id)?._sum.quantity ?? 0;
-    return { itemCode: v.boutiqueRef, name: v.product.title, colour: v.colorName, unit: v.product.soldBy, heldNow: held / f, used: used / f, wasted: waste / f, returned: returned / f, cost: r2((used + waste) * c) };
+    return { itemCode: v.boutiqueRef, name: v.product.title, colour: v.colorName, unit: v.product.soldBy, heldNow: held / f, used: used / f, wasted: waste / f, returned: returned / f, netUsed: Math.max(0, used - returned) / f, cost: r2((Math.max(0, used - returned) + waste) * c) };
   });
   return { orderRef, lines, totalCost: r2(lines.reduce((n, l) => n + l.cost, 0)) };
 }

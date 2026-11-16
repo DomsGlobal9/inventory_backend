@@ -168,8 +168,11 @@ async function main() {
   console.log('\nRETRIES AND RACES');
   const id = rid();
   const once1 = await call('POST', '/movements', { itemCode: 'KS-MAR', kind: 'ISSUE', quantity: 1, orderRef: 'ORD-9' }, { requestId: id });
-  const once2 = await call('POST', '/movements', { itemCode: 'KS-MAR', kind: 'ISSUE', quantity: 5, orderRef: 'ORD-9' }, { requestId: id });
+  const once2 = await call('POST', '/movements', { itemCode: 'KS-MAR', kind: 'ISSUE', quantity: 1, orderRef: 'ORD-9' }, { requestId: id });
   check('the same request again gets the first answer, marked as a replay', once1.status === 200 && once2.status === 200 && once2.replay === 'true' && same(once1.data, once2.data), { once1, once2 });
+  // 16 Nov review: the same id with a DIFFERENT body is a different change, refused in words (it used to replay).
+  const once3 = await call('POST', '/movements', { itemCode: 'KS-MAR', kind: 'ISSUE', quantity: 5, orderRef: 'ORD-9' }, { requestId: id });
+  check('...the same id for a different change (5 m, not 1 m): 409, nothing issued', once3.status === 409 && /already used for a different change/.test(once3.message ?? ''), once3);
   check('...and cut the cloth only once (1250 -> 1150)', (await stockOf(C1, 'KS-MAR')).qty === 1150, await stockOf(C1, 'KS-MAR'));
   const sameId = rid();
   const three = await Promise.all([1, 2, 3].map(() => call('POST', '/movements', { itemCode: 'KS-MAR', kind: 'ISSUE', quantity: 0.5 }, { requestId: sameId })));

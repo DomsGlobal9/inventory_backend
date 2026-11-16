@@ -48,7 +48,8 @@ export async function lookupItems(actor: Actor, raw: unknown) {
 export async function nextCode(actor: Actor, rawPrefix: unknown) {
   const prefix = String(rawPrefix ?? '').trim().toUpperCase();
   if (!/^[A-Z0-9]{1,10}$/.test(prefix)) throw problem('The prefix is 1 to 10 letters or digits, for example PRD or FG.');
-  const pattern = `^${prefix}-([0-9]+)$`;
+  // Up to 9 digits: a code like PRD-20261116123456 is not a counter and must not overflow the sum.
+  const pattern = `^${prefix}-([0-9]{1,9})$`;
   const [row] = await prisma.$queryRaw<{ n: number | null }[]>`
     SELECT MAX(CAST(substring(boutique_ref from ${pattern}) AS INTEGER)) AS n
     FROM inventory_product_variants WHERE client_id = ${actor.clientId} AND boutique_ref ~ ${pattern}`;
@@ -59,19 +60,20 @@ export async function nextCode(actor: Actor, rawPrefix: unknown) {
 /** Counts for the item list's groups: all, per category, per kind of item, archived, reorder due. */
 export async function itemGroups(actor: Actor) {
   const base = await itemWhere(actor, {});
-  const [all, archived, byCategory, byType, due] = await Promise.all([
-    prisma.productVariant.count({ where: { ...base, product: { status: { not: 'ARCHIVED' as any } } } }),
-    prisma.productVariant.count({ where: { ...base, product: { status: 'ARCHIVED' as any } } }),
+  const [all, archived, byCategory, byType, due, inBin] = await Promise.all([
+    prisma.productVariant.count({ where: { ...base, product: { status: { not: 'ARCHIVED' as any }, trashedAt: null } } }),
+    prisma.productVariant.count({ where: { ...base, product: { status: 'ARCHIVED' as any, trashedAt: null } } }),
     prisma.$queryRaw<{ category: string | null; n: bigint }[]>`
       SELECT p.boutique_category AS category, COUNT(*) AS n FROM inventory_product_variants v JOIN inventory_products p ON p.id = v.product_id
-      WHERE v.client_id = ${actor.clientId} AND v.boutique_ref IS NOT NULL AND p.status <> 'ARCHIVED' GROUP BY 1`,
+      WHERE v.client_id = ${actor.clientId} AND v.boutique_ref IS NOT NULL AND p.status <> 'ARCHIVED' AND p.trashed_at IS NULL GROUP BY 1`,
     prisma.$queryRaw<{ item_type: string | null; n: bigint }[]>`
       SELECT p.item_type, COUNT(*) AS n FROM inventory_product_variants v JOIN inventory_products p ON p.id = v.product_id
-      WHERE v.client_id = ${actor.clientId} AND v.boutique_ref IS NOT NULL AND p.status <> 'ARCHIVED' GROUP BY 1`,
-    prisma.productVariant.count({ where: await itemWhere(actor, { reorderDue: '1', status: 'ACTIVE' }) })
+      WHERE v.client_id = ${actor.clientId} AND v.boutique_ref IS NOT NULL AND p.status <> 'ARCHIVED' AND p.trashed_at IS NULL GROUP BY 1`,
+    prisma.productVariant.count({ where: await itemWhere(actor, { reorderDue: '1', status: 'ACTIVE' }) }),
+    prisma.productVariant.count({ where: { ...base, product: { trashedAt: { not: null } } } })
   ]);
   return {
-    all, archived, reorderDue: due,
+    all, archived, inBin, reorderDue: due,
     byCategory: Object.fromEntries(byCategory.map(r => [r.category ?? 'NONE', Number(r.n)])),
     byItemType: Object.fromEntries(byType.map(r => [r.item_type ?? 'NONE', Number(r.n)]))
   };
@@ -101,9 +103,13 @@ const dateOf = (v: unknown, what: string) => {
 /** Every movement on the boutique's items, newest first, filtered by item, order, place, kind, source and dates. */
 export async function listMovements(actor: Actor, q: Record<string, unknown>) {
   const { page, limit } = pageOf(q);
-  const from = dateOf(q.from, 'from'), to = dateOf(q.to, 'to');
-  // A bare date for "to" means the whole of that day.
-  const toEnd = to && /^\d{4}-\d{2}-\d{2}$/.test(String(q.to)) ? new Date(to.getTime() + 86_400_000) : to;
+  // A bare day (2026-11-16) is that day in India, the same as the reports; "to" then means the whole of that day.
+  const bare = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v ?? ''));
+  const from = bare(q.from) ? new Date(`${q.from}T00:00:00+05:30`) : dateOf(q.from, 'from');
+  const toDay = bare(q.to) ? new Date(`${q.to}T00:00:00+05:30`) : dateOf(q.to, 'to');
+  if (toDay && Number.isNaN(toDay.getTime())) throw problem('to is not a date (use 2026-11-16 or a full ISO time).');
+  if (from && Number.isNaN(from.getTime())) throw problem('from is not a date (use 2026-11-16 or a full ISO time).');
+  const toEnd = toDay && bare(q.to) ? new Date(toDay.getTime() + 86_400_000) : toDay;
   const kind = q.kind ? String(q.kind).trim().toUpperCase() : null;
   const source = q.source ? String(q.source).trim().toUpperCase() : null;
   if (source && !['BOUTIQUE', 'SCALEEZY'].includes(source)) throw problem('source is BOUTIQUE or SCALEEZY.');
@@ -113,11 +119,13 @@ export async function listMovements(actor: Actor, q: Record<string, unknown>) {
     ...(q.orderRef ? { boutiqueOrderRef: String(q.orderRef) } : {}),
     ...(q.locationId ? { locationId: String(q.locationId) } : {}),
     // A boutique word (WASTE) or one of ours (SALE); ours only when it is one, or the database refuses the query.
-    ...(kind ? { OR: [{ boutiqueKind: kind }, ...((Object.values(InventoryReason) as string[]).includes(kind) ? [{ boutiqueKind: null, reason: kind as InventoryReason }] : [])] } : {}),
-    ...(source === 'BOUTIQUE' ? { referenceType: 'BOUTIQUE' } : source === 'SCALEEZY' ? { OR: [{ referenceType: null }, { referenceType: { not: 'BOUTIQUE' } }] } : {}),
+    AND: [
+      ...(kind ? [{ OR: [{ boutiqueKind: kind }, ...((Object.values(InventoryReason) as string[]).includes(kind) ? [{ boutiqueKind: null, reason: kind as InventoryReason }] : [])] }] : []),
+      ...(source === 'BOUTIQUE' ? [{ OR: [{ referenceType: 'BOUTIQUE' }, { boutiqueKind: { not: null } }] }]
+        : source === 'SCALEEZY' ? [{ boutiqueKind: null, OR: [{ referenceType: null }, { referenceType: { not: 'BOUTIQUE' } }] }] : [])
+    ],
     ...(from || toEnd ? { createdAt: { ...(from ? { gte: from } : {}), ...(toEnd ? { lt: toEnd } : {}) } } : {})
   };
-  if (kind && source === 'SCALEEZY') throw problem('Filter by kind or by source SCALEEZY, not both.');
   const [rows, total] = await Promise.all([
     prisma.inventoryTransaction.findMany({ where, include: { location: { select: { name: true } }, variant: { select: { boutiqueRef: true, product: { select: { soldBy: true } } } } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], skip: (page - 1) * limit, take: limit }),
     prisma.inventoryTransaction.count({ where })
@@ -149,6 +157,8 @@ export async function changes(actor: Actor, q: { after?: unknown; limit?: unknow
     where: {
       clientId: actor.clientId, variant: { boutiqueRef: { not: null } },
       OR: [{ referenceType: null }, { referenceType: { not: 'BOUTIQUE' } }],
+      // Not the boutique's own (its purchase-order receipts are marked), and not shelf moves: they change no stock.
+      boutiqueKind: null, reason: { not: 'SHELF_MOVE' as any },
       createdAt: { lte: settled, ...(afterAt ? { gte: afterAt } : {}) },
       ...(afterAt ? { NOT: { createdAt: afterAt, id: { lte: afterId } } } : {})
     },
@@ -334,3 +344,29 @@ export async function photoUploads(actor: Actor, input: { files?: unknown }) {
 }
 
 export { itemView };
+
+/**
+ * Before an item is saved with photos from our own storage: each must be this shop's, really uploaded, and at most
+ * 10 MB. The upload link cannot cap the size (storage takes whatever is sent), so an oversized photo is deleted
+ * here and the save refused. Links to anywhere else (the boutique's own CDN) are left alone.
+ */
+export async function checkOwnPhotos(clientId: string, urls: unknown) {
+  if (!Array.isArray(urls)) return;
+  const base = supabase.storage.from('inventory-images').getPublicUrl('').data.publicUrl.replace(/\/$/, '');
+  for (const [i, raw] of urls.entries()) {
+    const url = String(raw ?? '');
+    if (!url.startsWith(`${base}/`)) continue;
+    let path = '';
+    try { path = decodeURIComponent(url.slice(base.length + 1).split(/[?#]/)[0]); } catch { /* a broken %-sequence: refused below */ }
+    // "<shop>/../<other shop>/x.jpg" would pass a plain prefix check: only plain names inside this shop's folder.
+    if (!path || path.split('/').some(seg => seg === '..' || seg === '.' || seg === '') || path.includes('\\') || !/^[A-Za-z0-9._\-/]+$/.test(path)
+      || !path.startsWith(`${clientId}/`)) throw problem(`Photo ${i + 1} belongs to another shop. Upload it again for this one.`, 403);
+    const head = await fetch(url, { method: 'HEAD' }).catch(() => null);
+    if (!head || head.status === 404 || head.status === 400) throw problem(`Photo ${i + 1} was not uploaded. Upload it again, then save the item.`);
+    const size = Number(head.headers.get('content-length') ?? 0);
+    if (size > MAX_PHOTO_BYTES) {
+      await supabase.storage.from('inventory-images').remove([path]).catch(() => undefined);
+      throw problem(`Photo ${i + 1} is over 10 MB, so it was removed. Make it smaller and upload it again.`);
+    }
+  }
+}
