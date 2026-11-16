@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { shownPrice, perWord } from '../units';
 import { Link } from 'react-router-dom';
 import { getProducts, money } from '../api';
 import Shot from './Shot';
@@ -93,7 +94,7 @@ export default function AlsoIn({ slug, product, shop, onRows }) {
                   {!sellable ? <span className="tag out">Sold out</span> : null}
                 </Shot>
                 <h3>{p.title}</h3>
-                {from != null ? <p className="now">{money(from, p.variants?.[0]?.currency ?? 'INR')}</p> : null}
+                {from != null ? <p className="now">{money(shownPrice(from, p.soldBy), p.variants?.[0]?.currency ?? 'INR')}{perWord(p.soldBy)}</p> : null}
               </Link>
             );
           })}

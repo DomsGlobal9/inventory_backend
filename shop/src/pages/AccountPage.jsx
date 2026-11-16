@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { shownPrice, perWord } from '../units';
 import { createPortal } from 'react-dom';
 import { EmptyWishlist } from '../components/Motion';
 import { placed } from '../components/Banners';
@@ -574,7 +575,7 @@ function WishlistView({ slug, shop, me, said, unheart }) {
 
                   <div className="wish-price-row">
                     {h.price !== null ? (
-                      <strong className="wish-price">{money(h.price)}</strong>
+                      <strong className="wish-price">{money(shownPrice(h.price, h.soldBy))}{perWord(h.soldBy)}</strong>
                     ) : (
                       <span className="wish-price-na">Price on request</span>
                     )}

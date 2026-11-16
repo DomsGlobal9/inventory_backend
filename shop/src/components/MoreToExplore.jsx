@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { shownPrice, perWord } from '../units';
 import { Link } from 'react-router-dom';
 import { getProducts, money } from '../api';
 import AlsoIn from './AlsoIn';
@@ -117,7 +118,7 @@ function rememberSeen(slug, p) {
   const prices = (p.variants ?? []).map(v => Number(v.price)).filter(Number.isFinite);
   const entry = {
     code: p.productCode, title: p.title, photo: photo?.url ?? null,
-    price: prices.length ? Math.min(...prices) : null, currency: p.variants?.[0]?.currency ?? 'INR'
+    price: prices.length ? Math.min(...prices) : null, currency: p.variants?.[0]?.currency ?? 'INR', soldBy: p.soldBy ?? 'PIECE'
   };
   try {
     const next = [entry, ...readSeen(slug).filter(e => e.code !== entry.code)].slice(0, SEEN_MAX);
@@ -143,7 +144,7 @@ function Recent({ slug, product }) {
           <Link key={e.code} className="small mini" to={`/${slug}/p/${encodeURIComponent(e.code)}`}>
             <Shot src={e.photo} alt={e.title} />
             <h3>{e.title}</h3>
-            {e.price != null ? <p className="now">{money(e.price, e.currency)}</p> : null}
+            {e.price != null ? <p className="now">{money(shownPrice(e.price, e.soldBy), e.currency)}{perWord(e.soldBy)}</p> : null}
           </Link>
         ))}
       </div>

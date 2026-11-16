@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { money, offerWords } from '../api';
 import Shot from './Shot';
+import { shownPrice, perWord } from '../units';
 
 /**
  * One piece in a grid: the shop's home page and the endless "You may also like" under a product
@@ -59,8 +60,8 @@ export default function Tile({ slug, p, to }) {
       <p className="sub">{[p.fabric, p.dressType].filter(Boolean).join(' · ') || ' '}</p>
       {from != null && (
         <div className="row">
-          <span className="now">{spread ? 'From ' : ''}{money(from, currency)}</span>
-          {was && off ? <><span className="was">{money(was, currency)}</span><span className="off">{off}% off</span></> : null}
+          <span className="now">{spread ? 'From ' : ''}{money(shownPrice(from, p.soldBy), currency)}{perWord(p.soldBy)}</span>
+          {was && off ? <><span className="was">{money(shownPrice(was, p.soldBy), currency)}</span><span className="off">{off}% off</span></> : null}
         </div>
       )}
       {colours.length > 1 && (

@@ -102,6 +102,7 @@ type Resolved = {
   variantId: string; variantCode: string; quantity: number;
   title: string; productCode: string; size: string | null; colour: string | null; colourHex: string | null;
   imageUrl: string | null;
+  soldBy: string;
   stocks: { locationId: string; quantity: number; reservedQty: number }[];
   profiles: { locationId: string; isAvailable: boolean }[];
 };
@@ -159,7 +160,7 @@ async function resolve(clientId: string, lines: BasketLine[]): Promise<Resolved[
       variantId: v.id, variantCode: v.variantCode, quantity,
       title: v.product.title, productCode: v.product.productCode,
       size: v.size ?? null, colour: v.colorName ?? null,
-      colourHex: hex(v.hexCode), imageUrl: photo,
+      colourHex: hex(v.hexCode), imageUrl: photo, soldBy: v.product.soldBy ?? 'PIECE',
       stocks: v.stocks, profiles: v.locationProfiles
     };
   });
@@ -304,6 +305,8 @@ function view(
         variantCode: i.variantCode, productCode: i.productCode, title: i.title,
         size: i.size, colour: i.colour, colourHex: i.colourHex, imageUrl: i.imageUrl,
         quantity: i.quantity,
+        // How it is sold (17 Nov): checkout showed 2.50 m of cloth as "250x" because this line did not say.
+        soldBy: i.soldBy,
         /** What one costs before anything comes off, and what the line comes to after. */
         unitPrice: Number(priced?.listUnitPrice ?? 0),
         lineTotal: Number(priced?.lineTotal ?? 0),

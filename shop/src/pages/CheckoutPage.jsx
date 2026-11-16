@@ -524,7 +524,7 @@ export default function CheckoutPage({ shop }) {
               )}
 
               <dl>
-                <div><dt>Pieces</dt><dd>{money(bag.goods, currency)}</dd></div>
+                <div><dt>Items</dt><dd>{money(bag.goods, currency)}</dd></div>
                 {bag.saved > 0 ? <div className="good"><dt>You save</dt><dd>−{money(bag.saved, currency)}</dd></div> : null}
                 <div><dt>Delivery</dt><dd>{bag.delivery > 0 ? money(bag.delivery, currency) : <span className="good">Free</span>}</dd></div>
                 <div className="sum"><dt>To pay</dt><dd>{money(bag.total, currency)}</dd></div>

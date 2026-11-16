@@ -577,7 +577,7 @@ export default function ProductPage({ slug, shop }) {
                     </svg>
                     Offers
                   </div>
-                  <p className="best">Best price <b>{money(Math.max(0, chosen.price - (chosen.offer.saves ?? 0)), currency)}</b></p>
+                  <p className="best">Best price <b>{metre ? <>{money(perMetre(Math.max(0, chosen.price - (chosen.offer.saves ?? 0))), currency)} per metre</> : money(Math.max(0, chosen.price - (chosen.offer.saves ?? 0)), currency)}</b></p>
                   <p className="offerline">{chosen.offer.name ? <b>{chosen.offer.name}: </b> : null}{offerWords(chosen.offer, currency)}. Applied automatically, no code needed.</p>
                 </div>
               ) : null}
@@ -703,7 +703,9 @@ export default function ProductPage({ slug, shop }) {
             outweighed its own label. Here it is what it actually is: the thing to do BEFORE
             deciding, grouped with the deciding, and plainly not a third Buy now.
           */}
-          {shop?.tryOn && photos.length > 0 ? (
+          {/* Not for cloth by the metre (17 Nov): a length of unstitched cloth is not a garment to try on, and each
+              try-on is a paid generation. */}
+          {shop?.tryOn && photos.length > 0 && !metre ? (
             <button type="button" className="tryonbtn" onClick={() => setTrying(true)}>
               <span className="mark">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
@@ -785,7 +787,11 @@ export default function ProductPage({ slug, shop }) {
               {p.craft ? <><dt>Craft</dt><dd>{p.craft}</dd></> : null}
               {p.brand ? <><dt>Brand</dt><dd>{p.brand}</dd></> : null}
               {chosen?.colour ? <><dt>Colour</dt><dd>{chosen.colour}</dd></> : null}
-              {chosen?.size ? <><dt>Size</dt><dd>{chosen.size}</dd></> : null}
+              {/* Cloth: its width is what matters ("Free Size" says nothing about a length of fabric). */}
+              {metre
+                ? (p.widthCm ? <><dt>Width</dt><dd>{p.widthCm} cm ({Math.round(p.widthCm / 2.54)} inches)</dd></> : null)
+                : chosen?.size ? <><dt>Size</dt><dd>{chosen.size}</dd></> : null}
+              {metre ? <><dt>Sold by</dt><dd>The metre</dd></> : null}
               <dt>Product code</dt><dd>{p.productCode}</dd>
             </dl>
             {p.description ? <p>{p.description}</p> : null}

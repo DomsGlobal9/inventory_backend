@@ -4,6 +4,12 @@
  * arrives per centimetre (4.50 = ₹450 per metre). Pieces and packets: factor 1, as always.
  */
 export const isMetre = (soldBy) => soldBy === 'METRE';
+/**
+ * A price as a shopper reads it on a CARD (17 Nov 2026): cloth's stored per-cm price shown per metre, with its unit.
+ * Live, every card showed sphl's Rs 450/m cloth as "Rs 4.50". shownPrice(4.5, 'METRE') = 450, perWord = ' / m'.
+ */
+export const shownPrice = (perBase, soldBy) => (perBase == null ? null : Math.round(Number(perBase) * (FACTOR[soldBy] ?? 1) * 100) / 100);
+export const perWord = (soldBy) => (soldBy === 'METRE' ? ' / m' : soldBy === 'KILOGRAM' ? ' / kg' : '');
 const FACTOR = { METRE: 100, KILOGRAM: 1000 };
 export const factorOf = (soldBy) => FACTOR[soldBy] ?? 1;
 

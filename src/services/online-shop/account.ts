@@ -93,6 +93,8 @@ export async function me(shop: Shop, token: unknown) {
       || images.find((i: any) => i.isPrimary)?.url || images[0]?.url || null;
     return {
       productCode: h.productCode, variantCode: h.variantCode, title: p.title, colour,
+        // How it is sold, so the wishlist shows cloth per metre (price below is per base unit: per cm for METRE).
+        soldBy: (p as any).soldBy ?? 'PIECE',
       price: prices.length ? Math.min(...prices) : null,
       imageUrl: picture,
       available: ofColour.some((v: any) => v.sellable),
