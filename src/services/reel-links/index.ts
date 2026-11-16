@@ -218,14 +218,17 @@ async function describePieces(clientId: string, productIds: string[]) {
 }
 
 /** Search for pieces to add: the shop's published, for-sale products, by name, code or SKU. */
-export async function searchPieces(clientId: string, raw: unknown) {
+export async function searchPieces(clientId: string, raw: unknown, filterRaw?: unknown) {
   const q = typeof raw === 'string' ? raw.trim().slice(0, 80) : '';
+  // The picker's quick filters: made in the last 7 days, or with stock to sell.
+  const filter = filterRaw === 'new' || filterRaw === 'instock' ? filterRaw : null;
   // Prisma's `contains`, and `equals` with mode 'insensitive', are an ILIKE that does not escape: "%" or "_" matched
   // everything, and a backslash at the end broke the query.
   const like = literal(q);
   const rows = await prisma.product.findMany({
     where: {
       clientId, ...ELIGIBLE_PRODUCT,
+      ...(filter === 'new' ? { createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } } : {}),
       ...(q ? {
         OR: [
           { title: { contains: like, mode: 'insensitive' } },
@@ -235,11 +238,28 @@ export async function searchPieces(clientId: string, raw: unknown) {
       } : {})
     },
     orderBy: { updatedAt: 'desc' },
-    take: 20,
+    // A photo grid to pick from: 36 at a time (more are found by searching). In stock: read more, keep those with stock.
+    take: filter === 'instock' ? 120 : 36,
     select: { id: true }
   });
   const described = await describePieces(clientId, rows.map(r => r.id));
-  return rows.map(r => described.get(r.id)).filter(Boolean);
+  const found = rows.map(r => described.get(r.id)).filter(Boolean);
+  return (filter === 'instock' ? found.filter(p => p.inStock > 0) : found).slice(0, 36);
+}
+
+/** People (not link-preview robots) who opened each reel link in the last 7 days. */
+async function openedThisWeek(clientId: string, refs: string[]) {
+  const out = new Map<string, number>();
+  if (!refs.length) return out;
+  const rows = await prisma.$queryRaw<{ ref: string; n: bigint }[]>`
+    SELECT sl.owner_ref AS ref, COUNT(*) AS n
+      FROM short_link_taps t JOIN short_links sl ON sl.id = t.link_id
+     WHERE sl.client_id = ${clientId} AND sl.owner_module = ${OWNER_MODULE} AND sl.is_test = false
+       AND t.visitor = 'HUMAN' AND t.at >= now() - interval '7 days'
+       AND sl.owner_ref IN (${Prisma.join(refs.slice(0, 500))})
+     GROUP BY 1`;
+  for (const r of rows) out.set(r.ref, Number(r.n));
+  return out;
 }
 
 /** The shop's reel links, newest first, with how many people opened each. */
@@ -251,16 +271,19 @@ export async function list(clientId: string) {
       orderBy: { createdAt: 'desc' },
       select: {
         id: true, clientId: true, code: true, title: true, active: true, shortCode: true, createdAt: true, createdById: true,
-        items: { orderBy: { position: 'asc' }, take: 1, select: { product: { select: { images: PHOTO_SELECT } } } },
+        items: { orderBy: { position: 'asc' }, select: { productId: true, product: { select: { images: PHOTO_SELECT } } } },
         _count: { select: { items: true } }
       }
     })
   ]);
   // A link made while short links were not set up yet gets one now.
   for (const r of rows) if (!r.shortCode) r.shortCode = await ensureShortLink(r, null);
-  const [stats, people] = await Promise.all([
+  const [stats, people, week, described] = await Promise.all([
     links.statsForMany(clientId, OWNER_MODULE, rows.map(r => r.id)),
-    prisma.user.findMany({ where: { id: { in: [...new Set(rows.map(r => r.createdById).filter(Boolean) as string[])] } }, select: { id: true, name: true } })
+    prisma.user.findMany({ where: { id: { in: [...new Set(rows.map(r => r.createdById).filter(Boolean) as string[])] } }, select: { id: true, name: true } }),
+    openedThisWeek(clientId, rows.map(r => r.id)),
+    // Each piece's free stock (in the shop's online-shop places), so a card can say how many are sold out.
+    describePieces(clientId, [...new Set(rows.flatMap(r => r.items.map(i => i.productId)))])
   ]);
   const nameOf = new Map(people.map(p => [p.id, p.name]));
   return rows.map(r => ({
@@ -268,6 +291,10 @@ export async function list(clientId: string) {
     createdBy: r.createdById ? nameOf.get(r.createdById) ?? null : null,
     pieces: r._count.items,
     cover: r.items[0]?.product.images[0]?.url ?? null,
+    // Up to three photos, in reel order, for the card's collage.
+    covers: r.items.map(i => i.product.images[0]?.url).filter(Boolean).slice(0, 3),
+    soldOut: r.items.filter(i => { const d = described.get(i.productId); return d && !d.hidden && !(d.inStock > 0); }).length,
+    openedWeek: week.get(r.id) ?? 0,
     shortUrl: shortUrlOf(r.shortCode),
     pageUrl: lookUrl(shop?.slug ?? null, r.code),
     opened: stats.get(r.id)?.totalTaps ?? 0

@@ -66,9 +66,11 @@ async function main() {
   const all = (await api('GET', '/reel-links/pieces?q=')).data as any[];
   const many = (await prisma.product.findMany({
     where: { clientId: CLIENT, status: 'ACTIVE', trashedAt: null, sellInShop: true, soldBy: 'PIECE' },
-    select: { id: true, productCode: true, title: true, variants: { select: { colorName: true } } }, take: 40, orderBy: { createdAt: 'asc' }
+    select: { id: true, productCode: true, title: true, variants: { select: { colorName: true, stocks: { select: { quantity: true, reservedQty: true } } } } }, take: 40, orderBy: { createdAt: 'asc' }
   }));
-  const withColour = many.filter(p => p.variants.some(v => v.colorName));
+  // A, B and C must have something to sell: the "sold-out piece is shown last" check counts on only that one being out.
+  const free = (p: (typeof many)[number]) => p.variants.some(v => v.stocks.some(s => s.quantity - s.reservedQty > 0));
+  const withColour = many.filter(p => p.variants.some(v => v.colorName) && free(p));
   check('the test shop has at least 16 published pieces to use', many.length >= 16 && withColour.length >= 3, { many: many.length, withColour: withColour.length });
   const [A, B, C] = withColour;
   const rest = many.filter(p => ![A.id, B.id, C.id].includes(p.id));
