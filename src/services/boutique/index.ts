@@ -494,7 +494,7 @@ export async function archiveItem(tx: Db, actor: Actor, itemCode: string) {
 }
 
 type StockRow = { locationId: string; quantity: number; reservedQty: number; location?: { name: string } | null };
-type ItemExtra = { stocks: StockRow[]; heldForOrders: number; images?: string[] };
+type ItemExtra = { stocks: StockRow[]; heldForOrders: number; images?: string[]; supplier?: { id: string; name: string } | null };
 
 /**
  * One item as the boutique sees it. With `extra`, its stock: the total, per place, what is held -- split into the
@@ -521,6 +521,7 @@ export function itemView(p: any, v: any, extra?: ItemExtra) {
   return {
     ...base,
     ...(extra.images ? { imageUrls: extra.images } : {}),
+    supplier: extra.supplier ?? null,
     stock: quantity / f, reserved: reserved / f, free: free / f, stockText: formatQty(quantity, p.soldBy),
     heldForOrders: extra.heldForOrders / f, heldByShop: Math.max(0, reserved - extra.heldForOrders) / f,
     outOfStock: free <= 0, reorderDue: free <= (v.reorderLevel ?? 0), belowMinimum: v.minStock != null && free < v.minStock,
@@ -533,16 +534,19 @@ export function itemView(p: any, v: any, extra?: ItemExtra) {
 /** Each of these colours' stock, photos and the boutique's own active holds, for itemView. */
 async function extrasFor(clientId: string, variantIds: string[]) {
   if (!variantIds.length) return new Map<string, ItemExtra>();
-  const [stocks, holds, images] = await Promise.all([
+  const [stocks, holds, images, suppliers] = await Promise.all([
     prisma.inventoryStock.findMany({ where: { variantId: { in: variantIds } }, include: { location: { select: { name: true } } }, orderBy: { createdAt: 'asc' } }),
     prisma.boutiqueReservation.groupBy({ by: ['variantId'], where: { clientId, variantId: { in: variantIds }, status: 'ACTIVE' }, _sum: { quantity: true } }),
-    prisma.productImage.findMany({ where: { variantId: { in: variantIds } }, orderBy: [{ orderIndex: 'asc' }], select: { variantId: true, url: true } })
+    prisma.productImage.findMany({ where: { variantId: { in: variantIds } }, orderBy: [{ orderIndex: 'asc' }], select: { variantId: true, url: true } }),
+    // The item's supplier: the preferred link (set by the boutique, or the shop's own choice).
+    prisma.supplierProduct.findMany({ where: { variantId: { in: variantIds }, isPreferred: true }, select: { variantId: true, supplier: { select: { id: true, name: true } } } })
   ]);
   const out = new Map<string, ItemExtra>();
   for (const id of variantIds) out.set(id, { stocks: [], heldForOrders: 0, images: [] });
   for (const s of stocks) out.get(s.variantId)!.stocks.push(s as any);
   for (const h of holds) out.get(h.variantId)!.heldForOrders = h._sum.quantity ?? 0;
   for (const i of images) out.get(i.variantId!)?.images!.push(i.url);
+  for (const sp of suppliers) { const e = out.get(sp.variantId); if (e && !e.supplier) e.supplier = sp.supplier; }
   return out;
 }
 

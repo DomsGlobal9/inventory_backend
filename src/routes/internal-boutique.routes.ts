@@ -4,6 +4,9 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import * as boutique from '../services/boutique';
 import * as extra from '../services/boutique/more';
+import * as buying from '../services/boutique/buying';
+import * as reports from '../services/boutique/reports';
+import * as racks from '../services/boutique/shelves';
 import { factorOf } from '../lib/units';
 import type { Actor } from '../services/boutique';
 import { respondWithError } from '../utils/respondWithError';
@@ -25,7 +28,7 @@ import { respondWithError } from '../utils/respondWithError';
  * first answer and changes nothing.
  */
 const router = Router();
-const KNOWN_CAN = ['products:write', 'stock:write', 'stitching:issue', 'stock:transfer'];
+const KNOWN_CAN = ['products:write', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view'];
 type Pass = { id: string; scopes: string[]; tenant?: string; clientId?: string; issuedAt?: number; expiresAt?: number; onBehalfOf?: { userId: string; name?: string; can?: string[] } };
 const pass = (req: Request) => (req as any).service as Pass;
 const fail = (res: Response, status: number, message: string) => res.status(status).json({ success: false, message });
@@ -158,6 +161,8 @@ router.post('/items/import', async (req, res) => {
  */
 async function withOpening(tx: boutique.Db, a: Actor, row: any) {
   const r = await boutique.upsertItem(tx, a, row);
+  // supplierId: the item's supplier (null clears it); left out keeps it.
+  if (row?.supplierId !== undefined) await buying.setItemSupplier(tx, a, String(row.itemCode), row.supplierId);
   const opening = row?.openingStock;
   if (opening == null) return r;
   if (!Array.isArray(opening) || opening.length > 20) throw Object.assign(new Error('openingStock is a list of up to 20 { quantity, locationId }.'), { statusCode: 400 });
@@ -188,5 +193,60 @@ router.get('/holds', read(async req => {
   const byId = new Map(variants.map(v => [v.id, v]));
   return rows.map(r => { const v = byId.get(r.variantId); const f = factorOf((v?.product.soldBy ?? 'PIECE') as any); return { reservationId: r.id, itemCode: v?.boutiqueRef, name: v?.product.title, orderRef: r.orderRef, quantity: r.quantity / f, status: r.status, by: r.actorName, at: r.createdAt }; });
 }));
+
+// ── suppliers and purchase orders (CRM-B checklist section 4) ─────────────────────────────────────
+router.get('/suppliers', read(req => buying.listSuppliers(actorOf(req), req.query as any)));
+router.get('/suppliers/performance', read(req => buying.supplierPerformance(actorOf(req), req.query.supplierId ? String(req.query.supplierId) : undefined)));
+router.post('/suppliers', write((tx, a, req) => buying.addSupplier(tx, a, req.body ?? {})));
+router.put('/suppliers/:id', write((tx, a, req) => buying.changeSupplier(tx, a, String(req.params.id), req.body ?? {})));
+router.get('/purchase-orders', read(req => buying.listOrders(actorOf(req), req.query as any)));
+router.get('/purchase-orders/:id', read(req => buying.getOrder(actorOf(req), String(req.params.id))));
+/**
+ * Purchase orders run on the shop's own purchase-order code, which keeps its own transactions; the request ledger
+ * (once) still holds the id, so a retry gets the first answer and makes no second order or receipt.
+ */
+const viaLedger = (fn: (a: Actor, req: Request, key: string) => Promise<unknown>, status = 200) => async (req: Request, res: Response) => {
+  try {
+    const a = actorOf(req);
+    const key = String(requestIdOf(req) ?? '');
+    const r = await boutique.once(a.clientId, key, async () => ({ status, answer: { success: true, data: await fn(a, req, key) } }));
+    res.status(r.status).set('Idempotent-Replay', r.repeat ? 'true' : 'false').json(r.answer);
+  } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
+};
+router.post('/purchase-orders', viaLedger((a, req) => buying.createOrder(a, req.body ?? {}), 201));
+router.put('/purchase-orders/:id', viaLedger((a, req) => buying.changeOrder(a, String(req.params.id), req.body ?? {})));
+router.post('/purchase-orders/:id/receive', viaLedger((a, req, key) => buying.receiveOrder(a, String(req.params.id), req.body ?? {}, key)));
+// ── reports (CRM-B checklist section 9): each needs reports:view ───────────────────────────────────
+router.get('/reports/purchase-spend', read(req => { reports.mustReport(actorOf(req)); return buying.purchaseSpend(actorOf(req), req.query as any); }));
+router.get('/reports/stock-summary', read(req => reports.stockSummary(actorOf(req), req.query as any)));
+router.get('/reports/low-stock', read(req => reports.lowStock(actorOf(req))));
+router.get('/reports/consumption', read(req => reports.consumption(actorOf(req), req.query as any)));
+router.get('/reports/loss-rates', read(req => reports.lossRates(actorOf(req), req.query as any)));
+router.get('/reports/cost-per-order', read(req => reports.costPerOrder(actorOf(req), req.query as any)));
+router.get('/reports/order-usage', read(req => reports.orderUsage(actorOf(req), String(req.query.orderRef ?? ''))));
+router.get('/reports/movement-summary', read(req => reports.movementSummary(actorOf(req), req.query as any)));
+router.get('/reports/daybook', read(req => reports.daybook(actorOf(req), req.query as any)));
+router.get('/reports/supplier-performance', read(req => { reports.mustReport(actorOf(req)); return buying.supplierPerformance(actorOf(req)); }));
+
+// ── racks and shelves (CRM-B checklist section 3) ─────────────────────────────────────────────────
+router.get('/stores/:id/spots', read(req => racks.tree(actorOf(req), String(req.params.id))));
+router.get('/stores/:id/labels', read(req => racks.labels(actorOf(req), String(req.params.id), req.query.spotIds ? String(req.query.spotIds).split(',') : undefined)));
+router.get('/stores/:id/not-shelved', read(req => racks.notShelved(actorOf(req), String(req.params.id), req.query.page)));
+router.get('/stores/:id/count-queue', read(req => racks.countQueue(actorOf(req), String(req.params.id))));
+router.get('/spots/scan', read(req => racks.scan(actorOf(req), req.query.code, req.query.locationId ? String(req.query.locationId) : undefined)));
+router.get('/spots/:spotId', read(req => racks.onSpot(actorOf(req), String(req.params.spotId))));
+router.get('/spots/:spotId/history', read(req => racks.spotHistory(actorOf(req), String(req.params.spotId))));
+router.get('/where', read(req => racks.find(actorOf(req), req.query.search, req.query.locationId ? String(req.query.locationId) : undefined)));
+router.get('/items/:itemCode/where', read(req => racks.whereIs(actorOf(req), String(req.params.itemCode), req.query.locationId ? String(req.query.locationId) : undefined)));
+router.get('/shelf-problems', read(req => racks.problems(actorOf(req), req.query as any)));
+// Shelf changes run on the shelves' own code and transactions; the request ledger still makes a retry land once.
+router.post('/stores/:id/spots', viaLedger((a, req) => racks.addSpot(a, String(req.params.id), req.body ?? {}), 201));
+router.post('/stores/:id/spots/bulk', viaLedger((a, req) => racks.addSpots(a, String(req.params.id), req.body ?? {})));
+router.put('/spots/:spotId', viaLedger((a, req) => racks.changeSpot(a, String(req.params.spotId), req.body ?? {})));
+router.delete('/spots/:spotId', viaLedger((a, req) => racks.removeSpot(a, String(req.params.spotId))));
+router.post('/shelf-moves', viaLedger((a, req) => racks.moveOnShelves(a, req.body ?? {})));
+router.post('/shelf-moves/whole-shelf', viaLedger((a, req) => racks.moveWholeShelf(a, req.body ?? {})));
+router.post('/spots/:spotId/count', viaLedger((a, req) => racks.countShelf(a, String(req.params.spotId), req.body ?? {})));
+router.post('/shelf-problems/:id/fix', viaLedger((a, req) => racks.fixProblem(a, String(req.params.id), req.body ?? {})));
 
 export default router;

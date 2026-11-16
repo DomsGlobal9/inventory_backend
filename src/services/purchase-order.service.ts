@@ -40,7 +40,9 @@ export class PurchaseOrderService {
   async createPO(
     clientId: string,
     data: { supplierId: string; locationId?: string | null; expectedDeliveryDate?: Date; notes?: string; items: { variantId: string; orderedQty: number; unitPrice: number; productTitle?: string; color?: string; size?: string }[] },
-    selectedLocationId?: string
+    selectedLocationId?: string,
+    /** The boutique API counts cloth in centimetres and prices it per centimetre, so it may order by the metre. */
+    opts: { allowMeasured?: boolean } = {}
   ) {
     // Both looked up within this shop. Neither was: a supplier id from another shop failed only at
     // the foreign key, and a variant id from another shop was accepted and snapshotted onto the
@@ -61,7 +63,7 @@ export class PurchaseOrderService {
     // Purchase orders count whole pieces. Fabric is kept in centimetres, so "10" here would be 10 cm: refused, with
     // the way that works (Stock in on the Inventory page takes metres).
     const measured = variants.find(v => isMeasured((v.product as any)?.soldBy));
-    if (measured) throw refuse(`${measured.product.title} is sold by the metre. Purchase orders count whole pieces, so add it with Stock in on the Inventory page instead.`, 400);
+    if (measured && !opts.allowMeasured) throw refuse(`${measured.product.title} is sold by the metre. Purchase orders count whole pieces, so add it with Stock in on the Inventory page instead.`, 400);
 
     // Numbered once the supplier and store are known to be good, so a refused order uses no number.
     const poNumber = await generateSequentialCode(clientId, 'PO', 'PURCHASE_ORDER');

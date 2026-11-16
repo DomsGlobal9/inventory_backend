@@ -1010,6 +1010,10 @@ model Supplier {
   email   String?
   phone   String?
   address String?
+  /// The boutique's (CRM-B) supplier details; retail does not set them.
+  contactPerson String? @map("contact_person")
+  gstin         String?
+  notes         String?
 
   isActive Boolean @default(true) @map("is_active")
 
@@ -1050,6 +1054,10 @@ model PurchaseOrder {
 
   totalAmount Decimal? @map("total_amount")
   notes       String?
+  /// The boutique's (CRM-B) invoice, tax and payment status (UNPAID, PARTIAL, PAID); retail does not set them.
+  invoiceNumber String?  @map("invoice_number")
+  taxAmount     Decimal? @map("tax_amount") @db.Decimal(12, 2)
+  paymentStatus String?  @map("payment_status")
 
   items    PurchaseOrderItem[]
   /// One per delivery received against this order, newest last.
@@ -1089,6 +1097,8 @@ model PurchaseOrderItem {
   orderedQty  Int     @map("ordered_qty")
   receivedQty Int     @default(0) @map("received_qty")
   unitPrice   Decimal @map("unit_price")
+  /// The boutique's (CRM-B) batch number for this line.
+  batchNumber String? @map("batch_number")
 
   lastReceivedAt DateTime? @map("last_received_at")
 
