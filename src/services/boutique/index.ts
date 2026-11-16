@@ -9,6 +9,7 @@
  * Every write carries a request id: a repeat gets the first answer and changes nothing (once()).
  */
 import { randomBytes } from 'node:crypto';
+import { literal } from '../../utils/likeText';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { inventoryMutationService } from '../inventory-mutation.service';
@@ -370,19 +371,36 @@ function itemView(p: any, v: any, stock?: { quantity: number; reserved: number }
 }
 
 /** Items with their stock (all stores), searched by name or code, a page at a time. */
+/** Items per page when the boutique does not say (16 Nov: the boutique team asked for 20). At most 100. */
+export const ITEMS_PER_PAGE = 20;
+const MAX_PER_PAGE = 100;
+const wholeAtLeast1 = (v: unknown) => { const n = Number(v); return Number.isInteger(n) && n >= 1 ? n : null; };
+
+/**
+ * The boutique's items, a page at a time: 20 a page unless `limit` says otherwise (1 to 100), oldest first, with the
+ * total and the number of pages, so a screen can draw page buttons. Same items in the same order on every call: ties
+ * on the time an item was added (a bulk import adds many in one moment) are broken by its id, so no item ever shows
+ * on two pages or on none. A page past the end is an empty page, not an error.
+ */
 export async function listItems(actor: Actor, q: { search?: unknown; page?: unknown; limit?: unknown; itemCode?: unknown }) {
-  const limit = Math.min(100, Math.max(1, Number(q.limit) || 50));
-  const page = Math.max(1, Number(q.page) || 1);
-  const search = String(q.search ?? '').trim();
+  const limit = Math.min(MAX_PER_PAGE, wholeAtLeast1(q.limit) ?? ITEMS_PER_PAGE);
+  const page = wholeAtLeast1(q.page) ?? 1;
+  const search = String(q.search ?? '').trim().slice(0, 100);
+  // Prisma's `contains` is a LIKE that does not escape: "%" or "_" typed would match everything.
+  const like = literal(search);
   const where: Prisma.ProductVariantWhereInput = {
     clientId: actor.clientId, boutiqueRef: q.itemCode ? String(q.itemCode) : { not: null },
-    ...(search ? { OR: [{ boutiqueRef: { contains: search, mode: 'insensitive' } }, { product: { title: { contains: search, mode: 'insensitive' } } }] } : {})
+    ...(search ? { OR: [{ boutiqueRef: { contains: like, mode: 'insensitive' } }, { product: { title: { contains: like, mode: 'insensitive' } } }] } : {})
   };
   const [rows, total] = await Promise.all([
-    prisma.productVariant.findMany({ where, include: { product: true, stocks: true }, orderBy: { createdAt: 'asc' }, skip: (page - 1) * limit, take: limit }),
+    prisma.productVariant.findMany({ where, include: { product: true, stocks: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], skip: (page - 1) * limit, take: limit }),
     prisma.productVariant.count({ where })
   ]);
-  return { items: rows.map(v => itemView(v.product, v, { quantity: v.stocks.reduce((n, s) => n + s.quantity, 0), reserved: v.stocks.reduce((n, s) => n + s.reservedQty, 0) })), page, limit, total };
+  const totalPages = Math.ceil(total / limit);
+  return {
+    items: rows.map(v => itemView(v.product, v, { quantity: v.stocks.reduce((n, s) => n + s.quantity, 0), reserved: v.stocks.reduce((n, s) => n + s.reservedQty, 0) })),
+    page, limit, total, totalPages, hasMore: page < totalPages
+  };
 }
 
 /* ── stock ───────────────────────────────────────────────────────────────────────────────────────── */

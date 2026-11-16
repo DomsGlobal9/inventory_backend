@@ -430,6 +430,38 @@ async function main() {
   const found = await filterProducts(R3, productFilterQuery.parse({ q: 'lining' }));
   check('searching "lining" finds a product whose kind is Lining', found.meta.total === 1 && found.data[0]?.id === liningP, found.meta);
   check('...and "lace" finds nothing here (no lace)', (await filterProducts(R3, productFilterQuery.parse({ q: 'lace' }))).meta.total === 0);
+
+  console.log('\nTHE ITEM LIST, 20 A PAGE (16 Nov: asked for by the boutique team)');
+  const P = `btqtest-pages-${STAMP}`;
+  const pl = await call('POST', '/link', { shopName: 'Pages Boutique' }, { tenant: P });
+  check('a boutique with 45 items (one bulk import: many added in the same moment)', pl.status === 201, pl);
+  const many = Array.from({ length: 45 }, (_, i) => ({ itemCode: `PG-${String(i + 1).padStart(2, '0')}`, name: `Page item ${i + 1}${i === 7 ? ' 100% silk' : ''}`, unit: 'PIECE', kind: 'OTHER', sellingPrice: 100 + i }));
+  const pimp = await call('POST', '/items/import', { items: many }, { tenant: P });
+  check('...imported', pimp.status < 300, pimp.message);
+  const pg = async (qs: string) => call('GET', `/items${qs}`, undefined, { tenant: P });
+  const p1 = await pg(''), p2 = await pg('?page=2'), p3 = await pg('?page=3'), p4 = await pg('?page=4');
+  check('page 1 by default: 20 items, total 45, 3 pages, more to come', p1.data?.items?.length === 20 && p1.data.page === 1 && p1.data.limit === 20 && p1.data.total === 45 && p1.data.totalPages === 3 && p1.data.hasMore === true, { ...p1.data, items: p1.data?.items?.length });
+  check('page 2: 20 more; page 3: the last 5, nothing more', p2.data?.items?.length === 20 && p2.data.hasMore === true && p3.data?.items?.length === 5 && p3.data.hasMore === false, [p2.data?.items?.length, p3.data?.items?.length, p3.data?.hasMore]);
+  const codes = [...p1.data.items, ...p2.data.items, ...p3.data.items].map((x: any) => x.itemCode);
+  check('the three pages together: all 45, each exactly once, even though they were added at the same moment', codes.length === 45 && new Set(codes).size === 45, codes.length - new Set(codes).size);
+  const pagesAgain = [...(await pg('')).data.items, ...(await pg('?page=2')).data.items, ...(await pg('?page=3')).data.items].map((x: any) => x.itemCode);
+  check('asking again gives the same items in the same order', pagesAgain.join() === codes.join());
+  check('a page past the end: empty, not an error', p4.status === 200 && p4.data?.items?.length === 0 && p4.data.total === 45 && p4.data.hasMore === false, p4);
+  const l5 = await pg('?limit=5&page=9');
+  check('limit=5: pages of 5 (page 9 is items 41 to 45)', l5.data?.items?.length === 5 && l5.data.totalPages === 9 && l5.data.items.map((x: any) => x.itemCode).join() === codes.slice(40, 45).join(), l5.data?.items?.map((x: any) => x.itemCode));
+  for (const [qs, want] of [['?limit=500', 45], ['?limit=0', 20], ['?limit=-3', 20], ['?limit=abc', 20], ['?limit=2.5', 20]] as const) {
+    const r = await pg(qs);
+    check(`${qs}: ${want === 45 ? 'at most 100 a page' : 'not a page size, so 20'}`, r.status === 200 && r.data?.items?.length === Math.min(want, 45), [r.status, r.data?.items?.length, r.data?.limit]);
+  }
+  for (const qs of ['?page=0', '?page=-2', '?page=abc', '?page=1.5']) {
+    const r = await pg(qs);
+    check(`${qs}: not a page number, so page 1`, r.status === 200 && r.data?.page === 1 && r.data.items[0]?.itemCode === codes[0], [r.status, r.data?.page]);
+  }
+  const s7 = await pg('?search=page item 1');
+  check('search with paging: "page item 1" finds 1 and 10 to 19 (11), one page', s7.data?.total === 11 && s7.data.totalPages === 1 && s7.data.items.length === 11, s7.data?.total);
+  check('search "%" finds only a name with a real % in it', (await pg('?search=%25')).data?.total === 1);
+  check('search "_" finds nothing (no name has one), not everything', (await pg('?search=_')).data?.total === 0);
+  check('search by item code works too', (await pg('?search=PG-4')).data?.total === 6);
 }
 
 async function cleanup() {
