@@ -74,7 +74,8 @@ export async function listForPos(
   /** The till said it understands units (X-Pos-Units: 1): metre and kilogram products are in, with their unit. */
   opts: { units?: boolean } = {}
 ) {
-  const page = await storefrontCatalogueService.listProducts(scope, { ...paging, withLengths: !!opts.units });
+  // includeLeavers: an incremental page also names what LEFT the catalogue (listed:false), so the till drops it.
+  const page = await storefrontCatalogueService.listProducts(scope, { ...paging, withLengths: !!opts.units, includeLeavers: true });
 
   const codes = page.products.flatMap((p: any) => p.variants.map((v: any) => v.variantCode));
   const tax = await taxByVariantCode(scope.clientId, codes);
@@ -113,7 +114,7 @@ export async function listForPos(
          * appears on an incremental page with eligible:false, so the till stops offering it
          * rather than quietly keeping a copy nobody deleted.
          */
-        eligible: Boolean(v.stock?.sellable)
+        eligible: Boolean(v.stock?.sellable) && (p as any).listed !== false
       };
     })
   }));

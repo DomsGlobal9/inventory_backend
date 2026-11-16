@@ -491,12 +491,14 @@ async function main() {
     check('a sales person can sign in', login.status === 200 && cookie.length > 0, String(login.status));
     const as = (path: string, method = 'GET', body?: any) => fetch(`${API}${path}`, { method, headers: { 'content-type': 'application/json', cookie }, body: body ? JSON.stringify(body) : undefined }).then(r => r.status);
     const loc = await prisma.stockLocation.findFirst({ where: { clientId: t.clientId, active: true }, select: { id: true } });
+    // Counted before, not assumed 0: the test shop may hold a till made for other local testing (17 Nov).
+    const tillsBefore = await prisma.storefrontConnection.count({ where: { clientId: t.clientId, baseUrl: POS_BASE_URL, status: 'ACTIVE' } });
     check('they cannot list the shop\'s tills', await as('/pos-connections') === 403);
     check('they cannot make a till key', await as('/pos-connections', 'POST', { locationId: loc!.id }) === 403);
     check('they cannot see the bills left out of Inventory', await as('/pos-connections/left-out') === 403);
     check('they cannot replace or disconnect one',await as('/pos-connections/00000000-0000-0000-0000-000000000000/replace-key', 'POST') === 403 && await as('/pos-connections/00000000-0000-0000-0000-000000000000/disconnect', 'POST') === 403);
     check('they CAN ask which stores bill at a till (their screen needs it to hide New sale)', await as('/pos-connections/billing-locations') === 200);
-    check('and no till was made by any of that', (await prisma.storefrontConnection.count({ where: { clientId: t.clientId, baseUrl: POS_BASE_URL, status: 'ACTIVE' } })) === 0);
+    check('and no till was made by any of that', (await prisma.storefrontConnection.count({ where: { clientId: t.clientId, baseUrl: POS_BASE_URL, status: 'ACTIVE' } })) === tillsBefore);
   } finally {
     await prisma.userRole.deleteMany({ where: { userId: cashier.id } });
     await prisma.user.delete({ where: { id: cashier.id } }).catch(() => undefined);

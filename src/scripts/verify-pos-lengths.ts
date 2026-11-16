@@ -20,6 +20,7 @@ import { tick } from '../services/pos/pos-queue.service';
 import { dayBookService } from '../services/daybook.service';
 import { platformAdminService } from '../services/platform-admin.service';
 import { storedPrice } from '../lib/units';
+import { storefrontCatalogueService } from '../services/storefront-catalogue.service';
 
 for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
   if (!/localhost:55433/.test(process.env[k] ?? '')) { console.error(`Refusing: ${k} is not the local database.`); process.exit(2); }
@@ -171,6 +172,54 @@ async function main() {
   check('a quote for 2.25 m: Rs 1,012.50 (101250 paise)', q.status === 200 && q.body?.data?.totalPaise === 101250, q.body);
   const st = await newTill('GET', `/stock?codes=${M}`);
   check('stock for the cloth answers in cm', st.status === 200 && JSON.stringify(st.body).includes(String(await free(maroon.variant))), st.body);
+
+  console.log('\nH. A PRODUCT THAT LEAVES REACHES THE TILL (found live on sphl, 17 Nov)');
+  const full = await newTill('GET', '/catalogue?limit=200');
+  const cursor = full.body?.data?.nextCursor;
+  check('a full pull gives a cursor to ask "what changed since"', typeof cursor === 'string' && cursor.length > 0, full.body?.data?.nextCursor);
+  const sareeId = saree.product.id;
+  const since = async (t: ReturnType<typeof till>, c: string) => (await t('GET', `/catalogue?limit=200&cursor=${encodeURIComponent(c)}`)).body?.data;
+  const findIn = (page: any, title: string) => page?.products?.find((p: any) => p.title === title);
+  const setProduct = async (data: Record<string, unknown>) => {
+    let res = await api('PATCH', `/products/${sareeId}`, data);
+    if (res.status === 404) res = await api('PUT', `/products/${sareeId}`, data);
+    return res;
+  };
+  await new Promise(res => setTimeout(res, 20));
+  let res = await setProduct({ status: 'DRAFT' });
+  let page = await since(newTill, cursor);
+  let s1 = findIn(page, 'Ready saree');
+  check('unpublished: the next incremental page HAS the saree, every variant eligible:false', res.status === 200 && !!s1 && s1.variants.every((v: any) => v.eligible === false), { status: res.status, found: !!s1, eligible: s1?.variants?.map((v: any) => v.eligible) });
+  const fullAgain = (await newTill('GET', '/catalogue?limit=200')).body?.data;
+  check('...and a full pull simply leaves it out (no ghost rows)', !findIn(fullAgain, 'Ready saree'));
+  const c2 = page?.nextCursor ?? cursor;
+  res = await setProduct({ status: 'ACTIVE' });
+  page = await since(newTill, c2);
+  s1 = findIn(page, 'Ready saree');
+  check('published again: back on the incremental page, eligible:true', res.status === 200 && !!s1 && s1.variants.some((v: any) => v.eligible === true), s1?.variants?.map((v: any) => v.eligible));
+  const c3 = page?.nextCursor ?? c2;
+  await prisma.product.update({ where: { id: sareeId }, data: { sellInShop: false } });
+  page = await since(newTill, c3);
+  s1 = findIn(page, 'Ready saree');
+  check('made a material (not for sale): eligible:false', !!s1 && s1.variants.every((v: any) => v.eligible === false), s1?.variants?.map((v: any) => v.eligible));
+  await prisma.product.update({ where: { id: sareeId }, data: { sellInShop: true } });
+  const c4 = page?.nextCursor ?? c3;
+  await prisma.product.update({ where: { id: sareeId }, data: { trashedAt: new Date() } });
+  page = await since(newTill, c4);
+  s1 = findIn(page, 'Ready saree');
+  check('put in the bin: eligible:false', !!s1 && s1.variants.every((v: any) => v.eligible === false), s1?.variants?.map((v: any) => v.eligible));
+  await prisma.product.update({ where: { id: sareeId }, data: { trashedAt: null } });
+  const oldCursor = (await oldTill('GET', '/catalogue?limit=200')).body?.data?.nextCursor;
+  await prisma.product.update({ where: { id: maroon.product.id }, data: { title: 'Maroon silk' } });
+  const oldPage = await since(oldTill, oldCursor);
+  const m1 = findIn(oldPage, 'Maroon silk');
+  check('an OLD till: cloth that changed comes as eligible:false, never as something to sell', !m1 || m1.variants.every((v: any) => v.eligible === false), m1?.variants?.map((v: any) => v.eligible));
+  // Other websites read the same feed WITHOUT the leavers: their contract is unchanged.
+  const webFull = await storefrontCatalogueService.listProducts({ clientId: SHOP, locationIds: [] }, { limit: 200 });
+  await prisma.product.update({ where: { id: sareeId }, data: { status: 'DRAFT' } });
+  const webSince = await storefrontCatalogueService.listProducts({ clientId: SHOP, locationIds: [] }, { limit: 200, cursor: webFull.nextCursor ?? undefined });
+  check('other websites\' feed: an unpublished piece is still left out, even on a "changed since" page', !webSince.products.some((p: any) => p.title === 'Ready saree') && webSince.products.every((p: any) => !('listed' in p)), webSince.products.map((p: any) => p.title));
+  await prisma.product.update({ where: { id: sareeId }, data: { status: 'ACTIVE' } });
 
   console.log('\nG. THE DAY BOOK');
   const day: any = await dayBookService.getToday(SHOP);

@@ -259,6 +259,7 @@ const PRODUCT_SELECT = {
   category: true, productType: true, dressType: true, fabric: true, craft: true, brand: true,
   basePrice: true, isService: true, publishedAt: true, createdAt: true, updatedAt: true,
   soldBy: true, minCut: true, widthCm: true, cutReturnable: true,
+  status: true, trashedAt: true, sellInShop: true,
   images: {
     // variantId: a photograph may belong to one colour rather than to the product as a whole,
     // which is how a shop shows the green saree when green is chosen.
@@ -430,7 +431,14 @@ export class StorefrontCatalogueService {
    * a reader that said it understands units -- a POS till sending `X-Pos-Units: 1` (16 Nov 2026, PLAN-fabrics.md 4.5).
    * Every other reader, and every till that did not say so, keeps the pieces-only feed it has always had.
    */
-  async listProducts(scope: CatalogueScope, opts: { cursor?: string; limit?: number; since?: Date; withLengths?: boolean } = {}) {
+  /*
+   * `includeLeavers` (the POS till only, 17 Nov 2026): on an INCREMENTAL page (a cursor or `since`), also return the
+   * products that changed AND are no longer for sale -- unpublished, binned, made a material, or sold by length for a
+   * till that does not do lengths -- each with `listed: false`, so the till stops offering them. Found live on sphl:
+   * an unpublished piece never reached the till's incremental page (it was filtered out before "changed since"), so
+   * the till kept selling it until a full refresh. Other websites keep the feed they have always had.
+   */
+  async listProducts(scope: CatalogueScope, opts: { cursor?: string; limit?: number; since?: Date; withLengths?: boolean; includeLeavers?: boolean } = {}) {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
     // Together, not one after the other. Neither needs the other's answer, and waiting for the
     // locations before even asking for the currency spent a whole round trip -- about a second
@@ -445,7 +453,7 @@ export class StorefrontCatalogueService {
 
     const where: Prisma.ProductWhereInput = {
       clientId: scope.clientId,
-      ...(opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT),
+      ...(opts.includeLeavers && (opts.cursor || opts.since) ? {} : (opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT)),
       ...(opts.since ? { updatedAt: { gte: opts.since } } : {}),
       ...(decoded
         ? {
@@ -472,7 +480,14 @@ export class StorefrontCatalogueService {
      * built against these photographs, and quietly adding flat-lay references to it would put a
      * garment on a table onto somebody's product page without them asking.
      */
-    const products: StorefrontProduct[] = page.map(p => toStorefrontProduct(p, scoped, currency));
+    const products: StorefrontProduct[] = page.map(p => {
+      const shaped = toStorefrontProduct(p, scoped, currency);
+      if (!opts.includeLeavers) return shaped;
+      // Still for sale to THIS reader? The same rule as the filter above (lengths only for a till that does them).
+      const forSale = (p as any).status === 'ACTIVE' && (p as any).trashedAt === null && (p as any).sellInShop !== false
+        && (opts.withLengths || !MEASURED_UNITS.includes(String((p as any).soldBy ?? 'PIECE')));
+      return { ...shaped, listed: forSale };
+    });
 
     const last = page[page.length - 1];
     return {
