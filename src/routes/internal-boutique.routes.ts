@@ -11,6 +11,7 @@ import * as racks from '../services/boutique/shelves';
 import { factorOf } from '../lib/units';
 import type { Actor } from '../services/boutique';
 import { respondWithError } from '../utils/respondWithError';
+import * as customers from '../services/boutique/customers';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -29,7 +30,7 @@ import { respondWithError } from '../utils/respondWithError';
  * first answer and changes nothing.
  */
 const router = Router();
-const KNOWN_CAN = ['products:write', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view'];
+const KNOWN_CAN = ['products:write', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write'];
 type Pass = { id: string; scopes: string[]; tenant?: string; clientId?: string; issuedAt?: number; expiresAt?: number; onBehalfOf?: { userId: string; name?: string; can?: string[] } };
 const pass = (req: Request) => (req as any).service as Pass;
 const fail = (res: Response, status: number, message: string) => res.status(status).json({ success: false, message });
@@ -237,6 +238,15 @@ router.get('/holds', read(async req => {
 }));
 
 // ── suppliers and purchase orders (CRM-B checklist section 4) ─────────────────────────────────────
+// ── customers (17 Nov 2026): the boutique's people on ScaleEzy's one customer list, with their read-only snapshot ──
+// Before /customers/:id so "removed" and "bulk" are never read as ids.
+router.get('/customers/removed', read(req => customers.removedSince(actorOf(req), req.query as any)));
+router.post('/customers/bulk', write((tx, a, req) => customers.linkMany(tx, a, req.body ?? {})));
+router.post('/customers', write((tx, a, req) => customers.link(tx, a, req.body ?? {})));
+router.get('/customers/:boutiqueCustomerId', read(req => customers.getOne(actorOf(req), req.params.boutiqueCustomerId)));
+router.put('/customers/:boutiqueCustomerId/profile', write((tx, a, req) => customers.putProfile(tx, a, req.params.boutiqueCustomerId, req.body ?? {})));
+router.delete('/customers/:boutiqueCustomerId', write((tx, a, req) => customers.unlink(tx, a, req.params.boutiqueCustomerId)));
+
 router.get('/suppliers', read(req => buying.listSuppliers(actorOf(req), req.query as any)));
 router.get('/suppliers/performance', read(req => {
   const a = actorOf(req);

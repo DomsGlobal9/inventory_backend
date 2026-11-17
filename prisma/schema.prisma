@@ -1352,6 +1352,7 @@ model Customer {
   storeCreditEntries StoreCreditEntry[]
   addresses          CustomerAddress[]
   pastPurchases      PastPurchase[]
+  boutiqueProfiles   CustomerBoutiqueProfile[]
 
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -5577,4 +5578,30 @@ model BoutiqueJoinRequest {
   @@index([tenant, createdAt])
   @@index([status, createdAt])
   @@map("boutique_join_requests")
+}
+
+/// The boutique app's (CRM-B) people, one row each, on the Inventory customer holding their number (17 Nov 2026).
+/// Several can share one customer (a family phone); snapshots are never merged. Removed rows keep no personal data
+/// (a database trigger wipes name and snapshot). CRM reads them on the module feed. See services/boutique/customers.ts.
+model CustomerBoutiqueProfile {
+  id                 String    @id @default(uuid())
+  clientId           String    @map("client_id")
+  boutiqueCustomerId String    @map("boutique_customer_id")
+  customerId         String?   @map("customer_id")
+  boutiqueName       String?   @map("boutique_name")
+  nameMatches        Boolean   @default(false) @map("name_matches")
+  snapshot           Json      @default("{}")
+  snapshotAt         DateTime? @map("snapshot_at")
+  removed            Boolean   @default(false)
+  removedReason      String?   @map("removed_reason")
+  removedAt          DateTime? @map("removed_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@unique([clientId, boutiqueCustomerId])
+  @@index([clientId, customerId])
+  @@index([clientId, removedAt])
+  @@map("customer_boutique_profiles")
 }
