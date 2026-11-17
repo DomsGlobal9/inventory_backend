@@ -527,10 +527,21 @@ export class StorefrontCatalogueService {
     const scoped = new Set(locationIds);
 
     const q = (opts.q ?? '').trim().slice(0, 60);
-    const priceRange = {
-      ...(opts.minPrice != null ? { gte: opts.minPrice } : {}),
-      ...(opts.maxPrice != null ? { lte: opts.maxPrice } : {})
-    };
+    /*
+     * A price range is what a shopper reads: per piece, or per METRE for cloth (17 Nov 2026). Cloth's stored price is
+     * per cm, so Rs 450/m sat at 4.50 and showed under "up to Rs 10". Each unit is compared in its own base: the
+     * range divided by the unit's factor (100 for a metre, 1000 for a kilogram).
+     */
+    const rangeIn = (factor: number) => ({
+      ...(opts.minPrice != null ? { gte: opts.minPrice / factor } : {}),
+      ...(opts.maxPrice != null ? { lte: opts.maxPrice / factor } : {})
+    });
+    const priceMatch = (factor: number): Prisma.ProductWhereInput => ({
+      OR: [
+        { variants: { some: { sellingPrice: rangeIn(factor) } } },
+        { basePrice: rangeIn(factor), variants: { some: { sellingPrice: null } } }
+      ]
+    });
     const where: Prisma.ProductWhereInput = {
       clientId: scope.clientId,
       ...ELIGIBLE_PRODUCT, // the online shop's list: fabric sells there (PLAN-fabrics 4.5)
@@ -551,8 +562,9 @@ export class StorefrontCatalogueService {
         ...(opts.minPrice != null || opts.maxPrice != null
           ? [{
               OR: [
-                { variants: { some: { sellingPrice: priceRange } } },
-                { basePrice: priceRange, variants: { some: { sellingPrice: null } } }
+                { soldBy: { notIn: MEASURED_UNITS }, ...priceMatch(1) },
+                { soldBy: 'METRE', ...priceMatch(100) },
+                { soldBy: 'KILOGRAM', ...priceMatch(1000) }
               ]
             }]
           : []),
@@ -580,7 +592,26 @@ export class StorefrontCatalogueService {
       // Newest first is what a returning customer wants to see, and what "new arrivals" means.
       : [{ publishedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'asc' }];
 
-    const [total, rows] = await Promise.all([
+    /*
+     * Price order is by the price a shopper reads (per metre for cloth), which the database cannot sort by: cloth's
+     * per-cm 4.50 came first as "cheapest". For the two price sorts, the matching products' prices and units are
+     * read (light: three columns), ordered here, and only the page asked for is loaded.
+     */
+    const priceSort = opts.sort === 'PRICE_LOW' || opts.sort === 'PRICE_HIGH';
+    const sortedIds = priceSort
+      ? (await prisma.product.findMany({ where, select: { id: true, basePrice: true, soldBy: true } }))
+          .map(k => ({ id: k.id, shown: Number(k.basePrice) * (k.soldBy === 'METRE' ? 100 : k.soldBy === 'KILOGRAM' ? 1000 : 1) }))
+          .sort((a, b) => (opts.sort === 'PRICE_LOW' ? a.shown - b.shown : b.shown - a.shown) || a.id.localeCompare(b.id))
+          .map(k => k.id)
+      : null;
+    const [total, rows] = sortedIds
+      ? await (async () => {
+          const ids = sortedIds.slice((page - 1) * limit, page * limit);
+          const found = await prisma.product.findMany({ where: { id: { in: ids } }, select: PRODUCT_SELECT });
+          const at = new Map(ids.map((id, i) => [id, i]));
+          return [sortedIds.length, found.sort((a, b) => (at.get(a.id) ?? 0) - (at.get(b.id) ?? 0))] as const;
+        })()
+      : await Promise.all([
       prisma.product.count({ where }),
       prisma.product.findMany({
         where,

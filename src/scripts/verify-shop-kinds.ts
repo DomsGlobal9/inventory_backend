@@ -107,7 +107,8 @@ async function openShop(id: string, opts: { sells: Sells; gst: boolean; name: st
     const res = await fetch(`${BASE}/internal/modules/crm/shops/${id}`, { method: 'PUT', headers: { Authorization: `Bearer ${pass}`, 'Content-Type': 'application/json' }, body: '{}' });
     return res.status;
   };
-  const crmEvents = async () => (await prisma.moduleEvent.findMany({ where: { clientId: id }, select: { kind: true } })).map(e => e.kind);
+  // CRM's events only: the same table carries the till's own push (module 'pos', catalogue.changed) for a shop with a till.
+  const crmEvents = async () => (await prisma.moduleEvent.findMany({ where: { clientId: id, module: 'crm' }, select: { kind: true } })).map(e => e.kind);
 
   return { id, store, api, addProduct, till, bill, shopper, order, crmOn, crmEvents };
 }
@@ -209,6 +210,16 @@ async function shopD() {
   check('...one order, Rs 9,800, the cloth line 200 cm', near(o?.total, 9800) && o?.items?.some(i => i.quantity === 200), o);
   const day: any = await dayBookService.getToday(s.id);
   check('Day Book Rs 9,800', near(day?.sales?.revenue, 9800), day?.sales);
+
+  // Price filters and sorts read cloth per METRE, as the shopper does (17 Nov: Rs 450/m showed under "up to Rs 10").
+  const fine = await s.addProduct({ title: 'Fine Kanchi silk', category: 'WOMEN', productType: 'UNSTITCHED', soldBy: 'METRE', kind: 'FABRIC', basePrice: storedPrice(9000, 'METRE') }, [{ sku: `FKS-${STAMP}`, colorName: 'Gold', sellingPrice: storedPrice(9000, 'METRE'), quantity: 1000 }]);
+  const titles = async (q: string) => { const r = await s.shopper('GET', `/products?${q}`); return ((r.body?.data?.products ?? r.body?.data ?? []) as any[]).map(p => p.title); };
+  check('a Rs 9,000/m silk added', fine.ok, fine.why);
+  check('"up to Rs 10": no cloth (its per-cm price is not its price)', !(await titles('maxPrice=10')).some(t => /silk/i.test(t)), await titles('maxPrice=10'));
+  check('"Rs 600 to Rs 700": the Rs 650/m raw silk', JSON.stringify(await titles('minPrice=600&maxPrice=700')) === JSON.stringify(['Raw silk']), await titles('minPrice=600&maxPrice=700'));
+  check('"Rs 8,800 and up": only the Rs 9,000/m silk (not the Rs 8,500 saree)', JSON.stringify(await titles('minPrice=8800')) === JSON.stringify(['Fine Kanchi silk']), await titles('minPrice=8800'));
+  check('dearest first: the Rs 9,000/m silk, then the Rs 8,500 saree, then the Rs 650/m silk', JSON.stringify(await titles('sort=PRICE_HIGH')) === JSON.stringify(['Fine Kanchi silk', 'Kanchi pattu saree', 'Raw silk']), await titles('sort=PRICE_HIGH'));
+  check('cheapest first: the exact reverse', JSON.stringify(await titles('sort=PRICE_LOW')) === JSON.stringify(['Raw silk', 'Kanchi pattu saree', 'Fine Kanchi silk']), await titles('sort=PRICE_LOW'));
 }
 
 async function main() {
