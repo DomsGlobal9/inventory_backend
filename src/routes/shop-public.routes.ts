@@ -168,7 +168,8 @@ router.get('/:slug/looks/:code', async (req: Request, res: Response) => {
     };
     const pieces = soldOutLast(products.map((p: any) => ({ ...p, reelColour: reelColour(p) })));
     // Every piece gone from the shop since (deleted, unpublished): the same kind page as a switched-off link.
-    if (pieces.length) return res.json({ success: true, data: { available: true, title: look.title, pieces } });
+    // reel: Instagram's own player for the reel, when the shop typed one (null otherwise).
+    if (pieces.length) return res.json({ success: true, data: { available: true, title: look.title, reel: look.reel ?? null, pieces } });
   }
   res.json({ success: true, data: { available: false, title: null, pieces: [], newArrivals: await newArrivals(shop) } });
 });

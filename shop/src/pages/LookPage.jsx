@@ -253,12 +253,19 @@ export default function LookPage({ slug, code, shop }) {
   return (
     <section className="lk">
       <div className="lk-head">
-        <div className="lk-thumb"><Shot src={describe(pieces[0] ?? {}).photo?.url} alt="" ratio="3 / 4" sizes="64px" /></div>
+        {/* With a reel, the photo opens it on Instagram too (the play mark says so); without one it is just the photo. */}
+        {look.reel
+          ? <a className="lk-thumb lk-thumbplay" href={look.reel.url} target="_blank" rel="noreferrer" aria-label="Watch the reel on Instagram">
+              <Shot src={describe(pieces[0] ?? {}).photo?.url} alt="" ratio="3 / 4" sizes="64px" />
+            </a>
+          : <div className="lk-thumb"><Shot src={describe(pieces[0] ?? {}).photo?.url} alt="" ratio="3 / 4" sizes="64px" /></div>}
         <div className="lk-headtext">
           <span className="lk-kicker">Shop the reel</span>
           <h1 className="lk-title">{look.title}</h1>
           <span className="lk-sub">{pieces.length} {pieces.length === 1 ? 'piece' : 'pieces'} seen in this reel{buying ? '' : ' · message us to order'}</span>
         </div>
+        {/* The reel on Instagram itself (17 Nov, the owner: a link, not a pop-up, for shoppers). */}
+        {look.reel ? <a className="lk-watch" href={look.reel.url} target="_blank" rel="noreferrer"><i aria-hidden="true" />Watch reel</a> : null}
       </div>
 
       {pieces.length > 1 && (

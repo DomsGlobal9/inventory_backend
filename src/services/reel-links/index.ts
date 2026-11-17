@@ -270,7 +270,7 @@ export async function list(clientId: string) {
       where: { clientId, deletedAt: null },
       orderBy: { createdAt: 'desc' },
       select: {
-        id: true, clientId: true, code: true, title: true, active: true, shortCode: true, createdAt: true, createdById: true,
+        id: true, clientId: true, code: true, title: true, active: true, shortCode: true, createdAt: true, createdById: true, reelUrl: true,
         items: { orderBy: { position: 'asc' }, select: { productId: true, product: { select: { images: PHOTO_SELECT } } } },
         _count: { select: { items: true } }
       }
@@ -288,6 +288,8 @@ export async function list(clientId: string) {
   const nameOf = new Map(people.map(p => [p.id, p.name]));
   return rows.map(r => ({
     id: r.id, code: r.code, title: r.title, active: r.active, createdAt: r.createdAt,
+    // The Instagram address typed for it, so the card can play the reel here (17 Nov 2026).
+    reelUrl: r.reelUrl ?? null,
     createdBy: r.createdById ? nameOf.get(r.createdById) ?? null : null,
     pieces: r._count.items,
     cover: r.items[0]?.product.images[0]?.url ?? null,
@@ -442,16 +444,34 @@ export async function slugForCode(raw: unknown): Promise<string | null> {
  * worn in the reel. `null` when there is no such reel link IN THIS SHOP (another shop's code reads as unknown).
  * `available: false` when it was switched off or deleted.
  */
+/**
+ * The reel the link was made from, as Instagram's OWN embeddable player (17 Nov 2026: shoppers watch it on the page).
+ * Only an https Instagram address of a reel or post becomes a player -- /reel/, /reels/, /p/ or /tv/ and a plain code
+ * -- rebuilt from that code alone, so whatever else was typed (a query, a fragment, another site) can never be framed.
+ * Anything else: null, and the page shows no player.
+ */
+export function instagramPlayer(raw: unknown): { url: string; embed: string } | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const u = new URL(raw.trim());
+    if (u.protocol !== 'https:' || !['instagram.com', 'www.instagram.com', 'm.instagram.com'].includes(u.hostname.toLowerCase())) return null;
+    const m = /^\/(?:[A-Za-z0-9._]{1,30}\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]{5,40})\/?$/.exec(u.pathname);
+    if (!m) return null;
+    const kind = m[1] === 'reels' ? 'reel' : m[1];
+    return { url: `https://www.instagram.com/${kind}/${m[2]}/`, embed: `https://www.instagram.com/${kind}/${m[2]}/embed/` };
+  } catch { return null; }
+}
+
 export async function forShopper(clientId: string, raw: unknown) {
   const code = typeof raw === 'string' ? raw.trim() : '';
   if (!CODE_SHAPE.test(code)) return null;
   const r = await prisma.reelLink.findFirst({
     where: { code, clientId },
-    select: { title: true, active: true, deletedAt: true, items: { orderBy: { position: 'asc' }, select: { colour: true, product: { select: { productCode: true } } } } }
+    select: { title: true, active: true, deletedAt: true, reelUrl: true, items: { orderBy: { position: 'asc' }, select: { colour: true, product: { select: { productCode: true } } } } }
   });
   if (!r) return null;
-  if (!r.active || r.deletedAt) return { available: false as const, title: null, pieces: [] };
-  return { available: true as const, title: r.title, pieces: r.items.map(i => ({ productCode: i.product.productCode, colour: i.colour })) };
+  if (!r.active || r.deletedAt) return { available: false as const, title: null, pieces: [], reel: null };
+  return { available: true as const, title: r.title, reel: instagramPlayer(r.reelUrl), pieces: r.items.map(i => ({ productCode: i.product.productCode, colour: i.colour })) };
 }
 
 /** The bio page: the shop's switched-on reel links, newest first, each with its first piece's photo. */

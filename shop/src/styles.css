@@ -4757,3 +4757,11 @@ a.shot { display: block; }
   .lk-bar { position: sticky; top: calc(var(--bar) + 16px); bottom: auto; margin: 0; flex-direction: column; align-items: stretch; border: 1px solid var(--line); border-radius: var(--r); padding: 16px; }
   .lk-bar .go { width: 100%; }
 }
+
+/* "Watch reel" on a reel link's page: a link to the reel on Instagram (17 Nov 2026). "lk-" only. */
+.lk-thumbplay { position: relative; display: block; }
+.lk-thumbplay::after { content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-35%, -50%); border-left: 13px solid #fff; border-top: 8px solid transparent; border-bottom: 8px solid transparent; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .55)); }
+.lk-thumbplay:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.lk-watch { margin-left: auto; flex: none; min-height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid var(--ink); background: var(--card); color: var(--ink); font-weight: 700; font-size: 13px; display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; text-decoration: none; }
+.lk-watch i { width: 0; height: 0; border-left: 8px solid currentColor; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+.lk-watch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import axios from 'axios';
 import { prisma } from '../lib/prisma';
+import { instagramPlayer } from '../services/reel-links';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4036/api/v1';
 for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
@@ -110,6 +111,33 @@ async function main() {
   check('a search with a filter: both apply', ((await api('GET', `/reel-links/pieces?q=${encodeURIComponent('zzz-nothing-' + STAMP)}&filter=instock`)).data ?? []).length === 0);
   check('a person who may only look cannot search for pieces: 403', (await api('GET', '/reel-links/pieces', undefined, SALES)).status === 403);
   check('...nor read the list (no reel_link:view): 403', (await api('GET', '/reel-links', undefined, SALES)).status === 403);
+
+  console.log('\nTHE REEL ITSELF (17 Nov): PLAYED IN INVENTORY, A LINK FOR SHOPPERS');
+  const P = (u: string) => instagramPlayer(u);
+  check('a reel address -> Instagram\'s player', JSON.stringify(P('https://www.instagram.com/reel/C0ffee123/')) === JSON.stringify({ url: 'https://www.instagram.com/reel/C0ffee123/', embed: 'https://www.instagram.com/reel/C0ffee123/embed/' }), P('https://www.instagram.com/reel/C0ffee123/'));
+  check('...with Instagram\'s ?igsh= share tail: the tail is dropped', P('https://www.instagram.com/reel/C0ffee123/?igsh=MTZ6aWx')?.embed === 'https://www.instagram.com/reel/C0ffee123/embed/');
+  check('...a username before /reel/, m.instagram.com, /reels/ and a post (/p/) all work', P('https://www.instagram.com/sphl.sarees/reel/C0ffee123/')?.url === 'https://www.instagram.com/reel/C0ffee123/' && P('https://m.instagram.com/reel/C0ffee123')?.url === 'https://www.instagram.com/reel/C0ffee123/' && P('https://www.instagram.com/reels/C0ffee123/')?.url === 'https://www.instagram.com/reel/C0ffee123/' && P('https://www.instagram.com/p/C0ffee123/')?.embed === 'https://www.instagram.com/p/C0ffee123/embed/');
+  for (const [why, u] of [
+    ['another site', 'https://www.youtube.com/watch?v=abc12345'],
+    ['a look-alike domain', 'https://instagram.com.evil.example/reel/C0ffee123/'],
+    ['plain http', 'http://www.instagram.com/reel/C0ffee123/'],
+    ['a profile, not a reel', 'https://www.instagram.com/sphl.sarees/'],
+    ['a path trying to climb out', 'https://www.instagram.com/reel/../../evil/'],
+    ['not an address at all', 'reel 12 on insta']
+  ] as const) check(`no player for ${why}`, P(u) === null, P(u));
+
+  const withReel = await api('POST', '/reel-links', { title: T('with reel'), reelUrl: 'https://www.instagram.com/reel/C0ffee123/?igsh=xyz', pieces: [a] });
+  const without = await api('POST', '/reel-links', { title: T('no reel'), pieces: [a] });
+  const listRow = ((await api('GET', '/reel-links')).data ?? []).find((r: any) => r.id === withReel.data?.id);
+  check('the wall\'s list carries the reel address, so a card can play it', listRow?.reelUrl === 'https://www.instagram.com/reel/C0ffee123/?igsh=xyz', listRow?.reelUrl);
+  const shopSlug = (await prisma.onlineShop.findFirst({ where: { clientId: CLIENT }, select: { slug: true } }))?.slug;
+  const pub = async (code: string) => (await axios.get(`${BASE.replace(/\/api\/v1$/, '')}/shop/${shopSlug}/looks/${code}`, { validateStatus: () => true })).data?.data;
+  const pubWith = await pub(withReel.data.code);
+  check('the shopper\'s page gets the reel as Instagram\'s address (for "Watch reel")', pubWith?.reel?.url === 'https://www.instagram.com/reel/C0ffee123/', pubWith?.reel);
+  check('...and a link without a reel address gets none (no button)', (await pub(without.data.code))?.reel === null);
+  const page = await axios.get(`${BASE.replace(/\/api\/v1$/, '')}/${shopSlug}/look/${withReel.data.code}`, { headers: { host: `shop.localhost:${new URL(BASE).port}` }, validateStatus: () => true });
+  const csp = String(page.headers['content-security-policy'] ?? '');
+  check('the shop page still lets NO Instagram frame in (shoppers get a link, not a player)', csp.length > 0 && !/frame-src[^;]*instagram/.test(csp), csp.slice(0, 200));
 }
 
 async function cleanup() {
