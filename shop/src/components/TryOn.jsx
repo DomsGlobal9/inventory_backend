@@ -101,7 +101,7 @@ function NumberStep({ slug, onProved }) {
           <label>
             <span>OTP sent to your WhatsApp</span>
             <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric"
-              autoComplete="one-time-code" maxLength={6} placeholder="123456" autoFocus />
+              autoComplete="one-time-code" maxLength={6} placeholder="123456" aria-label="The 6-digit code sent to your WhatsApp" autoFocus />
           </label>
           <div className="row">
             <button type="button" className="go" disabled={busy || code.replace(/\D/g, '').length !== 6} onClick={check}>

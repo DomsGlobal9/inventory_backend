@@ -113,7 +113,7 @@ export default function BagPage({ shop }) {
                 <div className="what">
                   <h2>{priced?.title ?? line.title ?? 'Loading…'}</h2>
                   <p className="of">
-                    {[priced?.colour ?? line.colour, priced?.size ?? line.size].filter(Boolean).join(' · ') || ' '}
+                    {[priced?.colour ?? line.colour, isMetre(line.soldBy ?? priced?.soldBy) ? null : (priced?.size ?? line.size)].filter(Boolean).join(' · ') || ' '}
                     {(priced?.colourHex ?? line.colourHex)
                       ? <i className="swatch" style={{ background: priced?.colourHex ?? line.colourHex }} aria-hidden="true" />
                       : null}

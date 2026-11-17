@@ -376,7 +376,7 @@ export default function CheckoutPage({ shop }) {
                   <label>
                     <span>OTP sent to your WhatsApp</span>
                     <input value={proof.code} onChange={e => setProof(p => ({ ...p, code: e.target.value }))}
-                      inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456" />
+                      inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="123456" aria-label="The 6-digit code sent to your WhatsApp" />
                   </label>
                   <div className="row">
                     <button type="button" className="go quiet" disabled={proof.busy || proof.code.replace(/\D/g, '').length !== 6}
@@ -483,8 +483,8 @@ export default function CheckoutPage({ shop }) {
                         commit the money and can no longer see the swatches they picked from.
                         The bag and the finished order have always named it; this was the gap. */}
                     <span className="t">{l.productCode
-                      ? <Link className="itemlink" to={`/${slug}/p/${encodeURIComponent(l.productCode)}?v=${encodeURIComponent(l.variantCode)}`}>{[l.title, l.colour, l.size].filter(Boolean).join(' · ')}</Link>
-                      : [l.title, l.colour, l.size].filter(Boolean).join(' · ')}</span>
+                      ? <Link className="itemlink" to={`/${slug}/p/${encodeURIComponent(l.productCode)}?v=${encodeURIComponent(l.variantCode)}`}>{[l.title, l.colour, isMetre(l.soldBy) ? null : l.size].filter(Boolean).join(' · ')}</Link>
+                      : [l.title, l.colour, isMetre(l.soldBy) ? null : l.size].filter(Boolean).join(' · ')}</span>
                     <span className="m">{money(l.lineTotal, currency)}</span>
                   </li>
                 ))}

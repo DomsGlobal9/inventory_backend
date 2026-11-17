@@ -258,7 +258,7 @@ export default function OrderPage({ shop }) {
                   </Link>
                 ) : null}
                 <p className="of">
-                  {[i.colour, i.size].filter(Boolean).join(' · ')}
+                  {[i.colour, isMetre(i.soldBy) ? null : i.size].filter(Boolean).join(' · ')}
                   {i.colourHex ? <i className="swatch" style={{ background: i.colourHex }} aria-hidden="true" /> : null}
                 </p>
                 <p className="of">{isMetre(i.soldBy) ? `${lengthText(i.quantity)} × ${money(Math.round(Number(i.unitPrice) * 100 * 100) / 100)} / m` : <>{i.quantity} × {money(i.unitPrice)}</>}</p>
@@ -277,7 +277,9 @@ export default function OrderPage({ shop }) {
           <div className="sum"><dt>Total</dt><dd>{money(o.total)}</dd></div>
         </dl>
 
-        {/* The line a customer opens this page to read. */}
+        {/* The line a customer opens this page to read. Not on a cancelled order with nothing to refund: it said
+            "Have this ready: Rs 1,225" right under "Nothing is due on this order" (17 Nov, sphl SO-000081). */}
+        {o.state === 'CANCELLED' && !refunding ? null : (
         <div className="due">
           <span>
             {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.paidOnDelivery ? 'Paid on delivery' : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
@@ -285,6 +287,7 @@ export default function OrderPage({ shop }) {
           </span>
           <b>{money(o.total)}</b>
         </div>
+        )}
       </section>
 
       <div className="ogrid">

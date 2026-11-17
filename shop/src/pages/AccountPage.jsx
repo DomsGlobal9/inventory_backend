@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { shownPrice, perWord } from '../units';
+const isMeasured = (soldBy) => soldBy === 'METRE' || soldBy === 'KILOGRAM';
 import { createPortal } from 'react-dom';
 import { EmptyWishlist } from '../components/Motion';
 import { placed } from '../components/Banners';
@@ -348,7 +349,8 @@ function WishlistView({ slug, shop, me, said, unheart }) {
   // Only what the bag can truly take: a shop not taking orders has no bag to add to, and a piece with a
   // choice of sizes is chosen on its own page.
   const buying = shop?.buying?.open === true;
-  const ready = buying ? hearts.filter(h => h.available && h.buyCode) : [];
+  // "Move all to bag" adds one of each: never cloth, which needs a length (it would be 1 cm).
+  const ready = buying ? hearts.filter(h => h.available && h.buyCode && !isMeasured(h.soldBy)) : [];
   const soldOutCount = hearts.filter(h => !h.available).length;
 
   const filteredHearts = useMemo(() => {
@@ -583,9 +585,10 @@ function WishlistView({ slug, shop, me, said, unheart }) {
 
                   {/* Quick Action Button */}
                   <div className="wish-actions">
-                    {h.available && !(buying && h.buyCode) ? (
+                    {/* Cloth by the metre goes to its page to choose a LENGTH: "Add to bag" here added 1, i.e. 1 cm (17 Nov). */}
+                    {h.available && (!(buying && h.buyCode) || isMeasured(h.soldBy)) ? (
                       <Link className="wish-add-btn" to={`/${slug}/p/${encodeURIComponent(h.productCode)}${h.variantCode ? `?v=${encodeURIComponent(h.variantCode)}` : ''}`}>
-                        <span>{buying ? 'Choose size' : 'View item'}</span>
+                        <span>{!buying ? 'View item' : isMeasured(h.soldBy) ? 'Choose length' : 'Choose size'}</span>
                       </Link>
                     ) : h.available ? (
                       <button
