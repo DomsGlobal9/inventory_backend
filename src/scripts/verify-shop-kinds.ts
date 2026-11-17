@@ -156,6 +156,8 @@ async function shopA() {
     for (let i = 0; i < 20 && !(await s.crmEvents()).includes('sale.created'); i++) await new Promise(r => setTimeout(r, 500));
     const ev = await s.crmEvents();
     check('CRM gets the sales and the customers (sale.created, customer.created)', ev.includes('sale.created') && ev.includes('customer.created'), [...new Set(ev)]);
+    const pieceLines = (await prisma.moduleEvent.findMany({ where: { clientId: s.id, module: 'crm', kind: 'sale_line.created' }, select: { payload: true } })).map(e => (e.payload as any).sold_by);
+    check('...each sale line says sold_by PIECE (bangles, bag)', pieceLines.length > 0 && pieceLines.every(u => u === 'PIECE'), pieceLines);
   }
   const day: any = await dayBookService.getToday(s.id);
   check('Day Book: the till\'s Rs 5,900 (the online order counts once it is sent)', near(day?.sales?.revenue, 5900), day?.sales);
@@ -177,6 +179,7 @@ async function shopB() {
 async function shopC() {
   console.log('\nC. FABRICS-ONLY SHOP');
   const s = await openShop(`kinds-fab-${STAMP}`, { sells: 'FABRICS', gst: true, name: 'Ikat Cloth Store' });
+  if (CRM_KEY) check('CRM switched on for the cloth shop', (await s.crmOn()) === 200);
   const cloth = await s.addProduct({ title: 'Pochampally ikat cotton', category: 'WOMEN', productType: 'UNSTITCHED', soldBy: 'METRE', kind: 'FABRIC', widthCm: 112, basePrice: storedPrice(380, 'METRE'), hsnCode: '5208', taxRateBps: 500 },
     [{ sku: `IKT-${STAMP}`, colorName: 'Indigo', sellingPrice: storedPrice(380, 'METRE'), quantity: 4000 }]);
   check('cloth sold by the metre, 40 m in stock (4000 cm)', cloth.ok && cloth.product?.soldBy === 'METRE' && (await prisma.inventoryStock.findFirst({ where: { clientId: s.id } }))?.quantity === 4000, cloth.why);
@@ -191,6 +194,20 @@ async function shopC() {
   check('...5% GST inside Rs 570 = Rs 27.14', near(o?.taxAmount, 27.14) && o?.items?.[0]?.taxRateBps === 500, o);
   const free = (await prisma.inventoryStock.findFirst({ where: { clientId: s.id } })) as any;
   check('stock: 40 m - 1.50 m sold at the till = 38.50 m, 2.50 m held for the online order', free?.quantity === 3850 && free?.reservedQty === 250, { q: free?.quantity, held: free?.reservedQty });
+
+  // CRM hears how each line is sold (17 Nov): cloth's quantity is centimetres, so without this CRM showed "250 x Rs 3.80".
+  if (CRM_KEY) {
+    const lines = async (kind: string) => (await prisma.moduleEvent.findMany({ where: { clientId: s.id, module: 'crm', kind }, select: { payload: true } })).map(e => e.payload as any);
+    const sold = await lines('sale_line.created');
+    check('CRM gets the till\'s 1.50 m as quantity 150, sold_by METRE', sold.some(p => p.quantity === 150 && p.sold_by === 'METRE'), sold.map(p => [p.quantity, p.sold_by]));
+    check('...and the online 2.50 m as quantity 250, sold_by METRE', sold.some(p => p.quantity === 250 && p.sold_by === 'METRE'), sold.map(p => [p.quantity, p.sold_by]));
+    // 1 m back at the till (cut cloth allowed for this check), and the return line says METRE too.
+    await prisma.product.update({ where: { id: cloth.product.id }, data: { cutReturnable: true } });
+    const back = await s.till(true)('POST', '/events', { kind: 'sale.returned', creditNoteNo: `CN/${s.id}/1`, againstInvoiceNo: `INV/${s.id}/2`, lines: [{ itemCode: V.variantCode, qty: 100, lineTotalPaise: 38000 }], totals: {} });
+    for (let i = 0; i < 60 && !(await lines('return_line.created')).length; i++) { await tick([s.id]).catch(() => undefined); await new Promise(r => setTimeout(r, 300)); }
+    const ret = await lines('return_line.created');
+    check('a 1 m return reaches CRM as quantity 100, sold_by METRE', ret.some(p => p.quantity === 100 && p.sold_by === 'METRE'), { answer: back?.data?.answer ?? back, ret: ret.map(p => [p.quantity, p.sold_by]) });
+  }
 }
 
 async function shopD() {
