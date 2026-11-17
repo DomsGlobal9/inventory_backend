@@ -4667,104 +4667,231 @@ a.shot { display: block; }
 .lp-total { display: flex; justify-content: space-between; align-items: baseline; margin: 0; font-size: 14px; }
 .lp-total strong { font-size: 17px; }
 
-/* ── Reel links (PLAN-reel-links.md): one reel's pieces, and the bio page of all reels ─────────── */
-.look { padding: 18px 0 30px; }
-.look-title { overflow-wrap: anywhere; font-size: 22px; font-weight: 750; letter-spacing: -.01em; margin: 0 0 4px; line-height: 1.25; }
-.look-sub { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
-.look-piece { display: flex; flex-direction: column; gap: 8px; }
-.look-wa { display: block; text-align: center; border: 1.5px solid #1f8f4e; color: #1f8f4e; border-radius: 10px;
-  padding: 9px 8px; font-weight: 650; font-size: 13px; text-decoration: none; }
-.look-actions { display: grid; gap: 10px; margin-top: 22px; max-width: 460px; }
-.look-actions .go { flex: none; width: 100%; text-decoration: none; }
-.look-added { border: 1.5px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 8px; }
-.look-added p { margin: 0; font-size: 14px; }
-.look-added a:not(.go) { color: var(--accent); font-weight: 600; }
-/* "bio-" names: .reel is already the sideways photo row under a product (Similar, Also bought, Recently viewed). */
-.bio-reels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
-@media (min-width: 620px) { .bio-reels { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (min-width: 940px) { .bio-reels { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-.bio-reel { display: block; color: inherit; text-decoration: none; }
-.bio-reel-shot { display: block; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; background: var(--soft); border: 1px solid var(--line); }
-.bio-reel-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.bio-reel-name { overflow-wrap: anywhere; display: block; font-size: 13.5px; font-weight: 600; margin-top: 7px; line-height: 1.3; }
+/* ── Reel links (PLAN-reel-links.md): the bio page of all reels, and one reel's page. Redesigned 17 Nov 2026 ──────
+   "bio-" (Filmstrips) and "lk-" (Frames) names only: this is one global sheet, and on 16 Nov a short name (.reel)
+   restyled every product page. */
+.bio, .lk-reel, .lk-plain, .lk-sheetwrap {
+  --lk-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --lk-night: #121317;      /* the band at the top of a frame: the same in light and dark */
+  --lk-blank: #f1ede4;      /* where a photograph will be */
+  --lk-blank-ink: #6f6758;
+  --lk-link: var(--accent); /* words in the shop's colour; dark words where that colour could not be read */
+}
+:root[data-accent-light] .bio, :root[data-accent-light] .lk-reel, :root[data-accent-light] .lk-plain { --lk-link: var(--ink); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .bio, :root:not([data-theme='light']) .lk-reel,
+  :root:not([data-theme='light']) .lk-plain, :root:not([data-theme='light']) .lk-sheetwrap {
+    --lk-blank: #1c2028; --lk-blank-ink: #9aa2af; --lk-link: var(--ink);
+  }
+}
+.bio-nophoto, .lk-nophoto {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 10px;
+  text-align: center; font-size: 11.5px; line-height: 1.3; color: var(--lk-blank-ink);
+}
 
-/* ── Reel link page, "A. Product grid" (16 Nov 2026, PLAN-reel-look-mockups-2.html) ───────────────────────
-   "lk-" only, everything: this is one global sheet, and on 16 Nov a short name (.reel) restyled every product page. */
-.lk { padding: 12px 0 40px; }
-.lk-head { display: flex; gap: 12px; align-items: center; padding: 6px 0 14px; }
-.lk-thumb { width: 56px; flex: none; border-radius: 8px; overflow: hidden; }
-.lk-headtext { min-width: 0; display: grid; gap: 1px; }
-.lk-kicker { font-size: 12.5px; color: var(--muted); font-weight: 600; }
-.lk-title { margin: 0; font-size: 20px; line-height: 1.25; font-weight: 750; letter-spacing: -.01em; overflow-wrap: anywhere; }
-.lk-sub { font-size: 13px; color: var(--muted); }
-.lk-sortbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 14px; font-size: 13.5px; color: var(--muted); }
-.lk-wrap { display: block; }
-.lk-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 12px; }
-.lk-card { min-width: 0; display: flex; flex-direction: column; }
-.lk-photo { position: relative; border-radius: 10px; overflow: hidden; background: var(--soft); }
-.lk-photo > a { display: block; }
-.lk-num { position: absolute; top: 8px; left: 8px; min-width: 24px; height: 24px; padding: 0 7px; border-radius: 6px; background: var(--card); color: var(--ink); font-size: 12.5px; font-weight: 750; display: inline-flex; align-items: center; justify-content: center; }
-.lk-heart { position: absolute; top: 6px; right: 6px; }
-.lk-heart .heart { width: 36px; height: 36px; background: var(--card); }
-.lk-heart .heart svg { width: 19px; height: 19px; }
-.lk-band { position: absolute; left: 0; right: 0; bottom: 0; padding: 7px 8px; text-align: center; font-size: 12px; font-weight: 700; letter-spacing: .02em; background: var(--card); color: var(--muted); opacity: .94; }
-.lk-card.gone .lk-photo .shot { filter: grayscale(1); opacity: .6; }
-.lk-info { display: flex; flex-direction: column; gap: 2px; padding-top: 8px; flex: 1; }
-.lk-name { font-weight: 650; font-size: 14px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-.lk-meta { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lk-price { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; font-size: 14px; margin-top: 2px; }
-.lk-price b { font-weight: 750; }
-.lk-price s { color: var(--faint); font-size: 12.5px; }
-.lk-off { color: var(--save); font-weight: 700; font-size: 12.5px; }
-.lk-few { font-size: 12.5px; font-weight: 650; color: var(--accent); }
-.lk-act { margin-top: auto; padding-top: 10px; }
-.lk-add { display: flex; align-items: center; justify-content: center; min-height: 40px; border-radius: 8px; border: 1px solid var(--ink); background: var(--card); color: var(--ink); font-weight: 700; font-size: 13px; letter-spacing: .02em; text-transform: uppercase; cursor: pointer; text-align: center; padding: 0 8px; }
-.lk-add.on { background: var(--ink); color: var(--bg); }
-.lk-add:disabled { border-color: var(--line); color: var(--faint); cursor: default; }
-.lk-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.lk-bar { position: sticky; bottom: 0; z-index: 20; margin: 18px -14px 0; padding: 10px 14px calc(12px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); display: flex; gap: 12px; align-items: center; }
-.lk-bar .go { flex: none; width: auto; min-width: 150px; margin: 0; }
-.lk-bartext { flex: 1; display: grid; font-size: 12.5px; color: var(--muted); }
-.lk-bartext b { font-size: 17px; color: var(--ink); }
-.lk-said { min-height: 1px; margin: 8px 0 0; font-size: 13px; color: var(--muted); text-align: center; }
-.lk-more { margin-top: 18px; display: flex; justify-content: center; }
-.lk-more .go { max-width: 360px; }
-/* the choose sheet */
+/* The bio page: every reel is a row that already shows its pieces */
+.bio { padding: 22px 0 34px; }
+.bio-title { margin: 0 0 6px; font-family: var(--display); font-weight: 600; font-size: 34px; line-height: 1.05; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.bio-sub { margin: 0 0 4px; font-size: 14px; color: var(--muted); }
+.bio-film { padding-top: 16px; }
+.bio-film + .bio-film { margin-top: 18px; border-top: 1px solid var(--line); }
+.bio-filmhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding-bottom: 10px; }
+.bio-filmtitle { margin: 0; min-width: 0; font-family: var(--display); font-weight: 600; font-size: 23px; line-height: 1.2; overflow-wrap: anywhere; }
+.bio-filmtitle small { display: block; margin-top: 2px; font: 400 13px/1.4 var(--lk-sans); color: var(--muted); }
+.bio-shop { position: relative; flex: none; margin-top: 5px; padding-bottom: 1px; white-space: nowrap; font-size: 13.5px; font-weight: 650; color: var(--lk-link); border-bottom: 1.5px solid var(--accent); }
+.bio-shop::after { content: ''; position: absolute; inset: -12px -8px; }
+.bio-stripwrap { position: relative; --bio-w: 136px; }
+.bio-strip { list-style: none; display: flex; gap: 10px; margin: 0 -14px; padding: 0 14px 2px; overflow-x: auto; scroll-snap-type: x proximity; scroll-padding-left: 14px; scrollbar-width: none; }
+.bio-strip::-webkit-scrollbar { display: none; }
+.bio-strip > li, .bio-strip > .bio-piece { flex: none; width: var(--bio-w, 136px); scroll-snap-align: start; }
+.bio-piece { display: block; color: inherit; }
+.bio-piece .bio-shot { border-radius: 12px; background: var(--lk-blank); box-shadow: none; }
+.bio-piece .bio-shot img { object-position: 50% 14%; }
+.bio-piece .bio-shot[data-state='failed']::after {
+  content: 'Photo coming soon'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 10px; text-align: center; font-size: 11.5px; line-height: 1.3; color: var(--lk-blank-ink);
+}
+.bio-out { position: absolute; left: 8px; bottom: 8px; z-index: 1; padding: 3px 8px; border-radius: 6px; background: var(--card); color: var(--ink); font-size: 11.5px; font-weight: 650; }
+.bio-piece.gone .bio-shot[data-state='here'] img { filter: grayscale(1); opacity: .6; }
+.bio-name { display: block; margin-top: 7px; font-size: 12.5px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bio-price { display: block; font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.bio-piece.gone .bio-price { color: var(--muted); font-weight: 600; }
+.bio-restbox { display: flex; flex-direction: column; align-items: center; justify-content: center; aspect-ratio: 4 / 5; padding: 10px; border: 1px solid var(--line); border-radius: 12px; text-align: center; font-size: 12.5px; color: var(--muted); }
+.bio-restbox b { margin-bottom: 4px; font: 600 24px/1.1 var(--display); color: var(--ink); }
+.bio-piece:focus-visible, .bio-shop:focus-visible, .bio-filmtitle a:focus-visible, .bio-arrow:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+.bio-arrow { display: none; }
+.bio-more { display: flex; justify-content: center; margin-top: 28px; }
+.bio-more .go { flex: none; width: 100%; max-width: 360px; }
+/* With a mouse there is nothing to swipe with: two round arrows, each only while there is more that way. */
+@media (hover: hover) and (pointer: fine) {
+  .bio-arrow {
+    position: absolute; top: calc(var(--bio-w) * .625 - 18px); z-index: 2; display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--card); color: var(--ink);
+    box-shadow: 0 1px 3px rgba(16, 18, 24, .14); cursor: pointer;
+  }
+  .bio-arrow.back { left: -6px; }
+  .bio-arrow.on { right: -6px; }
+}
+@media (min-width: 620px) { .bio-stripwrap { --bio-w: 156px; } }
+@media (min-width: 940px) {
+  .bio { padding-top: 30px; }
+  .bio-title { font-size: 40px; }
+  .bio-filmtitle { font-size: 26px; }
+  .bio-stripwrap { --bio-w: 196px; }
+  .bio-strip { gap: 14px; margin: 0; padding: 0 0 2px; scroll-padding-left: 0; }
+}
+/* Only where there is room beside the column: nearer than this an arrow hanging out made the page 4px too wide. */
+@media (min-width: 1240px) {
+  .bio-arrow.back { left: -18px; }
+  .bio-arrow.on { right: -18px; }
+}
+
+/* One reel's page: one piece, one screen. It scrolls inside its own frame, so a frame is always exactly a screen. */
+.lk-reel { position: fixed; inset: 0; z-index: 40; overflow-x: hidden; overflow-y: auto; scroll-snap-type: y mandatory; background: var(--bg); color: var(--ink); outline: none; }
+.lk-frame { position: relative; display: flex; flex-direction: column; min-height: 100%; scroll-snap-align: start; scroll-snap-stop: always; background: var(--bg); }
+.lk-stage { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+
+/* the band: where you are in the reel, whose shop it is, the reel itself, the bag */
+.lk-band { position: absolute; inset: 0 0 auto 0; z-index: 3; padding: calc(10px + env(safe-area-inset-top)) 16px 10px; background: rgba(12, 12, 14, .56); color: #fff; }
+.lk-band.solid { background: var(--lk-night); }
+.lk-band.flow { position: relative; flex: none; }
+.lk-segs { display: flex; gap: 5px; margin-bottom: 9px; }
+.lk-segs button { position: relative; flex: 1; height: 3px; padding: 0; border: 0; border-radius: 2px; background: rgba(255, 255, 255, .38); cursor: pointer; }
+.lk-segs button::after { content: ''; position: absolute; inset: -9px 0; }
+.lk-segs button.on { background: #fff; }
+.lk-bandrow { display: flex; align-items: center; gap: 14px; min-height: 36px; }
+.lk-shopname { flex: 0 1 auto; min-width: 0; margin-right: auto; font: 600 19px/1.2 var(--display); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lk-watch { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 8px 0; font-size: 13px; font-weight: 600; color: #fff; white-space: nowrap; }
+.lk-watch i { width: 0; height: 0; border-left: 8px solid currentColor; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+.lk-bag { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; margin-right: -7px; color: #fff; }
+.lk-bag em { position: absolute; top: 0; right: 0; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: #fff; color: #16181d; font: 700 10.5px/17px var(--lk-sans); font-style: normal; text-align: center; }
+.lk-band a:focus-visible { outline: 2px solid #fff; outline-offset: 2px; border-radius: 4px; }
+
+/* the photograph */
+.lk-shot { position: relative; flex: 1 1 230px; min-height: 230px; overflow: hidden; background: var(--lk-blank); }
+.lk-shot.bone { border-radius: 0; }
+.lk-shot > a { position: absolute; inset: 0; display: block; }
+.lk-img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 14%; opacity: 0; transition: opacity .15s ease-out; }
+.lk-img[data-state='here'] { opacity: 1; }
+.lk-frame.gone .lk-img[data-state='here'] { filter: grayscale(1); opacity: .6; }
+.lk-shot .lk-nophoto { flex-direction: column; gap: 10px; font-size: 13px; }
+.lk-flag { position: absolute; left: 16px; bottom: 34px; z-index: 1; padding: 4px 10px; border-radius: 7px; background: var(--card); color: var(--ink); font-size: 12.5px; font-weight: 650; }
+
+/* everything needed to buy it, under the thumb */
+.lk-panel { position: relative; z-index: 2; flex: none; margin-top: -22px; padding: 18px 20px calc(14px + env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; background: var(--card); }
+.lk-count { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); }
+.lk-in { flex: none; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--save); }
+.lk-name { margin: 0 0 4px; font: 600 25px/1.18 var(--display); letter-spacing: -.005em; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.lk-meta { font-size: 13.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lk-price { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-top: 10px; font-variant-numeric: tabular-nums; }
+.lk-price b { font-size: 23px; font-weight: 700; }
+.lk-price s { font-size: 14px; color: var(--muted); }
+.lk-off { font-size: 13.5px; font-weight: 700; color: var(--save); }
+.lk-few { margin-top: 2px; font-size: 12.5px; font-weight: 650; color: var(--lk-link); }
+.lk-deal { margin-top: 3px; font-size: 13px; color: var(--save); }
+.lk-deal b { font-weight: 700; }
+.lk-colours { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+.lk-sws { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px; margin: -4px; }
+.lk-colours.words .lk-sws { gap: 8px; }
+.lk-sw { position: relative; flex: none; width: 30px; height: 30px; padding: 0; border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent); border-radius: 50%; cursor: pointer; }
+.lk-sw::before { content: ''; position: absolute; inset: -7px; }
+.lk-sw.on { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--ink); }
+.lk-sw.x::after { content: ''; position: absolute; left: -3px; right: -3px; top: 50%; height: 1.5px; background: var(--muted); transform: rotate(-38deg); }
+.lk-sw.still { width: 22px; height: 22px; cursor: default; }
+.lk-sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }
+.lk-swtext { min-width: 0; font-size: 13.5px; }
+.lk-swtext small { display: block; font-size: 12px; color: var(--muted); }
+.lk-btns { display: flex; align-items: stretch; gap: 10px; margin-top: 14px; }
+.lk-btn { flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; padding: 0 16px; border-radius: 14px; font-size: 16px; font-weight: 650; text-align: center; cursor: pointer; }
+.go.lk-btn { padding: 0 16px; border-radius: 14px; font-size: 16px; }
+.lk-btn.line { border: 1.5px solid var(--ink); background: var(--card); color: var(--ink); }
+.lk-btn.line:disabled { border-color: var(--line); color: var(--muted); cursor: default; }
+.lk-btn:focus-visible, .lk-next:focus-visible, .lk-small:focus-visible, .lk-rowshot:focus-visible, .lk-other:focus-visible, .lk-name a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.lk-heart { flex: none; display: flex; }
+.lk-heart .heart { width: 52px; height: 52px; border: 1.5px solid var(--line); border-radius: 14px; background: var(--card); }
+.lk-next { display: flex; align-items: center; gap: 12px; width: 100%; margin-top: 14px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line); background: none; color: var(--ink); text-align: left; cursor: pointer; }
+.lk-nextshot { flex: none; width: 34px; height: 44px; border-radius: 6px; overflow: hidden; background: var(--lk-blank); }
+.lk-nextshot img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 14%; }
+.lk-nexttext { flex: 1; min-width: 0; display: grid; }
+.lk-nexttext small { font-size: 13px; color: var(--muted); }
+.lk-nexttext b { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lk-next svg { flex: none; }
+
+/* the last frame: the whole look, the total, the shop's other reels */
+.lk-end { display: flex; flex-direction: column; min-height: 100%; scroll-snap-align: start; background: var(--bg); }
+.lk-endin { width: 100%; max-width: 560px; margin: 0 auto; padding: 0 20px 30px; }
+.lk-endtitle { margin: 22px 0 4px; font: 600 30px/1.1 var(--display); letter-spacing: -.01em; }
+.lk-endsub { margin: 0 0 8px; font-size: 13.5px; color: var(--muted); overflow-wrap: anywhere; }
+.lk-rows { list-style: none; margin: 0; padding: 0; }
+.lk-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.lk-rowshot { flex: none; display: flex; align-items: center; justify-content: center; width: 66px; height: 88px; padding: 0; border: 0; border-radius: 10px; overflow: hidden; background: var(--lk-blank); cursor: pointer; }
+.lk-rowshot img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 15%; }
+.lk-rowshot span { padding: 4px; text-align: center; font-size: 10.5px; line-height: 1.3; color: var(--lk-blank-ink); }
+.lk-row.gone .lk-rowshot img { filter: grayscale(1); opacity: .6; }
+.lk-rowtext { flex: 1; min-width: 0; display: grid; }
+.lk-rowtext b { font: 600 16px/1.25 var(--display); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.lk-rowtext span { font-size: 12.5px; color: var(--muted); }
+.lk-rowtext em { margin-top: 4px; font-style: normal; font-weight: 700; font-size: 14.5px; font-variant-numeric: tabular-nums; }
+.lk-rowsaid { flex: none; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.lk-small { position: relative; flex: none; display: inline-flex; align-items: center; min-height: 36px; padding: 0 16px; border: 1.5px solid var(--ink); border-radius: 10px; background: var(--card); color: var(--ink); font-size: 13.5px; font-weight: 650; white-space: nowrap; cursor: pointer; }
+.lk-small::after { content: ''; position: absolute; inset: -5px; }
+.lk-sum { margin-top: 16px; }
+.lk-total { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; font-size: 14px; }
+.lk-total b { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.go.lk-endgo { width: 100%; min-height: 52px; border-radius: 14px; font-size: 16px; }
+.lk-others { margin-top: 26px; }
+.lk-others h3 { margin: 0 0 10px; font: 600 17px/1.25 var(--display); }
+.lk-othergrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.lk-other { display: grid; gap: 1px; min-width: 0; color: inherit; }
+.lk-other .lk-othershot { margin-bottom: 5px; border-radius: 10px; background: var(--lk-blank); box-shadow: none; }
+.lk-other .lk-othershot img { object-position: 50% 14%; }
+.lk-other b { font-size: 12.5px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.lk-other > span { font-size: 12px; color: var(--muted); }
+.lk-endlinks { display: grid; gap: 10px; margin-top: 24px; }
+.lk-endlinks .go { width: 100%; }
+.lk-end .foot { width: 100%; margin-top: auto; }
+
+/* a reel that has gone, or could not be fetched: a plain page under the same band */
+.lk-plain { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+.lk-plainin { flex: 1 0 auto; width: 100%; padding-bottom: 30px; }
+.lk-plainmore { display: flex; justify-content: center; margin-top: 22px; }
+.lk-plainmore .go { flex: none; width: 100%; max-width: 360px; }
+/* heard, not shown: "… is in your bag" for a screen reader (the tick and "Go to bag" say it to the eye) */
+.lk-said { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* choosing a colour and size: a sheet from the bottom */
 .lk-sheetwrap { position: fixed; inset: 0; z-index: 80; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-end; justify-content: center; }
 .lk-sheet { width: 100%; max-width: 520px; background: var(--card); color: var(--ink); border-radius: 16px 16px 0 0; padding: 10px 16px calc(18px + env(safe-area-inset-bottom)); outline: none; max-height: 85vh; overflow-y: auto; }
 .lk-grab { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 12px; }
 .lk-sheethead { display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: center; margin-bottom: 6px; }
 .lk-sheetshot { border-radius: 6px; overflow: hidden; }
+.lk-sheetprice { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .lk-x { width: 40px; height: 40px; border: 0; background: transparent; color: var(--muted); font-size: 26px; line-height: 1; cursor: pointer; }
 .lk-label { font-size: 13px; font-weight: 700; margin: 12px 0 8px; }
 .lk-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .lk-chip { min-height: 38px; padding: 0 14px; border-radius: 19px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .lk-chip i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(0, 0, 0, .15); }
-.lk-chip.on { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.lk-chip.on { border-color: var(--accent); color: var(--lk-link); box-shadow: inset 0 0 0 1px var(--accent); }
 .lk-chip.x { color: var(--faint); text-decoration: line-through; }
 .lk-chip:disabled { cursor: default; }
 .lk-sheetgo { margin-top: 16px; width: 100%; }
 .lk-sheetgo:disabled { opacity: .5; }
-@media (min-width: 620px) { .lk-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .lk-sheetwrap { align-items: center; } .lk-sheet { border-radius: 16px; } }
-@media (min-width: 940px) {
-  .lk-title { font-size: 24px; }
-  .lk-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 18px; }
-}
-/* a laptop: the bag from this reel sits beside the pieces instead of under them */
-@media (min-width: 1100px) {
-  .lk-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px; align-items: start; }
-  .lk-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .lk-bar { position: sticky; top: calc(var(--bar) + 16px); bottom: auto; margin: 0; flex-direction: column; align-items: stretch; border: 1px solid var(--line); border-radius: var(--r); padding: 16px; }
-  .lk-bar .go { width: 100%; }
-}
+@media (min-width: 620px) { .lk-sheetwrap { align-items: center; } .lk-sheet { border-radius: 16px; } }
 
-/* "Watch reel" on a reel link's page: a link to the reel on Instagram (17 Nov 2026). "lk-" only. */
-.lk-thumbplay { position: relative; display: block; }
-.lk-thumbplay::after { content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-35%, -50%); border-left: 13px solid #fff; border-top: 8px solid transparent; border-bottom: 8px solid transparent; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .55)); }
-.lk-thumbplay:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
-.lk-watch { margin-left: auto; flex: none; min-height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid var(--ink); background: var(--card); color: var(--ink); font-weight: 700; font-size: 13px; display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; text-decoration: none; }
-.lk-watch i { width: 0; height: 0; border-left: 8px solid currentColor; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
-.lk-watch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* a laptop (and a tablet on its side): the photograph whole on the left, the words beside it */
+@media (min-width: 900px) and (min-height: 560px) {
+  .lk-band { padding-left: max(24px, calc((100vw - 1180px) / 2)); padding-right: max(24px, calc((100vw - 1180px) / 2)); }
+  .lk-frame > .lk-band { position: relative; flex: none; background: var(--lk-night); }
+  .lk-stage { flex-direction: row; justify-content: center; align-items: stretch; }
+  .lk-shot { flex: 0 0 auto; width: min(calc((100vh - 68px) * .75), calc(100vw - 520px)); min-height: 0; }
+  .lk-panel { flex: 0 1 440px; min-width: 340px; align-self: center; margin: 0; padding: 24px 8px 24px 48px; border-radius: 0; background: transparent; }
+  .lk-name { font-size: 32px; -webkit-line-clamp: 3; }
+  .lk-price b { font-size: 26px; }
+  .lk-flag { bottom: 16px; }
+  .lk-endin { max-width: 620px; }
+  .lk-endtitle { margin-top: 34px; font-size: 36px; }
+}
+@media (prefers-reduced-motion: reduce) { .lk-img { transition: none; } }
 
 /* No browser-drawn controls (17 Nov 2026, owner): tick boxes and round choices in the shop's own colour, the same in
    every browser. Width and height stay overridable; the tick scales with the box. */

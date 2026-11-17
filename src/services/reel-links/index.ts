@@ -474,16 +474,19 @@ export async function forShopper(clientId: string, raw: unknown) {
   return { available: true as const, title: r.title, reel: instagramPlayer(r.reelUrl), pieces: r.items.map(i => ({ productCode: i.product.productCode, colour: i.colour })) };
 }
 
-/** The bio page: the shop's switched-on reel links, newest first, each with its first piece's photo. */
-export async function bioForShopper(clientId: string, limit = 60) {
+/**
+ * The bio page: the shop's switched-on reel links, newest first, each with its pieces in the shop's order and the
+ * colour worn in the reel. What a piece looks like and costs is the shop window's business (the route reads that).
+ */
+export async function bioForShopper(clientId: string, limit = 40) {
   const rows = await prisma.reelLink.findMany({
     where: { clientId, active: true, deletedAt: null, items: { some: { product: ELIGIBLE_PRODUCT } } },
     orderBy: { createdAt: 'desc' },
     take: limit,
     select: {
       code: true, title: true,
-      items: { where: { product: ELIGIBLE_PRODUCT }, orderBy: { position: 'asc' }, take: 1, select: { product: { select: { images: PHOTO_SELECT } } } }
+      items: { where: { product: ELIGIBLE_PRODUCT }, orderBy: { position: 'asc' }, select: { colour: true, product: { select: { productCode: true } } } }
     }
   });
-  return rows.map(r => ({ code: r.code, title: r.title, cover: r.items[0]?.product.images[0]?.url ?? null }));
+  return rows.map(r => ({ code: r.code, title: r.title, pieces: r.items.map(i => ({ productCode: i.product.productCode, colour: i.colour })) }));
 }

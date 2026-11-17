@@ -110,6 +110,16 @@ function Shop({ page }) {
   }
 
   /*
+   * A reel link's page is its own whole screen (17 Nov 2026, "A. Frames"): one piece fills it, as the reel did, so it
+   * carries its own slim band (the shop's name, the bag) instead of this bar, and the footer rides at its end. Keyed
+   * by the reel, so going from one reel to another starts that one from its first frame.
+   */
+  if (page === 'look') {
+    return <LookPage key={code} slug={slug} code={code} shop={shop} footer={<Footer shop={shop} />}
+      announcement={<Announcement slug={slug} announcement={shop.announcement} />} />;
+  }
+
+  /*
    * A shop that set a single picture before banners existed keeps it, shown as the one banner. No
    * shop has to go and do anything for its page to carry on looking the way it did.
    */
@@ -130,7 +140,6 @@ function Shop({ page }) {
             milliseconds and a spinner for that long is worse than a quiet pause. */}
         <Suspense fallback={<div className="bone" style={{ height: 320, borderRadius: 14, margin: '20px 0' }} />}>
           {page === 'product' ? <ProductPage slug={slug} shop={shop} />
-            : page === 'look' ? <LookPage slug={slug} code={code} shop={shop} />
             : page === 'reels' ? <ReelsPage slug={slug} shop={shop} />
             : page === 'bag' ? <BagPage shop={shop} />
             : page === 'checkout' ? <CheckoutPage shop={shop} />

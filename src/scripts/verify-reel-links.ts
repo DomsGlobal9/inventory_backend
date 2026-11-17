@@ -208,7 +208,8 @@ async function main() {
   const bio = (await shop(`/_api/shop/${SLUG}/reels`)).data.data.reels as any[];
   const i1 = bio.findIndex(r => r.code === L1.code), i3 = bio.findIndex(r => r.code === r3.data.code);
   check('both reels listed, newest first', i3 >= 0 && i1 > i3, bio.map(r => r.title));
-  check('the bio page shows titles and photos only', bio.every(r => Object.keys(r).sort().join() === 'code,cover,title'));
+  // 17 Nov: each reel now carries its pieces as a strip (verify-reel-links-wall checks what a piece may say).
+  check('the bio page says only: code, title, cover, count, pieces', bio.every(r => Object.keys(r).sort().join() === 'code,count,cover,pieces,title'), bio[0] && Object.keys(bio[0]));
   const bioHtml = (await shop(`/${SLUG}/reels`)).data as string;
   check('its preview tags say "Shop our reels"', String(bioHtml).includes('og:title" content="Shop our reels · '));
 

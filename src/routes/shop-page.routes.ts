@@ -137,12 +137,14 @@ async function page(req: Request, res: Response) {
    */
   let image = shop.banners?.[0]?.imageUrl ?? shop.bannerUrl ?? shop.logoUrl ?? '';
 
-  // A reel link (PLAN-reel-links.md): its title, and the first piece's photograph, which is what the reel showed.
+  // A reel link (PLAN-reel-links.md): its title, and the first photographed piece, which is what the reel showed.
   const lookCode = String(req.params.lookCode ?? '');
   if (lookCode) {
     const look = await reelLinks.forShopper(shop.clientId, lookCode).catch(() => null);
     if (look?.available) {
-      const first = (await onlineShop.publicPieces(shop, look.pieces.slice(0, 1).map(p => p.productCode)).catch(() => []))[0] as any;
+      // The first piece that HAS a photograph (17 Nov 2026): a reel opening with an unphotographed piece previewed as the banner.
+      const first = (await onlineShop.publicPieces(shop, look.pieces.map(p => p.productCode)).catch(() => [] as any[]))
+        .find((p: any) => p.images?.length) as any;
       title = `${look.title} · ${shop.name}`;
       description = `${look.pieces.length} ${look.pieces.length === 1 ? 'piece' : 'pieces'} from our reel. Shop them at ${shop.name}.`;
       image = first?.images?.find((i: { isPrimary?: boolean }) => i.isPrimary)?.url ?? first?.images?.[0]?.url ?? image;

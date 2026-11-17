@@ -141,10 +141,14 @@ router.get('/_look/:code', async (req: Request, res: Response) => {
   res.json({ success: true, data: { slug } });
 });
 
-/** Sold out last, keeping the shop's own order inside each half: the reel showed them, so they stay on the page. */
+/**
+ * The order a shopper meets a reel's pieces in: what can be bought first, sold out last (the reel showed them, so they
+ * stay on the page), and inside each half a piece with a photograph before one without (17 Nov 2026: a reel whose
+ * first piece had no photograph opened on an empty screen). Otherwise the shop's own order is kept.
+ */
 const soldOutLast = (pieces: any[]) => {
-  const can = (p: any) => (p.variants ?? []).some((v: any) => v.sellable);
-  return [...pieces.filter(can), ...pieces.filter(p => !can(p))];
+  const rank = (p: any) => ((p.variants ?? []).some((v: any) => v.sellable) ? 0 : 2) + ((p.images ?? []).length ? 0 : 1);
+  return pieces.map((p, i) => ({ p, i })).sort((x, y) => rank(x.p) - rank(y.p) || x.i - y.i).map(x => x.p);
 };
 
 /** New arrivals, for a reel link that is no longer available: never a dead end. */
@@ -174,11 +178,68 @@ router.get('/:slug/looks/:code', async (req: Request, res: Response) => {
   res.json({ success: true, data: { available: false, title: null, pieces: [], newArrivals: await newArrivals(shop) } });
 });
 
-/** The bio page: every switched-on reel link of the shop, newest first. */
+const sameColour = (a?: string | null, b?: string | null) => (a ?? '').toLowerCase() === (b ?? '').toLowerCase();
+
+/**
+ * One piece as a small tile in its reel's strip (the bio page, 17 Nov 2026): the photograph of the colour worn in the
+ * reel, the name, and the price its own page shows (per metre for cloth). Nothing else of the product goes out.
+ */
+const stripPiece = (p: any, want: string | null) => {
+  const variants: any[] = p.variants ?? [];
+  // The reel's colour only while the piece still comes in it, as on the reel's own page.
+  const colour = want ? variants.find(v => sameColour(v.colour, want))?.colour ?? null : null;
+  const shown = colour ? variants.filter(v => sameColour(v.colour, colour)) : variants;
+  const prices = shown.map(v => Number(v.price)).filter(Number.isFinite);
+  const per = p.soldBy === 'METRE' ? 100 : p.soldBy === 'KILOGRAM' ? 1000 : 1;
+  const ofColour = new Set(shown.map(v => v.variantCode));
+  const images: any[] = p.images ?? [];
+  // This colour's photograph, else one of the piece as a whole, else the shop's first.
+  const photo = (colour ? images.find(i => i.variantCode && ofColour.has(i.variantCode)) ?? images.find(i => !i.variantCode) : null)
+    ?? images[0] ?? null;
+  return {
+    productCode: p.productCode as string,
+    title: p.title as string,
+    photo: (photo?.url ?? null) as string | null,
+    price: prices.length ? Math.round(Math.min(...prices) * per * 100) / 100 : null,
+    from: prices.length > 1 && Math.min(...prices) !== Math.max(...prices),
+    unit: p.soldBy === 'METRE' ? 'm' : p.soldBy === 'KILOGRAM' ? 'kg' : null,
+    currency: (variants[0]?.currency ?? 'INR') as string,
+    soldOut: !variants.some(v => v.sellable)
+  };
+};
+
+/** How many pieces one strip carries; the rest are a tap away on the reel's own page. */
+const STRIP_PIECES = 10;
+/** Pieces read for the whole page at once. Far above any real shop; a ceiling, so the page stays one cheap read. */
+const BIO_PIECES = 600;
+
+/**
+ * The bio page: every switched-on reel link of the shop, newest first, each with its pieces (17 Nov 2026: the page
+ * shows them straight away, as a strip per reel). `cover` is the first piece that HAS a photograph: it used to be the
+ * first piece's, and a reel that opened with an unphotographed piece showed an empty grey box.
+ */
 router.get('/:slug/reels', async (req: Request, res: Response) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') return notOpen(res, shop.state, (shop as { name?: string }).name);
-  res.json({ success: true, data: { reels: await reelLinks.bioForShopper(shop.clientId) } });
+  const reels = await reelLinks.bioForShopper(shop.clientId);
+  const products = await onlineShop.publicPieces(shop, reels.flatMap(r => r.pieces.map(p => p.productCode)), BIO_PIECES);
+  const byCode = new Map(products.map((p: any) => [p.productCode, p]));
+  res.json({
+    success: true,
+    data: {
+      reels: reels.map(r => {
+        // The same order as the reel's own page (soldOutLast).
+        const pieces = soldOutLast(r.pieces.filter(p => byCode.has(p.productCode)).map(p => ({ ...byCode.get(p.productCode), want: p.colour })))
+          .map(p => stripPiece(p, p.want));
+        return {
+          code: r.code, title: r.title,
+          cover: pieces.find(p => p.photo)?.photo ?? null,
+          count: pieces.length,
+          pieces: pieces.slice(0, STRIP_PIECES)
+        };
+      })
+    }
+  });
 });
 
 /** The shop itself: who it is, what it looks like, and the seller details the law requires. */

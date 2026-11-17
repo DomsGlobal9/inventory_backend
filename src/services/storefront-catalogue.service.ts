@@ -652,6 +652,26 @@ export class StorefrontCatalogueService {
   }
 
   /**
+   * Many products by code in ONE read, each exactly as getProduct would give it (the same eligibility, prices, stock
+   * and photographs). For a page that shows pieces of many reels at once: asking one by one was a read per piece.
+   * No order is promised; a code that is not a product a shopper may see is simply absent.
+   */
+  async getProducts(scope: CatalogueScope, productCodes: string[], opts: { withLengths?: boolean } = {}): Promise<StorefrontProduct[]> {
+    const codes = [...new Set(productCodes.filter(c => typeof c === 'string' && c.trim()))];
+    if (!codes.length) return [];
+    const [locationIds, currency] = await Promise.all([
+      resolveLocationIds(scope),
+      this.getCurrency(scope.clientId)
+    ]);
+    const scoped = new Set(locationIds);
+    const rows = await prisma.product.findMany({
+      where: { clientId: scope.clientId, productCode: { in: codes }, ...(opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT) },
+      select: PRODUCT_SELECT
+    });
+    return rows.map(p => toStorefrontProduct(p, scoped, currency, scope.allPhotos === true));
+  }
+
+  /**
    * The stock half of a variant, through a scope. Used when raising a stock event, so an event
    * and the read API can never disagree about what "available" means.
    */

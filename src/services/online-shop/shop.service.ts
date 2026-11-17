@@ -670,16 +670,20 @@ export async function publicProduct(
  */
 export async function publicPieces(
   shop: { clientId: string; locationIds: string[]; showFewLeft?: boolean },
-  codes: string[]
+  codes: string[],
+  /** One reel link holds at most 24 pieces; the page of ALL reels asks for more at once (17 Nov 2026). */
+  max = 24
 ) {
-  const wanted = codes.filter(c => typeof c === 'string' && c.trim()).slice(0, 24);
+  const wanted = [...new Set(codes.filter(c => typeof c === 'string' && c.trim()))].slice(0, max);
   if (!wanted.length) return [];
   const scope: CatalogueScope = { clientId: shop.clientId, locationIds: shop.locationIds, allPhotos: false };
+  // One read for all of them (it was one read per piece: a reel of twelve asked the database thirty-six things).
   const [offers, rows] = await Promise.all([
     windowOffers(shop),
-    Promise.all(wanted.map(c => storefrontCatalogueService.getProduct(scope, c, { withLengths: true })))
+    storefrontCatalogueService.getProducts(scope, wanted, { withLengths: true })
   ]);
-  return rows.filter(Boolean).map(p => withOffers(forShopper(p!, shop.showFewLeft !== false), offers));
+  const byCode = new Map(rows.map(r => [r.productCode, r]));
+  return wanted.map(c => byCode.get(c)).filter(Boolean).map(p => withOffers(forShopper(p!, shop.showFewLeft !== false), offers));
 }
 
 /** How many tiles "Customers who bought this also bought" shows at most. */
