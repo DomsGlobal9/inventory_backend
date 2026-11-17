@@ -1269,8 +1269,14 @@ model PastPurchaseImport {
   billsAdded       Int       @default(0) @map("bills_added")
   startedAt        DateTime  @default(now()) @map("started_at")
   finishedAt       DateTime? @map("finished_at")
+  /// "UPLOAD" for an import from the Customers screen; null for a script load (PLAN: past purchases).
+  kind             String?
+  fileName         String?   @map("file_name")
+  madeBy           String?   @map("made_by")
+  madeByName       String?   @map("made_by_name")
 
   @@id([clientId, source])
+  @@index([clientId, kind])
   @@map("past_purchase_imports")
 }
 

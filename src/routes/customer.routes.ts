@@ -18,6 +18,12 @@ import { respondWithError } from '../utils/respondWithError';
 import { holdsEverything } from '../config/permissions';
 import * as customerDelete from '../services/customer-delete';
 import { pastPurchases } from '../services/past-purchases';
+import * as customerImport from '../services/customer-import';
+
+/** Taking an import back out deletes customers, so it is the owner's alone, as deleting one customer is. */
+const ownerOnlyTakeBack = (req: any, res: any, next: any) => holdsEverything(req.user?.permissions, req.user?.roles)
+  ? next()
+  : res.status(403).json({ success: false, message: 'Only the shop owner can take an import back out.' });
 
 const router = Router();
 
@@ -27,6 +33,35 @@ router.use(tenantMiddleware);
 router.post('/', requirePermission('customer:create'), createCustomer);
 
 router.get('/', requirePermission('customer:view'), getCustomers);
+
+/*
+ * Import customers from the shop's own Excel or CSV file (services/customer-import). The browser reads the file and
+ * sends rows. Check writes nothing; import adds only what the check promised; taking an import back out is the
+ * owner's, like deleting a customer, and is done in CRM once this shop deletes customers there.
+ */
+router.post('/import/check', requirePermission('customer:create'), async (req, res) => {
+  try { res.json({ success: true, data: await customerImport.checkForScreen((req as any).clientId, req.body?.rows) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.post('/import', requirePermission('customer:create'), async (req, res) => {
+  try {
+    const u = (req as any).user ?? {};
+    const by = { id: String(u.id ?? ''), name: String(u.name || u.email || 'Someone') };
+    res.status(201).json({ success: true, data: await customerImport.apply((req as any).clientId, by, req.body?.fileName, req.body?.rows, req.body?.expected) });
+  } catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.get('/imports', requirePermission('customer:create'), async (req, res) => {
+  try { res.json({ success: true, data: await customerImport.list((req as any).clientId) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.get('/imports/:source/take-back', ownerOnlyTakeBack, async (req, res) => {
+  try { await refuseIfProfileMoved((req as any).clientId); res.json({ success: true, data: await customerImport.takeBackPreview((req as any).clientId, req.params.source) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
+router.post('/imports/:source/take-back', ownerOnlyTakeBack, async (req, res) => {
+  try { await refuseIfProfileMoved((req as any).clientId); res.json({ success: true, data: await customerImport.takeBack((req as any).clientId, req.params.source) }); }
+  catch (error) { return respondWithError(res, error, { status: 500 }); }
+});
 // The Customer card: who this number is, their sizes and colours, and what in this store fits them.
 router.get('/card', requirePermission('customer:view'), async (req, res) => {
   try {

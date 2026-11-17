@@ -135,6 +135,8 @@ app.use('/api/v1/shopify/webhooks', express.raw({ type: '*/*', limit: '5mb' }));
  * gains a larger attack surface.
  */
 app.use('/api/v1/products/import', carriesLogin, express.json({ limit: '10mb' }));
+// A customer file of up to 5,000 rows, sent as rows (services/customer-import).
+app.use('/api/v1/customers/import', carriesLogin, express.json({ limit: '8mb' }));
 
 // WhatsApp: a document's PDF travels inside the send request (5 MB of PDF is ~7 MB of base64),
 // and the service's events are signed over their raw bytes, like Shopify's above. Both scoped to

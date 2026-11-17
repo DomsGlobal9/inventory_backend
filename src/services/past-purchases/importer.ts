@@ -214,7 +214,26 @@ export async function applyImport(clientId: string, source: string, file: Import
 export async function undoImport(clientId: string, source: string) {
   const marker = await prisma.pastPurchaseImport.findUnique({ where: { clientId_source: { clientId, source } } });
   if (!marker) throw new ImportRefused(`There is no load called ${source} for this shop.`);
+  const { untouched, kept } = await undoPlan(clientId, source);
 
+  let billsRemoved = 0;
+  for (;;) {
+    const page = await prisma.pastPurchase.findMany({ where: { clientId, source }, select: { id: true }, take: LOOKUP });
+    if (!page.length) break;
+    billsRemoved += (await prisma.pastPurchase.deleteMany({ where: { id: { in: page.map(p => p.id) } } })).count;
+  }
+  let customersRemoved = 0;
+  for (const part of chunks(untouched, CHUNK)) customersRemoved += (await prisma.customer.deleteMany({ where: { clientId, id: { in: part } } })).count;
+  for (const part of chunks(kept, CHUNK)) await prisma.customer.updateMany({ where: { clientId, id: { in: part } }, data: { importSource: null } });
+  await prisma.pastPurchaseImport.delete({ where: { clientId_source: { clientId, source } } });
+  return { billsRemoved, customersRemoved, customersKept: kept.length };
+}
+
+/**
+ * Who taking a load back out would remove (untouched) and who stays (kept: the shop has used them since). Writes
+ * nothing, so a screen can say the numbers before anyone agrees.
+ */
+export async function undoPlan(clientId: string, source: string) {
   const made = await prisma.customer.findMany({
     where: { clientId, importSource: source },
     select: {
@@ -238,16 +257,5 @@ export async function undoImport(clientId: string, source: string) {
   const untouched = made.filter(c => !c.deletedAt && c.updatedAt.getTime() === c.createdAt.getTime() && !busy.has(c.id)
     && !c._count.salesOrders && !c._count.loyaltyEntries && !c._count.storeCreditEntries && !c._count.addresses).map(c => c.id);
   const kept = ids.filter(id => !untouched.includes(id));
-
-  let billsRemoved = 0;
-  for (;;) {
-    const page = await prisma.pastPurchase.findMany({ where: { clientId, source }, select: { id: true }, take: LOOKUP });
-    if (!page.length) break;
-    billsRemoved += (await prisma.pastPurchase.deleteMany({ where: { id: { in: page.map(p => p.id) } } })).count;
-  }
-  let customersRemoved = 0;
-  for (const part of chunks(untouched, CHUNK)) customersRemoved += (await prisma.customer.deleteMany({ where: { clientId, id: { in: part } } })).count;
-  for (const part of chunks(kept, CHUNK)) await prisma.customer.updateMany({ where: { clientId, id: { in: part } }, data: { importSource: null } });
-  await prisma.pastPurchaseImport.delete({ where: { clientId_source: { clientId, source } } });
-  return { billsRemoved, customersRemoved, customersKept: kept.length };
+  return { untouched, kept };
 }
