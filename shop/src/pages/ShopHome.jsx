@@ -166,7 +166,7 @@ export default function ShopHome({ slug, shop }) {
           onChange={v => setParam('sort', v)}
           label="Order them by"
         />
-        {facets.dressTypes.slice(0, 6).map(d => (
+        {facets.dressTypes.filter(d => String(d.value ?? '').trim()).slice(0, 6).map(d => (
           <button key={d.value} type="button" className="pill" aria-pressed={dressType === d.value}
             onClick={() => setParam('dressType', dressType === d.value ? '' : d.value)}>{d.value}</button>
         ))}

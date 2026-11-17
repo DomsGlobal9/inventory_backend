@@ -42,8 +42,10 @@ const label = (value: string) =>
  * A saree shop whose catalogue is nine-tenths sarees should have Sarees first in its nav; sorting
  * these alphabetically would put its one Blouse ahead of them.
  */
+// A product saved with a blank kind or fabric ("" rather than none) is not a choice to offer: it became a pill with
+// no words on sphl's shop, shown as already chosen because "no kind chosen" is also "" (17 Nov 2026).
 const rank = (rows: { value: string; count: number }[]) =>
-  rows.sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+  rows.filter(r => r.value.trim() !== '').sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
 
 export async function facetsFor(
   clientId: string,

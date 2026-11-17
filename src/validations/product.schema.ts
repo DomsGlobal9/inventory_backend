@@ -2,6 +2,12 @@ import { z } from 'zod';
 import { isWholePaise, PAISA_MESSAGE } from './money';
 import { ProductCategory, ProductType, ProductStatus } from '@prisma/client';
 
+/** Trimmed text, and nothing at all when it is only spaces: stored as null, not "". */
+const blankIsNone = z.preprocess(
+  (v) => (typeof v === 'string' ? (v.trim() === '' ? null : v.trim()) : v),
+  z.string().nullable().optional()
+);
+
 export const createProductSchema = z.object({
   productCode: z.string().optional(),
   // Trimmed BEFORE the length is checked. `min(1)` counted the spaces, so a title of "   " was
@@ -14,10 +20,11 @@ export const createProductSchema = z.object({
   description: z.string().optional(),
   category: z.nativeEnum(ProductCategory),
   productType: z.nativeEnum(ProductType),
-  dressType: z.string().optional(),
-  fabric: z.string().optional(),
-  craft: z.string().optional(),
-  brand: z.string().optional(),
+  // A blank word is "none", never "": a "" kind became a pill with no words on the shop (17 Nov 2026).
+  dressType: blankIsNone,
+  fabric: blankIsNone,
+  craft: blankIsNone,
+  brand: blankIsNone,
 
   /*
    * GST. Optional everywhere, because a DRAFT is a save-point for something unfinished and a shop
