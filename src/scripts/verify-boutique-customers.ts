@@ -276,6 +276,68 @@ async function main() {
   check('...the next page carries on: b-cou, b-hard, b-lak in all, never the one the boutique unlinked itself', allRemoved === 'b-cou,b-hard,b-lak' && rem2.data.hasMore === false, allRemoved);
   check('GET one shows them removed', (await call('GET', '/customers/b-lak')).data?.removed === true);
 
+  console.log('\nTHE GUIDE\'S OWN EXAMPLES (handouts/ScaleEzy-Boutique-API-Guide.md, "Customers: what you can send")');
+  // Every way of writing one number the guide lists is the same customer, kept as +91...
+  const g = await fresh();
+  const forms = [g, `${g.slice(0, 5)} ${g.slice(5)}`, `${g.slice(0, 3)}-${g.slice(3, 6)}-${g.slice(6)}`, `(${g.slice(0, 5)}) ${g.slice(5)}`, `0${g}`, `+91 ${g.slice(0, 5)} ${g.slice(5)}`, `91${g}`, `0091 ${g}`];
+  const landed: string[] = [];
+  for (const [i, f] of forms.entries()) landed.push((await call('POST', '/customers', { boutiqueCustomerId: `g-ph-${i}`, name: 'Guide Phone', phone: f })).data?.inventoryCustomerId);
+  check(`the ${forms.length} ways of writing one Indian number in the guide are one customer, kept as +91...`, landed.every(id => !!id && id === landed[0]) && (await prisma.customer.findUnique({ where: { id: landed[0] } }))?.phone === `+91${g}`, landed);
+  const abroad = await call('POST', '/customers', { boutiqueCustomerId: 'g-ph-us', name: 'Guide Abroad', phone: '+1 415 555 0142' });
+  check('"+1 415 555 0142" is kept as +14155550142', (await prisma.customer.findUnique({ where: { id: abroad.data?.inventoryCustomerId ?? '' } }))?.phone === '+14155550142', abroad);
+  for (const badPhone of ['98480 2233', '984802233812', '5848022338', '98480 abcde', '9999999999', '9876543210']) {
+    check(`the guide says "${badPhone}" is refused`, (await call('POST', '/customers', { boutiqueCustomerId: 'g-ph-bad', name: 'Guide Bad', phone: badPhone })).status === 400);
+  }
+  check('phone "" and phone null are "no phone"', (await call('POST', '/customers', { boutiqueCustomerId: 'g-ph-empty', name: 'Guide Empty', phone: '' })).status === 201 && (await call('POST', '/customers', { boutiqueCustomerId: 'g-ph-null', name: 'Guide Null', phone: null })).status === 201);
+  const dates = ['14-08', '14/08', '14.08', '14-08-1990', '14 Aug', '14 August 1990', '14th Aug', '1990-08-14'];
+  const kept: (string | null | undefined)[] = [];
+  for (const [i, dt] of dates.entries()) {
+    const r = await call('POST', '/customers', { boutiqueCustomerId: `g-dt-${i}`, name: `Guide Date ${i}`, birthday: dt });
+    kept.push((await prisma.customer.findUnique({ where: { id: r.data?.inventoryCustomerId ?? '' } }))?.birthday);
+  }
+  check(`the ${dates.length} ways of writing 14 August in the guide are all kept as 08-14`, kept.every(b => b === '08-14'), kept);
+  const leap = await call('POST', '/customers', { boutiqueCustomerId: 'g-dt-leap', name: 'Guide Leap', birthday: '29-02' });
+  check('"29-02" is accepted', (await prisma.customer.findUnique({ where: { id: leap.data?.inventoryCustomerId ?? '' } }))?.birthday === '02-29', leap);
+  for (const badDate of ['30-02', '31-04', '12-13', 'next week']) {
+    check(`the guide says the date "${badDate}" is refused`, (await call('POST', '/customers', { boutiqueCustomerId: 'g-dt-bad', name: 'Guide Bad Date', birthday: badDate })).status === 400);
+  }
+  check('capital and small letters are different ids (C-1 and c-1 are two people)', (await call('POST', '/customers', { boutiqueCustomerId: 'G-Case', name: 'Guide Case One' })).data?.inventoryCustomerId
+    !== (await call('POST', '/customers', { boutiqueCustomerId: 'g-case', name: 'Guide Case Two' })).data?.inventoryCustomerId);
+  const blank = await call('POST', '/customers', { boutiqueCustomerId: 'g-blank', name: 'Guide Blank', phone: await fresh(), email: 'blank@example.com' });
+  await call('POST', '/customers', { boutiqueCustomerId: 'g-blank', name: 'Guide Blank', email: '' });
+  check('sending "" for a detail does not remove it', (await prisma.customer.findUnique({ where: { id: blank.data.inventoryCustomerId } }))?.email === 'blank@example.com');
+  // The guide's two worked examples, word for word, in the other (empty) shop.
+  const o2 = { tenant: T2 };
+  const single = await call('POST', '/customers', { boutiqueCustomerId: 'C-1042', name: 'Lakshmi K', phone: '98480 22338', email: 'lakshmi@gmail.com', birthday: '14-08-1990', anniversary: '02-12', address: '12 MG Road, Hyderabad' }, o2);
+  check('the guide\'s POST example answers 201 with exactly the fields it shows', single.status === 201 && Object.keys(single.data ?? {}).sort().join() === 'boutiqueCustomerId,inventoryCustomerId,matched,moved,nameMatches,relinked'
+    && single.data.matched === 'NEW' && single.data.nameMatches === true && single.data.moved === false && single.data.relinked === false, single);
+  const del = await call('DELETE', '/customers/C-1042', undefined, o2);
+  check('the guide\'s DELETE answer: { boutiqueCustomerId, removed: true }, and the customer stays', del.status === 200 && Object.keys(del.data ?? {}).sort().join() === 'boutiqueCustomerId,removed' && del.data.removed === true
+    && !!(await prisma.customer.findFirst({ where: { id: single.data.inventoryCustomerId, deletedAt: null } })), del);
+  const back2 = await call('POST', '/customers', { boutiqueCustomerId: 'C-1042', name: 'Lakshmi K', phone: '98480 22338' }, o2);
+  check('...and sending the id again links them again (relinked: true), as the guide says', back2.status === 200 && back2.data?.relinked === true && back2.data?.inventoryCustomerId === single.data.inventoryCustomerId, back2);
+  const pg = await fresh();
+  const gb = await call('POST', '/customers/bulk', { customers: [
+    { boutiqueCustomerId: 'C-1', name: 'Lakshmi K', phone: pg },
+    { boutiqueCustomerId: 'C-2', name: 'Priya K', phone: pg },
+    { boutiqueCustomerId: 'C-3', name: '' },
+    { boutiqueCustomerId: 'C-1', name: 'Lakshmi K' }
+  ] }, o2);
+  const gr = gb.data?.results ?? [];
+  check('the guide\'s bulk example: linked 2, refused 2, each row as shown', gb.status === 200 && gb.data?.linked === 2 && gb.data?.refused === 2
+    && gr[0]?.ok === true && gr[0].matched === 'NEW' && gr[0].nameMatches === true
+    && gr[1]?.ok === true && gr[1].matched === 'BY_PHONE' && gr[1].nameMatches === false && gr[1].inventoryCustomerId === gr[0].inventoryCustomerId
+    && gr[2]?.ok === false && gr[2].boutiqueCustomerId === 'C-3' && gr[2].error === 'Give the customer\'s name.'
+    && gr[3]?.ok === false && gr[3].boutiqueCustomerId === 'C-1' && gr[3].error === 'This boutiqueCustomerId is in the list twice; it was taken once.', gb.data);
+  const noList = await call('POST', '/customers/bulk', {}, o2);
+  check('bulk with no list is refused (400), nothing saved', noList.status === 400, noList);
+  const badAfter = await call('GET', '/customers/removed?after=nonsense', undefined, o2);
+  check('a wrong "after" on the removed list is 400', badAfter.status === 400, badAfter);
+  const lim = await call('GET', '/customers/removed?limit=99999', undefined, o2);
+  check('a huge limit on the removed list is simply capped (200 OK)', lim.status === 200 && Array.isArray(lim.data?.removed), lim);
+  check('reading needs no can word (GET with an empty can list)', (await call('GET', '/customers/C-1', undefined, { tenant: T2, can: [] })).status === 200);
+  check('deleting without customers:write is refused (403)', (await call('DELETE', '/customers/C-1', undefined, { tenant: T2, can: ['products:write'] })).status === 403);
+
   console.log('\nANOTHER SHOP');
   check('shop 2 cannot read shop 1\'s person', (await call('GET', '/customers/b-pri', undefined, { tenant: T2 })).status === 404);
   check('...nor unlink them', (await call('DELETE', '/customers/b-pri', undefined, { tenant: T2 })).status === 404);
