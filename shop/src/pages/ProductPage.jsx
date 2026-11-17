@@ -66,6 +66,8 @@ function saving(now, was) {
 function ShareButton({ shopName, product, bare = false }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // A browser that will not copy at all: the link is shown, selected, to copy by hand (never the browser's prompt box).
+  const [byHand, setByHand] = useState(false);
   const box = useRef(null);
   const menu = useRef(null);
   const [at, setAt] = useState(null);
@@ -107,6 +109,7 @@ function ShareButton({ shopName, product, bare = false }) {
     return () => { document.removeEventListener('pointerdown', away); document.removeEventListener('keydown', esc); };
   }, [open]);
 
+  useEffect(() => { if (!open) setByHand(false); }, [open]);
   const s = shareThis(shopName, product);
   // The share sheet on a phone or tablet only: a computer's own (the Windows share window) is clumsy,
   // and the menu below does the job better there.
@@ -121,7 +124,17 @@ function ShareButton({ shopName, product, bare = false }) {
   };
   const copy = async () => {
     try { await navigator.clipboard.writeText(s.url); setCopied(true); window.setTimeout(() => { setCopied(false); setOpen(false); }, 1400); }
-    catch { window.prompt('Copy this link', s.url); }
+    catch {
+      // The older way of copying (a selected text box and the copy command), for plain http or inside a frame.
+      const box = document.createElement('textarea');
+      box.value = s.url; box.setAttribute('readonly', ''); box.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+      document.body.appendChild(box); box.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch { ok = false; }
+      box.remove();
+      if (ok) { setCopied(true); window.setTimeout(() => { setCopied(false); setOpen(false); }, 1400); }
+      else setByHand(true);
+    }
   };
   const mail = `mailto:?subject=${encodeURIComponent(`${product.title} from ${shopName}`)}&body=${encodeURIComponent(`${s.text}\n${s.url}`)}`;
 
@@ -141,6 +154,7 @@ function ShareButton({ shopName, product, bare = false }) {
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" /><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></svg>
             {copied ? 'Link copied' : 'Copy link'}
           </button>
+          {byHand && <input className="sm-byhand" readOnly value={s.url} aria-label="This product's link, to copy" autoFocus onFocus={(e) => e.target.select()} />}
           <a role="menuitem" href={s.whatsapp} target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)}><Wa /> WhatsApp</a>
           <a role="menuitem" href={mail} onClick={() => setOpen(false)}>
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3.5 6.5 8.5 6.5 8.5-6.5" /></svg>
