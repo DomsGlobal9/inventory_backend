@@ -18,6 +18,11 @@ import { Problem, Say } from '../components/States';
  * swipe brings the next. The bars at the top say where you are in the reel. The last frame is the whole look: every
  * piece in a row, what is in the bag, the total, and the shop's other reels.
  *
+ * 18 Nov 2026, the owner on the laptop view ("not good": words floating in empty white): a laptop gets "B. Like a
+ * shopping site" (PLAN-reel-laptop-mockups.html) -- the shop's light header, the reel's pieces as small pictures down
+ * the left, the photograph, and the details from the top of the right-hand side. The phone stays as chosen, with one
+ * addition the owner asked for: the first frame SAYS to swipe up, until the shopper has.
+ *
  * Opened from Instagram's own small browser, so: no sign-in to look, one request, today's prices and stock. The page
  * scrolls inside its own frame (not the document), so that browser's bars never slide about and a frame is always
  * exactly one screen. Sold-out pieces come last (the server orders them) and offer WhatsApp. A link the shop switched
@@ -112,7 +117,7 @@ const Down = () => (
  * The band at the top of every frame: where you are in the reel, whose shop this is, the reel itself, the bag.
  * Each frame carries its own, so it travels with its photograph and never sits over the next frame's words.
  */
-function Band({ slug, shop, total = 0, lit = 0, onGo, reelUrl, solid, flow }) {
+function Band({ slug, shop, total = 0, lit = 0, onGo, reelUrl, reelName, solid, flow }) {
   const n = bagCount(slug);
   return (
     <div className={`lk-band${solid ? ' solid' : ''}${flow ? ' flow' : ''}`}>
@@ -126,6 +131,8 @@ function Band({ slug, shop, total = 0, lit = 0, onGo, reelUrl, solid, flow }) {
       ) : null}
       <div className="lk-bandrow">
         <Link className="lk-shopname" to={`/${slug}`}>{shop.name}</Link>
+        {/* On a laptop the band is the shop's header, with room to say which reel this is. */}
+        {reelName ? <span className="lk-reelname">{reelName}</span> : null}
         {/* The reel on Instagram itself (17 Nov, the owner: a link, not a pop-up, for shoppers). */}
         {reelUrl ? <a className="lk-watch" href={reelUrl} target="_blank" rel="noreferrer"><i aria-hidden="true" />Watch reel</a> : null}
         <Link className="lk-bag" to={`/${slug}/bag`} aria-label={n > 0 ? `Your bag, ${n} ${n === 1 ? 'item' : 'items'}` : 'Your bag'}>
@@ -259,8 +266,15 @@ function ChooseSheet({ slug, p, start, onClose, onAdded }) {
 }
 
 /** One piece, one screen. */
-function Frame({ slug, shop, look, p, index, total, colour, onColour, next, onGo, buying, hearts, inBagCodes, ask, onAdd, tooSoon, eager, setRef }) {
+function Frame({ slug, shop, look, p, index, total, colour, onColour, next, onGo, buying, hearts, inBagCodes, ask, onAdd, tooSoon, eager, setRef, all, reelName, cue }) {
   const d = describe(p, colour);
+  // A long reel's column of pictures scrolls inside itself; each frame's column opens with its own piece in view.
+  const rail = useRef(null);
+  useEffect(() => {
+    const el = rail.current, cur = el?.querySelector('.cur');
+    if (el && cur) el.scrollTop = Math.max(0, cur.offsetTop - (el.clientHeight - cur.offsetHeight) / 2);
+  }, [index, total]);
+  const sizes = [...new Set(d.shown.map(v => v.size).filter(Boolean))];
   const colours = coloursOf(p);
   const worn = p.reelColour ? colours.find(c => sameColour(c.name, p.reelColour)) : null;
   const isWorn = !!worn && sameColour(worn.name, colour);
@@ -306,13 +320,32 @@ function Frame({ slug, shop, look, p, index, total, colour, onColour, next, onGo
   const nextD = next ? describe(next.p, next.colour) : null;
   return (
     <section className={`lk-frame${d.soldOut ? ' gone' : ''}`} ref={setRef} data-piece={p.productCode} aria-label={`${index + 1} of ${total}: ${p.title}`}>
-      <Band slug={slug} shop={shop} total={total} lit={index + 1} onGo={onGo} reelUrl={look.reel?.url} solid={!d.photo} />
+      <Band slug={slug} shop={shop} total={total} lit={index + 1} onGo={onGo} reelUrl={look.reel?.url} reelName={reelName} solid={!d.photo} />
       <div className="lk-stage">
+        {total > 1 ? (
+          <nav className="lk-rail" aria-label="Pieces in this reel" ref={rail}>
+            {all.map((s, i) => (
+              <button key={s.p.productCode} type="button" className={`lk-railpic${i === index ? ' cur' : ''}`} onClick={() => onGo(i)}
+                aria-label={`${i + 1}: ${s.p.title}`} aria-current={i === index ? 'true' : undefined}>
+                {s.d.photo ? <img src={sized(s.d.photo.url, 240)} alt="" loading="lazy" decoding="async" /> : <span>Photo coming soon</span>}
+                <em aria-hidden="true">{i + 1}</em>
+              </button>
+            ))}
+            <button type="button" className="lk-railall" onClick={() => onGo(total)}>The whole look</button>
+          </nav>
+        ) : null}
         <div className="lk-shot">
           <Link to={pieceUrl(slug, p, colour)} aria-label={`${p.title}: photos and details`}>
             <FramePhoto key={d.photo?.url ?? 'none'} src={d.photo?.url} alt={`${p.title}${colour ? `, ${colour}` : ''}`} eager={eager} />
           </Link>
           {d.soldOut ? <span className="lk-flag">Sold out</span> : null}
+          {/* Said in words on the first frame, until the shopper has swiped once (the button below says it to a screen reader). */}
+          {cue ? (
+            <span className="lk-swipe" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 15l6-6 6 6" /></svg>
+              {total > 1 ? 'Swipe up for the next piece' : 'Swipe up for more'}
+            </span>
+          ) : null}
         </div>
         <div className="lk-panel">
           <div className="lk-count">
@@ -354,6 +387,13 @@ function Frame({ slug, shop, look, p, index, total, colour, onColour, next, onGo
             {action}
             {hearts ? <span className="lk-heart"><Heart slug={slug} productCode={p.productCode} variantCode={d.only?.variantCode} /></span> : null}
           </div>
+          {/* A laptop has the room for a few plain facts and the way to the piece's own page. */}
+          <dl className="lk-facts">
+            {p.fabric ? <div><dt>Fabric</dt><dd>{p.fabric}</dd></div> : null}
+            {colours.length > 1 ? <div><dt>Colours</dt><dd>{colours.map(c => c.name).join(', ')}</dd></div> : null}
+            {sizes.length > 1 ? <div><dt>Sizes</dt><dd>{sizes.join(', ')}</dd></div> : null}
+            <div><dt>Photos and details</dt><dd><Link to={pieceUrl(slug, p, colour)}>Open the piece</Link></dd></div>
+          </dl>
           <button type="button" className="lk-next" onClick={() => onGo(index + 1)}>
             {next ? (
               <>
@@ -403,6 +443,8 @@ export default function LookPage({ slug, code, shop, footer, announcement }) {
   const frames = useRef([]);
   const tick = useRef(0);
   const addedAt = useRef(0);
+  // The "swipe up" words on the first frame go once the shopper has moved, and do not come back.
+  const [moved, setMoved] = useState(false);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -467,6 +509,7 @@ export default function LookPage({ slug, code, shop, footer, announcement }) {
       tick.current = 0;
       const el = reel.current;
       if (!el) return;
+      if (el.scrollTop > 24) setMoved(true);
       const mid = el.scrollTop + el.clientHeight / 2;
       let at = 0;
       frames.current.forEach((f, n) => { if (f && f.offsetTop <= mid) at = n; });
@@ -572,6 +615,7 @@ export default function LookPage({ slug, code, shop, footer, announcement }) {
     setSaid(n ? `${n} ${n === 1 ? 'piece' : 'pieces'} added to your bag.` : 'Already in your bag.');
   };
   const pickColour = (p, colour) => setPicked(was => ({ ...was, [p.productCode]: colour }));
+  const reelName = `${look.title}, ${total} ${total === 1 ? 'piece' : 'pieces'}`;
 
   /** What a row of the whole look offers at its right-hand end. */
   const rowAction = ({ p, colour, d }) => {
@@ -592,11 +636,12 @@ export default function LookPage({ slug, code, shop, footer, announcement }) {
             colour={colour} onColour={pickColour} next={seen[i + 1] ?? null} onGo={goTo}
             buying={buying} hearts={hearts} inBagCodes={inBagCodes} ask={ask} onAdd={addOne} tooSoon={tooSoon}
             eager={i === current || (current >= total && i === 0)}
+            all={seen} reelName={reelName} cue={i === 0 && current === 0 && !moved}
             setRef={el => { frames.current[i] = el; }} />
         ))}
 
         <section className="lk-end" ref={el => { frames.current[total] = el; }} aria-label={total > 1 ? 'The whole look' : `More from ${shop.name}`}>
-          <Band slug={slug} shop={shop} total={total} lit={total} onGo={goTo} reelUrl={look.reel?.url} solid flow />
+          <Band slug={slug} shop={shop} total={total} lit={total} onGo={goTo} reelUrl={look.reel?.url} reelName={reelName} solid flow />
           {/* The shop's one line ("Diwali sale till 5 Nov"): on the frame where the buying is summed up, not over every photograph. */}
           {announcement}
           <div className="lk-endin">
