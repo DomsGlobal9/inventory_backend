@@ -54,7 +54,7 @@ export async function guardVariantPrice(clientId: string, where: { id?: string; 
 /** A boutique colour is archived in the boutique app, never deleted here: its stock, holds and history belong to the boutique's orders. */
 export async function guardColourDelete(clientId: string, variantId: string) {
   const v = await prisma.productVariant.findFirst({ where: { id: variantId, clientId }, select: { boutiqueRef: true } });
-  if (v?.boutiqueRef) throw refuse('This colour comes from your boutique app, so it cannot be deleted here. Archive it in the boutique app.');
+  if (v?.boutiqueRef) throw refuse('This colour comes from your boutique app, so it cannot be deleted here. Delete or archive it in the boutique app.');
 }
 
 /** Colours of a boutique design are added in the boutique app, which gives each its item code. */

@@ -12,7 +12,7 @@ import { prisma } from '../../lib/prisma';
 import { factorOf, formatQty, type SoldBy } from '../../lib/units';
 import { generateSequentialCode } from '../../utils/codeGenerator';
 import { purchaseOrderService } from '../purchase-order.service';
-import { type Actor, type Db, problem, baseQty, variantOf, storeOf } from './index';
+import { type Actor, type Db, problem, baseQty, variantOf, storeOf, codeOf, wasDeleted } from './index';
 
 const mustSupply = (a: Actor) => { if (!a.can.includes('suppliers:write')) throw problem('This person may not change suppliers or purchase orders.', 403); };
 const wholeAtLeast1 = (v: unknown) => { const n = Number(v); return Number.isInteger(n) && n >= 1 ? n : null; };
@@ -176,7 +176,7 @@ async function poView(id: string, clientId: string) {
     const soldBy = (i.variant.product.soldBy ?? 'PIECE') as SoldBy;
     const f = factorOf(soldBy);
     return {
-      lineId: i.id, itemCode: i.variant.boutiqueRef, name: i.productTitle, colour: i.color, unit: soldBy,
+      lineId: i.id, itemCode: codeOf(i.variant.boutiqueRef), ...(wasDeleted(i.variant.boutiqueRef) ? { itemDeleted: true } : {}), name: i.productTitle, colour: i.color, unit: soldBy,
       quantity: i.orderedQty / f, received: i.receivedQty / f, outstanding: Math.max(0, i.orderedQty - i.receivedQty) / f,
       unitCost: Math.round(Number(i.unitPrice) * f * 100) / 100, batchNumber: i.batchNumber ?? null,
       lineTotal: Math.round(i.orderedQty * Number(i.unitPrice) * 100) / 100

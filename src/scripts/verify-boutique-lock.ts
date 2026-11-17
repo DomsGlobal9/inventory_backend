@@ -100,7 +100,7 @@ async function main() {
     check(`the owner changing ${what} of a colour: 409 in words`, /^409 /.test(r) && msg.test(r), r);
   }
   check('the owner changing its reorder level: saved', (await owner(() => variantService.updateVariant(v.id, cA, { reorderLevel: 2000 }))) === 'saved');
-  check('the owner deleting the colour: 409, the colour is still there', /^409 .*Archive it in the boutique app/.test(await owner(() => variantService.deleteVariant(v.id, cA))) && !!(await prisma.productVariant.findUnique({ where: { id: v.id } })));
+  check('the owner deleting the colour: 409, the colour is still there', /^409 .*Delete or archive it in the boutique app/.test(await owner(() => variantService.deleteVariant(v.id, cA))) && !!(await prisma.productVariant.findUnique({ where: { id: v.id } })));
   check('the owner adding a colour: 409, nothing added', /^409 .*Add the colour there/.test(await owner(() => variantService.createVariant(p.id, cA, { colorName: 'Blue', size: 'Free', sku: `X-${S}`, sellingPrice: 450 })))
     && (await prisma.productVariant.count({ where: { productId: p.id } })) === 1);
   // Bulk updates answer row by row ({ updated, skipped, errors }) rather than failing the whole file.

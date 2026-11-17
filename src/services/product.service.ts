@@ -313,6 +313,10 @@ export class ProductService {
     if (isLive(existing.status)) {
       throw conflict('That product has not been archived or binned, so there is nothing to restore.');
     }
+    // Deleted in the boutique app (17 Nov 2026): it is in the bin only so its bills and stock records still add up.
+    if (await prisma.productVariant.count({ where: { productId: id, clientId, boutiqueDeletedAt: { not: null } } })) {
+      throw conflict('This item was deleted in your boutique app, so it cannot be restored here. It is kept only for its past records.');
+    }
 
     // When we genuinely do not know what it was, come back as a DRAFT rather than ACTIVE.
     //

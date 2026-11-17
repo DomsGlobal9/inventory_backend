@@ -1,7 +1,8 @@
 /**
  * Archiving one colour of a boutique design (16 Nov), against the REAL local server and database.
  *
- * Before: DELETE /items/:code archived only a design with no other colours, so a design with two or more colours
+ * (17 Nov: archiving is POST /items/:code/archive; DELETE /items/:code now deletes -- verify-boutique-delete.ts.)
+ * Before: archiving archived only a design with no other colours, so a design with two or more colours
  * could never be archived -- the colour stayed on sale and the answer still said "archived". Now an archived colour
  * moves to a shelf (a one-colour archived copy of the design) and the last live colour archives the design itself.
  *
@@ -73,8 +74,8 @@ async function main() {
   await wait(1500);
   const before = (await events(design.id)).length;
 
-  const del = await call('DELETE', `/items/${A}`);
-  check('DELETE one colour: 200 archived', del.status === 200 && del.data?.archived === true, del);
+  const del = await call('POST', `/items/${A}/archive`);
+  check('archive one colour: 200 archived', del.status === 200 && del.data?.archived === true, del);
   const a1 = await item(A);
   check('...it reads back ARCHIVED, with its stock and its hold', a1?.status === 'ARCHIVED' && a1.stock === 10 && a1.reserved === 2, a1);
   check('...the other two colours are still on sale', (await item(B))?.status === 'ACTIVE' && (await item(C))?.status === 'ACTIVE');
@@ -92,17 +93,17 @@ async function main() {
   const saree = (await homeOf(P1, clientId)).product;
   await wait(1500);
   const sareeBefore = (await events(saree.id)).length;
-  await call('DELETE', `/items/${P1}`);
+  await call('POST', `/items/${P1}/archive`);
   await wait(1500);
   const ev1 = await events(saree.id);
   check('a saree colour archived: the website is told the design changed', ev1.length > sareeBefore && ev1[ev1.length - 1] === 'PRODUCT_UPDATED', ev1);
-  await call('DELETE', `/items/${P2}`);
+  await call('POST', `/items/${P2}/archive`);
   await wait(1500);
   const ev1b = await events(saree.id);
   check('...its last colour archived: the website is told it is withdrawn', ev1b[ev1b.length - 1] === 'PRODUCT_UNPUBLISHED', ev1b);
 
-  const again = await call('DELETE', `/items/${A}`);
-  check('DELETE it again: same answer, nothing changes, still one shelf', again.status === 200 && (await prisma.product.count({ where: { clientId, importKey: `boutique-archived:${A}` } })) === 1 && (await item(A))?.status === 'ARCHIVED', again);
+  const again = await call('POST', `/items/${A}/archive`);
+  check('archive it again: same answer, nothing changes, still one shelf', again.status === 200 && (await prisma.product.count({ where: { clientId, importKey: `boutique-archived:${A}` } })) === 1 && (await item(A))?.status === 'ARCHIVED', again);
   const issue = await call('POST', `/holds/${hold.data?.reservationId}/issue`, {});
   check('a hold on the archived colour can still be cut (the order goes on)', issue.status === 200, issue);
   const putArch = await call('PUT', `/items/${A}`, silk(A, 'Maroon', { name: 'Kanchi silk, old maroon' }));
@@ -110,8 +111,8 @@ async function main() {
   check('...and the live design kept its own name', (await prisma.product.findUnique({ where: { id: design.id } }))!.title === 'Kanchi silk');
 
   console.log('\nALL COLOURS, THEN ONE BACK');
-  await call('DELETE', `/items/${B}`);
-  const lastOne = await call('DELETE', `/items/${C}`);
+  await call('POST', `/items/${B}/archive`);
+  const lastOne = await call('POST', `/items/${C}/archive`);
   const designNow = await prisma.product.findUnique({ where: { id: design.id } });
   check('the last colour archives the design itself (no shelf for it)', lastOne.status === 200 && designNow!.status === 'ARCHIVED' && (await homeOf(C, clientId)).productId === design.id);
   check('...no colour of it is on sale anywhere', !(await storefrontCatalogueService.getProduct({ clientId, locationIds: [] }, design.productCode, { withLengths: true })));
@@ -130,7 +131,7 @@ async function main() {
   check('...the online shop sells the design with B only', ((shop2 as any)?.variants ?? []).map((v: any) => v.sku).join() === B, (shop2 as any)?.variants);
 
   console.log('\nNEW COLOURS AND ARCHIVED ONES');
-  await call('DELETE', `/items/${B}`);
+  await call('POST', `/items/${B}/archive`);
   const E = `${S}-E`;
   const newE = await call('PUT', `/items/${E}`, silk(E, 'Blue'));
   check('a new colour added to an archived design: 201 and on sale', newE.status === 201 && newE.data?.status === 'ACTIVE', newE);
@@ -150,7 +151,7 @@ async function main() {
   console.log('\nOTHER DESIGNS');
   const SOLO = `${S}-SOLO`;
   await call('PUT', `/items/${SOLO}`, { name: 'Banarasi', designGroup: `SOLO-${S}`, kind: 'FABRIC', unit: 'METER', sellingPrice: 900, sellInShop: true });
-  await call('DELETE', `/items/${SOLO}`);
+  await call('POST', `/items/${SOLO}/archive`);
   const solo = await homeOf(SOLO, clientId);
   check('a one-colour design: archived in place, no shelf', solo.product.status === 'ARCHIVED' && solo.product.importKey === `boutique:SOLO-${S}`);
   const soloBack = await call('PUT', `/items/${SOLO}`, { name: 'Banarasi', designGroup: `SOLO-${S}`, kind: 'FABRIC', unit: 'METER', sellingPrice: 900, sellInShop: true, archived: false });
@@ -158,35 +159,35 @@ async function main() {
   const M1 = `${S}-M1`, M2 = `${S}-M2`;
   for (const m of [M1, M2]) await call('PUT', `/items/${m}`, { name: 'Lining', designGroup: `LIN-${S}`, category: 'LINING', color: m });
   const lining = (await homeOf(M1, clientId)).product;
-  await call('DELETE', `/items/${M1}`);
+  await call('POST', `/items/${M1}/archive`);
   await wait(1500);
   check('a material colour archived: archived, and no website is told (it was never on sale)', (await item(M1))?.status === 'ARCHIVED' && (await events(lining.id)).length === 0, await events(lining.id));
 
   console.log('\nRETRIES, IMPORT, PERMISSION');
   const key = `arch-replay-${S}`;
-  const r1 = await call('DELETE', `/items/${E}`, undefined, { key });
-  const r2 = await call('DELETE', `/items/${E}`, undefined, { key });
+  const r1 = await call('POST', `/items/${E}/archive`, undefined, { key });
+  const r2 = await call('POST', `/items/${E}/archive`, undefined, { key });
   check('the same request id twice: the second is a replay', r1.status === 200 && r2.status === 200 && r2.replay === 'true', [r1.replay, r2.replay]);
   const G = `${S}-G`, H = `${S}-H`;
   const imp = await call('POST', '/items/import', { items: [{ itemCode: G, ...silk(G, 'Teal') }, { itemCode: H, ...silk(H, 'Rust', { archived: true }) }] }, { key: `arch-import-${S}` });
   check('import: a row with archived:true lands archived, the other on sale', imp.data?.added === 2 && (await item(G))?.status === 'ACTIVE' && (await item(H))?.status === 'ARCHIVED', imp);
-  const no = await call('DELETE', `/items/${G}`, undefined, { can: ['stock:write'] });
+  const no = await call('POST', `/items/${G}/archive`, undefined, { can: ['stock:write'] });
   check('archiving without products:write: 403, nothing changes', no.status === 403 && (await item(G))?.status === 'ACTIVE', no);
-  const missing = await call('DELETE', `/items/NOPE-${S}`);
+  const missing = await call('POST', `/items/NOPE-${S}/archive`);
   check('archiving an unknown code: 404', missing.status === 404, missing);
 
   console.log('\nRACES');
   const R1 = `${S}-R1`, R2 = `${S}-R2`;
   for (const r of [R1, R2]) await call('PUT', `/items/${r}`, { ...silk(r, r), designGroup: `RACE-${S}` });
   const raceDesign = (await homeOf(R1, clientId)).productId;
-  const both = await Promise.all([call('DELETE', `/items/${R1}`), call('DELETE', `/items/${R2}`)]);
+  const both = await Promise.all([call('POST', `/items/${R1}/archive`), call('POST', `/items/${R2}/archive`)]);
   const left = await prisma.productVariant.count({ where: { productId: raceDesign } });
   const rd = await prisma.product.findUnique({ where: { id: raceDesign } });
   check('the last two colours archived at the same moment: both archived, no empty design on sale',
     both.every(b => b.status === 200) && (await item(R1))?.status === 'ARCHIVED' && (await item(R2))?.status === 'ARCHIVED' && rd!.status === 'ARCHIVED' && left === 1, { left, status: rd?.status });
   const R3 = `${S}-R3`, R4 = `${S}-R4`;
   await call('PUT', `/items/${R3}`, { ...silk(R3, 'x'), designGroup: `RACE2-${S}` });
-  await Promise.all([call('DELETE', `/items/${R3}`), call('PUT', `/items/${R4}`, { ...silk(R4, 'y'), designGroup: `RACE2-${S}` })]);
+  await Promise.all([call('POST', `/items/${R3}/archive`), call('PUT', `/items/${R4}`, { ...silk(R4, 'y'), designGroup: `RACE2-${S}` })]);
   check('the last colour archived while a new one is added: the new one is on sale, the old one archived',
     (await item(R4))?.status === 'ACTIVE' && (await item(R3))?.status === 'ARCHIVED', [await item(R3), await item(R4)]);
 

@@ -20,6 +20,15 @@ import { factorOf, isMeasured, KIND_KEYS, storedPrice, pricePerUnit, formatQty, 
 export type Actor = { clientId: string; name: string; can: string[] };
 export const problem = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode, message });
 
+/*
+ * A DELETED item that ScaleEzy keeps for its past records (services/boutique/remove.ts, 17 Nov 2026) carries a "#..."
+ * tail on its code. An item code can never contain "#", so a lookup by code misses it and the code is free again.
+ * codeOf gives back the code the boutique knew it by, for the movements and reports it is still part of.
+ */
+export const deletedRef = (code: string, id: string) => `${code}#${id.replace(/-/g, '').slice(0, 12)}`;
+export const wasDeleted = (ref: string | null | undefined) => !!ref && ref.includes('#');
+export const codeOf = <T extends string | null | undefined>(ref: T): T => (typeof ref === 'string' ? ref.split('#')[0] as T : ref);
+
 /* ── units: the boutique's codes to ours ─────────────────────────────────────────────────────────── */
 
 /** CRM-B `Unit` -> ours. A ROLL is counted as a piece (a whole roll); METER is our METRE (centimetres). */
@@ -109,7 +118,7 @@ export async function accountState(tenant: string) {
   if (!l) return { tenant, state: 'new' as const };
   if (l.unlinkedAt) return { tenant, state: 'free' as const, wasClientId: l.clientId };
   if (await isBoutiqueOnlyShop(l.clientId)) {
-    const items = await prisma.productVariant.count({ where: { clientId: l.clientId, boutiqueRef: { not: null } } });
+    const items = await prisma.productVariant.count({ where: { clientId: l.clientId, boutiqueRef: { not: null }, boutiqueDeletedAt: null } });
     return { tenant, state: 'boutique-only' as const, clientId: l.clientId, items };
   }
   return { tenant, state: 'taken' as const, clientId: l.clientId };
@@ -606,10 +615,10 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
  * live colour of a design archives the design itself. Before 16 Nov a design with two colours could never be
  * archived: the colour stayed on sale and the answer still said archived.
  */
-const SHELF = 'boutique-archived:';
-type Touched = Map<string, boolean>; // product id -> was it on sale before this change
+export const SHELF = 'boutique-archived:';
+export type Touched = Map<string, boolean>; // product id -> was it on sale before this change
 const isShelf = (p: { importKey: string | null }) => !!p.importKey?.startsWith(SHELF);
-const onSale = (p: { status: string; sellInShop: boolean; trashedAt: Date | null }) => p.status === 'ACTIVE' && p.sellInShop && !p.trashedAt;
+export const onSale = (p: { status: string; sellInShop: boolean; trashedAt: Date | null }) => p.status === 'ACTIVE' && p.sellInShop && !p.trashedAt;
 
 async function newProductCode(tx: Db, clientId: string) {
   const n = await tx.product.count({ where: { clientId } });
@@ -617,7 +626,7 @@ async function newProductCode(tx: Db, clientId: string) {
 }
 
 /** The archived one-colour copy of a design for this colour: made the first time, reused after. */
-async function shelfFor(tx: Db, clientId: string, design: any, ref: string) {
+export async function shelfFor(tx: Db, clientId: string, design: any, ref: string) {
   const key = `${SHELF}${ref}`.slice(0, 120);
   const { id: _id, productCode: _c, slug: _s, importKey: _k, createdAt: _a, updatedAt: _u, status: _st, trashedAt: _t, previousStatus: _p, ...details } = design;
   const found = await tx.product.findUnique({ where: { clientId_importKey: { clientId, importKey: key } } });
@@ -627,12 +636,12 @@ async function shelfFor(tx: Db, clientId: string, design: any, ref: string) {
 }
 
 /** A colour changed product: its photos go with it, and its Shopify link is dropped (the next push puts it right). */
-async function carryColour(tx: Db, variantId: string, productId: string) {
+export async function carryColour(tx: Db, variantId: string, productId: string) {
   await tx.productImage.updateMany({ where: { variantId }, data: { productId } });
   await tx.shopifyIdMap.deleteMany({ where: { variantId } });
 }
 
-async function archiveColour(tx: Db, clientId: string, seen: { id: string; productId: string }, touched: Touched): Promise<void> {
+export async function archiveColour(tx: Db, clientId: string, seen: { id: string; productId: string }, touched: Touched): Promise<void> {
   // The design is locked first, then read again: two of its last colours archived at the same moment would
   // otherwise each see the other still live, both move to shelves, and leave an empty design on sale.
   await tx.$queryRaw`SELECT id FROM inventory_products WHERE id = ${seen.productId} FOR UPDATE`;
@@ -663,7 +672,7 @@ async function reviveDesign(tx: Db, clientId: string, design: any, keepId?: stri
 }
 
 /** Once the change has committed, the shop's other channels hear about every design it touched that is or was on sale. */
-function tellShops(clientId: string, touched: Touched) {
+export function tellShops(clientId: string, touched: Touched) {
   afterCommit(() => {
     void (async () => {
       for (const [productId, was] of touched) {
@@ -676,7 +685,11 @@ function tellShops(clientId: string, touched: Touched) {
   });
 }
 
-/** Archive an item: it stops being sold and offered, but stays for its history and any open order. */
+/**
+ * Archive an item: it stops being sold and offered, but stays for its history and any open order.
+ * POST /items/{itemCode}/archive (and PUT archived:true). Until 17 Nov 2026 this was also what DELETE did; DELETE now
+ * deletes (services/boutique/remove.ts).
+ */
 export async function archiveItem(tx: Db, actor: Actor, itemCode: string) {
   if (!actor.can.includes('products:write')) throw problem('This person may not archive items.', 403);
   const v = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, boutiqueRef: itemCode }, include: { product: true } });
@@ -797,6 +810,8 @@ export async function itemWhere(actor: Actor, q: ItemQuery): Promise<Prisma.Prod
   return {
     clientId: actor.clientId,
     boutiqueRef: q.itemCodes ? { in: q.itemCodes } : q.itemCode ? String(q.itemCode) : { not: null },
+    // A deleted item kept for its records is in no list, whatever is searched for or filtered on.
+    boutiqueDeletedAt: null,
     ...(and.length ? { AND: and } : {})
   };
 }
@@ -1141,7 +1156,8 @@ export function movementView(t: any, itemCode: string | null, soldBy: string) {
   const f = factorOf(soldBy as SoldBy);
   const meta = (t.metadata && typeof t.metadata === 'object') ? t.metadata as Record<string, unknown> : {};
   return {
-    id: t.id, at: t.createdAt, itemCode, kind: t.boutiqueKind ?? t.reason, source: sourceOf(t),
+    // A movement of an item since deleted still answers, under the code it had, and says so.
+    id: t.id, at: t.createdAt, itemCode: codeOf(itemCode), ...(wasDeleted(itemCode) ? { itemDeleted: true } : {}), kind: t.boutiqueKind ?? t.reason, source: sourceOf(t),
     quantity: t.quantity / f, stockBefore: t.balanceBefore / f, stockAfter: t.balanceAfter / f,
     locationId: t.locationId, location: t.location?.name ?? null,
     orderRef: t.boutiqueOrderRef ?? null, stage: meta.stage ?? null, garmentRef: meta.garmentRef ?? null,

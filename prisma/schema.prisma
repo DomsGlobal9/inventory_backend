@@ -677,6 +677,9 @@ model ProductVariant {
   sku         String
   /// The boutique's item code for a colour it created (unique per shop): a repeated item lands once.
   boutiqueRef String? @map("boutique_ref")
+  /// Set when the boutique DELETED this item but ScaleEzy keeps it for its past records (17 Nov 2026): it is gone from
+  /// every list and lookup, boutique_ref / sku / variant_code carry a "#..." tail so the code is free again.
+  boutiqueDeletedAt DateTime? @map("boutique_deleted_at")
   /// The boutique's minimum stock and its free-text rack note for this colour (CRM-B); unused by retail.
   minStock Int?    @map("min_stock")
   rackNote String? @map("rack_note")

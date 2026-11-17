@@ -353,7 +353,7 @@ async function main() {
   check('4 m of lace goes to the tailor', toTailor.status === 200 && (await prisma.inventoryStock.findFirst({ where: { locationId: tailor.data?.id } }))?.quantity === 400, toTailor);
 
   console.log('\nARCHIVE');
-  const arc = await call('DELETE', '/items/THR-RED');
+  const arc = await call('POST', '/items/THR-RED/archive'); // DELETE deletes since 17 Nov (verify-boutique-delete.ts)
   const thrP = await prisma.product.findUnique({ where: { id: thrV.productId } });
   check('an archived item stops being offered, its history stays', arc.status === 200 && thrP?.status === 'ARCHIVED', { arc, status: thrP?.status });
 

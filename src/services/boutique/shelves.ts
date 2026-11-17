@@ -18,7 +18,7 @@ import { shelfStockService } from '../shelves/shelf-stock.service';
 import { shelfCountService } from '../shelves/count.service';
 import { shelfIssueService } from '../shelves/issue.service';
 import { createSpotSchema, bulkSpotsSchema, updateSpotSchema } from '../shelves/shelf.schema';
-import { type Actor, problem, baseQty, variantOf, storeOf } from './index';
+import { type Actor, problem, baseQty, variantOf, storeOf, codeOf } from './index';
 
 export const mustShelve = (a: Actor) => { if (!a.can.includes('stock:write') && !a.can.includes('stock:transfer')) throw problem('This person may not move stock on shelves.', 403); };
 export const mustSetUp = (a: Actor) => { if (!a.can.includes('stock:write')) throw problem('This person may not set up racks and shelves.', 403); };
@@ -61,7 +61,7 @@ async function inBoutiqueUnits<T>(clientId: string, value: T): Promise<T> {
     const v = typeof n.variantId === 'string' ? byId.get(n.variantId) : undefined;
     if (v) {
       here = factorOf((v.product.soldBy ?? 'PIECE') as SoldBy);
-      out.itemCode = v.boutiqueRef ?? null;
+      out.itemCode = codeOf(v.boutiqueRef) ?? null;
       out.unit = v.product.soldBy;
       if (!v.boutiqueRef) out.scaleezyItem = true;
     }

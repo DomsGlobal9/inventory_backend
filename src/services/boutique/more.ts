@@ -49,7 +49,9 @@ export async function nextCode(actor: Actor, rawPrefix: unknown) {
   const prefix = String(rawPrefix ?? '').trim().toUpperCase();
   if (!/^[A-Z0-9]{1,10}$/.test(prefix)) throw problem('The prefix is 1 to 10 letters or digits, for example PRD or FG.');
   // Up to 9 digits: a code like PRD-20261116123456 is not a counter and must not overflow the sum.
-  const pattern = `^${prefix}-([0-9]{1,9})$`;
+  // A deleted item kept for its records (its code now ends "#...") still holds its number: PRD-0007 was that item in
+  // every old report, so the next new item is PRD-0008, not a second PRD-0007.
+  const pattern = `^${prefix}-([0-9]{1,9})(#[0-9a-f]+)?$`;
   const [row] = await prisma.$queryRaw<{ n: number | null }[]>`
     SELECT MAX(CAST(substring(boutique_ref from ${pattern}) AS INTEGER)) AS n
     FROM inventory_product_variants WHERE client_id = ${actor.clientId} AND boutique_ref ~ ${pattern}`;

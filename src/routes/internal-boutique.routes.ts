@@ -12,6 +12,7 @@ import { factorOf } from '../lib/units';
 import type { Actor } from '../services/boutique';
 import { respondWithError } from '../utils/respondWithError';
 import * as customers from '../services/boutique/customers';
+import * as removal from '../services/boutique/remove';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -21,7 +22,8 @@ import * as customers from '../services/boutique/customers';
  *   scope       ["modules:boutique"]
  *   tenant      the boutique account it speaks for (CRM-B schema name)
  *   onBehalfOf  { userId, name, can }  the boutique person and what the boutique lets them do:
- *               products:write  add and change items       stock:write      receive, count, damage, sell, move
+ *               products:write  add, change, archive items stock:write      receive, count, damage, sell, move
+ *               products:delete delete items for good (17 Nov 2026)
  *               stitching:issue hold, cut and use cloth for orders, record waste and unused returns
  *   exp         at most 15 minutes after iat
  * The shop is found from the tenant (boutique_links); a pass can never name its own shop.
@@ -30,10 +32,11 @@ import * as customers from '../services/boutique/customers';
  * first answer and changes nothing.
  */
 const router = Router();
-const KNOWN_CAN = ['products:write', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write'];
+const KNOWN_CAN = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write'];
 type Pass = { id: string; scopes: string[]; tenant?: string; clientId?: string; issuedAt?: number; expiresAt?: number; onBehalfOf?: { userId: string; name?: string; can?: string[] } };
 const pass = (req: Request) => (req as any).service as Pass;
-const fail = (res: Response, status: number, message: string) => res.status(status).json({ success: false, message });
+// `more`: what a refusal can add for a program to act on (a delete's `code`, `blockers`, `canForce`).
+const fail = (res: Response, status: number, message: string, more?: Record<string, unknown>) => res.status(status).json({ success: false, message, ...(more ?? {}) });
 const actorOf = (req: Request) => (req as any).boutiqueActor as Actor;
 const requestIdOf = (req: Request) => req.get('Idempotency-Key') ?? req.body?.requestId;
 
@@ -128,7 +131,7 @@ const write = (fn: (tx: boutique.Db, actor: Actor, req: Request) => Promise<{ st
     const a = actorOf(req);
     const r = await boutique.once(a.clientId, requestIdOf(req), tx => fn(tx, a, req), boutique.fingerprintOf(req.method, req.path, req.body));
     res.status(r.status).set('Idempotent-Replay', r.repeat ? 'true' : 'false').json(r.answer);
-  } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
+  } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message, e.details); return respondWithError(res, e, { status: 500 }); }
 };
 
 // ── reading ──────────────────────────────────────────────────────────────────────────────────────
@@ -161,7 +164,17 @@ router.put('/items/:itemCode', async (req, res, next) => {
   try { await extra.checkOwnPhotos(actorOf(req).clientId, req.body?.imageUrls); next(); }
   catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
 }, write((tx, a, req) => withOpening(tx, a, { ...(req.body ?? {}), itemCode: req.params.itemCode })));
-router.delete('/items/:itemCode', write((tx, a, req) => boutique.archiveItem(tx, a, String(req.params.itemCode))));
+/*
+ * Delete and archive (17 Nov 2026). DELETE used to archive; the boutique asked for a real delete, so it deletes now
+ * (products:delete) and archiving has its own calls. `force` may come in the address (?force=true: many HTTP
+ * libraries send no body with DELETE) or in the body.
+ */
+const forced = (req: Request) => ['true', '1'].includes(String(req.query.force ?? '').toLowerCase()) || req.body?.force === true;
+router.post('/items/delete', write((tx, a, req) => removal.deleteItems(tx, a, req.body ?? {})));
+router.post('/items/archive', write((tx, a, req) => removal.archiveItems(tx, a, req.body ?? {})));
+router.post('/items/:itemCode/archive', write((tx, a, req) => boutique.archiveItem(tx, a, String(req.params.itemCode))));
+router.post('/items/:itemCode/restore', write((tx, a, req) => removal.restoreItem(tx, a, String(req.params.itemCode))));
+router.delete('/items/:itemCode', write((tx, a, req) => removal.deleteItem(tx, a, String(req.params.itemCode), { force: forced(req) })));
 
 /**
  * Many items at once (a first load, up to 200). Each row lands or is refused on its own; a row's id is the
@@ -234,7 +247,7 @@ router.get('/holds', read(async req => {
   const rows = await prisma.boutiqueReservation.findMany({ where: { clientId: a.clientId, ...(orderRef ? { orderRef } : {}), ...(all ? {} : { status: 'ACTIVE' }) }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], skip: (page - 1) * limit, take: limit });
   const variants = await prisma.productVariant.findMany({ where: { id: { in: rows.map(r => r.variantId) } }, include: { product: { select: { soldBy: true, title: true } } } });
   const byId = new Map(variants.map(v => [v.id, v]));
-  return rows.map(r => { const v = byId.get(r.variantId); const f = factorOf((v?.product.soldBy ?? 'PIECE') as any); return { reservationId: r.id, itemCode: v?.boutiqueRef, name: v?.product.title, orderRef: r.orderRef, quantity: r.quantity / f, status: r.status, by: r.actorName, at: r.createdAt }; });
+  return rows.map(r => { const v = byId.get(r.variantId); const f = factorOf((v?.product.soldBy ?? 'PIECE') as any); return { reservationId: r.id, itemCode: boutique.codeOf(v?.boutiqueRef), ...(boutique.wasDeleted(v?.boutiqueRef) ? { itemDeleted: true } : {}), name: v?.product.title, orderRef: r.orderRef, quantity: r.quantity / f, status: r.status, by: r.actorName, at: r.createdAt }; });
 }));
 
 // ── suppliers and purchase orders (CRM-B checklist section 4) ─────────────────────────────────────

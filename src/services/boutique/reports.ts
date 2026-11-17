@@ -11,7 +11,7 @@
 import { prisma } from '../../lib/prisma';
 import { factorOf, type SoldBy } from '../../lib/units';
 import { dayBookService } from '../daybook.service';
-import { type Actor, problem, listItems } from './index';
+import { type Actor, problem, listItems, codeOf, wasDeleted } from './index';
 
 export const mustReport = (a: Actor) => { if (!a.can.includes('reports:view')) throw problem('This person may not see reports.', 403); };
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -38,7 +38,9 @@ function range(q: { from?: unknown; to?: unknown }) {
 /** The boutique's colours with what each report needs: unit, purchase price per base unit, category, average-cost value. */
 async function boutiqueVariants(clientId: string, ids?: string[]) {
   const rows = await prisma.productVariant.findMany({
-    where: { clientId, boutiqueRef: { not: null }, ...(ids ? { id: { in: ids } } : {}) },
+    // Asked for by id (a report of the PAST: what was used, wasted, held for an order): a deleted item kept for its
+    // records still answers, under the code it had. Asked for all (what is in stock NOW): deleted ones are left out.
+    where: { clientId, boutiqueRef: { not: null }, ...(ids ? { id: { in: ids } } : { boutiqueDeletedAt: null }) },
     select: { id: true, boutiqueRef: true, colorName: true, costPrice: true, inventoryValue: true, reorderLevel: true, minStock: true, lastMovementAt: true,
       product: { select: { title: true, soldBy: true, boutiqueCategory: true, status: true, trashedAt: true } }, stocks: { select: { quantity: true, reservedQty: true } } }
   });
@@ -103,7 +105,7 @@ export async function consumption(actor: Actor, q: { from?: unknown; to?: unknow
     const v = vs.get(r.variantId); if (!v) continue;
     if (cats && !cats.includes(v.product.boutiqueCategory ?? '')) continue;
     const f = factorOf(v.product.soldBy as SoldBy), base = -(r._sum.quantity ?? 0);
-    const e = per.get(v.id) ?? { itemCode: v.boutiqueRef!, name: v.product.title, colour: v.colorName, category: v.product.boutiqueCategory, unit: v.product.soldBy, quantity: 0, value: 0 };
+    const e = per.get(v.id) ?? { itemCode: codeOf(v.boutiqueRef)!, ...(wasDeleted(v.boutiqueRef) ? { itemDeleted: true } : {}), name: v.product.title, colour: v.colorName, category: v.product.boutiqueCategory, unit: v.product.soldBy, quantity: 0, value: 0 };
     e.quantity += base / f; e.value += base * Number(v.costPrice ?? 0);
     per.set(v.id, e);
   }
@@ -136,7 +138,7 @@ export async function lossRates(actor: Actor, q: { from?: unknown; to?: unknown 
     const v = vs.get(id); if (!v) continue;
     const f = factorOf(v.product.soldBy as SoldBy), c = Number(v.costPrice ?? 0);
     tu += e.used * c; tw += e.waste * c; td += e.damaged * c; tr += e.received * c;
-    items.push({ itemCode: v.boutiqueRef, name: v.product.title, unit: v.product.soldBy, used: r2(e.used / f), waste: r2(e.waste / f), damaged: r2(e.damaged / f), received: r2(e.received / f),
+    items.push({ itemCode: codeOf(v.boutiqueRef), ...(wasDeleted(v.boutiqueRef) ? { itemDeleted: true } : {}), name: v.product.title, unit: v.product.soldBy, used: r2(e.used / f), waste: r2(e.waste / f), damaged: r2(e.damaged / f), received: r2(e.received / f),
       wastePercent: pct(e.waste, e.used + e.waste), damagePercent: pct(e.damaged, e.received) });
   }
   return { from, to, items, overall: { wastePercent: pct(tw, tu + tw), damagePercent: pct(td, tr), basis: 'value at purchase price' } };
@@ -176,7 +178,7 @@ export async function orderUsage(actor: Actor, orderRef: string) {
     const v = vs.get(id)!, f = factorOf(v.product.soldBy as SoldBy), c = Number(v.costPrice ?? 0);
     const sum = (ks: string[]) => Math.abs(rows.filter(r => r.variantId === id && ks.includes(r.boutiqueKind ?? '')).reduce((n, r) => n + (r._sum.quantity ?? 0), 0));
     const used = sum(USED), waste = sum(WASTED), returned = sum(RETURNED), held = holds.find(h => h.variantId === id)?._sum.quantity ?? 0;
-    return { itemCode: v.boutiqueRef, name: v.product.title, colour: v.colorName, unit: v.product.soldBy, heldNow: held / f, used: used / f, wasted: waste / f, returned: returned / f, netUsed: Math.max(0, used - returned) / f, cost: r2((Math.max(0, used - returned) + waste) * c) };
+    return { itemCode: codeOf(v.boutiqueRef), ...(wasDeleted(v.boutiqueRef) ? { itemDeleted: true } : {}), name: v.product.title, colour: v.colorName, unit: v.product.soldBy, heldNow: held / f, used: used / f, wasted: waste / f, returned: returned / f, netUsed: Math.max(0, used - returned) / f, cost: r2((Math.max(0, used - returned) + waste) * c) };
   });
   return { orderRef, lines, totalCost: r2(lines.reduce((n, l) => n + l.cost, 0)) };
 }
