@@ -45,6 +45,9 @@ type Clean = { bid: string; name: string; phone: string | null; email: string | 
 export function readPerson(input: BoutiqueCustomerIn): { ok: true; c: Clean } | { ok: false; say: string } {
   const bid = text(input?.boutiqueCustomerId);
   if (!ID.test(bid)) return { ok: false, say: 'boutiqueCustomerId is the boutique\'s own id for this person: 1 to 100 letters, numbers, dots, dashes, colons or underscores.' };
+  // Two words are addresses of this API (GET /customers/removed, POST /customers/bulk): an id spelled like one could
+  // never be read back.
+  if (['removed', 'bulk'].includes(bid.toLowerCase())) return { ok: false, say: 'boutiqueCustomerId cannot be the word "removed" or "bulk": those are addresses of this API. Use your own id for the person.' };
   const name = text(input.name);
   if (!name) return { ok: false, say: 'Give the customer\'s name.' };
   if (name.length > 120) return { ok: false, say: 'The name is longer than 120 letters.' };
@@ -72,6 +75,23 @@ async function customerFor(tx: Db, clientId: string, c: Clean, current: { custom
   if (c.phone && current?.customerId && current.sentPhone === c.phone) {
     const still = await tx.customer.findFirst({ where: { id: current.customerId, clientId, deletedAt: null }, select: { id: true } });
     if (still) return { id: still.id, made: false, kept: true };
+  }
+  // First sent with no number, and now they have one. Their customer here is the one ScaleEzy made for them (no number,
+  // kept by the boutique's id). When nobody else has the number it simply becomes THAT customer's number: making a
+  // new customer for it left the old no-number copy behind, the same lady twice in the shop's list.
+  if (c.phone && current?.customerId) {
+    const own = await tx.customer.findFirst({
+      where: { id: current.customerId, clientId, deletedAt: null, phone: null, externalCustomerId: `boutique:${c.bid}` }, select: { id: true }
+    });
+    if (own) {
+      // The same lock as every other way a number is given to a customer (customer.service holderOf).
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`customer:${clientId}:${c.phone}`}))`;
+      const holder = await tx.customer.findFirst({ where: { clientId, phone: c.phone, deletedAt: null }, select: { id: true } });
+      if (!holder) {
+        await tx.customer.update({ where: { id: own.id }, data: { phone: c.phone } });
+        return { id: own.id, made: false, kept: true };
+      }
+    }
   }
   if (c.phone) {
     const before = await tx.customer.findFirst({ where: { clientId, phone: c.phone, deletedAt: null }, select: { id: true } });
@@ -101,6 +121,36 @@ const goneForGood = (row: { removed: boolean; removedReason: string | null; remo
   row?.removed && row.removedReason === 'CUSTOMER_REMOVED'
     ? problem(`The shop removed this customer${row.removedAt ? ` on ${row.removedAt.toISOString().slice(0, 10)}` : ''}. Wipe them in your app (GET /customers/removed lists them) and do not send them again. If they come back as a new customer, send them with a new boutiqueCustomerId.`, 410)
     : null;
+
+/**
+ * The no-number customer ScaleEzy made for a boutique person, after that person moved onto the customer who has
+ * their new number: an empty copy of the same lady. It goes when nothing at all has happened to it; anything of its
+ * own (a bill, points, an address, a note, another boutique person) and it stays, as the shop's customer.
+ */
+async function dropOwnEmptyCopy(tx: Db, clientId: string, customerId: string, bid: string) {
+  const copy = await tx.customer.findFirst({
+    where: { id: customerId, clientId, deletedAt: null, phone: null, externalCustomerId: `boutique:${bid}` },
+    select: {
+      id: true, notes: true, tags: true, loyaltyPoints: true, storeCreditPaise: true,
+      _count: { select: { salesOrders: true, loyaltyEntries: true, storeCreditEntries: true, addresses: true, pastPurchases: true, boutiqueProfiles: true } }
+    }
+  });
+  if (!copy) return false;
+  const n = copy._count;
+  if (n.salesOrders || n.loyaltyEntries || n.storeCreditEntries || n.addresses || n.pastPurchases || n.boutiqueProfiles) return false;
+  if (copy.notes || copy.tags.length || copy.loyaltyPoints || copy.storeCreditPaise) return false;
+  // Something else may still point at it (a door visit, a look-up at the counter): then it stays. Tried behind a
+  // savepoint, so a refusal by the database does not spoil the rest of this change.
+  await tx.$executeRawUnsafe('SAVEPOINT own_copy');
+  try {
+    await tx.customer.delete({ where: { id: copy.id } });
+    await tx.$executeRawUnsafe('RELEASE SAVEPOINT own_copy');
+    return true;
+  } catch {
+    await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT own_copy');
+    return false;
+  }
+}
 
 /** Link (or move) one boutique person. Returns where they are now. */
 async function linkOne(tx: Db, clientId: string, c: Clean, datesAreCrms: boolean) {
@@ -133,11 +183,12 @@ async function linkOne(tx: Db, clientId: string, c: Clean, datesAreCrms: boolean
   const row = current
     ? await tx.customerBoutiqueProfile.update({ where: { id: current.id }, data })
     : await tx.customerBoutiqueProfile.create({ data: { clientId, boutiqueCustomerId: c.bid, ...data } });
+  const moved = !!current?.customerId && current.customerId !== cust.id;
+  if (moved) await dropOwnEmptyCopy(tx, clientId, current!.customerId!, c.bid);
   return {
-    boutiqueCustomerId: c.bid, inventoryCustomerId: cust.id, nameMatches,
+    boutiqueCustomerId: row.boutiqueCustomerId, inventoryCustomerId: cust.id, nameMatches,
     matched: target.made ? 'NEW' : target.kept ? 'BY_BOUTIQUE_ID' : 'BY_PHONE',
-    moved: !!current?.customerId && current.customerId !== cust.id,
-    relinked: !!current?.removed, profileId: row.id
+    moved, relinked: !!current?.removed
   };
 }
 

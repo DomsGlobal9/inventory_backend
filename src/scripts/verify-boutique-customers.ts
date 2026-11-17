@@ -117,11 +117,34 @@ async function main() {
   const keepNoPhone = await call('POST', '/customers', { boutiqueCustomerId: 'b-pri', name: 'Priya K' });
   check('sent later with no phone: she stays where she is', keepNoPhone.data?.inventoryCustomerId === moved.data.inventoryCustomerId && !keepNoPhone.data?.moved, keepNoPhone);
 
+  console.log('\nSENT WITH NO NUMBER FIRST, AND THE NUMBER COMES LATER');
+  const np1 = await call('POST', '/customers', { boutiqueCustomerId: 'b-np1', name: 'No Phone One' });
+  const p1 = await fresh();
+  const np1b = await call('POST', '/customers', { boutiqueCustomerId: 'b-np1', name: 'No Phone One', phone: p1 });
+  const np1c = await prisma.customer.findUnique({ where: { id: np1.data.inventoryCustomerId } });
+  check('nobody has the number: it becomes THEIR customer\'s number (same customer, not moved)', np1b.status === 200 && np1b.data?.inventoryCustomerId === np1.data.inventoryCustomerId && np1b.data?.moved === false && np1b.data?.matched === 'BY_BOUTIQUE_ID' && np1c?.phone === `+91${p1}`, [np1b, np1c?.phone]);
+  check('...and she is in the shop\'s list once, not twice', (await prisma.customer.count({ where: { clientId: C1, name: 'No Phone One', deletedAt: null } })) === 1);
+  const np2 = await call('POST', '/customers', { boutiqueCustomerId: 'b-np2', name: 'No Phone Two' });
+  const p2 = await fresh();
+  const shopTwo = await prisma.customer.create({ data: { clientId: C1, customerCode: `CUS-N${STAMP}`.slice(0, 20), name: 'No Phone Two', phone: `+91${p2}` } });
+  const np2b = await call('POST', '/customers', { boutiqueCustomerId: 'b-np2', name: 'No Phone Two', phone: p2 });
+  check('the shop already has that number: she moves onto the shop\'s customer (moved: true)', np2b.status === 200 && np2b.data?.inventoryCustomerId === shopTwo.id && np2b.data?.moved === true && np2b.data?.nameMatches === true, np2b);
+  check('...and the empty no-number copy ScaleEzy had made for her is gone (once in the list)', !(await prisma.customer.count({ where: { id: np2.data.inventoryCustomerId } })) && (await prisma.customer.count({ where: { clientId: C1, name: 'No Phone Two', deletedAt: null } })) === 1);
+  check('...without her being marked removed, or listed for the boutique to wipe', (await profileOf(C1, 'b-np2'))?.removed === false && !(await call('GET', '/customers/removed')).data?.removed?.some((r: any) => r.boutiqueCustomerId === 'b-np2'));
+  const np3 = await call('POST', '/customers', { boutiqueCustomerId: 'b-np3', name: 'No Phone Three' });
+  await prisma.customerAddress.create({ data: { clientId: C1, customerId: np3.data.inventoryCustomerId, name: 'No Phone Three', phone: '+919000000001', line: '1 Test Road', pincode: '500001' } as any });
+  const p3 = await fresh();
+  const shopThree = await prisma.customer.create({ data: { clientId: C1, customerCode: `CUS-M${STAMP}`.slice(0, 20), name: 'Someone Else', phone: `+91${p3}` } });
+  const np3b = await call('POST', '/customers', { boutiqueCustomerId: 'b-np3', name: 'No Phone Three', phone: p3 });
+  check('a no-number copy the shop has USED (an address on it) is kept when she moves', np3b.data?.inventoryCustomerId === shopThree.id && np3b.data?.moved === true && (await prisma.customer.count({ where: { id: np3.data.inventoryCustomerId, deletedAt: null } })) === 1, np3b);
+
   console.log('\nDETAILS THAT CANNOT BE TAKEN');
   const before = await prisma.customer.count({ where: { clientId: C1 } });
   const refusals: [string, unknown, RegExp][] = [
     ['no boutiqueCustomerId', { name: 'A', phone: await fresh() }, /boutiqueCustomerId/],
     ['an id with spaces', { boutiqueCustomerId: 'b 1', name: 'A' }, /boutiqueCustomerId/],
+    ['the id "removed" (an address of the API)', { boutiqueCustomerId: 'removed', name: 'A' }, /removed.*bulk/],
+    ['the id "Bulk"', { boutiqueCustomerId: 'Bulk', name: 'A' }, /removed.*bulk/],
     ['no name', { boutiqueCustomerId: 'b-n1', phone: await fresh() }, /name/],
     ['a 9-digit phone', { boutiqueCustomerId: 'b-n2', name: 'A', phone: '98480 2233' }, /Phone/],
     ['letters in the phone', { boutiqueCustomerId: 'b-n3', name: 'A', phone: 'abc' }, /Phone/],
