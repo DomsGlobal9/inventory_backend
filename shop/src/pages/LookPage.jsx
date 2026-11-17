@@ -339,11 +339,12 @@ function Frame({ slug, shop, look, p, index, total, colour, onColour, next, onGo
             <FramePhoto key={d.photo?.url ?? 'none'} src={d.photo?.url} alt={`${p.title}${colour ? `, ${colour}` : ''}`} eager={eager} />
           </Link>
           {d.soldOut ? <span className="lk-flag">Sold out</span> : null}
-          {/* Said in words on the first frame, until the shopper has swiped once (the button below says it to a screen reader). */}
+          {/* A small "scroll down" on the first frame, until the shopper has scrolled once (18 Nov, the owner: small, and
+              in the words people use). The button below says where it goes to a screen reader. */}
           {cue ? (
             <span className="lk-swipe" aria-hidden="true">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 15l6-6 6 6" /></svg>
-              {total > 1 ? 'Swipe up for the next piece' : 'Swipe up for more'}
+              Scroll down
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
             </span>
           ) : null}
         </div>

@@ -4882,10 +4882,10 @@ a.shot { display: block; }
 .lk-reelname, .lk-rail, .lk-facts { display: none; }
 /* Hidden here, but never the browser's own grey button at any size (no browser-drawn controls, anywhere). */
 .lk-railpic, .lk-railall { padding: 0; border: 0; background: none; color: inherit; }
-/* A phone's first frame says how to go on, until the shopper has. Three nudges of the arrow, then it rests. */
-.lk-swipe { position: absolute; left: 50%; bottom: 36px; z-index: 1; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 8px; background: rgba(12, 12, 14, .62); color: #fff; font-size: 13px; font-weight: 600; white-space: nowrap; pointer-events: none; }
+/* A phone's first frame: a small "Scroll down", until the shopper has. The arrow nudges down three times, then rests. */
+.lk-swipe { position: absolute; left: 50%; bottom: 32px; z-index: 1; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 6px; background: rgba(12, 12, 14, .5); color: #fff; font-size: 11.5px; font-weight: 600; line-height: 1.4; white-space: nowrap; pointer-events: none; }
 .lk-swipe svg { animation: lk-nudge 1.2s ease-out 3; }
-@keyframes lk-nudge { 0%, 100% { transform: none; } 40% { transform: translateY(-4px); } }
+@keyframes lk-nudge { 0%, 100% { transform: none; } 40% { transform: translateY(3px); } }
 
 /* a laptop (and a tablet on its side), 18 Nov 2026: like a shopping site -- the reel's pieces down the left, the
    photograph, and the details from the top of the right-hand side */
