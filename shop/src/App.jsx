@@ -61,9 +61,16 @@ function Shop({ page }) {
   const { shop } = state;
 
   // The shop's own colour, applied to the whole page rather than passed to every button.
+  // A light colour (a yellow, a pastel) gets dark words and a dark tick on it, so they can still be read (17 Nov 2026).
   useEffect(() => {
-    if (shop?.accent) document.documentElement.style.setProperty('--accent', shop.accent);
-    return () => document.documentElement.style.removeProperty('--accent');
+    const root = document.documentElement;
+    if (shop?.accent) {
+      root.style.setProperty('--accent', shop.accent);
+      const light = isLightColour(shop.accent);
+      root.style.setProperty('--accent-ink', light ? '#16181d' : '#ffffff');
+      if (light) root.setAttribute('data-accent-light', ''); else root.removeAttribute('data-accent-light');
+    }
+    return () => { root.style.removeProperty('--accent'); root.style.removeProperty('--accent-ink'); root.removeAttribute('data-accent-light'); };
   }, [shop?.accent]);
 
   // What a shopper sees in their tabs, in their history, and on their home screen if they save it.
@@ -195,4 +202,15 @@ export default function App() {
       </Routes>
     </BrowserRouter>
   );
+}
+
+/** True when dark words (#16181d) read better on this colour than white does: WCAG contrast, whichever is higher. */
+export function isLightColour(hex) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return false;
+  const h = m[1].length === 3 ? m[1].split('').map(c => c + c).join('') : m[1];
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255).map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const DARK = 0.0094;   // #16181d
+  return (L + 0.05) / (DARK + 0.05) > 1.05 / (L + 0.05);
 }

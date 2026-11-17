@@ -4804,3 +4804,7 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
   margin: 4px 6px 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--soft); color: var(--ink); font: inherit; font-size: 13px; min-width: 0;
 }
+/* A light shop colour: the tick is drawn dark so it can be seen on it (App.jsx sets data-accent-light). */
+:root[data-accent-light] input[type="checkbox"]:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.4l2.9 2.9 6.1-6.6' fill='none' stroke='%2316181d' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
