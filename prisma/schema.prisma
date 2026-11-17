@@ -5592,9 +5592,10 @@ model CustomerBoutiqueProfile {
   customerId         String?   @map("customer_id")
   boutiqueName       String?   @map("boutique_name")
   nameMatches        Boolean   @default(false) @map("name_matches")
-  /// Unused since 17 Nov (measurements are CRM-B's alone); kept empty so an older build keeps working. Drop later.
-  snapshot           Json      @default("{}")
-  snapshotAt         DateTime? @map("snapshot_at")
+  /// The number the boutique last sent for them: tells "the boutique changed it" from "the shop corrected it here".
+  sentPhone          String?   @map("sent_phone")
+  // The table still has snapshot / snapshot_at (unused since 17 Nov, always empty). They are left out of this model
+  // on purpose and dropped in a later migration, once no running build knows them.
   removed            Boolean   @default(false)
   removedReason      String?   @map("removed_reason")
   removedAt          DateTime? @map("removed_at")

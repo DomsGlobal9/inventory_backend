@@ -15,6 +15,8 @@ import fs from 'node:fs';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
+import { enableForClient, disableForClient } from '../services/boutique';
+import * as customerImport from '../services/customer-import';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4036/api/v1';
 for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
@@ -26,6 +28,8 @@ const privateKey = fs.readFileSync(`${process.env.BOUTIQUE_KEY_DIR}/private.pem`
 const STAMP = Date.now().toString(36);
 const T1 = `btqtest-c1-${STAMP}`;
 const T2 = `btqtest-c2-${STAMP}`;
+const T3 = `btqtest-c3-${STAMP}`, T4 = `btqtest-c4-${STAMP}`, T5 = `btqtest-c5-${STAMP}`;   // boutique-only shops that join a retail shop
+const R = `btqretail-c-${STAMP}`, R2 = `btqretail-c2-${STAMP}`;                                        // the retail shops
 let bad = 0, good = 0;
 const check = (name: string, ok: boolean, detail: unknown = '') => { ok ? good++ : bad++; console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : ` :: ${typeof detail === 'string' ? detail : JSON.stringify(detail)?.slice(0, 400)}`}`); };
 const ALL = ['products:write', 'stock:write', 'customers:write'];
@@ -57,6 +61,7 @@ const fresh = async () => {
 const profileOf = (clientId: string, bid: string) => prisma.customerBoutiqueProfile.findUnique({ where: { clientId_boutiqueCustomerId: { clientId, boutiqueCustomerId: bid } } });
 
 let C1 = '', C2 = '';
+const EXTRA: string[] = [];
 async function main() {
   console.log('SETUP: two boutique-only shops, the first on CRM');
   const l1 = await call('POST', '/link', { shopName: 'Customer Test Boutique' });
@@ -80,14 +85,14 @@ async function main() {
   const again = await call('POST', '/customers', { boutiqueCustomerId: 'b-lak', name: 'Lakshmi K.', phone: `+91 ${nL}`, email: 'lak@example.com', birthday: '14-08-1990', anniversary: '2 Dec', address: '12 MG Road, Hyderabad' }, { requestId: `lak-${STAMP}` });
   check('the same request id again is a replay: same answer, no second customer', again.replay === 'true' && again.data?.inventoryCustomerId === lak.data.inventoryCustomerId && (await prisma.customer.count({ where: { clientId: C1 } })) === 1, again);
   const resend = await call('POST', '/customers', { boutiqueCustomerId: 'b-lak', name: 'LAKSHMI k', phone: nL });
-  check('sent again (new request): the same customer, by phone, name still matches (case, spaces, dots)', resend.status === 200 && resend.data?.matched === 'BY_PHONE' && resend.data?.inventoryCustomerId === lak.data.inventoryCustomerId && resend.data?.nameMatches === true && !resend.data?.moved, resend);
+  check('sent again (new request): the same customer (already linked), name still matches (case, spaces, dots)', resend.status === 200 && resend.data?.matched === 'BY_BOUTIQUE_ID' && resend.data?.inventoryCustomerId === lak.data.inventoryCustomerId && resend.data?.nameMatches === true && !resend.data?.moved, resend);
   check('...and the name in Inventory is not changed', (await prisma.customer.findUnique({ where: { id: lak.data.inventoryCustomerId } }))?.name === 'Lakshmi K.');
 
   console.log('\nA CUSTOMER THE SHOP ALREADY HAS');
   const nS = await fresh();
   const shopOwn = await prisma.customer.create({ data: { clientId: C1, customerCode: `CUS-T${STAMP}`.slice(0, 20), name: 'Sujatha Rao', phone: `+91${nS}`, email: 'own@shop.in' } });
   const suj = await call('POST', '/customers', { boutiqueCustomerId: 'b-suj', name: 'sujatha  rao', phone: nS, email: 'boutique@x.in', birthday: '01-01' });
-  check('matched by number to the shop\'s own customer, name agrees', suj.status === 200 && suj.data?.inventoryCustomerId === shopOwn.id && suj.data?.nameMatches === true, suj);
+  check('matched by number to the shop\'s own customer, name agrees', suj.status === 200 && suj.data?.matched === 'BY_PHONE' && suj.data?.inventoryCustomerId === shopOwn.id && suj.data?.nameMatches === true, suj);
   const sujRow = await prisma.customer.findUnique({ where: { id: shopOwn.id } });
   check('her email is NOT overwritten; her empty birthday IS filled', sujRow?.email === 'own@shop.in' && sujRow?.birthday === '01-01' && sujRow?.name === 'Sujatha Rao', sujRow);
 
@@ -158,21 +163,56 @@ async function main() {
 
   console.log('\nNOTHING BOUTIQUE IS KEPT (the owner, 17 Nov: measurements and stitching are CRM-B\'s alone)');
   const oldRoute = await call('PUT', '/customers/b-lak/profile', { snapshot: { measurementSets: [{ id: 'm' }] } });
-  check('there is no measurements route (refused), and nothing about measurements is kept', oldRoute.status >= 400 && JSON.stringify((await profileOf(C1, 'b-lak'))?.snapshot) === '{}', oldRoute.status);
+  check('there is no measurements route (refused)', oldRoute.status >= 400, oldRoute.status);
   const extra = await call('POST', '/customers', { boutiqueCustomerId: 'b-lak', name: 'Lakshmi K.', phone: nL, measurements: { bust: 34 }, editUrl: 'https://x.example.com/1' });
   const lakRow = await prisma.customerBoutiqueProfile.findUnique({ where: { clientId_boutiqueCustomerId: { clientId: C1, boutiqueCustomerId: 'b-lak' } } });
   check('extra boutique fields sent with a customer (measurements, a link) are simply not kept', extra.status === 200 && !JSON.stringify(lakRow).includes('bust') && !JSON.stringify(lakRow).includes('x.example.com'), lakRow);
   check('GET one says only who is who', Object.keys((await call('GET', '/customers/b-lak')).data ?? {}).sort().join() === 'boutiqueCustomerId,inventoryCustomerId,nameMatches,removed,removedReason');
 
-  console.log('\nCRM\'S CHANGE FEED');
-  const events = await prisma.moduleEvent.findMany({ where: { clientId: C1, module: 'crm', sourceTable: 'customer_boutique_profiles' }, orderBy: { sequence: 'asc' } });
-  const lakEvents = events.filter(e => (e.payload as any).boutique_customer_id === 'b-lak');
-  check('CRM hears customer_boutique_profile.created and .updated', lakEvents.some(e => e.kind === 'customer_boutique_profile.created') && lakEvents.some(e => e.kind === 'customer_boutique_profile.updated'), events.map(e => e.kind));
-  const lastLak = lakEvents.at(-1)?.payload as any;
-  check('...the event carries the current customer, the name and name_matches, and nothing boutique', lastLak?.customer_id === lak.data.inventoryCustomerId && lastLak?.boutique_name && lastLak?.name_matches === true && JSON.stringify(lastLak?.snapshot ?? {}) === '{}' && !('edit_url' in (lastLak ?? {})), lastLak);
-  const priMove = events.filter(e => (e.payload as any).boutique_customer_id === 'b-pri').map(e => (e.payload as any).customer_id);
-  check('Priya\'s move to her own number is one event with the new customer', priMove.includes(moved.data.inventoryCustomerId));
+  console.log('\nTHE CHANGE FEED: ORDINARY CUSTOMERS ONLY');
+  check('the matching rows are Inventory\'s own business: nothing about them goes to CRM', !(await prisma.moduleEvent.count({ where: { clientId: C1, sourceTable: 'customer_boutique_profiles' } })));
+  const custEvents = await prisma.moduleEvent.findMany({ where: { clientId: C1, module: 'crm', sourceTable: 'customers' } });
+  check('CRM hears a boutique person the ordinary way: customer.created for the new customer', custEvents.some(e => e.kind === 'customer.created' && e.rowId === lak.data.inventoryCustomerId), custEvents.length);
+  check('...and nothing in those events says "boutique" except the no-phone key', !custEvents.some(e => /boutique_name|name_matches|sent_phone/.test(JSON.stringify(e.payload))));
   check('shop 2 (not on CRM) sends nothing to the feed', !(await prisma.moduleEvent.count({ where: { clientId: C2 } })));
+
+  console.log('\nTHE SHOP CORRECTS A NUMBER IN SCALEEZY');
+  const nA = await fresh(), nB = await fresh(), nC = await fresh();
+  const fix = await call('POST', '/customers', { boutiqueCustomerId: 'b-fix', name: 'Fix Me', phone: nA });
+  await prisma.customer.update({ where: { id: fix.data.inventoryCustomerId }, data: { phone: `+91${nB}` } });
+  const same1 = await call('POST', '/customers', { boutiqueCustomerId: 'b-fix', name: 'Fix Me', phone: nA });
+  check('the boutique sends the same person with its old number: they stay on their customer (no second one)', same1.status === 200 && same1.data?.inventoryCustomerId === fix.data.inventoryCustomerId && !same1.data?.moved
+    && !(await prisma.customer.count({ where: { clientId: C1, phone: `+91${nA}` } })), same1);
+  check('...and the number the shop corrected is not changed back', (await prisma.customer.findUnique({ where: { id: fix.data.inventoryCustomerId } }))?.phone === `+91${nB}`);
+  const stranger = await prisma.customer.create({ data: { clientId: C1, customerCode: `CUS-S${STAMP}`.slice(0, 20), name: 'New Holder', phone: `+91${nA}` } });
+  const same2 = await call('POST', '/customers', { boutiqueCustomerId: 'b-fix', name: 'Fix Me', phone: nA });
+  check('...even when somebody else now holds that old number', same2.data?.inventoryCustomerId === fix.data.inventoryCustomerId && same2.data?.inventoryCustomerId !== stranger.id, same2);
+  const really = await call('POST', '/customers', { boutiqueCustomerId: 'b-fix', name: 'Fix Me', phone: nC });
+  check('the boutique really changes the number: now they move (moved: true)', really.status === 201 && really.data?.moved === true && really.data?.inventoryCustomerId !== fix.data.inventoryCustomerId, really);
+  const stay = await call('POST', '/customers', { boutiqueCustomerId: 'b-fix', name: 'Fix Me', phone: nC });
+  check('...and stay there on the next send', stay.data?.inventoryCustomerId === really.data.inventoryCustomerId && !stay.data?.moved, stay);
+
+  console.log('\nA SHOP WHERE CRM CHANGES BIRTHDAYS');
+  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: C1, module: 'crm' } }, data: { moved: { profile: true } } });
+  const nD = await fresh();
+  const datesOwn = await prisma.customer.create({ data: { clientId: C1, customerCode: `CUS-D${STAMP}`.slice(0, 20), name: 'Dates Owner', phone: `+91${nD}` } });
+  await call('POST', '/customers', { boutiqueCustomerId: 'b-dates', name: 'Dates Owner', phone: nD, email: 'dates@x.in', birthday: '03-03', anniversary: '04-04' });
+  const dRow = await prisma.customer.findUnique({ where: { id: datesOwn.id } });
+  check('an existing customer: the empty email is filled, the birthday and anniversary are left to CRM', dRow?.email === 'dates@x.in' && dRow?.birthday === null && dRow?.anniversary === null, dRow);
+  const fresher = await call('POST', '/customers', { boutiqueCustomerId: 'b-dates2', name: 'Brand New', phone: await fresh(), birthday: '05-05' });
+  check('a customer made just now still takes the birthday sent with them', (await prisma.customer.findUnique({ where: { id: fresher.data.inventoryCustomerId } }))?.birthday === '05-05');
+  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: C1, module: 'crm' } }, data: { moved: {} } });
+
+  console.log('\nAN IMPORT TAKEN BACK OUT');
+  const i1 = await fresh(), i2 = await fresh();
+  const imp = await customerImport.apply(C1, { id: 'verify', name: 'Verify' }, 'take-back.xlsx', [{ rowNumber: 2, name: 'Imp One', phone: i1 }, { rowNumber: 3, name: 'Imp Two', phone: i2 }], 2);
+  await call('POST', '/customers', { boutiqueCustomerId: 'b-imp', name: 'Imp One', phone: i1 });
+  const tbp = await customerImport.takeBackPreview(C1, imp.source);
+  check('the boutique has one of the two imported customers: the preview says 1 goes, 1 stays', tbp.willGo === 1 && tbp.willStay === 1, tbp);
+  const tb = await customerImport.takeBack(C1, imp.source);
+  const impRow = await profileOf(C1, 'b-imp');
+  check('taken back: the boutique\'s customer stays, and the boutique is NOT told to wipe them', tb.removed === 1 && tb.kept === 1 && impRow?.removed === false && !!impRow.customerId
+    && !(await call('GET', '/customers/removed')).data?.removed?.some((r: any) => r.boutiqueCustomerId === 'b-imp'), [tb, impRow]);
 
   console.log('\nTHE BOUTIQUE UNLINKS SOMEONE');
   const un = await call('DELETE', '/customers/b-nop');
@@ -193,9 +233,15 @@ async function main() {
   check('erased: EVERY boutique person on that customer is removed (Lakshmi and the cousin)', !!gl?.removed && !!gc?.removed && gl.removedReason === 'CUSTOMER_REMOVED' && gc!.removedReason === 'CUSTOMER_REMOVED', [gl, gc]);
   check('...with nothing personal kept: no name, no customer', [gl, gc].every(r => !r?.boutiqueName && !r?.customerId));
   check('...Priya, who moved to her own number earlier, is untouched', (await profileOf(C1, 'b-pri'))?.removed === false);
-  const gone = events.length;
-  const evAfter = await prisma.moduleEvent.findMany({ where: { clientId: C1, module: 'crm', sourceTable: 'customer_boutique_profiles' }, orderBy: { sequence: 'asc' }, skip: gone });
-  check('CRM hears an .updated with removed: true for each, with no name in it', ['b-lak', 'b-cou'].every(b => evAfter.some(e => (e.payload as any).boutique_customer_id === b && (e.payload as any).removed === true && !(e.payload as any).boutique_name)), evAfter.map(e => e.payload));
+  check('nothing about the matching rows went to CRM; CRM hears the ordinary customer change', !(await prisma.moduleEvent.count({ where: { clientId: C1, sourceTable: 'customer_boutique_profiles' } }))
+    && (await prisma.moduleEvent.count({ where: { clientId: C1, module: 'crm', sourceTable: 'customers', rowId: lak.data.inventoryCustomerId, kind: 'customer.updated' } })) > 0);
+  const back = await call('POST', '/customers', { boutiqueCustomerId: 'b-lak', name: 'Lakshmi K.', phone: nL });
+  check('AN ERASE STAYS AN ERASE: sending the removed person again is refused (410), saying what to do', back.status === 410 && /removed this customer/.test(back.message ?? '') && /new boutiqueCustomerId/.test(back.message ?? ''), back);
+  check('...and nobody was made or brought back', (await profileOf(C1, 'b-lak'))?.removed === true && !(await prisma.customer.count({ where: { clientId: C1, phone: `+91${nL}`, deletedAt: null } })));
+  const mixed = await call('POST', '/customers/bulk', { customers: [{ boutiqueCustomerId: 'b-cou', name: 'Cousin Devi', phone: nL }, { boutiqueCustomerId: 'b-after', name: 'After Erase', phone: await fresh() }] });
+  check('in a bulk send the removed one is refused by name (gone: true) and the others still go in', mixed.status === 200 && mixed.data?.linked === 1 && mixed.data?.refused === 1 && mixed.data.results[0].gone === true && mixed.data.results[1].ok === true, mixed.data);
+  const anew = await call('POST', '/customers', { boutiqueCustomerId: 'b-lak-2', name: 'Lakshmi K.', phone: nL });
+  check('the same lady coming back as a NEW boutique customer (a new id) is a new customer, as at the till', anew.status === 201 && anew.data?.matched === 'NEW', anew);
   const hard = await call('POST', '/customers', { boutiqueCustomerId: 'b-hard', name: 'Hard Delete', phone: await fresh() });
   await prisma.customer.delete({ where: { id: hard.data.inventoryCustomerId } });
   const hr = await profileOf(C1, 'b-hard');
@@ -215,18 +261,83 @@ async function main() {
   check('the same boutique id and number in shop 2 is shop 2\'s own customer', same.status === 201 && same.data?.inventoryCustomerId !== moved.data.inventoryCustomerId, same);
 }
 
+async function joining() {
+  console.log('\nA BOUTIQUE-ONLY SHOP JOINS A RETAIL SHOP (its customers must come along, nobody wiped)');
+  const pA = await fresh(), pB = await fresh(), pO = await fresh();
+  const l3 = await call('POST', '/link', { shopName: 'Joining Boutique' }, { tenant: T3 });
+  const C3 = l3.data?.clientId as string; EXTRA.push(C3);
+  const o = { tenant: T3 };
+  const ba = await call('POST', '/customers', { boutiqueCustomerId: 'b-a', name: 'Asha Rao', phone: pA, email: 'asha@boutique.in' }, o);
+  await call('POST', '/customers', { boutiqueCustomerId: 'b-d', name: 'Deepa (daughter)', phone: pA }, o);
+  const bb = await call('POST', '/customers', { boutiqueCustomerId: 'b-b', name: 'Bindu', phone: pB }, o);
+  const bc = await call('POST', '/customers', { boutiqueCustomerId: 'b-c', name: 'Chitra' }, o);
+  check('(the boutique-only shop has 3 customers, numbered CUS-000001 to 3 like any shop)', (await prisma.customer.findMany({ where: { clientId: C3 }, orderBy: { customerCode: 'asc' } })).map(c => c.customerCode).join() === 'CUS-000001,CUS-000002,CUS-000003');
+  // The retail shop already has Asha (same number) as CUS-000001 and another customer as CUS-000002.
+  await prisma.stockLocation.create({ data: { clientId: R, name: 'Main shop', code: `MS-${STAMP}`, type: 'STORE' } as any });
+  const ownAsha = await prisma.customer.create({ data: { clientId: R, customerCode: 'CUS-000001', name: 'Asha Rao', phone: `+91${pA}`, email: 'asha@shop.in', loyaltyPoints: 40 } });
+  await prisma.customer.create({ data: { clientId: R, customerCode: 'CUS-000002', name: 'Only Retail', phone: `+91${pO}` } });
+  await prisma.clientSequence.create({ data: { clientId: R, entityType: 'CUSTOMER', lastValue: 2 } });
+
+  const joined = await enableForClient(R, T3).then(r => r, (e: any) => ({ error: e.message }));
+  check('the boutique is switched on for the shop without an error', !(joined as any).error && (joined as any).linked === true, joined);
+  const now = await prisma.customer.findMany({ where: { clientId: R }, orderBy: { customerCode: 'asc' } });
+  check('the shop now has 4 customers: its own 2, plus Bindu and Chitra', now.length === 4 && now.map(c => c.name).sort().join() === 'Asha Rao,Bindu,Chitra,Only Retail', now.map(c => `${c.customerCode} ${c.name}`));
+  check('...Bindu and Chitra took the shop\'s NEXT numbers (CUS-000003, CUS-000004), same customers as before', now.filter(c => ['Bindu', 'Chitra'].includes(c.name)).map(c => c.customerCode).sort().join() === 'CUS-000003,CUS-000004'
+    && now.find(c => c.name === 'Bindu')?.id === bb.data.inventoryCustomerId && now.find(c => c.name === 'Chitra')?.id === bc.data.inventoryCustomerId);
+  const ashaNow = now.find(c => c.name === 'Asha Rao');
+  check('...the shop\'s own Asha is untouched (her number, email, points), and the boutique-only copy is gone', ashaNow?.id === ownAsha.id && ashaNow.customerCode === 'CUS-000001' && ashaNow.email === 'asha@shop.in' && ashaNow.loyaltyPoints === 40
+    && !(await prisma.customer.count({ where: { id: ba.data.inventoryCustomerId } })), ashaNow);
+  check('nothing is left under the boutique-only shop', !(await prisma.customer.count({ where: { clientId: C3 } })) && !(await prisma.customerBoutiqueProfile.count({ where: { clientId: C3 } })));
+  const rows = await prisma.customerBoutiqueProfile.findMany({ where: { clientId: R }, orderBy: { boutiqueCustomerId: 'asc' } });
+  check('all 4 boutique people came along, NOBODY marked removed', rows.length === 4 && rows.every(r => !r.removed && !!r.customerId), rows);
+  check('...Asha and her daughter are on the shop\'s Asha (Asha matches by name, the daughter does not)', rows.find(r => r.boutiqueCustomerId === 'b-a')?.customerId === ownAsha.id && rows.find(r => r.boutiqueCustomerId === 'b-a')?.nameMatches === true
+    && rows.find(r => r.boutiqueCustomerId === 'b-d')?.customerId === ownAsha.id && rows.find(r => r.boutiqueCustomerId === 'b-d')?.nameMatches === false);
+  check('THE BOUTIQUE IS TOLD TO WIPE NOBODY', (await call('GET', '/customers/removed', undefined, o)).data?.removed?.length === 0);
+  const again = await call('POST', '/customers', { boutiqueCustomerId: 'b-b', name: 'Bindu', phone: pB }, o);
+  check('the boutique carries on as before: Bindu sent again is the same customer', again.status === 200 && again.data?.inventoryCustomerId === bb.data.inventoryCustomerId, again);
+  const next = await call('POST', '/customers', { boutiqueCustomerId: 'b-new', name: 'Next One', phone: await fresh() }, o);
+  check('...and the next new customer gets CUS-000005 (no number used twice)', (await prisma.customer.findUnique({ where: { id: next.data.inventoryCustomerId } }))?.customerCode === 'CUS-000005', next);
+
+  console.log('\nA COPY THAT CANNOT BE JOINED BY GUESSWORK');
+  const pZ = await fresh();
+  const l4 = await call('POST', '/link', { shopName: 'Second Joining Boutique' }, { tenant: T4 });
+  const C4 = l4.data?.clientId as string; EXTRA.push(C4);
+  const bz = await call('POST', '/customers', { boutiqueCustomerId: 'b-z', name: 'Zara', phone: pZ }, { tenant: T4 });
+  await prisma.customerAddress.create({ data: { clientId: C4, customerId: bz.data.inventoryCustomerId, name: 'Zara', phone: `+91${pZ}`, line: '1 Test Road', pincode: '500001' } as any });
+  await prisma.stockLocation.create({ data: { clientId: R2, name: 'Main shop', code: `M2-${STAMP}`, type: 'STORE' } as any });
+  await prisma.customer.create({ data: { clientId: R2, customerCode: 'CUS-000001', name: 'Zara', phone: `+91${pZ}` } });
+  const refused = await enableForClient(R2, T4).then(() => 'enabled', (e: any) => e.message as string);
+  check('a boutique copy with an address of its own on a number the shop also has: refused in words', /cannot be joined automatically/.test(refused) && /Nothing was changed/.test(refused), refused);
+  const zNow = await prisma.customer.findUnique({ where: { id: bz.data.inventoryCustomerId } });
+  check('...and nothing changed: the customer, their number CUS-000001, their link, the boutique-only shop', zNow?.clientId === C4 && zNow.customerCode === 'CUS-000001' && (await profileOf(C4, 'b-z'))?.removed === false
+    && (await call('GET', '/customers/b-z', undefined, { tenant: T4 })).data?.inventoryCustomerId === zNow.id, zNow);
+
+  console.log('\nTHE SHOP CHANGES TO ANOTHER BOUTIQUE');
+  await disableForClient(R);
+  const pN = await fresh();
+  const l5 = await call('POST', '/link', { shopName: 'Another Boutique' }, { tenant: T5 });
+  const C5 = l5.data?.clientId as string; EXTRA.push(C5);
+  const anjali = await call('POST', '/customers', { boutiqueCustomerId: 'b-a', name: 'Anjali New', phone: pN }, { tenant: T5 });
+  const swapped = await enableForClient(R, T5).then(r => r, (e: any) => ({ error: e.message }));
+  check('another boutique is switched on for the shop (its "b-a" is a different lady)', !(swapped as any).error, swapped);
+  const ba5 = await profileOf(R, 'b-a');
+  check('"b-a" now means the NEW boutique\'s Anjali, never the old boutique\'s Asha', ba5?.boutiqueName === 'Anjali New' && ba5.customerId === anjali.data.inventoryCustomerId && ba5.customerId !== ownAsha.id, ba5);
+  check('...the old boutique\'s other people are no longer matched (b-b, b-c, b-d gone)', (await prisma.customerBoutiqueProfile.count({ where: { clientId: R, boutiqueCustomerId: { in: ['b-b', 'b-c', 'b-d', 'b-new'] } } })) === 0);
+  check('...but the shop keeps every customer (they are the shop\'s customers)', (await prisma.customer.count({ where: { clientId: R, deletedAt: null } })) === 6);
+}
+
 async function cleanup() {
-  const ids = [C1, C2].filter(Boolean);
+  const ids = [C1, C2, R, R2, ...EXTRA].filter(Boolean);
   const tables = await prisma.$queryRaw<{ table_name: string }[]>`SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'client_id'`;
   for (let round = 0; round < 6; round++) {
     let left = 0;
     for (const t of tables) { try { await prisma.$executeRawUnsafe(`DELETE FROM "${t.table_name}" WHERE client_id = ANY($1)`, ids); } catch { left++; } }
     if (!left) break;
   }
-  await prisma.boutiqueLink.deleteMany({ where: { tenant: { in: [T1, T2] } } }).catch(() => undefined);
+  await prisma.boutiqueLink.deleteMany({ where: { tenant: { in: [T1, T2, T3, T4, T5] } } }).catch(() => undefined);
   console.log(`\ncleaned up ${ids.length} throwaway shops`);
 }
 
-main()
+main().then(joining)
   .catch(e => { bad++; console.error('CRASH', e); })
   .finally(async () => { await cleanup().catch(e => console.error('cleanup failed', e)); console.log(`${good} passed, ${bad} problems`); await prisma.$disconnect(); process.exit(bad ? 1 : 0); });

@@ -128,7 +128,9 @@ export async function boutiqueTaken(tenant: string) {
  */
 const MUST_MOVE = [
   'inventory_products', 'inventory_product_variants', 'inventory_stocks', 'inventory_transactions', 'boutique_reservations',
-  'inventory_locations', 'suppliers', 'supplier_products', 'purchase_orders', 'purchase_receipts', 'storage_spots', 'spot_stocks'
+  'inventory_locations', 'suppliers', 'supplier_products', 'purchase_orders', 'purchase_receipts', 'storage_spots', 'spot_stocks',
+  // People are never "derived rows": a clash here refuses the switch-on instead of deleting them (17 Nov 2026).
+  'customers', 'customer_boutique_profiles'
 ];
 
 /**
@@ -150,10 +152,56 @@ async function renumberForMove(tx: Prisma.TransactionClient, fromClientId: strin
   for (const r of await tx.purchaseReceipt.findMany({ where: { clientId: fromClientId }, orderBy: { createdAt: 'asc' }, select: { id: true } })) {
     await tx.purchaseReceipt.update({ where: { id: r.id }, data: { receiptNumber: await generateSequentialCode(intoClientId, 'GRN', 'PURCHASE_RECEIPT', tx as any) } });
   }
+  await moveCustomers(tx, fromClientId, intoClientId);
   await tx.clientSequence.deleteMany({ where: { clientId: fromClientId } });
   const theirs = new Set((await tx.stockLocation.findMany({ where: { clientId: intoClientId }, select: { code: true } })).map(l => l.code));
   for (const l of await tx.stockLocation.findMany({ where: { clientId: fromClientId }, select: { id: true, code: true } })) {
     if (theirs.has(l.code)) await tx.stockLocation.update({ where: { id: l.id }, data: { code: `${l.code}-B${randomBytes(2).toString('hex')}`.slice(0, 50) } });
+  }
+}
+
+/**
+ * The boutique-only shop's customers (17 Nov 2026: the boutique sends its people, services/boutique/customers.ts).
+ *
+ * They were not thought of when the move was written: their numbers (CUS-000001...) clash with the shop's own, and a
+ * clash on a table outside MUST_MOVE DELETES the boutique-only shop's rows -- every customer gone, and each deletion
+ * then told the boutique app to wipe that person. So, before the move:
+ *   - a number the shop already has is the same person: the boutique's people on that copy are put on the shop's
+ *     customer (which is never changed), and the boutique-only copy goes;
+ *   - everyone else gets the shop's next customer number and moves with the rest.
+ * A boutique-only copy that somehow has bills, points or addresses of its own is not joined by guesswork: the
+ * switch-on is refused, in words, with nothing changed.
+ */
+async function moveCustomers(tx: Prisma.TransactionClient, fromClientId: string, intoClientId: string) {
+  const { generateSequentialCode } = await import('../../utils/codeGenerator');
+  const { sameName } = await import('./customers');
+  const mine = await tx.customer.findMany({
+    where: { clientId: fromClientId }, orderBy: { createdAt: 'asc' },
+    select: {
+      id: true, name: true, phone: true, externalCustomerId: true, deletedAt: true,
+      _count: { select: { salesOrders: true, loyaltyEntries: true, storeCreditEntries: true, addresses: true, pastPurchases: true } }
+    }
+  });
+  // Out of the way first: the shop's next number (CUS-000007, say) may be one a later boutique customer still holds.
+  for (const c of mine) await tx.customer.update({ where: { id: c.id }, data: { customerCode: `MOVING-${c.id}` } });
+  for (const c of mine) {
+    const twin = c.deletedAt ? null
+      : c.phone ? await tx.customer.findFirst({ where: { clientId: intoClientId, phone: c.phone, deletedAt: null }, select: { id: true, name: true } })
+        : c.externalCustomerId ? await tx.customer.findFirst({ where: { clientId: intoClientId, externalCustomerId: c.externalCustomerId }, select: { id: true, name: true } })
+          : null;
+    if (!twin) {
+      await tx.customer.update({ where: { id: c.id }, data: { customerCode: await generateSequentialCode(intoClientId, 'CUS', 'CUSTOMER', tx as any) } });
+      continue;
+    }
+    const has = c._count;
+    if (has.salesOrders || has.loyaltyEntries || has.storeCreditEntries || has.addresses || has.pastPurchases) {
+      throw problem(`The boutique's customer ${c.name} has the same number as the shop's ${twin.name}, and has bills, points or addresses of their own. They cannot be joined automatically. Nothing was changed.`, 409);
+    }
+    // Their boutique people go onto the shop's customer first, so removing the copy tells nobody to wipe anyone.
+    for (const p of await tx.customerBoutiqueProfile.findMany({ where: { clientId: fromClientId, customerId: c.id }, select: { id: true, boutiqueName: true } })) {
+      await tx.customerBoutiqueProfile.update({ where: { id: p.id }, data: { customerId: twin.id, nameMatches: sameName(p.boutiqueName, twin.name) } });
+    }
+    await tx.customer.delete({ where: { id: c.id } });
   }
 }
 
@@ -206,6 +254,9 @@ export async function enableForClient(clientId: string, tenantIn: string, shopNa
     const mine = await tx.boutiqueLink.findUnique({ where: { clientId } });
     if (mine && !mine.unlinkedAt && mine.tenant !== tenant) throw problem(`This shop already uses the boutique "${mine.tenant}". Disable it first.`, 409);
     if (mine && !mine.unlinkedAt && mine.tenant === tenant) return { linked: true, tenant, moved: 0, already: true };
+    // Another boutique than the one this shop had before: the old one's people are known by ITS ids, and the new
+    // boutique's "C-1" must never be taken for the old boutique's "C-1". The matching rows go; the customers stay.
+    if (mine && mine.tenant !== tenant) await tx.customerBoutiqueProfile.deleteMany({ where: { clientId } });
     const theirs = await tx.boutiqueLink.findUnique({ where: { tenant } });
     let moved = 0;
     if (theirs && theirs.clientId !== clientId) {

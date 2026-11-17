@@ -244,15 +244,17 @@ export async function undoPlan(clientId: string, source: string) {
   const ids = made.map(c => c.id);
   const busy = new Set<string>();
   for (const part of chunks(ids, LOOKUP)) {
-    const [checkins, lookups, offers, recipients, quotes, holds] = await Promise.all([
+    const [checkins, lookups, offers, recipients, quotes, holds, boutique] = await Promise.all([
       prisma.storeCheckin.findMany({ where: { clientId, customerId: { in: part } }, select: { customerId: true } }),
       prisma.counterLookup.findMany({ where: { clientId, customerId: { in: part } }, select: { customerId: true } }),
       prisma.offerRedemption.findMany({ where: { customerId: { in: part } }, select: { customerId: true } }),
       prisma.campaignRecipient.findMany({ where: { customerId: { in: part } }, select: { customerId: true } }),
       prisma.pricingQuote.findMany({ where: { customerId: { in: part } }, select: { customerId: true } }),
-      prisma.posHold.findMany({ where: { customerId: { in: part } }, select: { customerId: true } })
+      prisma.posHold.findMany({ where: { customerId: { in: part } }, select: { customerId: true } }),
+      // The boutique app has this person too (17 Nov 2026): taking them out would tell the boutique to wipe them.
+      prisma.customerBoutiqueProfile.findMany({ where: { clientId, customerId: { in: part } }, select: { customerId: true } })
     ]);
-    for (const r of [...checkins, ...lookups, ...offers, ...recipients, ...quotes, ...holds]) if (r.customerId) busy.add(r.customerId);
+    for (const r of [...checkins, ...lookups, ...offers, ...recipients, ...quotes, ...holds, ...boutique]) if (r.customerId) busy.add(r.customerId);
   }
   const untouched = made.filter(c => !c.deletedAt && c.updatedAt.getTime() === c.createdAt.getTime() && !busy.has(c.id)
     && !c._count.salesOrders && !c._count.loyaltyEntries && !c._count.storeCreditEntries && !c._count.addresses).map(c => c.id);
