@@ -5581,8 +5581,10 @@ model BoutiqueJoinRequest {
 }
 
 /// The boutique app's (CRM-B) people, one row each, on the Inventory customer holding their number (17 Nov 2026).
-/// Several can share one customer (a family phone); snapshots are never merged. Removed rows keep no personal data
-/// (a database trigger wipes name and snapshot). CRM reads them on the module feed. See services/boutique/customers.ts.
+/// Several can share one customer (a family phone), never merged. Nothing boutique here (owner, 17 Nov): no
+/// measurements, no stitching, no link -- only who is who, for matching by phone and for telling the boutique whom to
+/// wipe. CRM shows these people as the shop's ordinary customers. Removed rows keep no personal data (a database
+/// trigger wipes them). See services/boutique/customers.ts.
 model CustomerBoutiqueProfile {
   id                 String    @id @default(uuid())
   clientId           String    @map("client_id")
@@ -5590,6 +5592,7 @@ model CustomerBoutiqueProfile {
   customerId         String?   @map("customer_id")
   boutiqueName       String?   @map("boutique_name")
   nameMatches        Boolean   @default(false) @map("name_matches")
+  /// Unused since 17 Nov (measurements are CRM-B's alone); kept empty so an older build keeps working. Drop later.
   snapshot           Json      @default("{}")
   snapshotAt         DateTime? @map("snapshot_at")
   removed            Boolean   @default(false)

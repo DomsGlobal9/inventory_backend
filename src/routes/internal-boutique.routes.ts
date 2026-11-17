@@ -238,13 +238,12 @@ router.get('/holds', read(async req => {
 }));
 
 // ── suppliers and purchase orders (CRM-B checklist section 4) ─────────────────────────────────────
-// ── customers (17 Nov 2026): the boutique's people on ScaleEzy's one customer list, with their read-only snapshot ──
+// ── customers (17 Nov 2026): the boutique's people on ScaleEzy's one customer list (no measurements: CRM-B's alone) ──
 // Before /customers/:id so "removed" and "bulk" are never read as ids.
 router.get('/customers/removed', read(req => customers.removedSince(actorOf(req), req.query as any)));
 router.post('/customers/bulk', write((tx, a, req) => customers.linkMany(tx, a, req.body ?? {})));
 router.post('/customers', write((tx, a, req) => customers.link(tx, a, req.body ?? {})));
 router.get('/customers/:boutiqueCustomerId', read(req => customers.getOne(actorOf(req), req.params.boutiqueCustomerId)));
-router.put('/customers/:boutiqueCustomerId/profile', write((tx, a, req) => customers.putProfile(tx, a, req.params.boutiqueCustomerId, req.body ?? {})));
 router.delete('/customers/:boutiqueCustomerId', write((tx, a, req) => customers.unlink(tx, a, req.params.boutiqueCustomerId)));
 
 router.get('/suppliers', read(req => buying.listSuppliers(actorOf(req), req.query as any)));

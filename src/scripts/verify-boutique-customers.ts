@@ -2,8 +2,8 @@
  * The boutique app's (CRM-B) customers in ScaleEzy (17 Nov 2026, services/boutique/customers.ts), end to end against
  * the REAL local server with signed boutique passes:
  *   linking (new, by phone, by the boutique id with no phone, names written differently, a family phone, a new phone
- *   moving them, retries and races, bad details), the bulk first load, the read-only snapshot (shape, order, every
- *   refusal, older snapshots, the 64 KB cap), CRM's change feed, and removal (the boutique unlinks; Inventory erases or
+ *   moving them, retries and races, bad details), the bulk first load, nothing boutique kept (no measurements, no
+ *   link: they are CRM-B's alone), CRM's change feed, and removal (the boutique unlinks; Inventory erases or
  *   deletes the customer -> every boutique person on them wiped, listed for the boutique to wipe its copy), another
  *   shop never seeing any of it, and who may do what.
  *
@@ -55,21 +55,6 @@ const fresh = async () => {
   }
 };
 const profileOf = (clientId: string, bid: string) => prisma.customerBoutiqueProfile.findUnique({ where: { clientId_boutiqueCustomerId: { clientId, boutiqueCustomerId: bid } } });
-
-const snapshot = (bid: string, over: Record<string, unknown> = {}) => ({
-  snapshotAt: new Date().toISOString(),
-  editUrl: `https://boutique.example.com/customers/${bid}`,
-  lastOrderAt: '2026-11-10T10:00:00+05:30',
-  measurementSets: [
-    { id: 'ms-old', name: 'Blouse – everyday', garment: 'Blouse', takenAt: '2025-06-01T10:00:00+05:30', takenBy: 'Meena', unit: 'in', values: [{ label: 'Bust', value: '34' }, { label: 'Waist', value: '28.5' }], note: null },
-    { id: 'ms-wed', name: 'Blouse – wedding', garment: 'Blouse', takenAt: '2026-11-01T10:00:00+05:30', takenBy: null, unit: 'in', values: [{ label: 'Bust', value: '34.5' }, { label: 'Shoulder', value: '14' }], note: 'Deep back' }
-  ],
-  orders: [
-    { id: 'o-1', number: 'BT-101', title: 'Blouse with lining, maroon', measurementSetId: 'ms-wed', status: 'TRIAL', statusWords: 'Trial booked', bookedAt: '2026-11-02T10:00:00+05:30', trialAt: '2026-11-22T11:00:00+05:30', dueAt: '2026-11-28T18:00:00+05:30', readyAt: null, deliveredAt: null, total: 4500, advance: 2000, balance: 2500, storeName: 'Banjara Hills', staffName: 'Meena' },
-    { id: 'o-0', number: 'BT-090', title: 'Salwar, cotton', measurementSetId: null, status: 'DELIVERED', statusWords: 'Delivered', bookedAt: '2026-09-01T10:00:00+05:30', trialAt: null, dueAt: null, readyAt: '2026-09-10T10:00:00+05:30', deliveredAt: '2026-09-12T10:00:00+05:30', total: 1800, advance: 1800, balance: 0, storeName: null, staffName: null }
-  ],
-  ...over
-});
 
 let C1 = '', C2 = '';
 async function main() {
@@ -171,48 +156,20 @@ async function main() {
   const b200 = await call('POST', '/customers/bulk', { customers: big });
   check(`200 at once, all linked (${((Date.now() - t0) / 1000).toFixed(1)} s)`, b200.status === 200 && b200.data?.linked === 200, b200.message ?? b200.data?.refused);
 
-  console.log('\nTHE SNAPSHOT');
-  const early = await call('PUT', '/customers/b-unknown/profile', { snapshot: snapshot('b-unknown') });
-  check('a snapshot for someone not linked: 404, link them first', early.status === 404 && /POST \/customers/.test(early.message ?? ''), early);
-  const put = await call('PUT', '/customers/b-lak/profile', { snapshot: snapshot('b-lak') });
-  check('a snapshot is kept', put.status === 200 && put.data?.kept === true, put);
-  const row = await profileOf(C1, 'b-lak');
-  const s = row?.snapshot as any;
-  check('stored exactly in CRM\'s shape, ids filled in by Inventory', s?.boutiqueCustomerId === 'b-lak' && s?.inventoryCustomerId === lak.data.inventoryCustomerId && s?.editUrl?.startsWith('https://') && Array.isArray(s?.measurementSets) && Array.isArray(s?.orders), s);
-  check('measurement sets newest first', s?.measurementSets?.[0]?.id === 'ms-wed' && s?.measurementSets?.[1]?.id === 'ms-old');
-  check('openOrders counted from the orders (1: the TRIAL one)', s?.openOrders === 1);
-  check('values kept as text, in order', s?.measurementSets?.[0]?.values?.map((v: any) => `${v.label}=${v.value}`).join() === 'Bust=34.5,Shoulder=14');
-  check('dates stored as ISO times', s?.orders?.[0]?.trialAt === new Date('2026-11-22T11:00:00+05:30').toISOString());
-  check('nothing about WhatsApp offers is in it', !JSON.stringify(s).toLowerCase().includes('whatsapp'));
-  const older = await call('PUT', '/customers/b-lak/profile', { snapshot: snapshot('b-lak', { snapshotAt: '2020-01-01T00:00:00Z', editUrl: 'https://old.example.com/x' }) });
-  check('an older snapshot is answered but not kept', older.status === 200 && older.data?.kept === false && ((await profileOf(C1, 'b-lak'))?.snapshot as any)?.editUrl?.startsWith('https://boutique.'), older);
-  const bads: [string, Record<string, unknown>, RegExp][] = [
-    ['an http (not https) edit link', { editUrl: 'http://x.example.com/1' }, /https/],
-    ['no snapshotAt', { snapshotAt: undefined }, /snapshotAt/],
-    ['a garment not in the list', { measurementSets: [{ id: 'm', name: 'n', garment: 'Saree', takenAt: '2026-01-01', unit: 'in', values: [] }] }, /garment/],
-    ['unit mm', { measurementSets: [{ id: 'm', name: 'n', garment: 'Blouse', takenAt: '2026-01-01', unit: 'mm', values: [] }] }, /unit/],
-    ['status DONE', { orders: [{ id: 'o', number: '1', title: 't', status: 'DONE', bookedAt: '2026-01-01' }] }, /status/],
-    ['an order pointing at a measurement set that is not there', { orders: [{ id: 'o', number: '1', title: 't', status: 'BOOKED', bookedAt: '2026-01-01', measurementSetId: 'nope' }] }, /measurement set/],
-    ['two sets with one id', { measurementSets: [{ id: 'm', name: 'a', garment: 'Blouse', takenAt: '2026-01-01', unit: 'in', values: [] }, { id: 'm', name: 'b', garment: 'Kurti', takenAt: '2026-01-02', unit: 'cm', values: [] }] }, /same id/],
-    ['4 closed orders', { orders: [0, 1, 2, 3].map(i => ({ id: `c${i}`, number: `${i}`, title: 't', status: 'DELIVERED', bookedAt: '2026-01-01' })) }, /last 3 closed/],
-    ['a date that is not a date', { lastOrderAt: 'yesterday' }, /not a date/],
-    ['a negative balance', { orders: [{ id: 'o', number: '1', title: 't', status: 'BOOKED', bookedAt: '2026-01-01', balance: -5 }] }, /amount/],
-    ['a 70 KB snapshot', { measurementSets: [{ id: 'm', name: 'n', garment: 'Blouse', takenAt: '2026-01-01', unit: 'in', values: [], note: 'x'.repeat(70 * 1024) }] }, /64 KB/],
-  ];
-  const kept = JSON.stringify((await profileOf(C1, 'b-lak'))?.snapshot);
-  for (const [what, over, re] of bads) {
-    const r = await call('PUT', '/customers/b-lak/profile', { snapshot: snapshot('b-lak', over) });
-    check(`${what}: refused in words`, r.status === 400 && re.test(r.message ?? ''), r);
-  }
-  check('...and the kept snapshot never changed (refused whole, never half)', JSON.stringify((await profileOf(C1, 'b-lak'))?.snapshot) === kept);
-  check('a snapshot that is not an object is refused', (await call('PUT', '/customers/b-lak/profile', { snapshot: 'hello' })).status === 400);
+  console.log('\nNOTHING BOUTIQUE IS KEPT (the owner, 17 Nov: measurements and stitching are CRM-B\'s alone)');
+  const oldRoute = await call('PUT', '/customers/b-lak/profile', { snapshot: { measurementSets: [{ id: 'm' }] } });
+  check('there is no measurements route (refused), and nothing about measurements is kept', oldRoute.status >= 400 && JSON.stringify((await profileOf(C1, 'b-lak'))?.snapshot) === '{}', oldRoute.status);
+  const extra = await call('POST', '/customers', { boutiqueCustomerId: 'b-lak', name: 'Lakshmi K.', phone: nL, measurements: { bust: 34 }, editUrl: 'https://x.example.com/1' });
+  const lakRow = await prisma.customerBoutiqueProfile.findUnique({ where: { clientId_boutiqueCustomerId: { clientId: C1, boutiqueCustomerId: 'b-lak' } } });
+  check('extra boutique fields sent with a customer (measurements, a link) are simply not kept', extra.status === 200 && !JSON.stringify(lakRow).includes('bust') && !JSON.stringify(lakRow).includes('x.example.com'), lakRow);
+  check('GET one says only who is who', Object.keys((await call('GET', '/customers/b-lak')).data ?? {}).sort().join() === 'boutiqueCustomerId,inventoryCustomerId,nameMatches,removed,removedReason');
 
   console.log('\nCRM\'S CHANGE FEED');
   const events = await prisma.moduleEvent.findMany({ where: { clientId: C1, module: 'crm', sourceTable: 'customer_boutique_profiles' }, orderBy: { sequence: 'asc' } });
   const lakEvents = events.filter(e => (e.payload as any).boutique_customer_id === 'b-lak');
   check('CRM hears customer_boutique_profile.created and .updated', lakEvents.some(e => e.kind === 'customer_boutique_profile.created') && lakEvents.some(e => e.kind === 'customer_boutique_profile.updated'), events.map(e => e.kind));
   const lastLak = lakEvents.at(-1)?.payload as any;
-  check('...the event carries the current customer, the name, name_matches and the full snapshot', lastLak?.customer_id === lak.data.inventoryCustomerId && lastLak?.boutique_name && lastLak?.name_matches === true && lastLak?.snapshot?.orders?.length === 2, lastLak);
+  check('...the event carries the current customer, the name and name_matches, and nothing boutique', lastLak?.customer_id === lak.data.inventoryCustomerId && lastLak?.boutique_name && lastLak?.name_matches === true && JSON.stringify(lastLak?.snapshot ?? {}) === '{}' && !('edit_url' in (lastLak ?? {})), lastLak);
   const priMove = events.filter(e => (e.payload as any).boutique_customer_id === 'b-pri').map(e => (e.payload as any).customer_id);
   check('Priya\'s move to her own number is one event with the new customer', priMove.includes(moved.data.inventoryCustomerId));
   check('shop 2 (not on CRM) sends nothing to the feed', !(await prisma.moduleEvent.count({ where: { clientId: C2 } })));
@@ -220,9 +177,8 @@ async function main() {
   console.log('\nTHE BOUTIQUE UNLINKS SOMEONE');
   const un = await call('DELETE', '/customers/b-nop');
   const unRow = await profileOf(C1, 'b-nop');
-  check('unlinked: removed, reason UNLINKED, nothing personal kept (name, snapshot, customer)', un.status === 200 && unRow?.removed && unRow.removedReason === 'UNLINKED' && !unRow.boutiqueName && !unRow.customerId && JSON.stringify(unRow.snapshot) === '{}', unRow);
+  check('unlinked: removed, reason UNLINKED, nothing personal kept (name, customer)', !!(un.status === 200 && unRow?.removed && unRow.removedReason === 'UNLINKED' && !unRow.boutiqueName && !unRow.customerId), unRow);
   check('...the Inventory customer itself stays (it is the shop\'s customer too)', !!(await prisma.customer.findFirst({ where: { id: noP.data.inventoryCustomerId, deletedAt: null } })));
-  check('a snapshot for an unlinked person: 404', (await call('PUT', '/customers/b-nop/profile', { snapshot: snapshot('b-nop') })).status === 404);
   const relink = await call('POST', '/customers', { boutiqueCustomerId: 'b-nop', name: 'Grandma Kamala' });
   const rl = await profileOf(C1, 'b-nop');
   check('linked again later: back, with the name, not removed', relink.status === 200 && relink.data?.relinked === true && rl?.removed === false && rl.boutiqueName === 'Grandma Kamala', [relink, rl]);
@@ -231,11 +187,11 @@ async function main() {
   console.log('\nINVENTORY REMOVES THE CUSTOMER');
   // Lakshmi's number carries Lakshmi and (until she moved) Priya. Add a cousin on it, then erase the customer.
   await call('POST', '/customers', { boutiqueCustomerId: 'b-cou', name: 'Cousin Devi', phone: nL });
-  await call('PUT', '/customers/b-cou/profile', { snapshot: snapshot('b-cou') });
+
   await prisma.customer.update({ where: { id: lak.data.inventoryCustomerId }, data: { deletedAt: new Date(), name: 'Removed customer', phone: null, email: null } });
   const [gl, gc] = [await profileOf(C1, 'b-lak'), await profileOf(C1, 'b-cou')];
   check('erased: EVERY boutique person on that customer is removed (Lakshmi and the cousin)', !!gl?.removed && !!gc?.removed && gl.removedReason === 'CUSTOMER_REMOVED' && gc!.removedReason === 'CUSTOMER_REMOVED', [gl, gc]);
-  check('...with nothing personal kept: no name, no snapshot, no customer', [gl, gc].every(r => !r?.boutiqueName && !r?.customerId && JSON.stringify(r?.snapshot) === '{}' && !r?.snapshotAt));
+  check('...with nothing personal kept: no name, no customer', [gl, gc].every(r => !r?.boutiqueName && !r?.customerId));
   check('...Priya, who moved to her own number earlier, is untouched', (await profileOf(C1, 'b-pri'))?.removed === false);
   const gone = events.length;
   const evAfter = await prisma.moduleEvent.findMany({ where: { clientId: C1, module: 'crm', sourceTable: 'customer_boutique_profiles' }, orderBy: { sequence: 'asc' }, skip: gone });
@@ -249,12 +205,10 @@ async function main() {
   const rem2 = await call('GET', `/customers/removed?after=${encodeURIComponent(rem.data.next)}`);
   const allRemoved = [...rem.data.removed, ...(rem2.data?.removed ?? [])].map((r: any) => r.boutiqueCustomerId).sort().join();
   check('...the next page carries on: b-cou, b-hard, b-lak in all, never the one the boutique unlinked itself', allRemoved === 'b-cou,b-hard,b-lak' && rem2.data.hasMore === false, allRemoved);
-  check('a snapshot for a removed person: 404', (await call('PUT', '/customers/b-lak/profile', { snapshot: snapshot('b-lak') })).status === 404);
   check('GET one shows them removed', (await call('GET', '/customers/b-lak')).data?.removed === true);
 
   console.log('\nANOTHER SHOP');
   check('shop 2 cannot read shop 1\'s person', (await call('GET', '/customers/b-pri', undefined, { tenant: T2 })).status === 404);
-  check('...nor send them a snapshot', (await call('PUT', '/customers/b-pri/profile', { snapshot: snapshot('b-pri') }, { tenant: T2 })).status === 404);
   check('...nor unlink them', (await call('DELETE', '/customers/b-pri', undefined, { tenant: T2 })).status === 404);
   check('...and shop 2\'s removed list is empty', (await call('GET', '/customers/removed', undefined, { tenant: T2 })).data?.removed?.length === 0);
   const same = await call('POST', '/customers', { boutiqueCustomerId: 'b-pri', name: 'Another Priya', phone: nP }, { tenant: T2 });

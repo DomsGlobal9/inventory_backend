@@ -1,16 +1,15 @@
 /**
- * The boutique app's (CRM-B) customers in ScaleEzy (17 Nov 2026; agreed with the CRM chat, owner: "one person, one
- * record").
+ * The boutique app's (CRM-B) customers on ScaleEzy's one customer list (17 Nov 2026; agreed with the CRM chat).
  *
- * CRM-B keeps its customers' measurements and stitching orders. What ScaleEzy needs is one customer list for the
- * till, the online shop and CRM, so:
+ * The owner, 17 Nov: measurements and stitching are the boutique's alone -- "boutique means CRM-B only" -- and CRM is
+ * the shop's own customer list. So ScaleEzy keeps only the PERSON, for the till, the online shop and CRM to know the
+ * same customer. No measurements, no stitching orders and no boutique link ever come here; CRM shows these people as
+ * the shop's ordinary customers.
  *   - a boutique person is linked to the Inventory customer holding their phone number (one customer per number, as
  *     everywhere in Inventory), or a new customer is made. An existing customer's name, phone and email are never
  *     changed by CRM-B; blanks are filled only when the names agree;
- *   - several boutique people can sit on one customer (a family phone). Each keeps its own row and snapshot, never
- *     merged; `nameMatches` says whether it is that customer or someone else on their number;
- *   - CRM-B sends a read-only snapshot (measurement sets + a small stitching summary) whenever it changes; CRM shows it
- *     from the module feed (customer_boutique_profile.*), with "Edit in the boutique app";
+ *   - several boutique people can sit on one customer (a family phone), each its own row, never merged; `nameMatches`
+ *     says whether it is that customer or someone else on their number;
  *   - when Inventory removes the customer, a database trigger wipes every boutique person on them (no personal data
  *     kept) and marks them removed: CRM wipes its copy from the feed, CRM-B from GET /customers/removed.
  * Nobody is offered WhatsApp from here; consent stays Inventory's.
@@ -25,7 +24,6 @@ import { problem, type Actor, type Db } from './index';
 
 const ID = /^[A-Za-z0-9._:-]{1,100}$/;
 const EMAIL = /^[^\s@<>()[\],;:"]+@[^\s@<>()[\],;:"]+\.[^\s@<>()[\],;:"]{2,}$/;
-const MAX_SNAPSHOT_BYTES = 64 * 1024;
 export const BULK_MAX = 200;
 
 const text = (v: unknown) => (v === null || v === undefined ? '' : String(v)).replace(/\s+/g, ' ').trim();
@@ -142,103 +140,6 @@ export async function linkMany(tx: Db, actor: Actor, body: { customers?: unknown
   return { status: 200, answer: { success: true, data: { linked: results.filter(r => r.ok).length, refused: results.filter(r => !r.ok).length, results } } };
 }
 
-/* ── the snapshot ───────────────────────────────────────────────────────────────────────────────── */
-
-const GARMENTS = ['Blouse', 'Salwar', 'Lehenga', 'Kurti', 'Other'];
-const STATUSES = ['BOOKED', 'IN_PROGRESS', 'TRIAL', 'READY', 'DELIVERED', 'CANCELLED'];
-const OPEN = new Set(['BOOKED', 'IN_PROGRESS', 'TRIAL', 'READY']);
-
-function when(v: unknown, what: string, required = false): string | null {
-  if (v === null || v === undefined || v === '') { if (required) throw problem(`${what} is needed (an ISO date and time).`); return null; }
-  const d = new Date(String(v));
-  if (Number.isNaN(d.getTime())) throw problem(`${what} is not a date and time (send ISO, like 2026-11-22T10:30:00+05:30).`);
-  return d.toISOString();
-}
-function words(v: unknown, what: string, max: number, required = false): string | null {
-  const t = v === null || v === undefined ? '' : String(v).trim();
-  if (!t) { if (required) throw problem(`${what} is needed.`); return null; }
-  if (t.length > max) throw problem(`${what} is longer than ${max} letters.`);
-  return t;
-}
-function money(v: unknown, what: string): number | null {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 0 || n > 1e8) throw problem(`${what} is not an amount in rupees.`);
-  return Math.round(n * 100) / 100;
-}
-
-/** The snapshot made safe, exactly in the shape CRM reads; refused whole (never half) when anything is off. */
-export function cleanSnapshot(raw: any, bid: string, inventoryCustomerId: string) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw problem('Send snapshot: an object.');
-  const size = Buffer.byteLength(JSON.stringify(raw), 'utf8');
-  if (size > MAX_SNAPSHOT_BYTES) throw problem(`The snapshot is ${Math.ceil(size / 1024)} KB; up to 64 KB is kept. Send fewer old orders or measurement sets.`);
-  const editUrl = words(raw.editUrl, 'editUrl', 500, true)!;
-  if (!/^https:\/\/[^\s]+$/.test(editUrl)) throw problem('editUrl must be an https link to this customer in the boutique app.');
-  const sets = Array.isArray(raw.measurementSets) ? raw.measurementSets : [];
-  if (sets.length > 50) throw problem('Up to 50 measurement sets are kept.');
-  const measurementSets = sets.map((s: any, i: number) => {
-    const at = `measurementSets[${i}]`;
-    if (!s || typeof s !== 'object') throw problem(`${at} is not a measurement set.`);
-    const garment = words(s.garment, `${at}.garment`, 20, true)!;
-    if (!GARMENTS.includes(garment)) throw problem(`${at}.garment is one of ${GARMENTS.join(', ')}.`);
-    const unit = String(s.unit ?? '');
-    if (unit !== 'in' && unit !== 'cm') throw problem(`${at}.unit is "in" or "cm".`);
-    const values = Array.isArray(s.values) ? s.values : [];
-    if (values.length > 100) throw problem(`${at} has more than 100 values.`);
-    return {
-      id: words(s.id, `${at}.id`, 100, true), name: words(s.name, `${at}.name`, 120, true), garment,
-      takenAt: when(s.takenAt, `${at}.takenAt`, true), takenBy: words(s.takenBy, `${at}.takenBy`, 120), unit,
-      values: values.map((v: any, j: number) => ({ label: words(v?.label, `${at}.values[${j}].label`, 60, true), value: words(v?.value, `${at}.values[${j}].value`, 30, true) })),
-      note: words(s.note, `${at}.note`, 500)
-    };
-  }).sort((a: any, b: any) => (a.takenAt < b.takenAt ? 1 : a.takenAt > b.takenAt ? -1 : 0));
-  const setIds = new Set(measurementSets.map((s: any) => s.id));
-  if (setIds.size !== measurementSets.length) throw problem('Two measurement sets have the same id.');
-  const list = Array.isArray(raw.orders) ? raw.orders : [];
-  if (list.length > 100) throw problem('Up to 100 orders are kept (every open one and the last 3 closed).');
-  const orders = list.map((o: any, i: number) => {
-    const at = `orders[${i}]`;
-    if (!o || typeof o !== 'object') throw problem(`${at} is not an order.`);
-    const status = String(o.status ?? '');
-    if (!STATUSES.includes(status)) throw problem(`${at}.status is one of ${STATUSES.join(', ')}.`);
-    const msId = o.measurementSetId === null || o.measurementSetId === undefined || o.measurementSetId === '' ? null : String(o.measurementSetId);
-    if (msId && !setIds.has(msId)) throw problem(`${at}.measurementSetId names a measurement set that is not in this snapshot.`);
-    return {
-      id: words(o.id, `${at}.id`, 100, true), number: words(o.number, `${at}.number`, 40, true), title: words(o.title, `${at}.title`, 120, true),
-      measurementSetId: msId, status, statusWords: words(o.statusWords, `${at}.statusWords`, 60),
-      bookedAt: when(o.bookedAt, `${at}.bookedAt`, true), trialAt: when(o.trialAt, `${at}.trialAt`), dueAt: when(o.dueAt, `${at}.dueAt`),
-      readyAt: when(o.readyAt, `${at}.readyAt`), deliveredAt: when(o.deliveredAt, `${at}.deliveredAt`),
-      total: money(o.total, `${at}.total`), advance: money(o.advance, `${at}.advance`), balance: money(o.balance, `${at}.balance`),
-      storeName: words(o.storeName, `${at}.storeName`, 120), staffName: words(o.staffName, `${at}.staffName`, 120)
-    };
-  });
-  if (new Set(orders.map((o: any) => o.id)).size !== orders.length) throw problem('Two orders have the same id.');
-  const closed = orders.filter((o: any) => !OPEN.has(o.status));
-  if (closed.length > 3) throw problem('Send every open order and only the last 3 closed ones.');
-  const openOrders = orders.filter((o: any) => OPEN.has(o.status)).length;
-  const lastOrderAt = when(raw.lastOrderAt, 'lastOrderAt');
-  return {
-    boutiqueCustomerId: bid, inventoryCustomerId, snapshotAt: when(raw.snapshotAt, 'snapshotAt', true), editUrl,
-    lastOrderAt, openOrders, measurementSets, orders
-  };
-}
-
-/** The snapshot for one linked boutique person. An older snapshot than the one kept is ignored (answered, not kept). */
-export async function putProfile(tx: Db, actor: Actor, bidRaw: unknown, body: { snapshot?: unknown }) {
-  mustWrite(actor);
-  const bid = text(bidRaw);
-  if (!ID.test(bid)) throw problem('That is not a boutiqueCustomerId.');
-  const row = await tx.customerBoutiqueProfile.findUnique({ where: { clientId_boutiqueCustomerId: { clientId: actor.clientId, boutiqueCustomerId: bid } } });
-  if (!row || row.removed || !row.customerId) throw problem('This person is not linked. Send them to POST /customers first.', 404);
-  const snap = cleanSnapshot(body?.snapshot, bid, row.customerId);
-  const at = new Date(snap.snapshotAt!);
-  if (row.snapshotAt && at < row.snapshotAt) {
-    return { status: 200, answer: { success: true, data: { boutiqueCustomerId: bid, kept: false, reason: 'A newer snapshot is already kept.', keptSnapshotAt: row.snapshotAt.toISOString() } } };
-  }
-  await tx.customerBoutiqueProfile.update({ where: { id: row.id }, data: { snapshot: snap as any, snapshotAt: at } });
-  return { status: 200, answer: { success: true, data: { boutiqueCustomerId: bid, inventoryCustomerId: row.customerId, kept: true } } };
-}
-
 /** The boutique no longer has this person: their row keeps nothing personal, and CRM wipes its copy. */
 export async function unlink(tx: Db, actor: Actor, bidRaw: unknown) {
   mustWrite(actor);
@@ -257,7 +158,7 @@ export async function getOne(actor: Actor, bidRaw: unknown) {
   if (!row) throw problem('This person is not linked.', 404);
   return {
     boutiqueCustomerId: row.boutiqueCustomerId, inventoryCustomerId: row.customerId, nameMatches: row.nameMatches,
-    removed: row.removed, removedReason: row.removedReason, snapshotAt: row.snapshotAt?.toISOString() ?? null
+    removed: row.removed, removedReason: row.removedReason
   };
 }
 
