@@ -7,7 +7,8 @@ import { customerCard } from '../services/customer-card';
 import { customerGroups } from '../services/customer-groups';
 import * as shopReviews from '../services/shop-reviews';
 import { crmHandover } from '../services/crm-handover';
-import { offersState, setOffersConsent } from '../services/campaigns';
+import { offersState, setOffersConsent, campaigns } from '../services/campaigns';
+import { fromUpload, fromProductImage } from '../services/campaigns/media';
 import { customerService } from '../services/customer.service';
 import * as customerDelete from '../services/customer-delete';
 import { pastPurchases } from '../services/past-purchases';
@@ -246,6 +247,18 @@ router.delete('/shops/:clientId/customers/:customerId', shop, person(null),
     (req, data) => [data?.mode === 'REMOVE' ? 'CUSTOMER_DELETED' : 'CUSTOMER_ERASED', customerIdOf(req)], 'CUSTOMER'));
 
 // ---- The hand-over switch ---------------------------------------------------------------------------
+
+// ---- Campaign pictures (18 Nov 2026) --------------------------------------------------------------
+// Campaigns are made in CRM; Inventory still prepares and stores their pictures (one JPEG, under 1 MB, no
+// hidden camera or GPS data) exactly as its own Campaigns screen did. Made for a person who may send
+// messages. Rows carry source 'CRM' so Inventory's housekeeping never removes them (CRM's database holds
+// what uses them). CRM reads its list of pictures straight from campaign_media by client_id.
+const mayPicture = person(['campaign:send', 'crm:messages:send']);
+const pictureBy = (req: Request) => ((req as any).actor?.id as string | undefined) ?? null;
+router.post('/shops/:clientId/campaign-media', shop, mayPicture, act(req => fromUpload(cid(req), pictureBy(req), req.body?.base64, 'CRM'), () => ['PICTURE_ADDED', 'n/a'], 'CAMPAIGN_MEDIA'));
+router.post('/shops/:clientId/campaign-media/from-product', shop, mayPicture,
+  act(req => fromProductImage(cid(req), pictureBy(req), req.body?.productImageId, 'CRM'), () => ['PICTURE_ADDED', 'n/a'], 'CAMPAIGN_MEDIA'));
+router.get('/shops/:clientId/product-photos', shop, mayPicture, act(req => campaigns.productPhotosOf(cid(req), req.query.q)));
 
 router.get('/shops/:clientId/moved', shop, async (req, res) => {
   try { res.json({ success: true, data: await crmHandover.get(clientIdOf(req)) }); }

@@ -347,10 +347,15 @@ export async function mediaFromProduct(actor: Actor, input: { productImageId?: u
 /** The shop's products that have photos, for choosing a campaign picture. Names and photos only. */
 export async function productPhotos(actor: Actor, search: unknown) {
   requireMay(actor, 'campaign:send');
+  return productPhotosOf(actor.clientId, search);
+}
+
+/** The same list for ScaleEzy CRM's picture picker (routes/internal-crm), whose person is checked there. */
+export async function productPhotosOf(clientId: string, search: unknown) {
   const q = typeof search === 'string' ? search.trim().slice(0, 80) : '';
   const rows = await prisma.product.findMany({
     where: {
-      clientId: actor.clientId,
+      clientId,
       status: { notIn: ['ARCHIVED', 'TRASHED'] },
       images: { some: {} },
       ...(q ? { OR: [{ title: { contains: q, mode: 'insensitive' } }, { productCode: { contains: q, mode: 'insensitive' } }] } : {})
