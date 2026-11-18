@@ -361,7 +361,7 @@ async function main() {
   const asha = await mkCustomer(SHOP, 'Asha', 250), ravi = await mkCustomer(SHOP, 'Ravi', 0), foreign = await mkCustomer(OTHER, 'Foreign', 999);
   const pts = (ids: string, shop = SHOP) => call('GET', crm(`/customers/points?ids=${encodeURIComponent(ids)}`, shop), tokenFor({ clientId: shop }));
   r = await pts(`${asha.id},${ravi.id}`);
-  check('points switched off for the shop: each customer with points null and no gift', r.status === 200 && r.data.data.length === 2 && r.data.data.every((x: any) => x.points === null && x.birthdayGift === null), brief(r));
+  check('points switched off for the shop: each customer with points null, no gift, giftPoints 0 (no gift to wait for)', r.status === 200 && r.data.data.length === 2 && r.data.data.every((x: any) => x.points === null && x.birthdayGift === null && x.giftPoints === 0), brief(r));
   await prisma.loyaltySettings.create({ data: { clientId: SHOP, enabled: true, birthdayPoints: 100 } as any });
   const year = Number(todayKey.slice(0, 4));
   await giveBirthdayPoints(SHOP, asha.id, year);
@@ -372,7 +372,7 @@ async function main() {
     && JSON.stringify(byId[asha.id]?.birthdayGift) === JSON.stringify({ points: 100, givenOn: todayKey }), brief(r));
   check('...Ravi: 0 points, no gift', byId[ravi.id]?.points === 0 && byId[ravi.id]?.birthdayGift === null, byId[ravi.id]);
   check('...another shop\'s customer and an unknown id are left out (ids in capitals still match)', r.data.data.length === 2 && !byId[foreign.id], r.data?.data);
-  check('...exactly { customerId, points, birthdayGift }', Object.keys(byId[asha.id] ?? {}).sort().join() === 'birthdayGift,customerId,points');
+  check('...exactly { customerId, points, birthdayGift, giftPoints }, giftPoints being the gift the shop gives (100)', Object.keys(byId[asha.id] ?? {}).sort().join() === 'birthdayGift,customerId,giftPoints,points' && byId[asha.id]?.giftPoints === 100 && byId[ravi.id]?.giftPoints === 100);
   await prisma.loyaltyEntry.updateMany({ where: { customerId: asha.id, kind: 'BIRTHDAY' as any }, data: { createdAt: new Date(Date.now() - 3 * 86400000) } });
   r = await pts(asha.id);
   check('...a gift given 3 days ago says so (CRM adds the line only on the day)', r.data?.data?.[0]?.birthdayGift?.givenOn !== todayKey && /^\d{4}-\d{2}-\d{2}$/.test(r.data?.data?.[0]?.birthdayGift?.givenOn), brief(r));

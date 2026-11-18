@@ -612,7 +612,8 @@ export async function pointsForCrm(clientId: string, rawIds: unknown) {
   const s = await getSettings(clientId);
   const { timezone } = await getShopSettings(clientId);
   const customers = await prisma.customer.findMany({ where: { clientId, id: { in: ids }, deletedAt: null }, select: { id: true, loyaltyPoints: true } });
-  if (!s.enabled) return customers.map(c => ({ customerId: c.id, points: null, birthdayGift: null }));
+  // giftPoints: the shop's birthday gift (0 = none), so CRM need not wait for a gift that never comes.
+  if (!s.enabled) return customers.map(c => ({ customerId: c.id, points: null, birthdayGift: null, giftPoints: 0 }));
   const year = localDayKey(new Date(), timezone).slice(0, 4);
   const gifts = await prisma.loyaltyEntry.findMany({
     where: { clientId, onceKey: { in: customers.map(c => `BIRTHDAY:${c.id}:${year}`) } },
@@ -620,7 +621,7 @@ export async function pointsForCrm(clientId: string, rawIds: unknown) {
   });
   return customers.map(c => {
     const g = gifts.find(x => x.customerId === c.id);
-    return { customerId: c.id, points: c.loyaltyPoints, birthdayGift: g ? { points: g.points, givenOn: localDayKey(g.createdAt, timezone) } : null };
+    return { customerId: c.id, points: c.loyaltyPoints, birthdayGift: g ? { points: g.points, givenOn: localDayKey(g.createdAt, timezone) } : null, giftPoints: s.birthdayPoints };
   });
 }
 

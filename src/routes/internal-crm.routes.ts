@@ -283,6 +283,8 @@ router.get('/shops/:clientId/profile', shop, readable, act(req => crmReads.profi
 router.get('/shops/:clientId/shop-link', shop, readable, act(req => crmReads.shopLink(cid(req))));
 router.get('/shops/:clientId/shop-link/products', shop, readable, act(req => crmReads.linksFor(cid(req), req.query.codes)));
 router.get('/shops/:clientId/new-arrivals', shop, readable, act(req => crmReads.newArrivals(cid(req), req.query)));
+router.get('/shops/:clientId/product-likes', shop, readable, act(req => crmReads.productLikes(cid(req), req.query.productIds)));
+router.get('/shops/:clientId/products/:productId/photos', shop, readable, act(req => crmReads.photosOf(cid(req), String(req.params.productId))));
 
 router.get('/shops/:clientId/moved', shop, async (req, res) => {
   try { res.json({ success: true, data: await crmHandover.forCrm(clientIdOf(req)) }); }

@@ -224,34 +224,72 @@ async function main() {
   check('its online shop: slug, open or not, and its address (or null where pages are not set up)', r.status === 200 && link.slug === slug && link.isLive === false && (link.url === null || link.url.endsWith(`/${slug}`)), brief(r));
 
   const loc = await prisma.stockLocation.create({ data: { clientId: SHOP, code: `GS${STAMP % 10000}`, name: 'Store', type: 'STORE' } as any });
-  const mkPiece = async (title: string, status: string, colour: string, stock: number, firstInDaysAgo: number | null, clientId = SHOP) => {
-    const p = await prisma.product.create({ data: { clientId, productCode: `NA-${++n}-${STAMP}`, slug: `na-${n}-${STAMP}`, title, category: 'WOMEN', productType: 'READY_TO_WEAR', basePrice: 1000, status } as any });
-    const v = await prisma.productVariant.create({ data: { clientId, productId: p.id, sku: `NA-SKU-${n}-${STAMP}`, variantCode: `NA-V-${n}-${STAMP}`, colorName: colour, size: 'Free', sellingPrice: 2500, createdAt: new Date(Date.now() - 200 * 86400000) } as any });
-    if (clientId === SHOP) await prisma.inventoryStock.create({ data: { clientId, variantId: v.id, locationId: loc.id, quantity: stock } });
-    if (firstInDaysAgo !== null && clientId === SHOP) {
-      await prisma.inventoryTransaction.create({ data: { clientId, variantId: v.id, locationId: loc.id, type: 'IN', reason: 'PURCHASE', quantity: Math.max(stock, 1), balanceBefore: 0, balanceAfter: Math.max(stock, 1), createdAt: new Date(Date.now() - firstInDaysAgo * 86400000) } as any });
-    }
+  const supplier = await prisma.supplier.create({ data: { clientId: SHOP, supplierCode: `SUP-${STAMP}`, name: 'Weaver' } as any });
+  const po = await prisma.purchaseOrder.create({ data: { clientId: SHOP, poNumber: `PO-${STAMP}`, supplierId: supplier.id } as any });
+  let rc = 0;
+  /** A colour received from the supplier `daysAgo` days ago (a real receipt line), with what the line said. */
+  const receive = async (v: any, title: string, daysAgo: number, qty: number, line: { size?: string; color?: string } = {}) => {
+    const item = await prisma.purchaseOrderItem.create({ data: { poId: po.id, variantId: v.id, sku: v.sku, variantCode: v.variantCode, productTitle: title, orderedQty: Math.max(qty, 1), unitPrice: 900 } as any });
+    const receipt = await prisma.purchaseReceipt.create({ data: { clientId: SHOP, receiptNumber: `GRN-${STAMP}-${++rc}`, poId: po.id, locationId: loc.id, receivedAt: new Date(Date.now() - daysAgo * 86400000) } as any });
+    await prisma.purchaseReceiptItem.create({ data: { receiptId: receipt.id, poItemId: item.id, variantId: v.id, sku: v.sku, variantCode: v.variantCode, productTitle: title, color: line.color ?? null, size: line.size ?? null, orderedQty: Math.max(qty, 1), receivedBefore: 0, quantity: qty, unitPrice: 900 } as any });
+  };
+  const mkPiece = async (title: string, status: string, colour: string | null, size: string | null, clientId = SHOP) => {
+    const p = await prisma.product.create({ data: { clientId, productCode: `NA-${++n}-${STAMP}`, slug: `na-${n}-${STAMP}`, title, category: 'WOMEN', productType: 'READY_TO_WEAR', dressType: 'Saree', basePrice: 1000, status } as any });
+    const v = await prisma.productVariant.create({ data: { clientId, productId: p.id, sku: `NA-SKU-${n}-${STAMP}`, variantCode: `NA-V-${n}-${STAMP}`, colorName: colour, size, sellingPrice: 2500 } as any });
     return { p, v };
   };
-  const fresh = await mkPiece('Fresh kanchi', 'ACTIVE', 'Red', 4, 2);
-  await prisma.productImage.create({ data: { productId: fresh.p.id, url: 'https://example.invalid/p.jpg', imageType: 'GALLERY', orderIndex: 1, isPrimary: false } as any });
-  await prisma.productImage.create({ data: { variantId: fresh.v.id, url: 'https://example.invalid/red.jpg', imageType: 'GALLERY', orderIndex: 0, isPrimary: true } as any });
-  const soldOut = await mkPiece('Sold out', 'ACTIVE', 'Blue', 0, 1);
-  const monthOld = await mkPiece('Month old', 'ACTIVE', 'Green', 3, 30);
-  const archived = await mkPiece('Archived new', 'ARCHIVED', 'Gold', 5, 1);
-  r = await call('GET', crm('/new-arrivals?days=14'), key());
+  const fresh = await mkPiece('Fresh kanchi', 'ACTIVE', 'Red', 'Free');
+  await receive(fresh.v, 'Fresh kanchi', 5, 2);
+  await receive(fresh.v, 'Fresh kanchi', 2, 3);                              // received twice: one row, the latest
+  const plain = await mkPiece('Plain one', 'ACTIVE', null, null);
+  await receive(plain.v, 'Plain one', 1, 1, { size: 'M', color: 'Teal' });      // colour and size from the receipt line
+  const zero = await mkPiece('Zero line', 'ACTIVE', 'Blue', 'Free');
+  await receive(zero.v, 'Zero line', 1, 0);                                    // a line received with 0: not an arrival
+  const monthOld = await mkPiece('Month old', 'ACTIVE', 'Green', 'Free');
+  await receive(monthOld.v, 'Month old', 30, 2);
+  const archived = await mkPiece('Archived new', 'ARCHIVED', 'Gold', 'Free');
+  await receive(archived.v, 'Archived new', 1, 4);
+  const since = (days: number) => new Date(Date.now() - days * 86400000).toISOString();
+  r = await call('GET', crm(`/new-arrivals?from=${encodeURIComponent(since(14))}`), key());
   const pieces = r.data?.data?.pieces ?? [];
-  const f = pieces.find((x: any) => x.variantId === fresh.v.id);
-  check('new arrivals (14 days): the fresh piece only (not sold out, not a month old, not archived)', r.status === 200 && pieces.length === 1 && !!f
-    && !pieces.some((x: any) => [soldOut.v.id, monthOld.v.id, archived.v.id].includes(x.variantId)), pieces.map((x: any) => x.title));
-  check('...with what CRM needs: ids, title, kind, size, colour, price, stock, first in stock 2 days ago', f && f.productId === fresh.p.id && f.title === 'Fresh kanchi' && f.kind === 'WOMEN' && f.size === 'Free' && f.colour === 'Red'
-    && f.price === 2500 && f.stock === 4 && Math.abs(Date.now() - new Date(f.firstInStockAt).getTime() - 2 * 86400000) < 3600_000, f);
-  check('...and its photos, the colour\'s own first (primary), each with its colour', f && f.photos.length === 2 && f.photos[0].url === 'https://example.invalid/red.jpg' && f.photos[0].colour === 'Red' && f.photos[0].isPrimary && f.photos[1].variantId === null, f?.photos);
-  r = await call('GET', crm('/new-arrivals?days=60'), key());
-  check('60 days: the month-old piece too, newest first', r.data?.data?.pieces?.map((x: any) => x.title).join() === 'Fresh kanchi,Month old', brief(r));
-  for (const q of ['days=0', 'days=91', 'days=abc', 'page=0']) {
+  check('new arrivals, received in the last 14 days: Plain one then Fresh kanchi (not the 0 line, not a month old, not archived)', r.status === 200
+    && pieces.map((x: any) => x.title).join() === 'Plain one,Fresh kanchi', pieces.map((x: any) => x.title));
+  const f = pieces.find((x: any) => x.variantId === fresh.v.id), pl = pieces.find((x: any) => x.variantId === plain.v.id);
+  check('...exactly { variantId, productId, title, kind (dress type), slug, size, colour, receivedAt }, received twice = one row with the latest', f
+    && Object.keys(f).sort().join() === 'colour,kind,productId,receivedAt,size,slug,title,variantId' && f.kind === 'Saree' && f.slug === fresh.p.slug && f.colour === 'Red' && f.size === 'Free'
+    && Math.abs(Date.now() - new Date(f.receivedAt).getTime() - 2 * 86400000) < 3600_000, f);
+  check('...a colour with no size or colour of its own takes the receipt line\'s (M, Teal)', pl?.size === 'M' && pl?.colour === 'Teal', pl);
+  r = await call('GET', crm(`/new-arrivals?from=${encodeURIComponent(since(60))}&to=${encodeURIComponent(since(10))}`), key());
+  check('a window 60 to 10 days ago: only the month-old piece', r.data?.data?.pieces?.map((x: any) => x.title).join() === 'Month old', brief(r));
+  for (const [q, words] of [['', /from as a date/], ['from=yesterday', /from as a date/], [`from=${since(1)}&to=${since(2)}`, /to must be after from/], [`from=${since(100)}`, /at most 92 days/]] as const) {
     const x = await call('GET', crm(`/new-arrivals?${q}`), key());
-    check(`...${q}: 400 in words`, x.status === 400 && /whole number/.test(x.data?.message), brief(x));
+    check(`...${q || 'no from'}: 400 in words`, x.status === 400 && (words as RegExp).test(x.data?.message), brief(x));
+  }
+
+  // One product's photos: cover and gallery only, primary first, each with its colour.
+  await prisma.productImage.create({ data: { productId: fresh.p.id, url: 'https://example.invalid/p.jpg', imageType: 'GALLERY', orderIndex: 1, isPrimary: false } as any });
+  await prisma.productImage.create({ data: { variantId: fresh.v.id, url: 'https://example.invalid/red.jpg', imageType: 'COVER', orderIndex: 0, isPrimary: true } as any });
+  await prisma.productImage.create({ data: { productId: fresh.p.id, url: 'https://example.invalid/raw.jpg', imageType: 'RAW_UPLOAD', orderIndex: 2, isPrimary: false } as any });
+  r = await call('GET', crm(`/products/${fresh.p.id}/photos`), key());
+  check('a product\'s photos: the colour\'s cover first, then the gallery; never the raw upload', r.status === 200 && JSON.stringify(r.data.data) === JSON.stringify([
+    { url: 'https://example.invalid/red.jpg', variantId: fresh.v.id, colour: 'Red', isPrimary: true, orderIndex: 0 },
+    { url: 'https://example.invalid/p.jpg', variantId: null, colour: null, isPrimary: false, orderIndex: 1 }]), brief(r));
+  const theirProduct = await prisma.product.create({ data: { clientId: OTHER, productCode: `NA-X-${STAMP}`, slug: `na-x-${STAMP}`, title: 'Theirs', category: 'WOMEN', productType: 'READY_TO_WEAR', basePrice: 1, status: 'ACTIVE' } as any });
+  r = await call('GET', crm(`/products/${theirProduct.id}/photos`), key());
+  check('...another shop\'s product: 404', r.status === 404 && r.data?.message === 'That product was not found.', brief(r));
+
+  // Online-shop hearts.
+  await prisma.shopProductView.create({ data: { clientId: SHOP, productId: fresh.p.id, phone: '+919800000001', views: 3, likedAt: new Date(), variantId: fresh.v.id } as any });
+  await prisma.shopProductView.create({ data: { clientId: SHOP, productId: fresh.p.id, phone: '+919800000002', views: 9, likedAt: null } as any });
+  await prisma.shopProductView.create({ data: { clientId: SHOP, productId: plain.p.id, phone: '+919800000003', views: 1, likedAt: new Date(Date.now() - 3600_000) } as any });
+  await prisma.shopProductView.create({ data: { clientId: OTHER, productId: theirProduct.id, phone: '+919800000004', views: 1, likedAt: new Date() } as any });
+  r = await call('GET', crm(`/product-likes?productIds=${fresh.p.id},${plain.p.id.toUpperCase()},${theirProduct.id}`), key());
+  const likes = r.data?.data ?? [];
+  check('likes: the two hearts on this shop\'s products, with their colour; a look without a heart is not one; another shop\'s never', r.status === 200 && likes.length === 2
+    && likes[0].phone === '+919800000001' && likes[0].colour === 'Red' && likes[0].productId === fresh.p.id && likes[1].phone === '+919800000003' && likes[1].colour === null, likes);
+  for (const [q, words] of [['', /Say which products/], [`productIds=${Array.from({ length: 201 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`).join(',')}`, /at most 200/], ['productIds=saree', /product id from Inventory/]] as const) {
+    const x = await call('GET', crm(`/product-likes?${q}`), key());
+    check(`...${q.slice(0, 20) || 'no ids'}: 400 in words`, x.status === 400 && (words as RegExp).test(x.data?.message), brief(x));
   }
 
   r = await call('GET', crm(`/shop-link/products?codes=${fresh.p.productCode},${fresh.v.sku},${archived.p.productCode},NOPE`), key());

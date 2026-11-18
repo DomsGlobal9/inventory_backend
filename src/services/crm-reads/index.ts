@@ -5,13 +5,14 @@
  *   profile()     the shop as it signs a message: name, phone, email, address, logo, timezone.
  *   shopLink()    its online shop: address, open or not.
  *   linksFor()    product or colour codes -> the page on the online shop.
- *   newArrivals() pieces that came into stock lately, with stock, price and photos (CRM's arrivals message).
+ *   newArrivals() colours received from suppliers in a window (CRM's arrivals message).
+ *   productLikes() online-shop hearts on products; photosOf() one product's photos.
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { getShopSettings } from '../../lib/clientSettings';
 import { shopBaseUrl } from '../online-shop/shop.service';
-import { badRequest } from '../../utils/httpError';
+import { badRequest, notFound } from '../../utils/httpError';
 
 const DAY = 86_400_000;
 
@@ -68,53 +69,76 @@ export async function linksFor(clientId: string, rawCodes: unknown) {
 }
 
 /**
- * Colours that came into stock in the last `days` days and still have stock, newest first, 50 a page.
- * "Came into stock" is the first stock that ever came in for that colour (its first inward movement), or
- * when it was made if it was added with stock and no movement. Archived and binned products are left out.
+ * Stock RECEIVED from suppliers in a window (purchase receipts), one row per colour received, newest first:
+ * what CRM's new-arrivals message says. Kind is the shop's own word for the garment (dress type); size and
+ * colour are the colour's own, else what the receipt line said. receivedAt is the latest receipt in the
+ * window. Archived and binned products are left out (a message must not point at them).
  */
 export async function newArrivals(clientId: string, query: any) {
-  const days = query?.days === undefined ? 14 : Number(query.days);
-  if (!Number.isInteger(days) || days < 1 || days > 90) throw badRequest('days must be a whole number from 1 to 90.');
-  const page = query?.page === undefined ? 1 : Number(query.page);
-  if (!Number.isInteger(page) || page < 1 || page > 1000) throw badRequest('page must be a whole number from 1.');
-  const size = 50;
-  const since = new Date(Date.now() - days * DAY);
-  const rows = await prisma.$queryRaw<{ variant_id: string; product_id: string; title: string; category: string; size: string | null; colour: string | null; price: Prisma.Decimal | null; stock: bigint; first_in: Date }[]>`
-    SELECT v.id AS variant_id, v.product_id, p.title, p.category::text AS category, v.size, v.color_name AS colour,
-           v.selling_price AS price, s.stock, COALESCE(t.first_in, v.created_at) AS first_in
-      FROM inventory_product_variants v
+  const when = (raw: unknown, what: string) => {
+    const d = new Date(String(raw ?? ''));
+    if (raw === undefined || Number.isNaN(d.getTime())) throw badRequest(`Send ${what} as a date and time (ISO), e.g. 2026-11-18T00:00:00+05:30.`);
+    return d;
+  };
+  const from = when(query?.from, 'from');
+  const to = query?.to === undefined ? new Date() : when(query.to, 'to');
+  if (to <= from) throw badRequest('to must be after from.');
+  if (to.getTime() - from.getTime() > 92 * DAY) throw badRequest('Ask for at most 92 days at a time.');
+  const rows = await prisma.$queryRaw<{ variant_id: string; product_id: string; title: string; kind: string | null; slug: string; size: string | null; colour: string | null; received_at: Date }[]>`
+    SELECT v.id AS variant_id, p.id AS product_id, p.title, p.dress_type AS kind, p.slug,
+           COALESCE(NULLIF(v.size, ''), MAX(i.size)) AS size, COALESCE(NULLIF(v.color_name, ''), MAX(i.color)) AS colour,
+           MAX(r.received_at) AS received_at
+      FROM purchase_receipts r
+      JOIN purchase_receipt_items i ON i.receipt_id = r.id
+      JOIN inventory_product_variants v ON v.id = i.variant_id
       JOIN inventory_products p ON p.id = v.product_id
-      JOIN (SELECT variant_id, SUM(quantity) AS stock FROM inventory_stocks WHERE client_id = ${clientId} GROUP BY variant_id HAVING SUM(quantity) > 0) s
-        ON s.variant_id = v.id
-      LEFT JOIN (SELECT variant_id, MIN(created_at) AS first_in FROM inventory_transactions WHERE client_id = ${clientId} AND quantity > 0 GROUP BY variant_id) t
-        ON t.variant_id = v.id
-     WHERE v.client_id = ${clientId} AND p.client_id = ${clientId} AND v.boutique_deleted_at IS NULL
-       AND p.status::text NOT IN ('ARCHIVED', 'TRASHED')
-       AND COALESCE(t.first_in, v.created_at) >= ${since}
-     ORDER BY first_in DESC, v.id
-     LIMIT ${size + 1} OFFSET ${(page - 1) * size}`;
-  const pieces = rows.slice(0, size);
-  const productIds = [...new Set(pieces.map(r => r.product_id))];
-  const images = productIds.length ? await prisma.productImage.findMany({
-    where: { OR: [{ productId: { in: productIds } }, { variant: { productId: { in: productIds } } }] },
-    select: { url: true, productId: true, variantId: true, isPrimary: true, orderIndex: true, variant: { select: { productId: true, colorName: true } } },
-    orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }]
-  }) : [];
+     WHERE r.client_id = ${clientId} AND v.client_id = ${clientId} AND p.client_id = ${clientId}
+       AND i.quantity > 0 AND r.received_at >= ${from} AND r.received_at < ${to}
+       AND p.status::text NOT IN ('ARCHIVED', 'TRASHED') AND v.boutique_deleted_at IS NULL
+     GROUP BY v.id, p.id
+     ORDER BY received_at DESC, v.id
+     LIMIT 1001`;
   return {
-    days, page,
-    hasMore: rows.length > size,
-    pieces: pieces.map(r => ({
-      variantId: r.variant_id,
-      productId: r.product_id,
-      title: r.title,
-      kind: r.category,
-      size: r.size,
-      colour: r.colour,
-      price: r.price === null ? null : Number(r.price),
-      stock: Number(r.stock),
-      firstInStockAt: r.first_in,
-      photos: images.filter(i => (i.productId ?? i.variant?.productId) === r.product_id)
-        .map(i => ({ url: i.url, variantId: i.variantId, colour: i.variant?.colorName ?? null, isPrimary: i.isPrimary }))
+    from, to,
+    hasMore: rows.length > 1000,
+    pieces: rows.slice(0, 1000).map(r => ({
+      variantId: r.variant_id, productId: r.product_id, title: r.title, kind: r.kind, slug: r.slug,
+      size: r.size, colour: r.colour, receivedAt: r.received_at
     }))
   };
+}
+
+const ids200 = (raw: unknown, what: string) => {
+  const ids = [...new Set(String(raw ?? '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean))];
+  if (!ids.length) throw badRequest(`Say which ${what}: ?productIds=<id>,<id> (up to 200).`);
+  if (ids.length > 200) throw badRequest('Ask for at most 200 at a time.');
+  if (ids.some(id => !/^[0-9a-f-]{36}$/.test(id))) throw badRequest('Every id must be a product id from Inventory.');
+  return ids;
+};
+
+/** Online-shop hearts on these products: who (their proved number), which product, which colour. */
+export async function productLikes(clientId: string, rawIds: unknown) {
+  const productIds = ids200(rawIds, 'products');
+  const rows = await prisma.shopProductView.findMany({
+    where: { clientId, productId: { in: productIds }, likedAt: { not: null } },
+    select: { phone: true, productId: true, variantId: true, likedAt: true },
+    orderBy: { likedAt: 'desc' }
+  });
+  const vids = [...new Set(rows.map(r => r.variantId).filter((x): x is string => !!x))];
+  const colours = vids.length ? await prisma.productVariant.findMany({ where: { clientId, id: { in: vids } }, select: { id: true, colorName: true } }) : [];
+  return rows.map(r => ({ phone: r.phone, productId: r.productId, colour: colours.find(c => c.id === r.variantId)?.colorName ?? null, likedAt: r.likedAt }));
+}
+
+/** One product's photos (cover and gallery, not raw uploads), primary and then in their order. */
+export async function photosOf(clientId: string, productId: string) {
+  const id = String(productId ?? '').toLowerCase();
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw badRequest('That is not a product id from Inventory.');
+  const product = await prisma.product.findFirst({ where: { id, clientId }, select: { id: true } });
+  if (!product) throw notFound('That product was not found.');
+  const images = await prisma.productImage.findMany({
+    where: { imageType: { in: ['COVER', 'GALLERY'] as any }, OR: [{ productId: id }, { variant: { productId: id, clientId } }] },
+    select: { url: true, variantId: true, isPrimary: true, orderIndex: true, variant: { select: { colorName: true } } },
+    orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }]
+  });
+  return images.map(i => ({ url: i.url, variantId: i.variantId, colour: i.variant?.colorName ?? null, isPrimary: i.isPrimary, orderIndex: i.orderIndex }));
 }
