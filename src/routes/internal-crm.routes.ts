@@ -10,6 +10,8 @@ import { crmHandover } from '../services/crm-handover';
 import { offersState, setOffersConsent, campaigns } from '../services/campaigns';
 import { fromUpload, fromProductImage, productPhoto, mediaOfShop } from '../services/campaigns/media';
 import { wishSettingsOf, pointsForCrm } from '../services/loyalty/loyalty.service';
+import { crmGroups } from '../services/crm-groups';
+import * as crmReads from '../services/crm-reads';
 import { customerService } from '../services/customer.service';
 import * as customerDelete from '../services/customer-delete';
 import { pastPurchases } from '../services/past-purchases';
@@ -127,6 +129,14 @@ const cid = clientIdOf;
 const readable = async (req: Request, res: Response, next: NextFunction) =>
   // Reading needs no person; when one is named, they must still be able to see customers.
   service(req).onBehalfOf ? person(['customer:view', 'crm:customer:view'])(req, res, next) : next();
+
+// ---- Customer groups are CRM's (18 Nov 2026): CRM writes Inventory's read-only copy -----------------
+// System to system: CRM's key for this shop, no person (the change was made by someone in CRM, logged there).
+// The first PUT makes the shop's groups CRM's; from then Inventory's own group screens refuse changes.
+router.get('/shops/:clientId/groups/projection', shop, act(req => crmGroups.state(cid(req))));
+router.put('/shops/:clientId/groups/projection', shop, act(req => crmGroups.put(cid(req), req.body), () => ['PROJECTION', 'all'], 'CUSTOMER_GROUP'));
+router.patch('/shops/:clientId/groups/projection/customers/:customerId', shop,
+  act(req => crmGroups.patch(cid(req), String(req.params.customerId), req.body), req => ['PROJECTION', String(req.params.customerId)], 'CUSTOMER_GROUP'));
 
 router.get('/shops/:clientId/groups', shop, readable, act(req => customerGroups.list(cid(req))));
 router.post('/shops/:clientId/groups', shop, person(['customer:manage_groups', 'crm:lists']), act(req => customerGroups.create(cid(req), req.body?.name), req => ['CREATED', 'n/a']));
@@ -268,6 +278,11 @@ router.get('/shops/:clientId/campaign-media', shop, readable, act(req => mediaOf
 router.get('/shops/:clientId/wish-settings', shop, readable, act(req => wishSettingsOf(cid(req))));
 // Points stay Inventory's: CRM's birthday wish reads the total and this year's gift (read only, up to 200).
 router.get('/shops/:clientId/customers/points', shop, readable, act(req => pointsForCrm(cid(req), req.query.ids)));
+// The shop, its online shop and its new pieces, so CRM's messages never read Inventory's tables.
+router.get('/shops/:clientId/profile', shop, readable, act(req => crmReads.profile(cid(req))));
+router.get('/shops/:clientId/shop-link', shop, readable, act(req => crmReads.shopLink(cid(req))));
+router.get('/shops/:clientId/shop-link/products', shop, readable, act(req => crmReads.linksFor(cid(req), req.query.codes)));
+router.get('/shops/:clientId/new-arrivals', shop, readable, act(req => crmReads.newArrivals(cid(req), req.query)));
 
 router.get('/shops/:clientId/moved', shop, async (req, res) => {
   try { res.json({ success: true, data: await crmHandover.forCrm(clientIdOf(req)) }); }

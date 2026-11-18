@@ -5269,6 +5269,19 @@ model GiftVoucherSettings {
   @@map("gift_voucher_settings")
 }
 
+/// A shop whose customer groups ScaleEzy CRM owns (18 Nov 2026). Its groups (customer_groups) and members
+/// (customers.tags) are a read-only copy CRM writes through internal routes; version is CRM's own
+/// increasing number, so a late push can never put back an older state. See services/crm-groups.
+model CrmGroupProjection {
+  clientId  String   @id @map("client_id")
+  version   BigInt   @default(0)
+  appliedAt DateTime @default(now()) @map("applied_at")
+  groups    Int      @default(0)
+  members   Int      @default(0)
+
+  @@map("crm_group_projections")
+}
+
 /// Which shop is switched on for which module ("crm", later "finance"). The outbox triggers write
 /// events only for shops listed here. Set by the module itself through /api/v1/internal.
 model ModuleSubscription {

@@ -1,5 +1,6 @@
 import { monthDay } from './loyalty/rules';
 import { normaliseTags } from './offers/rules';
+import { refuseIfGroupsInCrm } from './crm-groups';
 import { literal } from '../utils/likeText';
 import { prisma } from '../lib/prisma';
 import { generateSequentialCode, generateFreeSequentialCode } from '../utils/codeGenerator';
@@ -152,6 +153,8 @@ export class CustomerService {
    * skips this service can store a second one.
    */
   async createCustomer(clientId: string, data: any) {
+    // A CRM shop's groups are CRM's (services/crm-groups): a new customer here starts in none.
+    if (normaliseTags(data.tags).length) await refuseIfGroupsInCrm(clientId);
     // The phone arrives already in its one stored form (validations/customer.schema), and it is the
     // identity: one number, one customer. Email is not -- a family shares one far more often than a
     // mobile -- so two people on one email address are two customers.
@@ -352,6 +355,11 @@ export class CustomerService {
     // Not a deleted one: an edit brought a deleted customer's number back into use under them.
     const existing = await prisma.customer.findFirst({ where: { clientId, id, deletedAt: null } });
     if (!existing) throw notFound('Customer not found');
+    // Sending the same groups back (a form that always sends them) is fine; changing them is CRM's.
+    if (data.tags !== undefined) {
+      const next = normaliseTags(data.tags);
+      if (next.length !== existing.tags.length || next.some((t, i) => t !== existing.tags[i])) await refuseIfGroupsInCrm(clientId);
+    }
 
     // A new number is checked against everybody else under the same lock a new customer takes, so
     // an edit cannot quietly give this customer somebody else's number.

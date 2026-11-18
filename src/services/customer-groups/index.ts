@@ -13,6 +13,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest, conflict, notFound } from '../../utils/httpError';
 import { MAX_CUSTOMER_TAGS, MAX_TAG_LENGTH } from '../offers/rules';
+import { refuseIfGroupsInCrm } from '../crm-groups';
 
 export type GroupPurpose = 'offers' | 'wishes';
 
@@ -150,6 +151,7 @@ export const customerGroups = {
 
   /** An empty group, so it can be given rules before anybody is in it. */
   async create(clientId: string, rawName: unknown) {
+    await refuseIfGroupsInCrm(clientId);   // CRM's groups since 18 Nov 2026: a read-only copy here
     const name = cleanName(rawName);
     const key = keyOf(name);
     if (await displayName(clientId, key)) throw conflict(`There is already a group called ${name}.`);
@@ -164,6 +166,7 @@ export const customerGroups = {
    * step. Already in it, or already in the most groups a customer may have, is left as it is.
    */
   async addMembers(clientId: string, rawName: unknown, customerIds: unknown) {
+    await refuseIfGroupsInCrm(clientId);   // CRM's groups since 18 Nov 2026: a read-only copy here
     const ids = checkIds(customerIds);
     const asked = cleanName(rawName);
     const key = keyOf(asked);
@@ -188,6 +191,7 @@ export const customerGroups = {
   },
 
   async removeMember(clientId: string, key: string, customerId: string) {
+    await refuseIfGroupsInCrm(clientId);   // CRM's groups since 18 Nov 2026: a read-only copy here
     await mustExist(clientId, key);
     const removed = await prisma.$executeRaw`
       UPDATE customers SET tags = ARRAY(SELECT t FROM UNNEST(tags) WITH ORDINALITY u(t, i) WHERE lower(t) <> ${key} ORDER BY i), updated_at = NOW()
@@ -210,6 +214,7 @@ export const customerGroups = {
    * version of it, which only the offer screen writes.
    */
   async rename(clientId: string, key: string, rawName: unknown, opts: { merge?: boolean } = {}) {
+    await refuseIfGroupsInCrm(clientId);   // CRM's groups since 18 Nov 2026: a read-only copy here
     const from = await mustExist(clientId, key);
     const to = cleanName(rawName);
     const toKey = keyOf(to);
@@ -248,6 +253,7 @@ export const customerGroups = {
   },
 
   async remove(clientId: string, key: string) {
+    await refuseIfGroupsInCrm(clientId);   // CRM's groups since 18 Nov 2026: a read-only copy here
     const name = await mustExist(clientId, key);
     const offers = await offersUsing(clientId, key);
     if (offers.length) {
@@ -264,6 +270,7 @@ export const customerGroups = {
 
   /** A group's rules. Saving an auto-join rule adds whoever already qualifies, at once. */
   async setRules(clientId: string, key: string, raw: any) {
+    await refuseIfGroupsInCrm(clientId);   // CRM's groups since 18 Nov 2026: a read-only copy here
     const name = await mustExist(clientId, key);
     const data: Prisma.CustomerGroupUncheckedUpdateInput = {};
     if (raw?.noOfferMessages !== undefined) data.noOfferMessages = raw.noOfferMessages === true;

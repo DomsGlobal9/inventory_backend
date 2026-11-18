@@ -148,6 +148,12 @@ app.use('/api/v1/whatsapp/events', express.raw({ type: '*/*', limit: '1mb' }));
 app.use('/api/v1/payments/webhooks', express.raw({ type: '*/*', limit: '256kb' }));
 // A campaign picture travels as base64 inside JSON: 15 MB of photo is about 20 MB encoded. Only for
 // a signed-in caller, like the other large bodies above; the picture is checked and remade server-side.
+// A whole shop's customer groups from CRM: up to 50,000 customers, a few MB.
+app.use(/^\/api\/v1\/internal\/modules\/crm\/shops\/[^/]+\/groups\/projection$/, express.json({ limit: '8mb' }),
+  (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) =>
+    err?.type === 'entity.too.large'
+      ? res.status(413).json({ success: false, message: 'That is more than 8 MB of groups. Send at most 50,000 customers at once.' })
+      : next(err));
 app.use(/^\/api\/v1\/internal\/modules\/crm\/shops\/[^/]+\/campaign-media$/, express.json({ limit: '21mb' }),
   (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) =>
     err?.type === 'entity.too.large'
