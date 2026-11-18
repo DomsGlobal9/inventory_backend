@@ -36,6 +36,7 @@ import { platformAdminService } from '../services/platform-admin.service';
 import { purgeUnusedCampaignMedia } from '../services/campaigns';
 import { UNUSED_RETENTION_MS, prepareImage } from '../services/campaigns/media';
 import { localDayKey } from '../utils/businessDay';
+import { giveBirthdayPoints } from '../services/loyalty';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4036/api/v1';
 const STAMP = Date.now();
@@ -354,6 +355,40 @@ async function main() {
   r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
   check(`...but a wish lot STOPPED before anyone got it wished nobody: CRM starts today (${todayKey}), never neither`, r.data?.data?.wishes?.fromDay === todayKey, brief(r));
   await prisma.campaign.delete({ where: { id: lotToday.id } });
+
+  // Points stay Inventory's: CRM's birthday wish reads the total and this year's gift.
+  const mkCustomer = (clientId: string, name: string, points: number) => prisma.customer.create({ data: { clientId, customerCode: `PT-${name}-${STAMP}`, name, phone: `+9198${String(STAMP).slice(-6)}${points % 100}`.slice(0, 13), loyaltyPoints: points } as any });
+  const asha = await mkCustomer(SHOP, 'Asha', 250), ravi = await mkCustomer(SHOP, 'Ravi', 0), foreign = await mkCustomer(OTHER, 'Foreign', 999);
+  const pts = (ids: string, shop = SHOP) => call('GET', crm(`/customers/points?ids=${encodeURIComponent(ids)}`, shop), tokenFor({ clientId: shop }));
+  r = await pts(`${asha.id},${ravi.id}`);
+  check('points switched off for the shop: each customer with points null and no gift', r.status === 200 && r.data.data.length === 2 && r.data.data.every((x: any) => x.points === null && x.birthdayGift === null), brief(r));
+  await prisma.loyaltySettings.create({ data: { clientId: SHOP, enabled: true, birthdayPoints: 100 } as any });
+  const year = Number(todayKey.slice(0, 4));
+  await giveBirthdayPoints(SHOP, asha.id, year);
+  await giveBirthdayPoints(SHOP, asha.id, year);   // twice, as a retried job would: given once
+  r = await pts(`${asha.id.toUpperCase()},${ravi.id},${foreign.id},00000000-0000-4000-8000-000000000000`);
+  const byId = Object.fromEntries((r.data?.data ?? []).map((x: any) => [x.customerId, x]));
+  check('points on: Asha 350 (250 + the 100 gift given ONCE), with this year\'s gift given today', r.status === 200 && byId[asha.id]?.points === 350
+    && JSON.stringify(byId[asha.id]?.birthdayGift) === JSON.stringify({ points: 100, givenOn: todayKey }), brief(r));
+  check('...Ravi: 0 points, no gift', byId[ravi.id]?.points === 0 && byId[ravi.id]?.birthdayGift === null, byId[ravi.id]);
+  check('...another shop\'s customer and an unknown id are left out (ids in capitals still match)', r.data.data.length === 2 && !byId[foreign.id], r.data?.data);
+  check('...exactly { customerId, points, birthdayGift }', Object.keys(byId[asha.id] ?? {}).sort().join() === 'birthdayGift,customerId,points');
+  await prisma.loyaltyEntry.updateMany({ where: { customerId: asha.id, kind: 'BIRTHDAY' as any }, data: { createdAt: new Date(Date.now() - 3 * 86400000) } });
+  r = await pts(asha.id);
+  check('...a gift given 3 days ago says so (CRM adds the line only on the day)', r.data?.data?.[0]?.birthdayGift?.givenOn !== todayKey && /^\d{4}-\d{2}-\d{2}$/.test(r.data?.data?.[0]?.birthdayGift?.givenOn), brief(r));
+  for (const [what, ids, words] of [
+    ['no ids', '', 'Say which customers: ids=<id>,<id> (up to 200).'],
+    ['201 ids', Array.from({ length: 201 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`).join(','), 'Ask for at most 200 customers at a time.'],
+    ['a name instead of an id', 'Asha', 'Every id must be a customer id from Inventory.']
+  ] as const) {
+    r = await pts(ids);
+    check(`...${what}: 400 in words`, r.status === 400 && r.data?.message === words, brief(r));
+  }
+  r = await call('GET', crm(`/customers/points?ids=${asha.id}`), tokenFor({ clientId: SHOP, userId: store.id }));
+  check('...a storekeeper named (may not see customers): 403', r.status === 403, brief(r));
+  r = await pts(foreign.id, OTHER);
+  check('...a shop without CRM: 404', r.status === 404, brief(r));
+  await prisma.loyaltySettings.delete({ where: { clientId: SHOP } });
   r = await call('GET', crm('/moved', OTHER), tokenFor({ clientId: OTHER }));
   check('...a shop without CRM: 404, nothing written for it', r.status === 404 && !(await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: OTHER, module: 'crm' } } })), brief(r));
 

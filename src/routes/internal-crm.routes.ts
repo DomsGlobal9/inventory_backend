@@ -9,7 +9,7 @@ import * as shopReviews from '../services/shop-reviews';
 import { crmHandover } from '../services/crm-handover';
 import { offersState, setOffersConsent, campaigns } from '../services/campaigns';
 import { fromUpload, fromProductImage, productPhoto, mediaOfShop } from '../services/campaigns/media';
-import { wishSettingsOf } from '../services/loyalty/loyalty.service';
+import { wishSettingsOf, pointsForCrm } from '../services/loyalty/loyalty.service';
 import { customerService } from '../services/customer.service';
 import * as customerDelete from '../services/customer-delete';
 import { pastPurchases } from '../services/past-purchases';
@@ -266,6 +266,8 @@ router.get('/shops/:clientId/product-photos', shop, mayPicture, act(req => campa
 router.get('/shops/:clientId/product-photos/:imageId', shop, mayPicture, act(req => productPhoto(cid(req), req.params.imageId)));
 router.get('/shops/:clientId/campaign-media', shop, readable, act(req => mediaOfShop(cid(req))));
 router.get('/shops/:clientId/wish-settings', shop, readable, act(req => wishSettingsOf(cid(req))));
+// Points stay Inventory's: CRM's birthday wish reads the total and this year's gift (read only, up to 200).
+router.get('/shops/:clientId/customers/points', shop, readable, act(req => pointsForCrm(cid(req), req.query.ids)));
 
 router.get('/shops/:clientId/moved', shop, async (req, res) => {
   try { res.json({ success: true, data: await crmHandover.forCrm(clientIdOf(req)) }); }

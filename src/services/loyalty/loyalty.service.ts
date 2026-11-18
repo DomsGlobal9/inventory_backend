@@ -17,6 +17,8 @@
 import { LoyaltyEntryKind, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest, forbidden, notFound } from '../../utils/httpError';
+import { getShopSettings } from '../../lib/clientSettings';
+import { localDayKey } from '../../utils/businessDay';
 import { grants, holdsEverything } from '../../config/permissions';
 import { fromMinor, portionOf, toMinor } from '../pricing';
 import {
@@ -595,6 +597,31 @@ export async function giveBirthdayPoints(clientId: string, customerId: string, y
     clientId, customerId, kind: 'BIRTHDAY', points: s.birthdayPoints, onceKey: `BIRTHDAY:${customerId}:${year}`,
     note: 'Birthday gift'
   }));
+}
+
+/**
+ * For ScaleEzy CRM's birthday wish (18 Nov 2026): each customer's points and this year's birthday gift, read
+ * only. Points switched off: points and gift null. A customer of another shop, or unknown: left out.
+ * givenOn is the shop's day the gift was given, so CRM adds the gift line only on that day.
+ */
+export async function pointsForCrm(clientId: string, rawIds: unknown) {
+  const ids = [...new Set(String(rawIds ?? '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean))];
+  if (!ids.length) throw badRequest('Say which customers: ids=<id>,<id> (up to 200).');
+  if (ids.length > 200) throw badRequest('Ask for at most 200 customers at a time.');
+  if (ids.some(id => !/^[0-9a-f-]{36}$/.test(id))) throw badRequest('Every id must be a customer id from Inventory.');
+  const s = await getSettings(clientId);
+  const { timezone } = await getShopSettings(clientId);
+  const customers = await prisma.customer.findMany({ where: { clientId, id: { in: ids }, deletedAt: null }, select: { id: true, loyaltyPoints: true } });
+  if (!s.enabled) return customers.map(c => ({ customerId: c.id, points: null, birthdayGift: null }));
+  const year = localDayKey(new Date(), timezone).slice(0, 4);
+  const gifts = await prisma.loyaltyEntry.findMany({
+    where: { clientId, onceKey: { in: customers.map(c => `BIRTHDAY:${c.id}:${year}`) } },
+    select: { customerId: true, points: true, createdAt: true }
+  });
+  return customers.map(c => {
+    const g = gifts.find(x => x.customerId === c.id);
+    return { customerId: c.id, points: c.loyaltyPoints, birthdayGift: g ? { points: g.points, givenOn: localDayKey(g.createdAt, timezone) } : null };
+  });
 }
 
 /** Short text for the WhatsApp after a sale, or null when there is nothing worth saying. */
