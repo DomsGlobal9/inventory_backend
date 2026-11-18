@@ -700,6 +700,8 @@ export class PlatformAdminService {
       `DELETE FROM loyalty_entries WHERE client_id = $1`,
       `DELETE FROM store_credit_entries WHERE client_id = $1`,
       `DELETE FROM loyalty_settings WHERE client_id = $1`,
+      // CRM's groups copy marker (18 Nov 2026); the groups themselves go with customer_groups.
+      `DELETE FROM crm_group_projections WHERE client_id = $1`,
       // Short links: their opens go with them (cascade). Its links stop working with the shop.
       `DELETE FROM short_links WHERE client_id = $1`,
       // Goods receipts point at locations (restrict), so they go before the orders and locations.

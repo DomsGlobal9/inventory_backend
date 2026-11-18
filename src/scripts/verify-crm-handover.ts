@@ -5,7 +5,7 @@
  * the real service routes with a real signed service token, and against the app's own routes, so
  * "the same rules" means the same answer:
  *   1. the Customer card's suggestions and the store list for CRM;
- *   2. customer groups for CRM, done for a named person;
+ *   2. customer groups: CRM's (18 Nov 2026), written only through its copy; the old routes refuse;
  *   3. groups, campaigns, campaign templates and pictures reach the change feed;
  *   4. the hand-over switch and its safety rules; since 18 Nov 2026 campaigns and wishes are CRM's for
  *      every shop, so Inventory's jobs send neither whatever the switch says (the keys are still kept);
@@ -160,61 +160,50 @@ async function main() {
   const deleted = await call('GET', crm(`/customers/${noPhone.id}/suggestions`), CRM);
   check('a deleted customer: 404', deleted.status === 404, brief(deleted));
 
-  console.log('\n2. CUSTOMER GROUPS FOR CRM, DONE FOR A NAMED PERSON');
+  console.log('\n2. CUSTOMER GROUPS: CRM\'S, WRITTEN THROUGH ITS COPY ONLY (18 Nov 2026)');
   const asOwnerViaCrm = tokenFor({ clientId: SHOP, userId: owner.id });
+  // The old per-change routes still check who first, then refuse: groups change only through CRM's copy.
   const noPerson = await call('POST', crm('/groups'), CRM, { name: 'VIP' });
-  check('a change with nobody named: 403', noPerson.status === 403 && /onBehalfOf/.test(noPerson.data?.message), brief(noPerson));
+  check('the old group routes still check who: nobody named, 403', noPerson.status === 403 && /onBehalfOf/.test(noPerson.data?.message), brief(noPerson));
   const outsider = await call('POST', crm('/groups'), tokenFor({ clientId: SHOP, userId: ownerB.id }), { name: 'VIP' });
-  check('a person from another shop: 403', outsider.status === 403 && /not in this shop/.test(outsider.data?.message), brief(outsider));
-  const inactive = await call('POST', crm('/groups'), tokenFor({ clientId: SHOP, userId: gone.id }), { name: 'VIP' });
-  check('a person whose account is switched off: 403', inactive.status === 403 && /switched off/.test(inactive.data?.message), brief(inactive));
-  const mismatch = await call('POST', crm('/groups'), tokenFor({ clientId: OTHER, userId: owner.id }), { name: 'VIP' });
-  check('a token for another shop, even naming this shop\'s owner: 403', mismatch.status === 403, brief(mismatch));
+  check('...a person from another shop: 403', outsider.status === 403 && /not in this shop/.test(outsider.data?.message), brief(outsider));
   const salesCreate = await call('POST', crm('/groups'), tokenFor({ clientId: SHOP, userId: sales.id }), { name: 'VIP' });
-  check('a salesperson cannot make a group (same permission as in Inventory): 403', salesCreate.status === 403 && /customer:manage_groups/.test(salesCreate.data?.message), brief(salesCreate));
+  check('...a salesperson: 403 (permission)', salesCreate.status === 403 && /customer:manage_groups/.test(salesCreate.data?.message), brief(salesCreate));
+  const IN_CRM = 'Customer groups are made and changed in ScaleEzy CRM now.';
+  for (const [what, method, path, body] of [
+    ['make a group', 'POST', '/groups', { name: 'VIP' }],
+    ['add members', 'POST', '/groups/members', { group: 'VIP', customerIds: [customer.id] }],
+    ['change rules', 'PATCH', '/groups/vip/rules', { noOfferMessages: true }],
+    ['rename', 'POST', '/groups/vip/rename', { name: 'Gold' }],
+    ['merge', 'POST', '/groups/vip/merge', { into: 'Silver' }],
+    ['take a member out', 'DELETE', `/groups/vip/members/${customer.id}`, undefined],
+    ['delete', 'DELETE', '/groups/vip', undefined]
+  ] as const) {
+    const x = await call(method, crm(path), asOwnerViaCrm, body);
+    check(`...the owner through the old route, ${what}: 409 "${IN_CRM}"`, x.status === 409 && x.data?.message === IN_CRM, brief(x));
+  }
+  check('...nothing was made by any of them', (await prisma.customerGroup.count({ where: { clientId: SHOP } })) === 0 && JSON.stringify((await prisma.customer.findUnique({ where: { id: customer.id }, select: { tags: true } }))?.tags) === '[]');
 
-  const made = await call('POST', crm('/groups'), asOwnerViaCrm, { name: 'VIP' });
-  check('the owner makes "VIP"', made.status === 200, brief(made));
-  const dup = await call('POST', crm('/groups'), asOwnerViaCrm, { name: 'vip' });
-  check('"vip" again: 409, as in Inventory', dup.status === 409, brief(dup));
-  const add = await call('POST', crm('/groups/members'), tokenFor({ clientId: SHOP, userId: sales.id }), { group: 'VIP', customerIds: [customer.id] });
-  check('a salesperson may put a customer in a group (customer:update)', add.status === 200, brief(add));
-  const tags = (await prisma.customer.findUnique({ where: { id: customer.id }, select: { tags: true } }))?.tags;
-  check('...membership is in customers.tags', JSON.stringify(tags) === '["VIP"]', JSON.stringify(tags));
-  const foreignMember = await call('POST', crm('/groups/members'), asOwnerViaCrm, { group: 'VIP', customerIds: [theirs.id] });
-  const theirTags = (await prisma.customer.findUnique({ where: { id: theirs.id }, select: { tags: true } }))?.tags;
-  check('another shop\'s customer is "not found", as in Inventory, and never put in the group', foreignMember.status === 200 && foreignMember.data.data.added === 0 && foreignMember.data.data.notFound === 1 && JSON.stringify(theirTags) === '[]', `${brief(foreignMember)} ${JSON.stringify(theirTags)}`);
+  // CRM's copy: the whole shop, then reads as before.
+  const p1 = await call('PUT', crm('/groups/projection'), CRM, { version: 1, groups: [{ name: 'VIP', noOfferMessages: true }, { name: 'Silver' }], members: { [customer.id]: ['VIP'], [theirs.id]: ['VIP'] } });
+  check('CRM writes the copy: VIP and Silver, Meena in VIP, another shop\'s customer never touched', p1.status === 200 && JSON.stringify((await prisma.customer.findUnique({ where: { id: customer.id }, select: { tags: true } }))?.tags) === '["VIP"]'
+    && JSON.stringify((await prisma.customer.findUnique({ where: { id: theirs.id }, select: { tags: true } }))?.tags) === '[]' && JSON.stringify(p1.data.data.unknownCustomers) === JSON.stringify([theirs.id]), brief(p1));
   const list = await call('GET', crm('/groups'), CRM);
   const appList = await call('GET', '/customer-groups', asOwner);
-  check('the list is the one Inventory\'s Settings shows', list.status === 200 && JSON.stringify(list.data.data) === JSON.stringify(appList.data.data) && list.data.data.some((g: any) => g.name === 'VIP'), `${brief(list)} | ${brief(appList)}`);
+  check('the list CRM reads is the one Inventory shows', list.status === 200 && JSON.stringify(list.data.data) === JSON.stringify(appList.data.data) && list.data.data.some((g: any) => g.name === 'VIP'), `${brief(list)} | ${brief(appList)}`);
   const members = await call('GET', crm('/groups/vip/members'), CRM);
   check('members of VIP: Meena', members.status === 200 && JSON.stringify(members.data.data).includes(customer.id), brief(members));
   const readAsOutsider = await call('GET', crm('/groups'), tokenFor({ clientId: SHOP, userId: ownerB.id }));
-  check('a read naming somebody from another shop is refused too', readAsOutsider.status === 403, brief(readAsOutsider));
-  const rules = await call('PATCH', crm('/groups/vip/rules'), asOwnerViaCrm, { noOfferMessages: true });
-  check('rules change for the owner', rules.status === 200, brief(rules));
-  const ren = await call('POST', crm('/groups/vip/rename'), asOwnerViaCrm, { name: 'Gold' });
-  check('rename VIP to Gold', ren.status === 200 && JSON.stringify((await prisma.customer.findUnique({ where: { id: customer.id }, select: { tags: true } }))?.tags) === '["Gold"]', brief(ren));
-  await call('POST', crm('/groups'), asOwnerViaCrm, { name: 'Silver' });
-  const offer = await prisma.offer.create({ data: { clientId: SHOP, offerCode: `OFF-${STAMP}`, name: 'Gold 10%', valueType: 'PERCENTAGE', value: 10, startsAt: new Date(), status: 'ACTIVE', customerTags: ['Gold'] } as any });
-  const delLive = await call('DELETE', crm('/groups/gold'), asOwnerViaCrm);
-  check('deleting a group a live offer is only for: 409 naming the offer', delLive.status === 409 && /Gold 10%/.test(delLive.data?.message), brief(delLive));
-  const mergeLive = await call('POST', crm('/groups/gold/merge'), asOwnerViaCrm, { into: 'Silver' });
-  check('merging it away: 409 too', mergeLive.status === 409 && /Gold 10%/.test(mergeLive.data?.message), brief(mergeLive));
-  await prisma.offer.update({ where: { id: offer.id }, data: { status: 'ARCHIVED' } });
-  const merged = await call('POST', crm('/groups/gold/merge'), asOwnerViaCrm, { into: 'Silver' });
-  check('after the offer is archived, merge Gold into Silver', merged.status === 200 && JSON.stringify((await prisma.customer.findUnique({ where: { id: customer.id }, select: { tags: true } }))?.tags) === '["Silver"]', brief(merged));
-  const out = await call('DELETE', crm(`/groups/silver/members/${customer.id}`), tokenFor({ clientId: SHOP, userId: sales.id }));
-  check('take her out of Silver', out.status === 200 && JSON.stringify((await prisma.customer.findUnique({ where: { id: customer.id }, select: { tags: true } }))?.tags) === '[]', brief(out));
-  const del = await call('DELETE', crm('/groups/silver'), asOwnerViaCrm);
-  check('delete Silver', del.status === 200, brief(del));
+  check('a read naming somebody from another shop is refused', readAsOutsider.status === 403, brief(readAsOutsider));
+  const p2 = await call('PUT', crm('/groups/projection'), CRM, { version: 2, groups: [{ name: 'VIP', noOfferMessages: false }], members: { [customer.id]: ['VIP'] } });
+  check('a second copy: VIP\'s rule changed, Silver gone', p2.status === 200 && JSON.stringify(p2.data.data.removedGroups) === '["Silver"]'
+    && (await prisma.customerGroup.findUnique({ where: { clientId_key: { clientId: SHOP, key: 'vip' } } }))?.noOfferMessages === false, brief(p2));
   await new Promise(r => setTimeout(r, 1500));   // the activity row is written after the answer
-  const log = await prisma.auditLog.findMany({ where: { clientId: SHOP, entityType: 'CUSTOMER_GROUP' }, orderBy: { createdAt: 'asc' }, select: { userId: true, action: true, entityId: true } });
-  const who = (id: string) => id === owner.id ? 'owner' : id === sales.id ? 'sales' : id;
-  const seen = log.map(l => `${who(l.userId ?? '')}:${l.action}:${l.entityId}`);
-  check('the activity log names who did each change, as Inventory\'s own screen would',
-    JSON.stringify(seen) === JSON.stringify(['owner:CREATED:n/a', 'sales:MEMBERS:members', 'owner:MEMBERS:members', 'owner:RULES:vip', 'owner:RENAME:vip', 'owner:CREATED:n/a', 'owner:MERGE:gold', 'sales:MEMBERS:silver', 'owner:DELETED:silver']), JSON.stringify(seen));
-  check('...and refused changes left no row', !log.some(l => l.userId === ownerB.id || l.userId === gone.id));
+  const log = await prisma.auditLog.findMany({ where: { clientId: SHOP, entityType: 'CUSTOMER_GROUP' }, select: { userId: true, action: true, entityId: true } });
+  // Inventory's activity log names a PERSON; CRM's copy is written by CRM itself (its own log says who changed
+  // what), and the copy keeps its version and time (crm_group_projections). Refused changes leave nothing.
+  check('no activity row for any refused change, nor for CRM\'s copies (CRM logs who); the copy says version 2', log.length === 0
+    && (await prisma.crmGroupProjection.findUnique({ where: { clientId: SHOP } }))?.version === BigInt(2), JSON.stringify(log));
 
   console.log('\n3. THE CHANGE FEED');
   const tpl = await prisma.campaignTemplate.create({ data: { clientId: SHOP, name: `Tpl ${STAMP}`, text: 'Hello {name}' } });
