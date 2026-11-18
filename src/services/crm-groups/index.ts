@@ -13,9 +13,9 @@
  * version is CRM's own increasing number. Each write must carry a bigger one than the last that was
  * applied, so a push that arrives late (a retry, two in flight) can never put back an older state.
  *
- * Once a shop has a copy (a row in crm_group_projections), its groups are CRM's: Inventory's group screens
- * and routes refuse changes (refuseIfGroupsInCrm), customers' groups cannot be edited here, and the
- * auto-join rules are CRM's (the copy carries none, so Inventory's auto-join job finds nothing to do).
+ * Groups are CRM's for every shop (the owner, 18 Nov 2026): Inventory's group routes refuse changes
+ * (refuseIfGroupsInCrm), customers' groups cannot be edited here, and auto-join is CRM's (a copy carries
+ * no rule, and Inventory's own auto-join job no longer runs).
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
@@ -25,7 +25,7 @@ import { MAX_CUSTOMER_TAGS, MAX_TAG_LENGTH } from '../offers/rules';
 /** The same "vip" = "VIP" rule as customer-groups' keyOf (kept here so neither module imports the other). */
 const keyOf = (name: string) => String(name ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 
-export const GROUPS_IN_CRM = 'Customer groups for this shop are managed in ScaleEzy CRM now. Change them there.';
+export const GROUPS_IN_CRM = 'Customer groups are made and changed in ScaleEzy CRM now.';
 const MAX_GROUPS = 200;
 const MAX_MEMBERS = 50_000;
 const ID = /^[0-9a-f-]{36}$/i;
@@ -37,9 +37,15 @@ export async function groupsAreCrms(clientId: string): Promise<boolean> {
   return !!(await prisma.crmGroupProjection.findUnique({ where: { clientId }, select: { clientId: true } }));
 }
 
-/** For every place in Inventory that would change a group or a customer's groups. */
-export async function refuseIfGroupsInCrm(clientId: string) {
-  if (await groupsAreCrms(clientId)) throw conflict(GROUPS_IN_CRM);
+/**
+ * For every place in Inventory that would change a group or a customer's groups. The owner, 18 Nov 2026:
+ * groups are CRM's for EVERY shop, so this refuses whether or not CRM has sent the shop's copy yet (a shop
+ * without CRM keeps the groups it has, read at the till, and cannot change them here). Deleting a customer
+ * still clears theirs, as part of wiping the customer.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function refuseIfGroupsInCrm(_clientId: string) {
+  throw conflict(GROUPS_IN_CRM);
 }
 
 function version(raw: unknown): number {

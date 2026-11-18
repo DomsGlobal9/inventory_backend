@@ -201,7 +201,8 @@ async function main() {
   const joined = await runGroupAutoJoin(new Date(), { onlyClients: [SHOP] });
   check('Inventory\'s auto-join does nothing for this shop (the copy carries no rule; CRM runs its own)', joined === 0, joined);
   const otherCreate = await throws(() => customerGroups.create(OTHER, 'Silver'));
-  check('a shop whose groups are NOT CRM\'s still makes groups in Inventory as before', otherCreate === null, otherCreate?.message);
+  check('a shop CRM has never sent groups for (even one without CRM) cannot make groups in Inventory either: groups are CRM\'s for every shop', otherCreate?.statusCode === 409 && otherCreate.message === GROUPS_IN_CRM, otherCreate?.message);
+  check('...and keeps the groups it has, read as before', (await quietGroupOf(OTHER, ['vip'], 'offers')) === null && JSON.stringify(await groupNamesOf(OTHER, ['vip'])) === '["VIP"]');
 
   console.log('\n3. WHO MAY');
   r = await call('PUT', crm('/groups/projection'), tokenFor({ clientId: OTHER }), { ...good, version: 99 });

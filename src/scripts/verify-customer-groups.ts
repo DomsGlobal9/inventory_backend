@@ -1,18 +1,24 @@
 /**
- * Customer groups: managing members, rename / merge / delete (and when they are refused), the
- * WhatsApp rules -- campaigns, the points reminder and wishes skip quiet groups -- and auto-join by
- * spend.
+ * Customer groups in Inventory since 18 Nov 2026: READ ONLY. The owner: groups are made and changed only in
+ * ScaleEzy CRM (which writes Inventory's copy, see verify-crm-groups-and-reads). Here:
+ *   A  the groups a shop has are still listed, their members found, the customers list filters by them;
+ *   B  every change refused in the same words (make, add, remove, rename, merge, rules, delete, a new
+ *      customer with groups, changing a customer's groups), with nothing changed; the same groups sent back
+ *      by a form still saves;
+ *   C  what reads them still works: quiet groups leave customers out of a message's reach, and the
+ *      daily job makes no wish (wishes are CRM's too).
  *
- * Runs on a throwaway shop id with no WhatsApp number, so nothing it prepares can ever be sent (the
- * sender waits for a connected number). Deletes everything it made.
+ * Runs on a throwaway shop id with no WhatsApp number, so nothing it prepares can ever be sent. Deletes
+ * everything it made.
  *
  *   npx tsx src/scripts/verify-customer-groups.ts
  */
 import { prisma } from '../lib/prisma';
-import { customerGroups, quietGroupOf, runGroupAutoJoin } from '../services/customer-groups';
+import { customerGroups, quietGroupOf } from '../services/customer-groups';
 import { preview } from '../services/campaigns/audience';
 import { prepareShopDay } from '../services/campaigns';
 import { customerService } from '../services/customer.service';
+import { GROUPS_IN_CRM } from '../services/crm-groups';
 import { localDayKey } from '../utils/businessDay';
 
 let passed = 0, failed = 0;
@@ -21,7 +27,7 @@ const check = (name: string, ok: boolean, detail?: unknown) => {
   else { failed++; console.log(`  FAIL ${name}${detail !== undefined ? ` -- ${JSON.stringify(detail)}` : ''}`); }
 };
 const C = `groups-test-${Date.now()}`;
-const refused = async (p: Promise<unknown>) => { try { await p; return ''; } catch (e: any) { return String(e?.message ?? e); } };
+const refused = async (p: Promise<unknown>) => { try { await p; return null; } catch (e: any) { return e; } };
 
 async function main() {
   const today = localDayKey(new Date(), 'Asia/Kolkata').slice(5);   // MM-DD
@@ -31,90 +37,62 @@ async function main() {
   const meena = await mk(1, 'Meena', ['vip']);
   const ravi = await mk(2, 'Ravi', ['VIP', 'Staff']);
   const anu = await mk(3, 'Anu', []);
-  const old = await mk(4, 'Old customer', ['Wholesale'], { loyaltyPoints: 50 });
+  await mk(4, 'Old customer', ['Wholesale'], { loyaltyPoints: 50 });
+  await prisma.customerGroup.create({ data: { clientId: C, key: 'vip', name: 'VIP', noOfferMessages: true, noWishes: true } });
 
-  console.log('\nA. LIST AND MEMBERS');
-  let list = await customerGroups.list(C);
-  const vip = list.find(g => g.key === 'vip');
-  check('"vip" and "VIP" are one group of 2', vip?.count === 2, list);
+  console.log('\nA. STILL READ');
+  const list = await customerGroups.list(C);
+  check('"vip" and "VIP" are one group of 2', list.find(g => g.key === 'vip')?.count === 2, list);
   check('3 groups in all (VIP, Staff, Wholesale)', list.length === 3, list.map(g => g.name));
   const m = await customerGroups.members(C, 'vip');
   check('members of VIP: Meena and Ravi', m.members.map(x => x.name).join(',') === 'Meena,Ravi', m);
-
-  console.log('\nB. ADD, REMOVE, FILTER');
-  const add = await customerGroups.addMembers(C, 'VIP', [anu.id, meena.id]);
-  check('adding Anu and Meena adds 1 (Meena already in, any spelling)', add.added === 1, add);
   const filtered = await customerService.getCustomers(C, { group: 'Vip' });
-  check('the customers list filter finds all 3, whatever the spelling asked', filtered.length === 3, filtered.map((c: any) => c.name));
-  await customerGroups.removeMember(C, 'vip', anu.id);
-  const anuNow = await prisma.customer.findUnique({ where: { id: anu.id }, select: { tags: true } });
-  check('removing Anu leaves her with no groups', anuNow?.tags.length === 0, anuNow);
-  const fresh = await customerGroups.addMembers(C, 'Festival list', [anu.id]);
-  check('adding to a group that does not exist yet makes it', fresh.added === 1 && (await customerGroups.list(C)).some(g => g.name === 'Festival list'));
-  check('an empty group name is refused in words', /name/.test(await refused(customerGroups.addMembers(C, '  ', [anu.id]))));
+  check('the customers list filter finds both, whatever the spelling asked', filtered.length === 2, filtered.map((c: any) => c.name));
 
-  console.log('\nC. RENAME, MERGE, DELETE');
-  await customerGroups.rename(C, 'vip', 'VIP');
-  const spellings = await prisma.customer.findMany({ where: { clientId: C, id: { in: [meena.id, ravi.id] } }, select: { tags: true } });
-  check('a spelling-only rename makes every member say "VIP"', spellings.every(s => s.tags.includes('VIP') && !s.tags.includes('vip')), spellings);
-  check('renaming onto an existing group is refused, pointing to Merge', /Merge/.test(await refused(customerGroups.rename(C, 'staff', 'VIP'))));
-  const offer = await prisma.offer.create({ data: { clientId: C, offerCode: `OFF-${Date.now()}`, name: 'Staff 20%', valueType: 'PERCENTAGE', value: 20, startsAt: new Date(), status: 'ACTIVE', customerTags: ['Staff'] } as any });
-  check('merging a group a live offer is only for is refused, naming the offer', /Staff 20%/.test(await refused(customerGroups.rename(C, 'staff', 'VIP', { merge: true }))));
-  check('deleting it is refused too', /Staff 20%/.test(await refused(customerGroups.remove(C, 'staff'))));
-  await prisma.offer.update({ where: { id: offer.id }, data: { status: 'ARCHIVED' } });
-  await customerGroups.rename(C, 'staff', 'VIP', { merge: true });
-  const raviNow = await prisma.customer.findUnique({ where: { id: ravi.id }, select: { tags: true } });
-  check('after archiving, merge works: Ravi is in VIP once, Staff gone', JSON.stringify(raviNow?.tags) === '["VIP"]', raviNow);
-  const del = await customerGroups.remove(C, 'festival list');
-  check('delete removes the group from its members', del.removedFrom === 1 && !(await customerGroups.list(C)).some(g => g.key === 'festival list'), del);
+  console.log('\nB. EVERY CHANGE IS CRM\'S');
+  const tagsBefore = JSON.stringify((await prisma.customer.findMany({ where: { clientId: C }, orderBy: { customerCode: 'asc' }, select: { tags: true } })).map(c => c.tags));
+  for (const [what, p] of [
+    ['make a group', () => customerGroups.create(C, 'Festival list')],
+    ['put customers in a group', () => customerGroups.addMembers(C, 'VIP', [anu.id])],
+    ['put customers in a NEW group', () => customerGroups.addMembers(C, 'Brand new', [anu.id])],
+    ['take a customer out', () => customerGroups.removeMember(C, 'vip', meena.id)],
+    ['rename a group', () => customerGroups.rename(C, 'staff', 'Team')],
+    ['merge two groups', () => customerGroups.rename(C, 'staff', 'VIP', { merge: true })],
+    ['change a group\'s rules', () => customerGroups.setRules(C, 'vip', { noOfferMessages: false })],
+    ['set a spending rule', () => customerGroups.setRules(C, 'vip', { autoMinSpend: 50000, autoDays: 365 })],
+    ['delete a group', () => customerGroups.remove(C, 'wholesale')],
+    ['make a customer with groups', () => customerService.createCustomer(C, { name: 'New VIP', phone: '+919000000099', tags: ['VIP'] })],
+    ['change a customer\'s groups', () => customerService.updateCustomer(C, ravi.id, { tags: ['VIP'] })]
+  ] as const) {
+    const e = await refused((p as () => Promise<unknown>)());
+    check(`Inventory cannot ${what}: 409 "${GROUPS_IN_CRM}"`, e?.statusCode === 409 && e.message === GROUPS_IN_CRM, e?.message ?? 'it was allowed');
+  }
+  const tagsAfter = JSON.stringify((await prisma.customer.findMany({ where: { clientId: C, customerCode: { startsWith: 'CUS-' } }, orderBy: { customerCode: 'asc' }, select: { tags: true } })).map(c => c.tags));
+  check('...nothing changed: every customer\'s groups as they were, no group made or removed', tagsAfter === tagsBefore && (await customerGroups.list(C)).length === 3
+    && (await prisma.customerGroup.findUnique({ where: { clientId_key: { clientId: C, key: 'vip' } } }))?.noOfferMessages === true, { tagsBefore, tagsAfter });
+  const same = await refused(customerService.updateCustomer(C, ravi.id, { name: 'Ravi Kumar', tags: ['VIP', 'Staff'] }));
+  check('editing a customer and sending back the SAME groups (as a form does): saved', same === null && (await prisma.customer.findUniqueOrThrow({ where: { id: ravi.id } })).name === 'Ravi Kumar', same?.message);
+  const plain: any = await customerService.createCustomer(C, { name: 'Plain new', phone: '+919000000098' });
+  check('a new customer with no groups: made as usual', !!plain?.id && plain.tags.length === 0);
 
-  console.log('\nD. WHATSAPP RULES');
-  await customerGroups.setRules(C, 'vip', { noOfferMessages: true });
+  console.log('\nC. WHAT READS THEM STILL WORKS');
   const p = await preview(C, {});
-  check('a campaign to everyone leaves out the 2 VIPs: reaches 2 (Anu, Old customer)', p.count === 2, p);
-  check('the dry run says why: 2 in a group with no offer messages', p.breakdown.inQuietGroup === 2, p.breakdown);
-  const vipOnly = await preview(C, { tags: ['VIP'] });
-  check('a campaign only to VIP reaches nobody', vipOnly.count === 0 && vipOnly.breakdown.inQuietGroup === 2, vipOnly.breakdown);
-  check('the sender would skip Meena, naming the group', (await quietGroupOf(C, ['VIP'], 'offers')) === 'VIP');
-  check('...but her birthday wish still goes (no "no wishes" rule yet)', (await quietGroupOf(C, ['VIP'], 'wishes')) === null);
-
-  await customerGroups.setRules(C, 'vip', { noWishes: true });
+  check('a message to everyone: Anu and Old customer; the 2 in VIP left out (no offer messages), the new one has not agreed to offers', p.count === 2 && p.breakdown.inQuietGroup === 2
+    && p.sample.map((x: any) => x.name).sort().join() === 'Anu,Old customer', p);
+  check('the sender would skip Meena, naming the group, for offers and for wishes', (await quietGroupOf(C, ['vip'], 'offers')) === 'VIP' && (await quietGroupOf(C, ['VIP'], 'wishes')) === 'VIP');
   await prisma.loyaltySettings.create({ data: { clientId: C, birthdayWish: true } as any });
   const day = await prepareShopDay(C, new Date(), { ignoreHours: true });
-  // 18 Nov 2026: birthday wishes are ScaleEzy CRM's for every shop. The group's "no wishes" rule is still kept
-  // (and still answered by quietGroupOf), but Inventory's daily job makes no wish lot to apply it to.
-  check('the group\'s "no wishes" rule is kept and answered', (await quietGroupOf(C, ['VIP'], 'wishes')) === 'VIP');
   const wishLots = await prisma.campaign.count({ where: { clientId: C, source: 'BIRTHDAY' } });
-  check('...and Inventory\'s daily job makes no birthday wish at all (it is CRM\'s), even with the old switch left on', wishLots === 0 && (day?.birthdays ?? 0) === 0, { day, wishLots });
-
-  console.log('\nE. AUTO-JOIN BY SPEND');
-  const loc = await prisma.stockLocation.create({ data: { clientId: C, code: 'T1', name: 'Test store', type: 'STORE' } as any });
-  // Orders are made raw: the auto-join only reads customer, total, status and date.
-  const order = (customerId: string, total: number, daysAgo: number, n: number) => prisma.salesOrder.create({
-    data: { clientId: C, customerId, locationId: loc.id, orderNumber: `SO-T${n}`, total, createdAt: new Date(Date.now() - daysAgo * 86_400_000) } as any
-  });
-  await order(anu.id, 30000, 10, 1);
-  await order(anu.id, 25000, 20, 2);
-  await order(old.id, 60000, 400, 3);                       // big, but over a year ago
-  const r = await customerGroups.setRules(C, 'wholesale', { autoMinSpend: 50000, autoDays: 365 });
-  const anuTags = (await prisma.customer.findUnique({ where: { id: anu.id }, select: { tags: true } }))?.tags;
-  check('saving "₹50,000 in 365 days" adds Anu (₹55,000) at once', r.joined === 1 && !!anuTags?.includes('Wholesale'), { r, anuTags });
-  check('a second run adds nobody new (only adds, never twice)', (await runGroupAutoJoin(new Date(), { onlyClients: [C] })) === 0);
-  check('half a rule is refused in words', /rupees|days/.test(await refused(customerGroups.setRules(C, 'wholesale', { autoMinSpend: 100 }))));
-  await customerGroups.setRules(C, 'wholesale', { autoMinSpend: null, autoDays: null });
-  check('switching the rule off keeps the members it added', !!(await prisma.customer.findUnique({ where: { id: anu.id }, select: { tags: true } }))?.tags.includes('Wholesale'));
+  check('the daily job makes no birthday wish (CRM\'s), even with the old switch left on', wishLots === 0 && (day?.birthdays ?? 0) === 0, { day, wishLots });
 }
 
 main()
   .catch(e => { failed++; console.error(e); })
   .finally(async () => {
-    const campaigns = await prisma.campaign.findMany({ where: { clientId: C }, select: { id: true } });
-    await prisma.campaignRecipient.deleteMany({ where: { campaignId: { in: campaigns.map(c => c.id) } } });
+    const camps = await prisma.campaign.findMany({ where: { clientId: C }, select: { id: true } });
+    await prisma.campaignRecipient.deleteMany({ where: { campaignId: { in: camps.map(c => c.id) } } });
     await prisma.campaign.deleteMany({ where: { clientId: C } });
-    await prisma.salesOrder.deleteMany({ where: { clientId: C } });
-    await prisma.offer.deleteMany({ where: { clientId: C } });
     await prisma.loyaltySettings.deleteMany({ where: { clientId: C } });
-    await prisma.stockLocation.deleteMany({ where: { clientId: C } });
     await prisma.customerGroup.deleteMany({ where: { clientId: C } });
     await prisma.customer.deleteMany({ where: { clientId: C } });
     console.log(`\n${passed} passed, ${failed} failed`);

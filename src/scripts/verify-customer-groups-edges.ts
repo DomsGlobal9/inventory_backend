@@ -16,6 +16,12 @@
  *
  *   npx tsx src/scripts/verify-customer-groups-edges.ts
  */
+// RETIRED 18 Nov 2026: customer groups are made and changed only in ScaleEzy CRM; Inventory keeps a read-only
+// copy. What this suite tested (Inventory's own group editing) no longer exists. The new rules are proved by
+// verify-customer-groups.ts and verify-crm-groups-and-reads.ts.
+console.log('verify-customer-groups-edges is retired: groups are CRM's (see verify-customer-groups, verify-crm-groups-and-reads).');
+process.exit(0);
+
 import { prisma } from '../lib/prisma';
 import { AuthService } from '../services/auth.service';
 import { customerGroups, runGroupAutoJoin } from '../services/customer-groups';

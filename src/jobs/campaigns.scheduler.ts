@@ -1,7 +1,6 @@
 import { env } from '../config/env';
 import { whatsappConfigured } from '../services/whatsapp/client';
 import { runCampaignTick, runDailyPrepare } from '../services/campaigns';
-import { runGroupAutoJoin } from '../services/customer-groups';
 
 /**
  * Campaigns and the automatic loyalty messages, in-process like the Day Book scheduler.
@@ -55,12 +54,9 @@ export class CampaignsScheduler {
         this.preparing = false;
       }
     };
-    // Auto-join is safe to repeat (it only adds whoever is missing), so hourly is just how fresh it is.
-    const autoJoin = () => runGroupAutoJoin()
-      .then(n => { if (n) console.log(`[customer-groups] auto-join added ${n} customer(s)`); })
-      .catch(err => console.error('[customer-groups] auto-join failed:', (err as Error)?.message));
-    this.timers.push(setInterval(send, 2 * 60 * 1000), setInterval(prepare, 10 * 60 * 1000), setInterval(autoJoin, 60 * 60 * 1000));
+    // Group auto-join is ScaleEzy CRM's since 18 Nov 2026 (customer groups are CRM's for every shop).
+    this.timers.push(setInterval(send, 2 * 60 * 1000), setInterval(prepare, 10 * 60 * 1000));
     this.timers.forEach(t => t.unref?.());
-    void autoJoin().then(prepare).then(send);
+    void prepare().then(send);
   }
 }
