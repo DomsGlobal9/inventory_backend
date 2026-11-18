@@ -81,9 +81,11 @@ async function main() {
   await customerGroups.setRules(C, 'vip', { noWishes: true });
   await prisma.loyaltySettings.create({ data: { clientId: C, birthdayWish: true } as any });
   const day = await prepareShopDay(C, new Date(), { ignoreHours: true });
-  const wish = await prisma.campaign.findFirst({ where: { clientId: C, source: 'BIRTHDAY' }, include: { recipients: { select: { customerId: true } } } as any }) as any;
-  const got = (wish?.recipients ?? []).map((r: any) => r.customerId).sort();
-  check('the day\'s birthday wishes go to Anu and Old customer, not the VIPs', JSON.stringify(got) === JSON.stringify([anu.id, old.id].sort()), { day, got });
+  // 18 Nov 2026: birthday wishes are ScaleEzy CRM's for every shop. The group's "no wishes" rule is still kept
+  // (and still answered by quietGroupOf), but Inventory's daily job makes no wish lot to apply it to.
+  check('the group\'s "no wishes" rule is kept and answered', (await quietGroupOf(C, ['VIP'], 'wishes')) === 'VIP');
+  const wishLots = await prisma.campaign.count({ where: { clientId: C, source: 'BIRTHDAY' } });
+  check('...and Inventory\'s daily job makes no birthday wish at all (it is CRM\'s), even with the old switch left on', wishLots === 0 && (day?.birthdays ?? 0) === 0, { day, wishLots });
 
   console.log('\nE. AUTO-JOIN BY SPEND');
   const loc = await prisma.stockLocation.create({ data: { clientId: C, code: 'T1', name: 'Test store', type: 'STORE' } as any });

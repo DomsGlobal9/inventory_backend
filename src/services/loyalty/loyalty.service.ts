@@ -106,23 +106,24 @@ function flag(raw: unknown, what: string): boolean | undefined {
   return raw;
 }
 
+/** Birthday and anniversary wishes are ScaleEzy CRM's (18 Nov 2026), so they cannot be switched on here. */
+export const WISHES_IN_CRM = 'Birthday and anniversary wishes are sent from ScaleEzy CRM now, under Messages.';
+
 export async function saveSettings(actor: Actor, input: Record<string, unknown>) {
   if (!may(actor, 'loyalty:manage')) throw forbidden('Setting loyalty points is not part of your role. Ask the owner.');
+  if (input.birthdayWish === true || input.anniversaryWish === true) throw badRequest(WISHES_IN_CRM);
   const rules = checkRules(input as any);
   const data = {
     ...rules,
     enabled: flag(input.enabled, 'loyalty points'),
     notifyAfterSale: flag(input.notifyAfterSale, 'the message after a sale'),
-    birthdayWish: flag(input.birthdayWish, 'birthday wishes'),
-    anniversaryWish: flag(input.anniversaryWish, 'anniversary wishes'),
+    // Always off: any save also clears a wish left on from before.
+    birthdayWish: false,
+    anniversaryWish: false,
     expiryReminder: flag(input.expiryReminder, 'the reminder before points lapse'),
     earnAtCounter: flag(input.earnAtCounter, 'earning at the counter'),
     earnOnlineShop: flag(input.earnOnlineShop, 'earning on online shop orders'),
     earnShopify: flag(input.earnShopify, 'earning on Shopify orders'),
-    birthdayText: wishText(input.birthdayText, 'birthday'),
-    anniversaryText: wishText(input.anniversaryText, 'anniversary'),
-    birthdayMediaId: await wishMedia(actor.clientId, input.birthdayMediaId, 'birthday'),
-    anniversaryMediaId: await wishMedia(actor.clientId, input.anniversaryMediaId, 'anniversary')
   };
   const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
   await prisma.loyaltySettings.upsert({

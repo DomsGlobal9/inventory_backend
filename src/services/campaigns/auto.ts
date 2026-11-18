@@ -1,8 +1,9 @@
 /**
- * The automatic messages, prepared once a day per shop: birthday and anniversary wishes, and the
- * reminder a week before points lapse. Each day's lot is an ordinary campaign (source BIRTHDAY,
- * ANNIVERSARY or POINTS_EXPIRING), so it is sent by the same slow sender, shows in the same list
- * with its ticks, and can be stopped like any other.
+ * The automatic message, prepared once a day per shop: the reminder a week before points lapse. The
+ * day's lot is an ordinary campaign (source POINTS_EXPIRING), sent by the same slow sender.
+ *
+ * Birthday and anniversary WISHES are not made here any more (18 Nov 2026, the owner): they are ScaleEzy
+ * CRM's, for every shop, like campaigns. Old BIRTHDAY / ANNIVERSARY rows stay readable; none are made.
  *
  * Also once a day: quiet customers' points lapse, and birthday gift points are given.
  *
@@ -14,13 +15,9 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { getShopSettings } from '../../lib/clientSettings';
 import { localDayKey } from '../../utils/businessDay';
-import {
-  birthdayKeysFor, DEFAULT_ANNIVERSARY_TEXT, DEFAULT_BIRTHDAY_TEXT, getSettings, giveBirthdayPoints, lapseQuietPoints
-} from '../loyalty';
-import { reachable, offerReachable } from './audience';
-import { quietFilter } from '../customer-groups';
+import { birthdayKeysFor, getSettings, giveBirthdayPoints, lapseQuietPoints } from '../loyalty';
+import { offerReachable } from './audience';
 import { localHour, SEND_FROM_HOUR } from './sender';
-import { wishesMovedFrom } from '../crm-handover';
 
 const DAY = 86_400_000;
 const shortDate = (dayKey: string) => {
@@ -72,29 +69,11 @@ export async function prepareShopDay(clientId: string, now = new Date(), opts: {
 
   out.lapsed = await lapseQuietPoints(clientId, day, now);
 
-  // Birthday gift points go to every customer whose birthday it is, message or not.
+  // Birthday gift points go to every customer whose birthday it is. The wish itself (and any words about
+  // the gift) is CRM's to send.
   if (s.enabled && s.birthdayPoints > 0) {
     const born = await prisma.customer.findMany({ where: { clientId, deletedAt: null, status: 'ACTIVE', birthday: { in: todays } }, select: { id: true } });
     for (const c of born) if ((await giveBirthdayPoints(clientId, c.id, year).catch(() => null)) !== null) out.birthdayPoints += 1;
-  }
-
-  const wishable = await quietFilter(clientId, 'wishes').then(q => q ? { AND: [reachable(clientId), q] } : reachable(clientId));
-  // Handed to ScaleEzy CRM from some day on (crm-handover): from that day CRM sends the wishes, never both.
-  // Read after the claim above, which is what makes the hand-over day exact.
-  const wishesFrom = await wishesMovedFrom(clientId);
-  const wishesHere = !wishesFrom || day < wishesFrom;
-
-  if (s.birthdayWish && wishesHere) {
-    const ids = (await prisma.customer.findMany({ where: { AND: [wishable, { birthday: { in: todays } }] }, select: { id: true } })).map(c => c.id);
-    const gift = s.enabled && s.birthdayPoints > 0
-      ? `\n\nWe have added ${s.birthdayPoints.toLocaleString('en-IN')} points to your account as a gift. You now have {points} points.`
-      : '';
-    if (await makeCampaign(clientId, 'BIRTHDAY', `Birthday wishes, ${shortDate(day)}`, (s.birthdayText || DEFAULT_BIRTHDAY_TEXT) + gift, ids, s.birthdayMediaId ?? null)) out.birthdays = ids.length;
-  }
-
-  if (s.anniversaryWish && wishesHere) {
-    const ids = (await prisma.customer.findMany({ where: { AND: [wishable, { anniversary: { in: todays } }] }, select: { id: true } })).map(c => c.id);
-    if (await makeCampaign(clientId, 'ANNIVERSARY', `Anniversary wishes, ${shortDate(day)}`, s.anniversaryText || DEFAULT_ANNIVERSARY_TEXT, ids, s.anniversaryMediaId ?? null)) out.anniversaries = ids.length;
   }
 
   // A week's notice: points lapse `expiryMonths` after the last purchase or use, so remind whoever's
@@ -113,11 +92,11 @@ export async function prepareShopDay(clientId: string, now = new Date(), opts: {
   return out;
 }
 
-/** Every shop with loyalty or wishes switched on (or only `onlyClients`). */
+/** Every shop with loyalty points switched on (or only `onlyClients`). */
 export async function runDailyPrepare(now = new Date(), opts: { onlyClients?: string[]; ignoreHours?: boolean } = {}) {
   const shops = await prisma.loyaltySettings.findMany({
     where: {
-      OR: [{ enabled: true }, { birthdayWish: true }, { anniversaryWish: true }],
+      enabled: true,
       ...(opts.onlyClients ? { clientId: { in: opts.onlyClients } } : {})
     },
     select: { clientId: true }

@@ -7,7 +7,8 @@
  *   1. the Customer card's suggestions and the store list for CRM;
  *   2. customer groups for CRM, done for a named person;
  *   3. groups, campaigns, campaign templates and pictures reach the change feed;
- *   4. the hand-over switch and its safety rules (campaigns, wishes), and the jobs obeying it;
+ *   4. the hand-over switch and its safety rules; since 18 Nov 2026 campaigns and wishes are CRM's for
+ *      every shop, so Inventory's jobs send neither whatever the switch says (the keys are still kept);
  *   5. the session says which modules the shop has on.
  *
  * Needs the local server (launch config backend-localdb: local DB, TRUSTED_SERVICES_KEYS with the test
@@ -261,77 +262,61 @@ async function main() {
   const moved = await call('PUT', crm('/moved'), asOwnerViaCrm, { campaigns: true });
   check('once it is done, campaigns move (a birthday lot sending does not block it)', moved.status === 200 && moved.data.data.campaigns === true && moved.data.data.notes === true, brief(moved));
 
-  // Each with somebody still waiting, so the tick's "finished?" sweep leaves them SENDING.
+  // 18 Nov 2026: campaigns and wishes are CRM's for EVERY shop. An old campaign or wish lot left SENDING is
+  // never sent from here, whatever moved says. Each has somebody waiting, so the tick's sweep leaves them.
   const manual = await prisma.campaign.create({ data: { clientId: SHOP, name: 'Sneaked in', text: 'Hi', status: 'SENDING', startedAt: new Date() } });
   await prisma.campaignRecipient.create({ data: { campaignId: manual.id, clientId: SHOP, customerId: customer.id } });
   await prisma.campaignRecipient.create({ data: { campaignId: bday.id, clientId: SHOP, customerId: customer.id } });
-  const tick = await runCampaignTick(new Date(), { onlyClients: [SHOP], ignoreHours: true });
-  check('the campaign tick still takes the shop for its birthday lot', tick.some(r => r.clientId === SHOP), JSON.stringify(tick));
-  await prisma.campaign.update({ where: { id: bday.id }, data: { status: 'DONE' } });
-  const tick2 = await runCampaignTick(new Date(), { onlyClients: [SHOP], ignoreHours: true });
-  const manualNow = await prisma.campaign.findUnique({ where: { id: manual.id }, select: { status: true } });
-  const waitingNow = await prisma.campaignRecipient.count({ where: { campaignId: manual.id, state: 'WAITING' } });
-  check('...but with only its own campaign sending, the tick leaves the shop alone (nothing handed, still waiting)', !tick2.some(r => r.clientId === SHOP) && manualNow?.status === 'SENDING' && waitingNow === 1, `${JSON.stringify(tick2)} ${manualNow?.status} waiting=${waitingNow}`);
-  await prisma.campaign.update({ where: { id: manual.id }, data: { status: 'CANCELLED' } });
+  for (const flag of [true, false]) {
+    await crmHandover.set(SHOP, { campaigns: flag });
+    const tick = await runCampaignTick(new Date(), { onlyClients: [SHOP], ignoreHours: true });
+    const waiting = await prisma.campaignRecipient.count({ where: { campaignId: { in: [manual.id, bday.id] }, state: 'WAITING' } });
+    check(`moved.campaigns ${flag}: the tick leaves the shop's old campaign AND old birthday lot alone (nothing handed, both still waiting)`, !tick.some(r => r.clientId === SHOP) && waiting === 2, `${JSON.stringify(tick)} waiting=${waiting}`);
+  }
+  await prisma.campaign.updateMany({ where: { id: { in: [manual.id, bday.id] } }, data: { status: 'CANCELLED' } });
 
-  // Starting one in Inventory now is refused.
+  // Making or starting one in Inventory is refused, with CRM's campaigns switch on or off.
   await prisma.customer.update({ where: { id: customer.id }, data: { whatsappOffers: true, whatsappOffersAt: new Date() } });
-  const draft = await campaigns.create(actor, { name: `After move ${STAMP}`, text: 'Hello {name}, new arrivals are in.', audience: {} });
-  const started = await campaigns.start(actor, (draft as any).id).then(() => null, (e: any) => e);
-  check('starting a campaign in Inventory after the move: 409 "sent from ScaleEzy CRM"', started?.statusCode === 409 && /ScaleEzy CRM/.test(started.message), started?.message ?? 'it started');
-  check('...and it stays a draft', (await prisma.campaign.findUnique({ where: { id: (draft as any).id }, select: { status: true } }))?.status === 'DRAFT');
+  const oldDraft = await prisma.campaign.create({ data: { clientId: SHOP, name: `Old draft ${STAMP}`, text: 'Hello {name}', status: 'DRAFT', audience: {} } as any });
+  for (const flag of [true, false]) {
+    await crmHandover.set(SHOP, { campaigns: flag });
+    const made = await campaigns.create(actor, { name: `After move ${STAMP}`, text: 'Hello {name}, new arrivals are in.', audience: {} }).then(() => null, (e: any) => e);
+    const started = await campaigns.start(actor, oldDraft.id).then(() => null, (e: any) => e);
+    check(`moved.campaigns ${flag}: making one and starting an old draft are both refused, 409 "sent from ScaleEzy CRM"`, made?.statusCode === 409 && started?.statusCode === 409 && /ScaleEzy CRM/.test(started.message), `${made?.message} / ${started?.message}`);
+  }
+  check('...the draft stays a draft, and no other campaign was written', (await prisma.campaign.findUnique({ where: { id: oldDraft.id }, select: { status: true } }))?.status === 'DRAFT'
+    && (await prisma.campaign.count({ where: { clientId: SHOP, name: `After move ${STAMP}` } })) === 0);
   const back = await call('PUT', crm('/moved'), asOwnerViaCrm, { campaigns: false });
-  check('campaigns can be given back', back.status === 200 && back.data.data.campaigns === false, brief(back));
-  const startedNow = await campaigns.start(actor, (draft as any).id).then((r: any) => r?.status, (e: any) => `refused: ${e?.message}`);
-  check('...and then Inventory starts it as before', startedNow === 'SENDING', String(startedNow));
-  await prisma.campaign.update({ where: { id: (draft as any).id }, data: { status: 'CANCELLED' } });
+  check('the campaigns key is still stored and given back for CRM (true/false), though Inventory no longer reads it', back.status === 200 && back.data.data.campaigns === false, brief(back));
+  await prisma.campaign.update({ where: { id: oldDraft.id }, data: { status: 'CANCELLED' } });
 
-  // Wishes: the day is Inventory's choice, worked out from what it has prepared.
+  // Wishes: the key is still stored (CRM's build may send it), and Inventory's daily job makes no wish either way.
   const today = localDayKey(new Date(), TZ);
   const dayAfter = (k: string, d = 1) => { const [y, m, dd] = k.split('-').map(Number); return new Date(Date.UTC(y, m - 1, dd + d)).toISOString().slice(0, 10); };
   const yesterday = dayAfter(today, -1);
-  await prisma.loyaltySettings.create({ data: { clientId: SHOP, birthdayWish: true, autoPreparedFor: yesterday } as any });
-  const birthdayToday = today.slice(5);
-  await prisma.customer.update({ where: { id: customer.id }, data: { birthday: birthdayToday } });
+  // A shop with wishes left switched on from before, and points on (the daily job runs for points).
+  await prisma.loyaltySettings.create({ data: { clientId: SHOP, enabled: true, birthdayWish: true, anniversaryWish: true, autoPreparedFor: yesterday } as any });
+  await prisma.customer.update({ where: { id: customer.id }, data: { birthday: today.slice(5), anniversary: today.slice(5) } });
   const w1 = await call('PUT', crm('/moved'), asOwnerViaCrm, { wishes: true });
-  check(`today not prepared yet: wishes move from today (${today})`, w1.status === 200 && w1.data.data.wishes?.fromDay === today, brief(w1));
-  const w1again = await call('PUT', crm('/moved'), asOwnerViaCrm, { wishes: true });
-  check('asking again keeps the same day', w1again.data?.data?.wishes?.fromDay === today, brief(w1again));
-  const prep = await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
-  const wishLots = await prisma.campaign.count({ where: { clientId: SHOP, source: 'BIRTHDAY', name: { startsWith: 'Birthday wishes, ' }, NOT: { id: bday.id } } });
-  check('Inventory\'s daily job claims the day but makes no birthday wishes from fromDay on', prep !== null && prep.birthdays === 0 && wishLots === 0, `${JSON.stringify(prep)} lots=${wishLots}`);
-  check('...the day is still marked prepared (points and the lapse reminder are Inventory\'s)', (await prisma.loyaltySettings.findUnique({ where: { clientId: SHOP } }))?.autoPreparedFor === today);
-  const giveBack = await call('PUT', crm('/moved'), asOwnerViaCrm, { wishes: null });
-  check('wishes can be given back (null)', giveBack.status === 200 && giveBack.data.data.wishes === null, brief(giveBack));
-  const w2 = await call('PUT', crm('/moved'), asOwnerViaCrm, { wishes: true });
-  check(`today already prepared by Inventory: wishes move from tomorrow (${dayAfter(today)})`, w2.data?.data?.wishes?.fromDay === dayAfter(today), brief(w2));
-  await call('PUT', crm('/moved'), asOwnerViaCrm, { wishes: false });
-  await prisma.loyaltySettings.update({ where: { clientId: SHOP }, data: { autoPreparedFor: yesterday } });
-  const prepHere = await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
-  check('with wishes not moved, the same job does make today\'s birthday wish (1)', prepHere?.birthdays === 1, JSON.stringify(prepHere));
-
-  // The two at the same moment, many times: each day is wished by exactly one of them.
-  let raced = 0, bad: string[] = [];
-  for (let i = 0; i < 8; i++) {
-    await prisma.campaign.deleteMany({ where: { clientId: SHOP, source: 'BIRTHDAY', NOT: { id: bday.id } } });   // recipients go with them (cascade)
-    await crmHandover.set(SHOP, { wishes: false });
+  check(`wishes: true is still accepted and kept (from ${today})`, w1.status === 200 && w1.data.data.wishes?.fromDay === today, brief(w1));
+  for (const [label, wishes] of [['moved', true], ['given back', false]] as const) {
+    await crmHandover.set(SHOP, { wishes });
     await prisma.loyaltySettings.update({ where: { clientId: SHOP }, data: { autoPreparedFor: yesterday } });
-    const [p, m] = await Promise.all([prepareShopDay(SHOP, new Date(), { ignoreHours: true }), crmHandover.set(SHOP, { wishes: true })]);
-    const inventoryWished = (p?.birthdays ?? 0) > 0;
-    const crmFrom = m.wishes?.fromDay;
-    const ok = inventoryWished ? crmFrom === dayAfter(today) : crmFrom === today;
-    if (!ok) bad.push(`round ${i}: inventory wished=${inventoryWished}, CRM from ${crmFrom}`);
-    raced++;
+    await prisma.campaign.deleteMany({ where: { clientId: SHOP, source: { in: ['BIRTHDAY', 'ANNIVERSARY'] }, status: { not: 'CANCELLED' } } });
+    const prep = await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
+    const lots = await prisma.campaign.count({ where: { clientId: SHOP, source: { in: ['BIRTHDAY', 'ANNIVERSARY'] }, status: { not: 'CANCELLED' } } });
+    check(`wishes ${label}: Inventory's daily job runs (points are Inventory's) but makes NO birthday or anniversary wish`, prep !== null && prep.birthdays === 0 && prep.anniversaries === 0 && lots === 0, `${JSON.stringify(prep)} lots=${lots}`);
   }
-  check(`racing the daily job and the hand-over ${raced} times: never both, never neither`, bad.length === 0, bad.join('; '));
+  check('...the day is still marked prepared', (await prisma.loyaltySettings.findUnique({ where: { clientId: SHOP } }))?.autoPreparedFor === today);
   await crmHandover.set(SHOP, { wishes: false });
+  await crmHandover.set(SHOP, { campaigns: false });
 
   const listed = await call('GET', '/internal/modules/crm/shops', CRM);
   const row = listed.data?.data?.find((r: any) => r.clientId === SHOP);
   check('the shops list shows movedToCrm for the shop', JSON.stringify(row?.movedToCrm) === '{"notes":true,"onlineViews":true,"campaigns":false,"wishes":null}', JSON.stringify(row));
   await new Promise(r => setTimeout(r, 1000));
   const hoLog = await prisma.auditLog.count({ where: { clientId: SHOP, entityType: 'CRM_HANDOVER', userId: owner.id } });
-  check('each hand-over change is in the activity log under the owner', hoLog >= 8, String(hoLog));
+  check('each hand-over change made through the route is in the activity log under the owner (notes, campaigns on, campaigns back, wishes: 4)', hoLog === 4, String(hoLog));
 
   console.log('\n5. THE SESSION SAYS WHICH MODULES ARE ON');
   const sess = await call('GET', '/auth/session', asOwner);

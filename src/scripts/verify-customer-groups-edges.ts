@@ -260,12 +260,13 @@ async function main() {
   await prepareShopDay(T, new Date(), { ignoreHours: true });
   const lot = async (source: string) => ((await prisma.campaign.findFirst({ where: { clientId: T, source }, include: { recipients: { select: { customerId: true } } } as any })) as any)?.recipients?.map((x: any) => x.customerId) ?? [];
   const wishes = await lot('BIRTHDAY'), reminder = await lot('POINTS_EXPIRING');
-  check('"No offer messages" alone: the VIP still gets the birthday wish', wishes.includes(vipAndWholesale.id) && wishes.includes(wholesale.id), wishes);
+  check('no birthday wish lot is made here any more (wishes are CRM\'s, 18 Nov 2026)', wishes.length === 0 && (await prisma.campaign.count({ where: { clientId: T, source: 'BIRTHDAY' } })) === 0, wishes);
   check('...but not the points-expiry reminder (that is an offer message)', reminder.includes(wholesale.id) && !reminder.includes(vipAndWholesale.id), reminder);
+  const vipOnly = await preview(T, { tags: ['VIP'] });
+  check('a message to VIP only reaches nobody, and the dry run says why (in a group with no offer messages)', vipOnly.count === 0 && vipOnly.breakdown.inQuietGroup === 2, vipOnly.breakdown);
   const actor = { id: 'edge-test', clientId: T, roles: ['SUPER_ADMIN'], permissions: ['*'] };
-  const draft: any = await campaignService.create(actor as any, { name: 'Edge VIP only', text: 'Hello {name}', audience: { tags: ['VIP'] } });
-  const err = await campaignService.start(actor as any, draft.id ?? draft?.data?.id).then(() => '', (e: any) => String(e?.message));
-  check('starting a campaign whose only people are in a quiet group says that is why', /No offer messages/.test(err), err);
+  const err = await campaignService.create(actor as any, { name: 'Edge VIP only', text: 'Hello {name}', audience: { tags: ['VIP'] } }).then(() => '', (e: any) => String(e?.message));
+  check('...and a campaign cannot be made here at all (CRM\'s)', /ScaleEzy CRM/.test(err), err);
   await customerGroups.setRules(T, 'vip', { noOfferMessages: false });
   pv = await preview(T, { tags: ['VIP'] });
   check('switching the rule off lets them back in at once (both VIPs: the one joined by spending too)', pv.count === 2 && pv.breakdown.inQuietGroup === 0, pv.breakdown);

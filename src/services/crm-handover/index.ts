@@ -18,6 +18,11 @@
  *     Inventory's daily job skips birthday and anniversary wishes for days >= fromDay. Birthday gift
  *     points, lapsing points and the lapse reminder stay in Inventory.
  *
+ * 18 Nov 2026, the owner: campaigns AND wishes are ScaleEzy CRM's for EVERY shop, with no switch. Inventory
+ * no longer reads either flag: it starts no campaign and makes no wish for any shop (campaigns/auto.ts,
+ * campaign.service.ts, sender.ts). The two keys are still stored and given back here, so CRM's build that
+ * still sends them keeps working; they can be dropped once CRM no longer does.
+ *
  * Everything else (notes, onlineViews, card, groups) is a plain flag CRM reads back; Inventory's screens
  * key off "CRM is on" for now (see auth session `modules`).
  *
@@ -138,32 +143,6 @@ export const crmHandover = {
     }, { timeout: 20000, maxWait: 10000 });
   }
 };
-
-/** Shops whose own campaigns CRM now sends (or, given `among`, which of those). */
-export async function shopsWithCampaignsMoved(among?: string[]): Promise<Set<string>> {
-  const rows = await prisma.$queryRaw<{ client_id: string }[]>`
-    SELECT client_id FROM module_subscriptions
-    WHERE module = 'crm' AND moved->>'campaigns' = 'true'
-    ${among ? Prisma.sql`AND client_id IN (${Prisma.join(among.length ? among : [''])})` : Prisma.empty}`;
-  return new Set(rows.map(r => r.client_id));
-}
-
-/**
- * Inside a transaction that is about to start one of this shop's own campaigns: refuses if CRM sends
- * them now. FOR SHARE, so it waits for a hand-over being made at that moment and then sees it.
- */
-export async function refuseIfCampaignsMoved(tx: Prisma.TransactionClient, clientId: string) {
-  const rows = await tx.$queryRaw<{ moved: unknown }[]>`
-    SELECT moved FROM module_subscriptions WHERE client_id = ${clientId} AND module = 'crm' FOR SHARE`;
-  if (rows.length && cleanMoved(rows[0].moved).campaigns) {
-    throw conflict('Campaigns for this shop are sent from ScaleEzy CRM now. Start it there.');
-  }
-}
-
-/** The first shop day CRM sends this shop's wishes, or null while Inventory still does. Read after the day's claim. */
-export async function wishesMovedFrom(clientId: string): Promise<string | null> {
-  return (await crmHandover.get(clientId))?.wishes?.fromDay ?? null;
-}
 
 /**
  * For Inventory's own app routes that change a customer's offers answer, birthday, anniversary, or

@@ -42,7 +42,15 @@ import { checkCaption, checkLinkPlacement, checkName, checkText, render } from '
 import { checkCampaignLink, shopPhone, shortLinkLength, storedLink, type CampaignLink } from './link';
 import { fromProductImage, fromUpload, mediaView, ownMedia } from './media';
 import { dailyBudget } from './sender';
-import { refuseIfCampaignsMoved } from '../crm-handover';
+
+/**
+ * 18 Nov 2026, the owner: campaigns are made and sent ONLY in ScaleEzy CRM, for every shop (with CRM or
+ * without). Inventory keeps reading old ones, stopping one, and its own automatic points reminder.
+ */
+export const CAMPAIGNS_IN_CRM = 'Campaigns are made and sent from ScaleEzy CRM now, under Messages.';
+const inCrm = () => conflict(CAMPAIGNS_IN_CRM);
+// A function, not a constant, so the code below each refusal still type-checks and can come back if ever asked.
+const onlyInCrm = (): boolean => true;
 
 export type Actor = { id: string; clientId: string; name?: string | null; permissions?: string[]; roles?: string[] };
 const may = (a: Actor, key: string) => holdsEverything(a.permissions, a.roles) || grants(a.permissions ?? [], key);
@@ -229,6 +237,7 @@ async function checkContent(clientId: string, text: string, mediaId: string | nu
 
 export async function create(actor: Actor, input: Record<string, unknown>) {
   requireMay(actor, 'campaign:send');
+  if (onlyInCrm()) throw inCrm();
   const name = checkName(input.name);
   const text = checkText(input.text);
   const media = await ownMedia(actor.clientId, input.mediaId);
@@ -252,6 +261,7 @@ export async function create(actor: Actor, input: Record<string, unknown>) {
 
 export async function update(actor: Actor, id: string, input: Record<string, unknown>) {
   requireMay(actor, 'campaign:send');
+  if (onlyInCrm()) throw inCrm();
   const c = await find(actor.clientId, id);
   if (c.status !== 'DRAFT') throw conflict('This campaign has started, so its words and customers are fixed. Make a copy to change them.');
   const data: Prisma.CampaignUncheckedUpdateInput = {};
@@ -282,6 +292,7 @@ export async function remove(actor: Actor, id: string) {
 /** A new draft with the same words, picture, link and customers' description. */
 export async function copy(actor: Actor, id: string) {
   requireMay(actor, 'campaign:send');
+  if (onlyInCrm()) throw inCrm();
   const c = await find(actor.clientId, id);
   if (c.source !== 'MANUAL') throw badRequest('Automatic messages cannot be copied. Change their words in Loyalty settings.');
   // A started campaign copies what it SENT; a draft copies itself.
@@ -385,6 +396,7 @@ export async function productPhotosOf(clientId: string, search: unknown) {
  */
 export async function start(actor: Actor, id: string, input: { expected?: unknown } = {}) {
   requireMay(actor, 'campaign:send');
+  if (onlyInCrm()) throw inCrm();
   const c = await find(actor.clientId, id);
   if (c.status !== 'DRAFT') throw conflict('This campaign has already been started.');
   const link = storedLink(c.link);
@@ -417,8 +429,6 @@ export async function start(actor: Actor, id: string, input: { expected?: unknow
     frozenAt: now.toISOString()
   };
   await prisma.$transaction(async tx => {
-    // Not once this shop's campaigns have moved to ScaleEzy CRM: nothing here would send it.
-    await refuseIfCampaignsMoved(tx, actor.clientId);
     const claimed = await tx.campaign.updateMany({
       where: { id: c.id, clientId: actor.clientId, status: 'DRAFT' },
       data: { status: link ? 'PREPARING' : 'SENDING', startedAt: now, snapshot: snapshot as unknown as Prisma.InputJsonValue, prepareError: null }
@@ -507,6 +517,8 @@ export async function pause(actor: Actor, id: string) {
 export async function resume(actor: Actor, id: string) {
   requireMay(actor, 'campaign:send');
   const c = await find(actor.clientId, id);
+  // Only Inventory's own points reminder may carry on; anything else is CRM's to send.
+  if (c.source !== 'POINTS_EXPIRING') throw inCrm();
   const r = await prisma.campaign.updateMany({ where: { id: c.id, clientId: actor.clientId, status: 'PAUSED' }, data: { status: 'SENDING' } });
   if (r.count === 0) throw conflict('Only a paused campaign can carry on.');
   return get(actor, c.id);
@@ -555,6 +567,7 @@ export async function personalise(clientId: string, text: string, customer: { na
  */
 export async function sendTest(actor: Actor, input: { text?: unknown; campaignId?: unknown; to?: unknown; mediaId?: unknown; link?: unknown; name?: unknown }) {
   requireMay(actor, 'campaign:send');
+  if (onlyInCrm()) throw inCrm();
   let text: string;
   let mediaUrl: string | null;
   let link: CampaignLink | null;

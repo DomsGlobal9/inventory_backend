@@ -10,10 +10,13 @@
  *      three partial returns undo exactly what one would; a rejected return changes nothing
  *   F  changing points by hand: reason, once per press, never below zero, owner only
  *   G  agreeing to offers, and STOP: the counter tick, the customer page, the WhatsApp STOP event
- *   H  campaigns: words, who they reach, start, fixed list, pause, stop, the slow sender (hours,
- *      not linked, daily budget, three in flight, STOP after start, refusals, WhatsApp down, once
- *      per customer), finishing
- *   I  the daily job: birthday gift and wish once a year, anniversary, lapsing, the lapse reminder
+ *   H  campaigns are ScaleEzy CRM's (18 Nov 2026): none is made, changed, copied, test-sent or started
+ *      here, and an old one left sending is never sent. Who a message reaches is still worked out
+ *      here. The slow sender (hours, not linked, daily budget, three in flight, STOP after start,
+ *      refusals, WhatsApp down, once per customer, finishing) is proved on Inventory's own points
+ *      reminder, the one lot it still sends.
+ *   I  the daily job: birthday gift points once a year, NO birthday or anniversary wish (CRM's),
+ *      lapsing, the lapse reminder
  *   J  another shop sees none of it
  *
  * WhatsApp is never really called: the client is swapped for a recorder before anything sends.
@@ -142,10 +145,15 @@ async function main() {
       def.status === 200 && def.data.data.enabled === false && def.data.data.pointsPer100 === 1 && def.data.data.pointValuePaise === 100 && def.data.data.minRedeemPoints === 100 && def.data.data.maxRedeemPercent === 50, brief(def));
     const salesSave = await sales.http.put('/loyalty/settings', { enabled: true });
     check('a salesperson cannot switch points on', salesSave.status === 403 && plain(salesSave.data.message), brief(salesSave));
-    for (const [body, what] of [[{ maxRedeemPercent: 0 }, '0% of a bill'], [{ pointsPer100: 1.5 }, 'half points'], [{ pointValuePaise: -1 }, 'a negative value'], [{ enabled: 'yes' }, '"yes" as text'], [{ birthdayText: 'x'.repeat(701) }, 'a 701-letter wish']] as const) {
+    for (const [body, what] of [[{ maxRedeemPercent: 0 }, '0% of a bill'], [{ pointsPer100: 1.5 }, 'half points'], [{ pointValuePaise: -1 }, 'a negative value'], [{ enabled: 'yes' }, '"yes" as text']] as const) {
       const r = await own.put('/loyalty/settings', body);
       check(`refused in words: ${what}`, r.status === 400 && plain(r.data.message), brief(r));
     }
+    for (const body of [{ birthdayWish: true }, { anniversaryWish: true }, { enabled: true, birthdayWish: true, birthdayText: 'Happy birthday {name}' }]) {
+      const r = await own.put('/loyalty/settings', body);
+      check(`wishes cannot be switched on here (${Object.keys(body).join(', ')}): 400, they are CRM's`, r.status === 400 && r.data.message === 'Birthday and anniversary wishes are sent from ScaleEzy CRM now, under Messages.', brief(r));
+    }
+    check('  ...and a refused save changed nothing', (await prisma.loyaltySettings.findUnique({ where: { clientId: SHOP } }))?.enabled !== true);
     const on = await own.put('/loyalty/settings', { enabled: true, pointsPer100: 1, pointValuePaise: 100, minRedeemPoints: 100, maxRedeemPercent: 50, expiryMonths: 12 });
     check('the owner switches points on', on.status === 200 && on.data.data.enabled === true, brief(on));
 
@@ -290,74 +298,98 @@ async function main() {
     }
 
     // ── H ──────────────────────────────────────────────────────────────────────────────────
-    console.log('\nH. CAMPAIGNS');
-    const bad1 = await own.post('/campaigns', { name: 'Diwali', text: 'Hi {firstname}' });
-    check('a placeholder ScaleEzy cannot fill is refused, naming it', bad1.status === 400 && /\{firstname\}/.test(bad1.data.message), brief(bad1));
-    const bad2 = await own.post('/campaigns', { name: '', text: 'x' });
-    check('no name is refused', bad2.status === 400 && plain(bad2.data.message), brief(bad2));
-    const bad3 = await own.post('/campaigns', { name: 'X', text: 'x'.repeat(1001) });
-    check('a 1,001-letter message is refused', bad3.status === 400, brief(bad3));
-    const bad4 = await own.post('/campaigns', { name: 'X', text: 'x', audience: { boughtWithinDays: 60, notBoughtForDays: 30 } });
-    check('choices that can match nobody are refused', bad4.status === 400 && plain(bad4.data.message), brief(bad4));
+    console.log('\nH. CAMPAIGNS ARE CRM\'S; THE SLOW SENDER ON THE POINTS REMINDER');
+    const IN_CRM = 'Campaigns are made and sent from ScaleEzy CRM now, under Messages.';
+    for (const [what, body] of [['a good one', { name: 'Diwali sale', text: 'Hello {name}! 20% off.', audience: {} }], ['a bad one (still the same answer, nothing checked first)', { name: '', text: 'Hi {firstname}' }]] as const) {
+      const r = await own.post('/campaigns', body);
+      check(`the owner cannot make a campaign here, ${what}: 409 in words`, r.status === 409 && r.data.message === IN_CRM, brief(r));
+    }
     const salesMake = await sales.http.post('/campaigns', { name: 'X', text: 'x' });
-    check('a salesperson cannot write a campaign', salesMake.status === 403, brief(salesMake));
+    check('a salesperson is still told it is not their role first', salesMake.status === 403, brief(salesMake));
+    check('  ...no campaign was written', (await prisma.campaign.count({ where: { clientId: SHOP } })) === 0);
 
+    // Who a message reaches is still Inventory's to work out (the points reminder uses it).
     const vip = await own.post('/campaigns/preview', { audience: { tags: ['VIP'] } });
     check('the VIP group, spelt differently from how it was saved, finds the 3 VIPs', vip.status === 200 && vip.data.data.count === 3, brief(vip));
     const all = await own.post('/campaigns/preview', { audience: {} });
     check('everyone who agreed: Lakshmi, Cash Only and the 26 (not Ravi, who said STOP)', all.data.data.count === 28, brief(all));
     const recent = await own.post('/campaigns/preview', { audience: { boughtWithinDays: 7 } });
     check('bought in the last 7 days: Lakshmi and Cash Only', recent.data.data.count === 2, brief(recent));
-    const quiet = await own.post('/campaigns/preview', { audience: { notBoughtForDays: 30 } });
-    check('nothing bought for 30 days: nobody (the 26 never bought)', quiet.data.data.count === 0, brief(quiet));
     const spend = await own.post('/campaigns/preview', { audience: { minSpend: 10000 } });
     check('spent at least ₹10,000: Lakshmi only', spend.data.data.count === 1 && spend.data.data.sample[0].name === 'Lakshmi Devi', brief(spend));
-    const rich = await own.post('/campaigns/preview', { audience: { minPoints: 200 } });
-    check('hold 200+ points: Lakshmi only', rich.data.data.count === 1, brief(rich));
 
-    const made = await own.post('/campaigns', { name: 'Diwali sale', text: 'Hello {name}! Diwali sale at {shop}: 20% off silk. You have {points} points.', audience: {} });
-    check('a draft campaign is written', made.status === 201 && made.data.data.status === 'DRAFT', brief(made));
-    const cid = made.data.data.id;
-    const changed = await own.post(`/campaigns/${cid}/start`, { expected: 5 });
-    check('Start with a count far from what it now reaches asks the person to look again', changed.status === 409 && changed.data.details?.code === 'AUDIENCE_CHANGED' || /28 customers/.test(changed.data.message), brief(changed));
-    const started = await own.post(`/campaigns/${cid}/start`, { expected: 28 });
-    check('Start: 28 customers, sending', started.status === 200 && started.data.data.status === 'SENDING' && started.data.data.progress.total === 28, brief(started));
-    const twice = await own.post(`/campaigns/${cid}/start`, {});
-    check('Start pressed twice is refused, and the list is not doubled', twice.status === 409 && (await prisma.campaignRecipient.count({ where: { campaignId: cid } })) === 28, brief(twice));
-    const edit = await own.patch(`/campaigns/${cid}`, { text: 'changed' });
-    check('the words cannot change after Start', edit.status === 409 && plain(edit.data.message), brief(edit));
-    const del = await own.delete(`/campaigns/${cid}`);
-    check('a started campaign cannot be deleted', del.status === 409, brief(del));
-
-    // After Start, one of the 26 says STOP: skipped when their turn comes.
-    await prisma.customer.update({ where: { id: crowd[0] }, data: { whatsappStoppedAt: new Date(), whatsappOffers: false } });
+    // A campaign left over from before (a draft, and one left half sent): written as the old screens did.
+    const now0 = new Date();
+    const oldDraft = await prisma.campaign.create({ data: { clientId: SHOP, source: 'MANUAL', name: 'Old draft', text: 'hello {name}', status: 'DRAFT', audience: {} } as any });
+    const oldSending = await prisma.campaign.create({ data: { clientId: SHOP, source: 'MANUAL', name: 'Old, half sent', text: 'hello {name}', status: 'SENDING', startedAt: now0, audience: {}, snapshot: { text: 'hello {name}', media: null, link: null, shopName: 'Sree Silks', frozenAt: now0.toISOString() } } as any });
+    const oldWish = await prisma.campaign.create({ data: { clientId: SHOP, source: 'BIRTHDAY', name: 'Birthday wishes, old', text: 'Happy birthday {name}', status: 'SENDING', startedAt: now0, audience: {}, snapshot: { text: 'Happy birthday {name}', media: null, link: null, shopName: 'Sree Silks', frozenAt: now0.toISOString() } } as any });
+    await prisma.campaignRecipient.createMany({ data: [oldSending.id, oldWish.id].flatMap(campaignId => [lakshmi.id, cashOnly.id].map(customerId => ({ campaignId, clientId: SHOP, customerId }))) });
+    for (const [what, call] of [
+      ['start the old draft', () => own.post(`/campaigns/${oldDraft.id}/start`, {})],
+      ['change its words', () => own.patch(`/campaigns/${oldDraft.id}`, { text: 'changed' })],
+      ['copy it', () => own.post(`/campaigns/${oldDraft.id}/copy`)]
+    ] as const) {
+      const r = await (call as () => Promise<any>)();
+      check(`cannot ${what}: 409 in the same words`, r.status === 409 && r.data.message === IN_CRM, brief(r));
+    }
+    const me = { id: owner.id, clientId: SHOP, name: 'Owner Anand', permissions: ['*'], roles: ['SUPER_ADMIN'] };
+    const testSend = await throws(() => campaigns.sendTest(me, { text: 'Hi {name}', to: '+91 90000 00001' }));
+    check('"send me a test" is refused too, nothing sent', testSend?.statusCode === 409 && testSend.message === IN_CRM && sent.length === 0, testSend?.message);
 
     // h:00 today in India, whatever the time is here.
     const at = (h: number) => { const ist = new Date(Date.now() + 5.5 * 3600000); return new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate(), h) - 5.5 * 3600000); };
+    const leftOver = await runCampaignTick(at(11), { onlyClients: [SHOP] });
+    check('an old campaign and an old wish left SENDING are never sent from here: the sender does not even pick the shop up',
+      leftOver.length === 0 && sent.length === 0 && (await prisma.campaignRecipient.count({ where: { campaignId: { in: [oldSending.id, oldWish.id] }, state: 'WAITING' } })) === 4, JSON.stringify(leftOver));
+    const stopOld = await own.post(`/campaigns/${oldSending.id}/cancel`);
+    check('  ...but the owner can still stop it, and every customer on it is marked not sent', stopOld.status === 200 && stopOld.data.data.status === 'CANCELLED' && stopOld.data.data.recipients.every((r: any) => r.reason === 'The campaign was stopped.'), brief(stopOld));
+    await prisma.campaign.update({ where: { id: oldWish.id }, data: { status: 'PAUSED' } });
+    const carryOld = await own.post(`/campaigns/${oldWish.id}/resume`);
+    check('  ...and a paused old wish cannot carry on', carryOld.status === 409 && carryOld.data.message === IN_CRM, brief(carryOld));
+    await prisma.campaign.update({ where: { id: oldWish.id }, data: { status: 'CANCELLED' } });
+    const delDraft = await own.delete(`/campaigns/${oldDraft.id}`);
+    check('  ...and an old draft can be deleted', delDraft.status === 200 && (await prisma.campaign.count({ where: { id: oldDraft.id } })) === 0, brief(delDraft));
+
+    // Inventory's own lot: the 26 hold points that lapse in exactly a week, so the day's reminder goes to them.
+    await own.put('/loyalty/settings', { expiryReminder: true });
+    const lapseWeek = new Date(Date.now() + 7 * 86400000); lapseWeek.setMonth(lapseWeek.getMonth() - 12);
+    for (const id of crowd) {
+      await prisma.$transaction(tx => import('../services/loyalty').then(l => l.post(tx, { clientId: SHOP, customerId: id, kind: 'ADJUSTED', points: 10, onceKey: `SEED-H:${id}` })));
+      await prisma.customer.update({ where: { id }, data: { loyaltyActiveAt: new Date(lapseWeek.getTime() + 3600000) } });
+    }
+    await prisma.loyaltySettings.updateMany({ where: { clientId: SHOP }, data: { autoPreparedFor: null } });
+    const hDay = await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
+    const lot = await prisma.campaign.findFirst({ where: { clientId: SHOP, source: 'POINTS_EXPIRING' }, orderBy: { createdAt: 'desc' } });
+    check('the day\'s points reminder: one lot to the 26, sending', hDay?.expiring === 26 && lot?.status === 'SENDING' && (await prisma.campaignRecipient.count({ where: { campaignId: lot.id } })) === 26, JSON.stringify(hDay));
+    const cid = lot!.id;
+    const edit = await own.patch(`/campaigns/${cid}`, { text: 'changed' });
+    check('its words cannot be changed here', edit.status === 409 && plain(edit.data.message), brief(edit));
+    const del = await own.delete(`/campaigns/${cid}`);
+    check('a started one cannot be deleted', del.status === 409, brief(del));
+
+    // After it was made, one of the 26 says STOP: skipped when their turn comes.
+    await prisma.customer.update({ where: { id: crowd[0] }, data: { whatsappStoppedAt: new Date(), whatsappOffers: false } });
+
     const night = await runCampaignTick(at(22), { onlyClients: [SHOP] });
     check('at 10 pm nothing is sent', sent.length === 0 && night[0]?.waitingBecause === 'hours', JSON.stringify(night));
     account = { ...account, status: 'DISCONNECTED' };
     const dropped = await runCampaignTick(at(11), { onlyClients: [SHOP] });
-    check('the shop\'s WhatsApp not connected: nothing is sent, nothing is lost', sent.length === 0 && dropped[0]?.waitingBecause === 'not_connected' && (await prisma.campaignRecipient.count({ where: { campaignId: cid, state: 'WAITING' } })) === 28, JSON.stringify(dropped));
+    check('the shop\'s WhatsApp not connected: nothing is sent, nothing is lost', sent.length === 0 && dropped[0]?.waitingBecause === 'not_connected' && (await prisma.campaignRecipient.count({ where: { campaignId: cid, state: 'WAITING' } })) === 26, JSON.stringify(dropped));
     account = { ...account, status: 'CONNECTED', linkedAt: new Date(Date.now() - 3 * 86400000).toISOString() };
 
     const t1 = await runCampaignTick(at(11), { onlyClients: [SHOP] });
-    check('at 11 am: three handed over (never more than 3 waiting at WhatsApp)', t1[0].handed === 3 && sent.length === 3, JSON.stringify(t1));
-    check('  ...each personal, with its own name and the STOP line', sent.every(s => /Hello \w+! Diwali sale at Sree Silks/.test(s.text) && /Reply STOP/.test(s.text) && s.kind === 'C8'), sent.map(s => s.text.slice(0, 40)));
-    check('  ...each keyed to the campaign and the customer', new Set(sent.map(s => s.idempotencyKey)).size === 3 && sent.every(s => s.idempotencyKey.startsWith(`CAMPAIGN:${cid}:`)));
+    check('at 11 am: three handed over (never more than 3 waiting at WhatsApp)', t1[0]?.handed === 3 && sent.length === 3, JSON.stringify(t1));
+    check('  ...each personal: their own first name, their points, the shop, the STOP line', sent.every(s => /^Hello Crowd, your 10 points at Sree Silks/.test(s.text) && /Reply STOP/.test(s.text) && s.kind === 'C8'), sent.map(s => s.text.slice(0, 50)));
+    check('  ...each keyed to the lot and the customer', new Set(sent.map(s => s.idempotencyKey)).size === 3 && sent.every(s => s.idempotencyKey.startsWith(`CAMPAIGN:${cid}:`)));
     const t2 = await runCampaignTick(at(11), { onlyClients: [SHOP] });
-    check('the next pass hands nothing while those 3 still wait at WhatsApp', t2[0].handed === 0 && t2[0].waitingBecause === 'in_flight', JSON.stringify(t2));
+    check('the next pass hands nothing while those 3 still wait at WhatsApp', t2[0]?.handed === 0 && t2[0]?.waitingBecause === 'in_flight', JSON.stringify(t2));
 
-    // WhatsApp sends them: the ticks arrive.
     const ticks = async (status: string) => {
-      for (const s of sent) {
-        await wa.handleEvent({ id: `evt-${s.id}-${status}`, type: 'message.status', data: { messageId: s.id, status } });
-      }
+      for (const m of sent) await wa.handleEvent({ id: `evt-${m.id}-${status}`, type: 'message.status', data: { messageId: m.id, status } });
     };
     await ticks('DELIVERED');
-    // Refusals: one number is not on WhatsApp; then WhatsApp itself goes down.
     let refusals = 0;
-    refuse = (input) => (refusals++ === 0 ? new WhatsAppServiceError(400, 'This number is not on WhatsApp.') : null);
+    refuse = () => (refusals++ === 0 ? new WhatsAppServiceError(400, 'This number is not on WhatsApp.') : null);
     let handedTotal = 3, failedTotal = 0;
     for (let i = 0; i < 12; i++) {
       const r = await runCampaignTick(at(12), { onlyClients: [SHOP] });
@@ -365,68 +397,43 @@ async function main() {
       await ticks('DELIVERED');
     }
     refuse = null;
-    check('a new link (3 days old) sends at most 20 campaign messages a day', handedTotal === 20, `${handedTotal}`);
+    check('a new link (3 days old) sends at most 20 such messages a day', handedTotal === 20, `${handedTotal}`);
     check('  ...the number not on WhatsApp is marked failed with WhatsApp\'s words', failedTotal === 1 && (await prisma.campaignRecipient.findFirst({ where: { campaignId: cid, state: 'FAILED' } }))?.skipReason === 'This number is not on WhatsApp.', `${failedTotal}`);
     const budget = await runCampaignTick(at(13), { onlyClients: [SHOP] });
-    check('  ...and then waits for tomorrow', budget[0].handed === 0 && budget[0].waitingBecause === 'daily_budget', JSON.stringify(budget));
+    check('  ...and then waits for tomorrow', budget[0]?.handed === 0 && budget[0]?.waitingBecause === 'daily_budget', JSON.stringify(budget));
 
-    // Tomorrow (the day's count is the shop's day, so pretend the earlier ones were yesterday).
     await prisma.campaignRecipient.updateMany({ where: { campaignId: cid, handedAt: { not: null } }, data: { handedAt: new Date(Date.now() - 2 * 86400000) } });
     refuse = () => new WhatsAppServiceError(503, 'WhatsApp could not be reached just now.');
     const down = await runCampaignTick(at(11), { onlyClients: [SHOP] });
     refuse = null;
-    check('WhatsApp down: nothing handed, the customer goes back in the queue', down[0].handed === 0 && down[0].waitingBecause === 'unreachable' && (await prisma.campaignRecipient.count({ where: { campaignId: cid, state: 'HANDING' } })) === 0, JSON.stringify(down));
-
+    check('WhatsApp down: nothing handed, the customer goes back in the queue', down[0]?.handed === 0 && down[0]?.waitingBecause === 'unreachable' && (await prisma.campaignRecipient.count({ where: { campaignId: cid, state: 'HANDING' } })) === 0, JSON.stringify(down));
     refuse = () => new WhatsAppServiceError(400, 'The request is not valid: kind: Invalid enum value.');
     const oldService = await runCampaignTick(at(11), { onlyClients: [SHOP] });
     refuse = null;
-    check('a WhatsApp Service not yet updated for campaigns refuses the kind: the customer waits, never marked failed',
-      oldService[0].handed === 0 && oldService[0].failed === 0 && (await prisma.campaignRecipient.count({ where: { campaignId: cid, state: 'FAILED' } })) === 1, JSON.stringify(oldService));
+    check('a WhatsApp Service refusing the kind: the customer waits, never marked failed',
+      oldService[0]?.handed === 0 && oldService[0]?.failed === 0 && (await prisma.campaignRecipient.count({ where: { campaignId: cid, state: 'FAILED' } })) === 1, JSON.stringify(oldService));
 
     const paused = await own.post(`/campaigns/${cid}/pause`);
     const whilePaused = await runCampaignTick(at(11), { onlyClients: [SHOP] });
-    check('paused: nothing more goes', paused.data.data.status === 'PAUSED' && whilePaused.length === 0, brief(paused));
+    check('the points reminder can be paused: nothing more goes', paused.data.data?.status === 'PAUSED' && whilePaused.length === 0, brief(paused));
     const resumed = await own.post(`/campaigns/${cid}/resume`);
-    check('carry on', resumed.data.data.status === 'SENDING', brief(resumed));
-    // A crash mid-hand: a claim left behind is picked up again, and its key stops a second message.
+    check('  ...and carried on (it is Inventory\'s own)', resumed.status === 200 && resumed.data.data.status === 'SENDING', brief(resumed));
     const oneLeft = await prisma.campaignRecipient.findFirstOrThrow({ where: { campaignId: cid, state: 'WAITING' } });
     await prisma.campaignRecipient.update({ where: { id: oneLeft.id }, data: { state: 'HANDING', handedAt: new Date(at(11).getTime() - 60 * 60 * 1000) } });
     const beforeCrash = sent.length;
     for (let i = 0; i < 4; i++) { await runCampaignTick(at(11), { onlyClients: [SHOP] }); await ticks('READ'); }
     const doneC = await own.get(`/campaigns/${cid}`);
-    check('the rest go the next day, and the campaign finishes by itself', doneC.data.data.status === 'DONE', brief(doneC));
-    check('  ...a claim left by a crash was sent once, not lost', sent.filter(s => s.idempotencyKey.endsWith(oneLeft.customerId)).length === 1 && sent.length > beforeCrash);
-    const p = doneC.data.data.progress;
-    check('  ...the customer who said STOP after Start was skipped, never sent', !sent.some(s => s.idempotencyKey === `CAMPAIGN:${cid}:${crowd[0]}`) && (await prisma.campaignRecipient.findFirst({ where: { campaignId: cid, customerId: crowd[0] } }))?.state === 'SKIPPED');
-    check('  ...the numbers add up: 26 sent, 1 skipped, 1 failed, 28 in all', p.total === 28 && p.sent === 26 && p.skipped === 1 && p.failed === 1 && p.waiting === 0, JSON.stringify(p));
-    check('  ...nobody got it twice', new Set(sent.filter(s => s.kind === 'C8').map(s => s.to)).size === sent.filter(s => s.kind === 'C8').length);
-    check('  ...the list shows names, last four digits and reasons', doneC.data.data.recipients.length === 28 && doneC.data.data.recipients.every((r: any) => !r.phone || /^••••\d{4}$/.test(r.phone)) && doneC.data.data.recipients.some((r: any) => r.reason === 'The customer replied STOP.'), brief(doneC));
-
-    const draft = await own.post('/campaigns', { name: 'Stop me', text: 'hello {name}', audience: { tags: ['vip'] } });
-    await own.post(`/campaigns/${draft.data.data.id}/start`, {});
-    const cancelled = await own.post(`/campaigns/${draft.data.data.id}/cancel`);
-    check('a campaign stopped before its turn sends nothing, and says why', cancelled.data.data.status === 'CANCELLED' && cancelled.data.data.recipients.every((r: any) => r.reason === 'The campaign was stopped.'), brief(cancelled));
-    const copy = await own.post(`/campaigns/${draft.data.data.id}/copy`);
-    check('a copy is a fresh draft with the same words', copy.status === 201 && copy.data.data.status === 'DRAFT' && copy.data.data.text === 'hello {name}', brief(copy));
-    const nobody = await own.post('/campaigns', { name: 'Nobody', text: 'x', audience: { minPoints: 999999 } });
-    const nobodyStart = await own.post(`/campaigns/${nobody.data.data.id}/start`, {});
-    check('starting a campaign that reaches nobody is refused in words', nobodyStart.status === 400 && plain(nobodyStart.data.message), brief(nobodyStart));
-    const delDraft = await own.delete(`/campaigns/${nobody.data.data.id}`);
-    check('a draft can be deleted', delDraft.status === 200 && (await prisma.campaign.count({ where: { id: nobody.data.data.id } })) === 0, brief(delDraft));
+    check('the rest go the next day, and the lot finishes by itself', doneC.data.data.status === 'DONE', brief(doneC));
+    check('  ...a claim left by a crash was sent once, not lost', sent.filter(m => m.idempotencyKey.endsWith(oneLeft.customerId)).length === 1 && sent.length > beforeCrash);
+    const pr = doneC.data.data.progress;
+    check('  ...the customer who said STOP after it was made was skipped, never sent', !sent.some(m => m.idempotencyKey === `CAMPAIGN:${cid}:${crowd[0]}`) && (await prisma.campaignRecipient.findFirst({ where: { campaignId: cid, customerId: crowd[0] } }))?.state === 'SKIPPED');
+    check('  ...the numbers add up: 24 sent, 1 skipped, 1 failed, 26 in all', pr.total === 26 && pr.sent === 24 && pr.skipped === 1 && pr.failed === 1 && pr.waiting === 0, JSON.stringify(pr));
+    check('  ...nobody got it twice', new Set(sent.filter(m => m.kind === 'C8').map(m => m.to)).size === sent.filter(m => m.kind === 'C8').length);
+    check('  ...the list shows names, last four digits and reasons', doneC.data.data.recipients.length === 26 && doneC.data.data.recipients.every((r: any) => !r.phone || /^••••\d{4}$/.test(r.phone)) && doneC.data.data.recipients.some((r: any) => r.reason === 'The customer replied STOP.'), brief(doneC));
     const listed = await sales.http.get('/campaigns');
-    check('a salesperson cannot see campaigns (not in their role)', listed.status === 403, brief(listed));
-
-    const me = { id: owner.id, clientId: SHOP, name: 'Owner Anand', permissions: ['*'], roles: ['SUPER_ADMIN'] };
-    // The live service masks every number it hands back (••••3162), so the shop's own number is not
-    // known here: the test goes to a number the person types.
-    account = { ...account, phone: '••••0001' };
-    const noNumber = await throws(() => campaigns.sendTest(me, { text: 'Hi {name}' }));
-    check('"send me a test" with no number asks for one, in words', noNumber?.statusCode === 400 && plain(noNumber.message), noNumber?.message);
-    const badNumber = await throws(() => campaigns.sendTest(me, { text: 'Hi {name}', to: '12345' }));
-    check('  ...and a number that is not a phone number is refused', badNumber?.statusCode === 400, badNumber?.message);
-    const testSend = await campaigns.sendTest(me, { text: 'Hi {name}, {points} points', to: '+91 90000 00001' });
-    const lastTest = sent[sent.length - 1];
-    check('"send me a test" goes to the number typed, marked [Test], with the sender\'s name', testSend.sent === true && lastTest.to === '919000000001' && testSend.to === '••••0001' && /^\[Test\] Hi Owner, 250 points/.test(lastTest.text), JSON.stringify(lastTest));
+    check('a salesperson cannot see these lists (not in their role)', listed.status === 403, brief(listed));
+    // The 26 back to an ordinary state, so the daily job below sees only the customers it sets up.
+    await prisma.customer.updateMany({ where: { id: { in: crowd } }, data: { loyaltyActiveAt: new Date() } });
     account = { ...account, phone: '919000000001' };
 
     // After-sale notice (in this process, so the recorder sees it).
@@ -451,7 +458,9 @@ async function main() {
     await prisma.$transaction(tx => import('../services/loyalty').then(l => l.post(tx, { clientId: SHOP, customerId: crowd[4], kind: 'ADJUSTED', points: 70, onceKey: `SEED:${crowd[4]}` })));
     const lapseIn7 = new Date(Date.now() + 7 * 86400000); lapseIn7.setMonth(lapseIn7.getMonth() - 12);
     await prisma.customer.update({ where: { id: crowd[4] }, data: { loyaltyActiveAt: new Date(lapseIn7.getTime() + 3600000) } });
-    await own.put('/loyalty/settings', { birthdayPoints: 100, birthdayWish: true, anniversaryWish: true, expiryReminder: true, birthdayText: 'Happy birthday {name}, from {shop}!' });
+    await own.put('/loyalty/settings', { birthdayPoints: 100, expiryReminder: true });
+    // A shop that had wishes switched on before 18 Nov (the columns are still there): the job must ignore them.
+    await prisma.loyaltySettings.update({ where: { clientId: SHOP }, data: { birthdayWish: true, anniversaryWish: true, birthdayText: 'Happy birthday {name}, from {shop}!' } });
 
     const early = await prepareShopDay(SHOP, at(8));
     check('before 10 am the day is not prepared', early === null);
@@ -487,19 +496,19 @@ async function main() {
       check('the day was prepared, so the gift and lapse checks can run', false,
         'prepareShopDay returned null: something claimed this day before the test did');
     } else {
-    check('birthday gift: 100 points to both birthdays, Ravi too (STOP stops messages, not gifts)', day.birthdayPoints === 2 && await pointsOf(crowd[1]) === 100 && await pointsOf(ravi.id) === 159, JSON.stringify(day));
-    const wishes = await prisma.campaign.findFirst({ where: { clientId: SHOP, source: 'BIRTHDAY' }, include: { recipients: true } });
-    check('  ...the wish goes only to the one who agreed, not to Ravi', wishes?.recipients.length === 1 && wishes.recipients[0].customerId === crowd[1] && /gift/.test(wishes.text), JSON.stringify(wishes?.recipients));
-    const anniv = await prisma.campaign.findFirst({ where: { clientId: SHOP, source: 'ANNIVERSARY' }, include: { recipients: true } });
-    check('anniversary wish: one', anniv?.recipients.length === 1 && anniv.recipients[0].customerId === crowd[2]);
+    check('birthday gift: 100 points to both birthdays, Ravi too (STOP stops messages, not gifts)', day.birthdayPoints === 2 && await pointsOf(crowd[1]) === 110 && await pointsOf(ravi.id) === 159, JSON.stringify(day));
+    const wishesMade = await prisma.campaign.count({ where: { clientId: SHOP, source: { in: ['BIRTHDAY', 'ANNIVERSARY'] }, createdAt: { gte: new Date(Date.now() - 3600000) } } });
+    check('NO birthday or anniversary wish is made, even with the old switches left on (they are CRM\'s)', wishesMade === 0 && day.birthdays === 0 && day.anniversaries === 0, JSON.stringify(day));
     check('quiet for 13 months: points lapsed', day.lapsed >= 1 && await pointsOf(crowd[3]) === 0 && (await prisma.loyaltyEntry.count({ where: { customerId: crowd[3], kind: 'EXPIRED' } })) === 1);
     const lapsing = await prisma.campaign.findFirst({ where: { clientId: SHOP, source: 'POINTS_EXPIRING' }, include: { recipients: true } });
     check('a week before lapsing: a reminder to that one customer', lapsing?.recipients.length === 1 && lapsing.recipients[0].customerId === crowd[4], JSON.stringify(lapsing?.recipients));
     const autoList = await own.get('/campaigns', { params: { source: 'AUTO' } });
-    check('the automatic ones show in their own list, not among the shop\'s campaigns', autoList.data.data.length === 3 && (await own.get('/campaigns')).data.data.every((c: any) => c.source === 'MANUAL'), brief(autoList));
+    check('the automatic one shows in its own list: only the points reminder', autoList.data.data.length === 1 && autoList.data.data[0].source === 'POINTS_EXPIRING', brief(autoList));
+    const cleared = await own.put('/loyalty/settings', { birthdayPoints: 100 });
+    check('any save turns the old wish switches off for good', cleared.status === 200 && cleared.data.data.birthdayWish === false && cleared.data.data.anniversaryWish === false, brief(cleared));
     await prisma.loyaltySettings.update({ where: { clientId: SHOP }, data: { autoPreparedFor: '2000-01-01' } });
     await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
-    check('the job run again on the same calendar day never gives the birthday gift twice', await pointsOf(crowd[1]) === 100);
+    check('the job run again on the same calendar day never gives the birthday gift twice (10 from the reminder test + 100)', await pointsOf(crowd[1]) === 110);
     }
 
     // ── K ──────────────────────────────────────────────────────────────────────────────────

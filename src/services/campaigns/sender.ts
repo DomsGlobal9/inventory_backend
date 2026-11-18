@@ -34,7 +34,6 @@ import { markStopped } from './consent';
 import { recentlyOffered } from './audience';
 import { quietGroupOf } from '../customer-groups';
 import { links } from '../links';
-import { shopsWithCampaignsMoved } from '../crm-handover';
 import type { Snapshot } from './campaign.service';
 
 export const IN_FLIGHT = 3;
@@ -86,10 +85,9 @@ export async function runCampaignTick(now = new Date(), opts: { onlyClients?: st
     orderBy: { startedAt: 'asc' },
     select: { id: true, clientId: true, source: true }
   });
-  // A shop whose own campaigns ScaleEzy CRM sends now (crm-handover): leave those alone. Its automatic
-  // messages (wishes until they move too, the points-lapsing reminder) are still Inventory's to send.
-  const moved = await shopsWithCampaignsMoved([...new Set(found.map(c => c.clientId))]);
-  const sending = found.filter(c => !(moved.has(c.clientId) && c.source === 'MANUAL'));
+  // Campaigns and wishes are ScaleEzy CRM's for every shop (18 Nov 2026): only Inventory's own points
+  // reminder is sent from here. Anything else still marked SENDING is left alone.
+  const sending = found.filter(c => c.source === 'POINTS_EXPIRING');
   const shops = [...new Set(sending.map(c => c.clientId))];
   const results: ShopResult[] = [];
   for (const clientId of shops) {
