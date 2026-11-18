@@ -106,6 +106,24 @@ function flag(raw: unknown, what: string): boolean | undefined {
   return raw;
 }
 
+/**
+ * What the shop had set for its wishes before they became CRM's (18 Nov 2026): on/off, the words and the
+ * picture. Read once by CRM (GET internal .../wish-settings) to copy into its own settings.
+ */
+export async function wishSettingsOf(clientId: string) {
+  const row = await prisma.loyaltySettings.findUnique({
+    where: { clientId },
+    select: { birthdayWish: true, birthdayText: true, birthdayMediaId: true, anniversaryWish: true, anniversaryText: true, anniversaryMediaId: true }
+  });
+  const ids = [row?.birthdayMediaId, row?.anniversaryMediaId].filter((x): x is string => !!x);
+  const media = ids.length ? await prisma.campaignMedia.findMany({ where: { clientId, id: { in: ids } }, select: { id: true, url: true, width: true, height: true } }) : [];
+  const pic = (id: string | null | undefined) => media.find(m => m.id === id) ?? null;
+  return {
+    birthday: { on: !!row?.birthdayWish, text: row?.birthdayText ?? null, media: pic(row?.birthdayMediaId) },
+    anniversary: { on: !!row?.anniversaryWish, text: row?.anniversaryText ?? null, media: pic(row?.anniversaryMediaId) }
+  };
+}
+
 /** Birthday and anniversary wishes are ScaleEzy CRM's (18 Nov 2026), so they cannot be switched on here. */
 export const WISHES_IN_CRM = 'Birthday and anniversary wishes are sent from ScaleEzy CRM now, under Messages.';
 

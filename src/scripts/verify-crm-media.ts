@@ -12,6 +12,8 @@
  *   5. CRM's worst cases (18 Nov): a picture bomb, an SVG with a script, a moving GIF, an iPhone HEIC, an AVIF,
  *      exactly 15 MB and one byte over, a person from another shop, "%" and "_" typed in the search, a photo
  *      id in capitals, archived and binned products, a variant-only photo of another shop, ten uploads at once.
+ *   6. what CRM reads to keep its own pictures and wishes: one checked product photo, the shop's pictures,
+ *      its old wish settings, and the first day CRM wishes (always set, never sliding, never both).
  *
  * The local copy's server is cut off from the real picture storage on purpose (launch.json SUPABASE_URL is
  * http://127.0.0.1:9), so no test ever writes into the live bucket. There a good picture gets as far as being
@@ -33,6 +35,7 @@ import { seedRolesForClient } from '../services/rbac-seed.service';
 import { platformAdminService } from '../services/platform-admin.service';
 import { purgeUnusedCampaignMedia } from '../services/campaigns';
 import { UNUSED_RETENTION_MS, prepareImage } from '../services/campaigns/media';
+import { localDayKey } from '../utils/businessDay';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4036/api/v1';
 const STAMP = Date.now();
@@ -278,6 +281,81 @@ async function main() {
   }
   r = await call('GET', '/health');
   check('...and the server is still answering (any answer below 500; this address asks for a sign-in)', typeof r.status === 'number' && r.status < 500, brief(r));
+
+  console.log('\n6. WHAT CRM READS TO KEEP ITS OWN PICTURES AND WISHES');
+  r = await call('GET', crm(`/product-photos/${image.id}`), as(owner));
+  check('one product photo: 200, exactly { id, url, productId, title }, this shop\'s', r.status === 200 && Object.keys(r.data?.data ?? {}).sort().join() === 'id,productId,title,url'
+    && r.data.data.id === image.id && r.data.data.url === ourPhoto && r.data.data.productId === product.id && r.data.data.title === 'Kanchi silk saree', brief(r));
+  r = await call('GET', crm(`/product-photos/${image.id.toUpperCase()}`), as(owner));
+  check('...the id in capitals is the same photo', r.status === 200 && r.data.data.id === image.id, brief(r));
+  r = await call('GET', crm(`/product-photos/${myVariantPhoto.id}`), as(owner));
+  check('...a colour-only photo names its product and title', r.status === 200 && r.data.data.productId === product.id && r.data.data.title === 'Kanchi silk saree', brief(r));
+  for (const [what, id, status, words] of [
+    ['another shop\'s photo', otherImage.id, 404, 'That product photo was not found.'],
+    ['another shop\'s colour-only photo', theirVariantPhoto.id, 404, 'That product photo was not found.'],
+    ['an id that is not one', 'nope', 400, 'Choose one of the product photos.'],
+    ['a photo stored somewhere else (never handed out to fetch)', outside.id, 400, 'That product photo is not stored with ScaleEzy, so it cannot be used. Upload the picture instead.']
+  ] as const) {
+    r = await call('GET', crm(`/product-photos/${id}`), as(owner));
+    check(`...${what}: ${status} in words`, r.status === status && r.data?.message === words, brief(r));
+  }
+  await prisma.product.update({ where: { id: product.id }, data: { status: 'TRASHED' as any } });
+  r = await call('GET', crm(`/product-photos/${image.id}`), as(owner));
+  check('...a binned product\'s photo: 400 in the same words as before', r.status === 400 && r.data?.message === ARCHIVED_WORDS, brief(r));
+  await prisma.product.update({ where: { id: product.id }, data: { status: 'ACTIVE' as any } });
+  r = await call('GET', crm(`/product-photos/${image.id}`), as(store));
+  check('...a storekeeper (may not send messages): 403', r.status === 403, brief(r));
+  r = await call('GET', crm(`/product-photos/${image.id}`), tokenFor());
+  check('...nobody named: 403', r.status === 403 && /Say who this is for/.test(r.data?.message), brief(r));
+  r = await call('GET', crm(`/product-photos/${image.id}`, OTHER), as(theirs, OTHER));
+  check('...a shop without CRM: 404', r.status === 404, brief(r));
+
+  // The shop's pictures, newest first, for CRM to copy once with the same ids.
+  const older = await prisma.campaignMedia.create({ data: { clientId: SHOP, storagePath: `whatsapp-media/r1-${STAMP}.jpg`, url: 'https://example.invalid/r1.jpg', width: 800, height: 600, byteSize: 1000, source: 'UPLOAD', createdAt: new Date(Date.now() - 3600_000) } });
+  const newer = await prisma.campaignMedia.create({ data: { clientId: SHOP, storagePath: `whatsapp-media/r2-${STAMP}.jpg`, url: 'https://example.invalid/r2.jpg', width: 1600, height: 1200, byteSize: 2000, source: 'PRODUCT' } });
+  const theirsPic = await prisma.campaignMedia.create({ data: { clientId: OTHER, storagePath: `whatsapp-media/r3-${STAMP}.jpg`, url: 'https://example.invalid/r3.jpg', width: 1, height: 1, byteSize: 1, source: 'UPLOAD' } });
+  r = await call('GET', crm('/campaign-media'), tokenFor({ clientId: SHOP }));
+  const pics = r.data?.data ?? [];
+  check('the shop\'s pictures (no person needed): newest first, exactly { id, url, width, height, createdAt }', r.status === 200 && pics.length === 2 && pics[0].id === newer.id && pics[1].id === older.id
+    && Object.keys(pics[0]).sort().join() === 'createdAt,height,id,url,width' && pics[0].width === 1600, brief(r));
+  check('...never another shop\'s', !pics.some((x: any) => x.id === theirsPic.id));
+
+  // The old wish settings, for CRM to copy once.
+  r = await call('GET', crm('/wish-settings'), tokenFor({ clientId: SHOP }));
+  check('wish settings of a shop that never set any: both off, no words, no picture', r.status === 200 && JSON.stringify(r.data.data) === JSON.stringify({ birthday: { on: false, text: null, media: null }, anniversary: { on: false, text: null, media: null } }), brief(r));
+  await prisma.loyaltySettings.create({ data: { clientId: SHOP, birthdayWish: true, birthdayText: 'Happy birthday {name}!', birthdayMediaId: newer.id, anniversaryWish: false, anniversaryText: 'Happy anniversary', anniversaryMediaId: theirsPic.id } as any });
+  r = await call('GET', crm('/wish-settings'), tokenFor({ clientId: SHOP }));
+  const ws = r.data?.data;
+  check('...with them set: on, the words, and the picture with its address and size', r.status === 200 && ws.birthday.on === true && ws.birthday.text === 'Happy birthday {name}!'
+    && JSON.stringify(ws.birthday.media) === JSON.stringify({ id: newer.id, url: newer.url, width: 1600, height: 1200 }) && ws.anniversary.on === false && ws.anniversary.text === 'Happy anniversary', brief(r));
+  check('...a picture id that points at ANOTHER shop\'s picture is not handed out', ws?.anniversary.media === null, ws?.anniversary);
+  r = await call('GET', crm('/wish-settings'), tokenFor({ clientId: SHOP, userId: store.id }));
+  check('...a storekeeper named (may not see customers): 403, naming the permission', r.status === 403 && /customer:view/.test(r.data?.message), brief(r));
+  await prisma.loyaltySettings.delete({ where: { clientId: SHOP } });
+  await prisma.campaignMedia.deleteMany({ where: { id: { in: [older.id, newer.id, theirsPic.id] } } });
+
+  // The first day CRM wishes: always there for a CRM shop, worked out once, never sliding.
+  const todayKey = localDayKey(new Date(), 'Asia/Kolkata');
+  const tomorrowKey = (() => { const [y, m, d] = todayKey.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10); })();
+  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: {} } });
+  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
+  check(`a CRM shop that never moved wishes: GET moved says CRM wishes from today (${todayKey})`, r.status === 200 && r.data.data.wishes?.fromDay === todayKey, brief(r));
+  const stored = await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, select: { moved: true } });
+  check('...and it is kept, so it never slides to a later day', (stored?.moved as any)?.wishes?.fromDay === todayKey, stored?.moved);
+  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: { wishes: { fromDay: '2026-11-01' } } } });
+  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
+  check('...a shop that moved before keeps its own stored day', r.data?.data?.wishes?.fromDay === '2026-11-01', brief(r));
+  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: {} } });
+  const lotToday = await prisma.campaign.create({ data: { clientId: SHOP, source: 'BIRTHDAY', name: `Birthday wishes, today ${STAMP}`, text: 'Happy birthday', status: 'DONE', startedAt: new Date() } as any });
+  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
+  check(`...an older Inventory build already wished this shop today: CRM starts TOMORROW (${tomorrowKey}), never both`, r.data?.data?.wishes?.fromDay === tomorrowKey, brief(r));
+  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: {} } });
+  await prisma.campaign.update({ where: { id: lotToday.id }, data: { status: 'CANCELLED' } });
+  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
+  check(`...but a wish lot STOPPED before anyone got it wished nobody: CRM starts today (${todayKey}), never neither`, r.data?.data?.wishes?.fromDay === todayKey, brief(r));
+  await prisma.campaign.delete({ where: { id: lotToday.id } });
+  r = await call('GET', crm('/moved', OTHER), tokenFor({ clientId: OTHER }));
+  check('...a shop without CRM: 404, nothing written for it', r.status === 404 && !(await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: OTHER, module: 'crm' } } })), brief(r));
 
   console.log('\n4. INVENTORY\'S HOUSEKEEPING NEVER REMOVES CRM\'S PICTURES');
   const old = new Date(Date.now() - UNUSED_RETENTION_MS - 86_400_000);

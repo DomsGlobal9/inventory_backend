@@ -8,7 +8,8 @@ import { customerGroups } from '../services/customer-groups';
 import * as shopReviews from '../services/shop-reviews';
 import { crmHandover } from '../services/crm-handover';
 import { offersState, setOffersConsent, campaigns } from '../services/campaigns';
-import { fromUpload, fromProductImage } from '../services/campaigns/media';
+import { fromUpload, fromProductImage, productPhoto, mediaOfShop } from '../services/campaigns/media';
+import { wishSettingsOf } from '../services/loyalty/loyalty.service';
 import { customerService } from '../services/customer.service';
 import * as customerDelete from '../services/customer-delete';
 import { pastPurchases } from '../services/past-purchases';
@@ -259,9 +260,15 @@ router.post('/shops/:clientId/campaign-media', shop, mayPicture, act(req => from
 router.post('/shops/:clientId/campaign-media/from-product', shop, mayPicture,
   act(req => fromProductImage(cid(req), pictureBy(req), req.body?.productImageId, 'CRM'), () => ['PICTURE_ADDED', 'n/a'], 'CAMPAIGN_MEDIA'));
 router.get('/shops/:clientId/product-photos', shop, mayPicture, act(req => campaigns.productPhotosOf(cid(req), req.query.q)));
+// 18 Nov 2026: CRM prepares and stores pictures itself. It asks for one product photo, checked here (this
+// shop's, not archived or in the bin, in our storage), and fetches the address on its own. And it copies,
+// once, the pictures and wish settings this shop already has, so its drafts and wishes keep working.
+router.get('/shops/:clientId/product-photos/:imageId', shop, mayPicture, act(req => productPhoto(cid(req), req.params.imageId)));
+router.get('/shops/:clientId/campaign-media', shop, readable, act(req => mediaOfShop(cid(req))));
+router.get('/shops/:clientId/wish-settings', shop, readable, act(req => wishSettingsOf(cid(req))));
 
 router.get('/shops/:clientId/moved', shop, async (req, res) => {
-  try { res.json({ success: true, data: await crmHandover.get(clientIdOf(req)) }); }
+  try { res.json({ success: true, data: await crmHandover.forCrm(clientIdOf(req)) }); }
   catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
 

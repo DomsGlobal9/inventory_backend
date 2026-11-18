@@ -96,19 +96,43 @@ export async function fromUpload(clientId: string, userId: string | null, base64
  * One of the shop's own product photos. Fetched only from our own storage -- the address comes from
  * the database, and is checked to be ours anyway, so this can never be pointed somewhere else.
  */
-export async function fromProductImage(clientId: string, userId: string | null, productImageId: unknown, source: MediaSource = 'PRODUCT') {
+/**
+ * One of the shop's own product photos, checked: this shop's product or colour, not archived or in the bin,
+ * and stored in our own storage. Used to make a picture here, and (18 Nov 2026) by ScaleEzy CRM, which
+ * fetches the address itself and keeps its own copy (GET internal .../product-photos/:imageId).
+ */
+export async function productPhoto(clientId: string, productImageId: unknown) {
   if (typeof productImageId !== 'string' || !/^[0-9a-f-]{36}$/i.test(productImageId)) throw badRequest('Choose one of the product photos.');
   // Ids are stored in small letters (a text column): the same id in capitals is the same photo.
   const img = await prisma.productImage.findFirst({
     where: { id: productImageId.toLowerCase(), OR: [{ product: { clientId } }, { variant: { clientId } }] },
-    select: { url: true, productId: true, product: { select: { status: true } }, variant: { select: { productId: true, product: { select: { status: true } } } } }
+    select: {
+      id: true, url: true, productId: true,
+      product: { select: { status: true, title: true } },
+      variant: { select: { productId: true, product: { select: { status: true, title: true } } } }
+    }
   });
   if (!img) throw notFound('That product photo was not found.');
   // The photo list leaves these out; a photo chosen from an old list, or asked for by id, is refused the same way.
-  const status = String(img.product?.status ?? img.variant?.product?.status ?? '');
+  const owner = img.product ?? img.variant?.product ?? null;
+  const status = String(owner?.status ?? '');
   if (status === 'ARCHIVED' || status === 'TRASHED') throw badRequest('That product is archived or in the bin, so its photos are not used. Bring the product back, or upload the picture instead.');
   const ours = env.SUPABASE_URL ? `${env.SUPABASE_URL.replace(/\/+$/, '')}/storage/v1/object/public/` : null;
   if (!ours || !img.url.startsWith(ours)) throw badRequest('That product photo is not stored with ScaleEzy, so it cannot be used. Upload the picture instead.');
+  return { id: img.id, url: img.url, productId: img.productId ?? img.variant?.productId ?? null, title: owner?.title ?? '' };
+}
+
+/** Every picture this shop has for messages, newest first (for CRM to copy once into its own storage). */
+export async function mediaOfShop(clientId: string) {
+  return prisma.campaignMedia.findMany({
+    where: { clientId },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, url: true, width: true, height: true, createdAt: true }
+  });
+}
+
+export async function fromProductImage(clientId: string, userId: string | null, productImageId: unknown, source: MediaSource = 'PRODUCT') {
+  const img = await productPhoto(clientId, productImageId);
   let bytes: Buffer;
   try {
     const res = await fetch(img.url, { redirect: 'error', signal: AbortSignal.timeout(20_000) });
@@ -120,7 +144,7 @@ export async function fromProductImage(clientId: string, userId: string | null, 
     if ((e as any)?.statusCode === 400) throw e;
     throw Object.assign(new Error('That product photo could not be loaded just now. Please try again.'), { statusCode: 503 });
   }
-  return store(clientId, await prepareImage(bytes), { source, productId: img.productId ?? img.variant?.productId ?? null, createdById: userId });
+  return store(clientId, await prepareImage(bytes), { source, productId: img.productId, createdById: userId });
 }
 
 /** A picture id sent by the shop: it must be one of its own. */

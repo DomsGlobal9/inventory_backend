@@ -87,6 +87,16 @@ export const crmHandover = {
   },
 
   /**
+   * For CRM: the flags, with wishes ALWAYS carrying the first day CRM wishes (wishes are CRM's for every
+   * shop). Worked out once and kept, so it never slides; a shop that moved before keeps its stored day.
+   */
+  async forCrm(clientId: string): Promise<Moved | null> {
+    const now = await crmHandover.get(clientId);
+    if (!now || now.wishes) return now;
+    return crmHandover.set(clientId, { wishes: true });
+  },
+
+  /**
    * Changes some flags, keeping the rest. Refuses (409) to move campaigns while one is unfinished.
    * Runs as one transaction holding the subscription row, so two changes at once cannot both pass
    * the check, and a campaign starting at the same moment (it reads this row FOR SHARE) waits for it.
@@ -121,14 +131,18 @@ export const crmHandover = {
       if (change.wishes !== undefined) {
         if (change.wishes === true) {
           if (!now.wishes) {
-            // Holding the shop's loyalty row: Inventory's daily claim of a day updates this same row,
-            // so it either happened before (that day is Inventory's) or waits until we are done
-            // (and then sees the new day). No row: Inventory has prepared nothing, so today is CRM's.
-            const ls = await tx.$queryRaw<{ auto_prepared_for: string | null }[]>`
-              SELECT auto_prepared_for FROM loyalty_settings WHERE client_id = ${clientId} FOR UPDATE`;
+            // Since 18 Nov 2026 Inventory makes no wish at all, so the first day is CRM's today -- unless an
+            // older Inventory build already made a wish lot for this shop today (the day the change went
+            // live), in which case today was wished here and CRM starts tomorrow. Never both, never neither.
             const today = localDayKey(new Date(), timezone);
-            const prepared = ls[0]?.auto_prepared_for ?? null;
-            next.wishes = { fromDay: prepared && prepared >= today ? nextDay(prepared) : today };
+            const wishedToday = await tx.campaign.count({
+              // Counted only if it is going out or sent something: a lot stopped before anyone got it wished nobody.
+              where: {
+                clientId, source: { in: ['BIRTHDAY', 'ANNIVERSARY'] }, createdAt: { gte: new Date(Date.now() - 24 * 3600_000) },
+                OR: [{ status: { notIn: ['CANCELLED', 'DRAFT'] } }, { recipients: { some: { handedAt: { not: null } } } }]
+              }
+            });
+            next.wishes = { fromDay: wishedToday ? nextDay(today) : today };
           }
         } else {
           next.wishes = null;
