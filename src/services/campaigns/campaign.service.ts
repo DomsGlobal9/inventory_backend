@@ -26,6 +26,7 @@
  * two servers never send the same person the same campaign twice.
  */
 import { Prisma } from '@prisma/client';
+import { literal } from '../../utils/likeText';
 import crypto from 'crypto';
 import { prisma } from '../../lib/prisma';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/httpError';
@@ -358,7 +359,8 @@ export async function productPhotosOf(clientId: string, search: unknown) {
       clientId,
       status: { notIn: ['ARCHIVED', 'TRASHED'] },
       images: { some: {} },
-      ...(q ? { OR: [{ title: { contains: q, mode: 'insensitive' } }, { productCode: { contains: q, mode: 'insensitive' } }] } : {})
+      // Taken literally: Prisma's contains is an unescaped LIKE, so "%" listed every product and "_" any letter.
+      ...(q ? { OR: [{ title: { contains: literal(q), mode: 'insensitive' } }, { productCode: { contains: literal(q), mode: 'insensitive' } }] } : {})
     },
     // No `take` on the photographs any more, and six distinct ones kept below instead.
     // One photograph of a colour is registered against every size of that colour, so a saree in

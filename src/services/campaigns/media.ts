@@ -98,11 +98,15 @@ export async function fromUpload(clientId: string, userId: string | null, base64
  */
 export async function fromProductImage(clientId: string, userId: string | null, productImageId: unknown, source: MediaSource = 'PRODUCT') {
   if (typeof productImageId !== 'string' || !/^[0-9a-f-]{36}$/i.test(productImageId)) throw badRequest('Choose one of the product photos.');
+  // Ids are stored in small letters (a text column): the same id in capitals is the same photo.
   const img = await prisma.productImage.findFirst({
-    where: { id: productImageId, OR: [{ product: { clientId } }, { variant: { clientId } }] },
-    select: { url: true, productId: true, variant: { select: { productId: true } } }
+    where: { id: productImageId.toLowerCase(), OR: [{ product: { clientId } }, { variant: { clientId } }] },
+    select: { url: true, productId: true, product: { select: { status: true } }, variant: { select: { productId: true, product: { select: { status: true } } } } }
   });
   if (!img) throw notFound('That product photo was not found.');
+  // The photo list leaves these out; a photo chosen from an old list, or asked for by id, is refused the same way.
+  const status = String(img.product?.status ?? img.variant?.product?.status ?? '');
+  if (status === 'ARCHIVED' || status === 'TRASHED') throw badRequest('That product is archived or in the bin, so its photos are not used. Bring the product back, or upload the picture instead.');
   const ours = env.SUPABASE_URL ? `${env.SUPABASE_URL.replace(/\/+$/, '')}/storage/v1/object/public/` : null;
   if (!ours || !img.url.startsWith(ours)) throw badRequest('That product photo is not stored with ScaleEzy, so it cannot be used. Upload the picture instead.');
   let bytes: Buffer;

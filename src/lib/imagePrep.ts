@@ -39,10 +39,16 @@ export interface PrepareLimits {
  * it is not. Shared, because the guards that matter -- the decompression-bomb limit, the HEIC
  * message a shop owner can actually act on -- are exactly the ones nobody should write twice.
  */
+const HEIC_WORDS = 'This is an iPhone HEIC photo. Share it as a JPEG (or set the camera to "Most Compatible") and choose it again.';
 async function inspect(input: Buffer, minSide = MIN_SIDE): Promise<sharp.Metadata> {
   if (!input?.length) throw badRequest('The picture is empty.');
   if (input.length > MAX_UPLOAD_BYTES) throw badRequest('The picture is larger than 15 MB. Choose a smaller one.');
 
+  // An iPhone photo says so in its first 12 bytes (ftyp, brand heic/heix/hevc...). Told apart before libvips,
+  // which has no HEVC decoder here and may only call it unreadable, so the owner gets the words that help.
+  if (input.length >= 12 && input.toString('latin1', 4, 8) === 'ftyp' && /^(heic|heix|hevc|hevx|heim|heis)$/.test(input.toString('latin1', 8, 12))) {
+    throw badRequest(HEIC_WORDS);
+  }
   let meta: sharp.Metadata;
   try {
     // limitInputPixels makes libvips refuse a "decompression bomb" -- a small file that unpacks to
@@ -52,8 +58,11 @@ async function inspect(input: Buffer, minSide = MIN_SIDE): Promise<sharp.Metadat
     if (/pixel limit/i.test(String((e as Error)?.message))) throw badRequest('The picture is too large (more than 40 megapixels). Choose a smaller one.');
     throw badRequest('That file is not a picture ScaleEzy can read. Use a JPEG or PNG photo.');
   }
-  if (meta.format === 'heif') throw badRequest('This is an iPhone HEIC photo. Share it as a JPEG (or set the camera to "Most Compatible") and choose it again.');
-  if (!meta.format || !READABLE.has(meta.format)) throw badRequest('That file is not a picture ScaleEzy can read. Use a JPEG or PNG photo.');
+  // libvips names AVIF and HEIC both "heif"; only the compression tells them apart. AVIF (AV1) is read here,
+  // HEIC (HEVC, the iPhone kind) has no decoder in this build. Before 18 Nov every AVIF got the iPhone words.
+  const avif = meta.format === 'heif' && meta.compression === 'av1';
+  if (meta.format === 'heif' && !avif) throw badRequest(HEIC_WORDS);
+  if (!meta.format || !READABLE.has(avif ? 'avif' : meta.format)) throw badRequest('That file is not a picture ScaleEzy can read. Use a JPEG or PNG photo.');
   if (!meta.width || !meta.height) throw badRequest('That picture could not be read.');
   if (meta.width * meta.height > MAX_PIXELS) throw badRequest('The picture is too large (more than 40 megapixels). Choose a smaller one.');
   if (meta.width < minSide || meta.height < minSide) throw badRequest(`The picture is too small (${meta.width} × ${meta.height}). Use one at least ${minSide} pixels wide and tall.`);
