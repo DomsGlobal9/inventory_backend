@@ -303,6 +303,42 @@ async function main() {
   check('...open: the product and its colour\'s SKU open the product page; archived and unknown codes get none', base === null
     ? ls2.every((x: any) => x.url === null)
     : ls2[0].url === `${base}/p/${encodeURIComponent(fresh.p.productCode)}` && ls2[1].url === ls2[0].url && ls2[2].url === null && ls2[3].url === null && ls2[2].productCode === null, ls2);
+  // Ids -> pages (CRM knows a new arrival by its ids): a colour opens ON that colour (?v=<variantCode>).
+  const theirV = await prisma.productVariant.create({ data: { clientId: OTHER, productId: theirProduct.id, sku: `NA-T-${STAMP}`, variantCode: `NA-TV-${STAMP}`, colorName: 'Pink' } as any });
+  const unknownV = '00000000-0000-4000-8000-0000000000bb';
+  const idsQ = `variantIds=${fresh.v.id},${plain.v.id.toUpperCase()},${archived.v.id},${theirV.id},${unknownV}&productIds=${fresh.p.id},${archived.p.id}`;
+  r = await call('GET', crm(`/shop-link/products?${idsQ}`), key());
+  const byIds = r.data?.data;
+  const shopUrl = byIds?.shop?.url;
+  const vs = byIds?.variants ?? [], ps = byIds?.products ?? [];
+  check('by ids, shop open: each colour answered in order, with its product and colour codes', r.status === 200 && vs.length === 5 && ps.length === 2
+    && vs[0].variantId === fresh.v.id && vs[0].productId === fresh.p.id && vs[0].productCode === fresh.p.productCode && vs[0].variantCode === fresh.v.variantCode
+    && vs[1].productCode === plain.p.productCode, byIds);
+  check('...the colour\'s url opens the product ON that colour (?v=<variantCode>); the product id opens the page', shopUrl === null
+    ? vs.every((x: any) => x.url === null)
+    : vs[0].url === `${shopUrl}/p/${encodeURIComponent(fresh.p.productCode)}?v=${encodeURIComponent(fresh.v.variantCode)}` && ps[0].url === `${shopUrl}/p/${encodeURIComponent(fresh.p.productCode)}`, { shopUrl, v: vs[0], p: ps[0] });
+  check('...archived, another shop\'s and unknown colours, and an archived product: no codes, no url', [2, 3, 4].every(i => vs[i].url === null && vs[i].productCode === null) && ps[1].url === null && ps[1].productCode === null, vs.slice(2));
+  await prisma.onlineShop.update({ where: { clientId: SHOP }, data: { isLive: false } });
+  r = await call('GET', crm(`/shop-link/products?${idsQ}`), key());
+  check('...the shop closed: codes still given, but no url anywhere', r.data?.data?.variants?.[0]?.productCode === fresh.p.productCode && [...(r.data?.data?.variants ?? []), ...(r.data?.data?.products ?? [])].every((x: any) => x.url === null), brief(r));
+  await prisma.onlineShop.update({ where: { clientId: SHOP }, data: { isLive: true } });
+  for (const [q, words] of [['variantIds=', /Say which pieces/], ['variantIds=red', /id from Inventory/], [`productIds=${Array.from({ length: 201 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`).join(',')}`, /at most 200/]] as const) {
+    const x = await call('GET', crm(`/shop-link/products?${q}`), key());
+    check(`...${q.slice(0, 18)}: 400 in words`, x.status === 400 && (words as RegExp).test(x.data?.message), brief(x));
+  }
+
+  // Offers aimed at groups, as the offers themselves hold the names (CRM checks renames/deletes against these).
+  await prisma.offer.create({ data: { clientId: SHOP, offerCode: `GRP2-${STAMP}`, name: `A draft for Gold ${STAMP}`, valueType: 'PERCENTAGE', value: 5, startsAt: new Date(), status: 'DRAFT', customerTags: ['Gold', 'Platinum'] } as any });
+  await prisma.offer.create({ data: { clientId: SHOP, offerCode: `GRP3-${STAMP}`, name: `Archived VIP ${STAMP}`, valueType: 'PERCENTAGE', value: 5, startsAt: new Date(), status: 'ARCHIVED', customerTags: ['VIP'] } as any });
+  await prisma.offer.create({ data: { clientId: SHOP, offerCode: `GRP4-${STAMP}`, name: `For everyone ${STAMP}`, valueType: 'PERCENTAGE', value: 5, startsAt: new Date(), status: 'ACTIVE', customerTags: [] } as any });
+  await prisma.offer.create({ data: { clientId: OTHER, offerCode: `GRP5-${STAMP}`, name: `Theirs ${STAMP}`, valueType: 'PERCENTAGE', value: 5, startsAt: new Date(), status: 'ACTIVE', customerTags: ['VIP'] } as any });
+  r = await call('GET', crm('/offers/aimed'), key());
+  const aimed = r.data?.data ?? [];
+  check('offers aimed at groups: the draft for Gold/Platinum and the live one for Old (a group the copy no longer has); not the archived, not the one for everyone, not another shop\'s',
+    r.status === 200 && JSON.stringify(aimed.map((o: any) => [o.name, o.status, o.customerTags])) === JSON.stringify([[`A draft for Gold ${STAMP}`, 'DRAFT', ['Gold', 'Platinum']], [`Old buyers ${STAMP}`, 'ACTIVE', ['Old']]])
+    && Object.keys(aimed[0] ?? {}).sort().join() === 'customerTags,id,name,status', aimed);
+  r = await call('GET', crm('/offers/aimed', OTHER), tokenFor({ clientId: OTHER }));
+  check('...a shop without CRM: 404', r.status === 404, brief(r));
   r = await call('GET', crm('/shop-link/products'), key());
   check('...no codes: 400 in words', r.status === 400 && /Say which codes/.test(r.data?.message), brief(r));
   r = await call('GET', crm('/profile', OTHER), tokenFor({ clientId: OTHER }));
@@ -311,7 +347,7 @@ async function main() {
 
 let r: any;
 async function cleanup() {
-  await prisma.offer.deleteMany({ where: { clientId: SHOP } }).catch(() => {});
+  await prisma.offer.deleteMany({ where: { clientId: { in: [SHOP, OTHER] } } }).catch(() => {});
   await prisma.crmGroupProjection.deleteMany({ where: { clientId: { in: [SHOP, OTHER, FRESH] } } });
   await prisma.moduleSubscription.deleteMany({ where: { clientId: { in: [SHOP, OTHER, FRESH] } } });
   await prisma.moduleEvent.deleteMany({ where: { clientId: { in: [SHOP, OTHER, FRESH] } } });

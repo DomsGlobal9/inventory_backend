@@ -69,6 +69,56 @@ export async function linksFor(clientId: string, rawCodes: unknown) {
 }
 
 /**
+ * Ids -> pages, for pieces CRM knows by id (a new arrival). A colour opens its product's page ON that colour
+ * (?v=<variantCode>, as the shop page reads it); a product id opens the page. url null while the shop is
+ * closed, and for archived, binned, unknown or another shop's ids. Answered in the order asked.
+ */
+export async function linksForIds(clientId: string, query: any) {
+  const list = (raw: unknown) => [...new Set(String(raw ?? '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean))];
+  const variantIds = list(query?.variantIds), productIds = list(query?.productIds);
+  if (!variantIds.length && !productIds.length) throw badRequest('Say which pieces: variantIds=<id>,<id> or productIds=<id>,<id> (up to 200).');
+  if (variantIds.length + productIds.length > 200) throw badRequest('Ask for at most 200 at a time.');
+  if ([...variantIds, ...productIds].some(id => !/^[0-9a-f-]{36}$/.test(id))) throw badRequest('Every id must be an id from Inventory.');
+  const link = await shopLink(clientId);
+  const open = !!(link?.url && link.isLive);
+  const live = { status: { notIn: ['ARCHIVED', 'TRASHED'] as any } };
+  const [variants, products] = await Promise.all([
+    variantIds.length ? prisma.productVariant.findMany({
+      where: { clientId, id: { in: variantIds }, boutiqueDeletedAt: null, product: { clientId, ...live } },
+      select: { id: true, variantCode: true, product: { select: { id: true, productCode: true } } }
+    }) : [],
+    productIds.length ? prisma.product.findMany({ where: { clientId, id: { in: productIds }, ...live }, select: { id: true, productCode: true } }) : []
+  ]);
+  const page = (productCode: string) => `${link!.url}/p/${encodeURIComponent(productCode)}`;
+  return {
+    shop: link,
+    variants: variantIds.map(id => {
+      const v = variants.find(x => x.id === id);
+      if (!v) return { variantId: id, productId: null, productCode: null, variantCode: null, url: null };
+      const url = open ? `${page(v.product.productCode)}${v.variantCode ? `?v=${encodeURIComponent(v.variantCode)}` : ''}` : null;
+      return { variantId: id, productId: v.product.id, productCode: v.product.productCode, variantCode: v.variantCode ?? null, url };
+    }),
+    products: productIds.map(id => {
+      const p = products.find(x => x.id === id);
+      return p ? { productId: id, productCode: p.productCode, url: open ? page(p.productCode) : null } : { productId: id, productCode: null, url: null };
+    })
+  };
+}
+
+/**
+ * Every offer of the shop that is not archived and is aimed at customer groups, with the group names as the
+ * offer itself holds them. CRM checks a group rename or delete against these, whatever its copy here says.
+ */
+export async function offersAimed(clientId: string) {
+  const rows = await prisma.offer.findMany({
+    where: { clientId, status: { notIn: ['ARCHIVED'] as any }, NOT: { customerTags: { isEmpty: true } } },
+    select: { id: true, name: true, status: true, customerTags: true },
+    orderBy: { name: 'asc' }
+  });
+  return rows.map(o => ({ id: o.id, name: o.name, status: o.status, customerTags: o.customerTags }));
+}
+
+/**
  * Stock RECEIVED from suppliers in a window (purchase receipts), one row per colour received, newest first:
  * what CRM's new-arrivals message says. Kind is the shop's own word for the garment (dress type); size and
  * colour are the colour's own, else what the receipt line said. receivedAt is the latest receipt in the

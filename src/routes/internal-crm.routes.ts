@@ -281,7 +281,9 @@ router.get('/shops/:clientId/customers/points', shop, readable, act(req => point
 // The shop, its online shop and its new pieces, so CRM's messages never read Inventory's tables.
 router.get('/shops/:clientId/profile', shop, readable, act(req => crmReads.profile(cid(req))));
 router.get('/shops/:clientId/shop-link', shop, readable, act(req => crmReads.shopLink(cid(req))));
-router.get('/shops/:clientId/shop-link/products', shop, readable, act(req => crmReads.linksFor(cid(req), req.query.codes)));
+router.get('/shops/:clientId/shop-link/products', shop, readable,
+  act(req => (req.query.variantIds !== undefined || req.query.productIds !== undefined) ? crmReads.linksForIds(cid(req), req.query) : crmReads.linksFor(cid(req), req.query.codes)));
+router.get('/shops/:clientId/offers/aimed', shop, readable, act(req => crmReads.offersAimed(cid(req))));
 router.get('/shops/:clientId/new-arrivals', shop, readable, act(req => crmReads.newArrivals(cid(req), req.query)));
 router.get('/shops/:clientId/product-likes', shop, readable, act(req => crmReads.productLikes(cid(req), req.query.productIds)));
 router.get('/shops/:clientId/products/:productId/photos', shop, readable, act(req => crmReads.photosOf(cid(req), String(req.params.productId))));
