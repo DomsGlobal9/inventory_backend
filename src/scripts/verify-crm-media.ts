@@ -1,25 +1,19 @@
 /**
- * Campaign pictures for ScaleEzy CRM (18 Nov 2026): campaigns are made in CRM, Inventory keeps preparing and
- * storing their pictures. Real signed service tokens against the real routes, one throwaway shop with CRM on
- * (and one without), removed at the end with its pictures:
- *   1. who may: the modules:crm scope, a shop with CRM on, the token's own shop, a named ACTIVE person who may
- *      send messages (campaign:send or crm:messages:send);
- *   2. an upload: the same checks and words as the app's own picture route (empty, not base64, over 15 MB,
- *      not a picture), and the answer { id, url, width, height, byteSize } of a real JPEG under 1 MB;
- *   3. a product photo as the picture, and the product-photo list (names and photos only, this shop's);
- *   4. housekeeping: a CRM picture nothing in Inventory uses is NEVER removed, an unused upload made in
- *      Inventory still is.
- *   5. CRM's worst cases (18 Nov): a picture bomb, an SVG with a script, a moving GIF, an iPhone HEIC, an AVIF,
- *      exactly 15 MB and one byte over, a person from another shop, "%" and "_" typed in the search, a photo
- *      id in capitals, archived and binned products, a variant-only photo of another shop, ten uploads at once.
- *   6. what CRM reads to keep its own pictures and wishes: one checked product photo, the shop's pictures,
- *      its old wish settings, and the first day CRM wishes (always set, never sliding, never both).
- *
- * The local copy's server is cut off from the real picture storage on purpose (launch.json SUPABASE_URL is
- * http://127.0.0.1:9), so no test ever writes into the live bucket. There a good picture gets as far as being
- * saved and is refused with the app's own words, nothing left behind. Saving itself is the same store() the
- * app's Campaigns screen has used live since 22 Sep. With STORAGE_LIVE=1 (a server that can reach storage)
- * the saved picture is checked too.
+ * Pictures and the other things ScaleEzy CRM reads from Inventory for its messages (rewritten 19 Nov 2026, once
+ * CRM prepared and stored its pictures itself). Real signed service tokens against the real routes, a throwaway
+ * shop with CRM on (and one without), removed at the end:
+ *   1. who may read the product photos: the modules:crm scope, a shop with CRM on, the token's own shop, a named
+ *      ACTIVE person who may send messages (campaign:send or crm:messages:send);
+ *   2. Inventory's old picture-making routes for CRM are GONE: POST campaign-media and campaign-media/from-product
+ *      answer 404 to everybody, and store nothing;
+ *   3. the picture preparation Inventory still uses for its own pictures (lib/imagePrep, via prepareImage): a
+ *      big photo made WhatsApp-ready, a decompression bomb, an SVG with a script, a moving GIF, an iPhone HEIC,
+ *      an AVIF, empty, not a picture, exactly 15 MB and one byte over;
+ *   4. the product photos CRM chooses from (names and photos only; search taken literally) and one checked
+ *      photo by id (this shop's, not archived or binned, in our storage, capitals the same id);
+ *   5. housekeeping: a picture marked CRM is never removed, an unused Inventory upload still is;
+ *   6. the rest CRM reads: the shop's pictures, its old wish settings, points with this year's birthday gift and
+ *      the shop's gift, and GET/PUT moved with no campaigns or wishes in it any more.
  *
  *   DATABASE_URL=<local> DIRECT_URL=<local> VERIFY_API_URL=http://localhost:4036/api/v1 \
  *   CRM_KEY_DIR=<dir with private.pem> npx tsx src/scripts/verify-crm-media.ts
@@ -56,6 +50,7 @@ const check = (name: string, ok: boolean, detail: unknown = '') => {
 const brief = (r: any) => `${r?.status} ${JSON.stringify(r?.data).slice(0, 300)}`;
 const call = (method: string, path: string, headers: Record<string, string> = {}, data?: any) =>
   axios.request({ method, url: `${BASE}${path}`, headers, data, validateStatus: () => true, timeout: 120_000, maxBodyLength: Infinity, maxContentLength: Infinity });
+const throws = async (fn: () => unknown) => { try { await fn(); return null; } catch (e: any) { return e; } };
 
 const privateKey = fs.readFileSync(`${process.env.CRM_KEY_DIR}/private.pem`, 'utf8');
 const tokenFor = (claims: { clientId?: string; userId?: string; scope?: string[] } = {}) => ({
@@ -99,316 +94,167 @@ async function main() {
   const on = await call('PUT', `/internal/modules/crm/shops/${SHOP}`, tokenFor());
   check('CRM switches the shop on', on.status === 200, brief(on));
 
-  // A real photo: 2400 x 1800, so it must be made smaller; and a product with it as its photo.
-  const jpeg = await sharp({ create: { width: 2400, height: 1800, channels: 3, background: '#8b1a2b' } }).jpeg({ quality: 92 }).toBuffer();
-  const b64 = jpeg.toString('base64');
-
-  console.log('\n1. WHO MAY');
-  let r = await call('POST', crm('/campaign-media'), tokenFor({ scope: ['session:read'] }), { base64: b64 });
-  check('a token without modules:crm: refused', r.status === 403 && /modules:crm/.test(r.data?.message), brief(r));
-  r = await call('POST', crm('/campaign-media', OTHER), as(theirs, OTHER), { base64: b64 });
-  check('a shop that has not switched CRM on: 404 in words', r.status === 404 && r.data?.message === 'This shop has not switched CRM on.', brief(r));
-  r = await call('POST', crm('/campaign-media'), as(theirs, OTHER), { base64: b64 });
-  check('a token for another shop: refused', r.status === 403 && /another shop/.test(r.data?.message), brief(r));
-  r = await call('POST', crm('/campaign-media'), tokenFor(), { base64: b64 });
-  check('nobody named: refused (a picture is made FOR a person)', r.status === 403 && /Say who this is for/.test(r.data?.message), brief(r));
-  r = await call('POST', crm('/campaign-media'), as(store), { base64: b64 });
-  check('a storekeeper (may not send messages): refused, naming both permissions', r.status === 403 && r.data?.message === 'That person may not do this in Inventory (needs campaign:send or crm:messages:send).', brief(r));
-  r = await call('POST', crm('/campaign-media'), as(gone), { base64: b64 });
-  check('a person whose account is switched off: refused', r.status === 403 && /switched off/.test(r.data?.message), brief(r));
-  r = await call('GET', crm('/product-photos'), as(store));
-  check('the product-photo list needs the same permission', r.status === 403, brief(r));
-  check('nothing was stored by any refused call', (await prisma.campaignMedia.count({ where: { clientId: { in: [SHOP, OTHER] } } })) === 0);
-
-  console.log('\n2. AN UPLOAD');
-  const words = async (body: any) => (await call('POST', crm('/campaign-media'), as(owner), body));
-  r = await words({});
-  check('no picture: 400 "Choose a picture to upload."', r.status === 400 && r.data?.message === 'Choose a picture to upload.', brief(r));
-  r = await words({ base64: 'not base64 at all!' });
-  check('not base64: 400 "The picture could not be read. Choose it again."', r.status === 400 && r.data?.message === 'The picture could not be read. Choose it again.', brief(r));
-  r = await words({ base64: Buffer.from('this is a text file, not a picture').toString('base64') });
-  check('base64 of something that is not a picture: 400 in words, no file stored', r.status === 400 && typeof r.data?.message === 'string' && !/sharp|vips|Error:/i.test(r.data.message) && (await prisma.campaignMedia.count({ where: { clientId: SHOP } })) === 0, brief(r));
-  r = await words({ base64: 'A'.repeat(16 * 1024 * 1024 * 4 / 3) });
-  check('over 15 MB: refused in words (never decoded)', [400, 413].includes(r.status) && /larger than 15 MB/.test(r.data?.message), brief(r));
-  r = await words({ base64: `data:image/jpeg;base64,${b64}`, byName: 'ignored' });
-  const up = r.data?.data;
-  const STORAGE = process.env.STORAGE_LIVE === '1';
-  if (STORAGE) {
-    check('a 2400 x 1800 photo (as a data: address): 200, exactly { id, url, width, height, byteSize }', r.status === 200 && Object.keys(up ?? {}).sort().join() === 'byteSize,height,id,url,width', brief(r));
-    check('...made ready for WhatsApp: at most 1,600 px on its longer side, under 1 MB', up?.width === 1600 && up?.height === 1200 && up?.byteSize > 0 && up?.byteSize < 1024 * 1024, up);
-    const row = up?.id ? await prisma.campaignMedia.findUnique({ where: { id: up.id } }) : null;
-    check('...kept for this shop, marked source CRM, made by the person named', row?.clientId === SHOP && row?.source === 'CRM' && row?.createdById === owner.id, row);
-  } else {
-    check('a good 2400 x 1800 photo passes every check and reaches the saving step: there (storage cut off here) the app\'s own words, 503, nothing left behind',
-      r.status === 503 && r.data?.message === 'The picture could not be saved just now. Please try again.' && (await prisma.campaignMedia.count({ where: { clientId: SHOP } })) === 0, brief(r));
-  }
-
-  console.log('\n3. A PRODUCT PHOTO AS THE PICTURE');
+  // The shop's products: one with a photo in our storage, one with none.
+  const ourPhoto = `${process.env.LOCAL_STORAGE_URL ?? 'http://127.0.0.1:9'}/storage/v1/object/public/inventory-images/test/${STAMP}.jpg`;
   const product = await prisma.product.create({ data: { clientId: SHOP, productCode: `CM-${STAMP}`, slug: `cm-${STAMP}`, title: 'Kanchi silk saree', category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, basePrice: 9000, status: 'ACTIVE' as any } as any });
-  // A photo "in our storage": the address starts with this server's own storage (the cut-off one here).
-  const ourPhoto = up?.url ?? `${process.env.LOCAL_STORAGE_URL ?? 'http://127.0.0.1:9'}/storage/v1/object/public/inventory-images/test/${STAMP}.jpg`;
   const image = await prisma.productImage.create({ data: { productId: product.id, url: ourPhoto, imageType: 'GALLERY' as any, orderIndex: 0, isPrimary: true } as any });
   await prisma.product.create({ data: { clientId: SHOP, productCode: `CM2-${STAMP}`, slug: `cm2-${STAMP}`, title: 'No photo yet', category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, basePrice: 100, status: 'ACTIVE' as any } as any });
-  r = await call('GET', crm('/product-photos'), as(owner));
-  const list = r.data?.data ?? [];
-  check('the list: this shop\'s products that HAVE photos, with names and photos only', r.status === 200 && list.length === 1 && list[0].id === product.id && list[0].title === 'Kanchi silk saree'
-    && JSON.stringify(Object.keys(list[0]).sort()) === '["id","images","title"]' && list[0].images[0]?.id === image.id && JSON.stringify(Object.keys(list[0].images[0]).sort()) === '["id","url"]', brief(r));
-  r = await call('GET', crm('/product-photos?q=kanchi'), as(owner));
-  check('...searched by name ("kanchi" finds it, any letter case)', r.data?.data?.length === 1);
-  r = await call('GET', crm('/product-photos?q=zzz-nothing'), as(owner));
-  check('...a search that matches nothing: an empty list, not an error', r.status === 200 && Array.isArray(r.data?.data) && r.data.data.length === 0, brief(r));
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: image.id });
-  const fromP = r.data?.data;
-  if (STORAGE) {
-    const pRow = fromP?.id ? await prisma.campaignMedia.findUnique({ where: { id: fromP.id } }) : null;
-    check('from a product photo: 200, the same answer, source CRM, the product remembered', r.status === 200 && Object.keys(fromP ?? {}).sort().join() === 'byteSize,height,id,url,width' && pRow?.source === 'CRM' && pRow?.productId === product.id, brief(r));
-  } else {
-    check('from this shop\'s own product photo: it passes every check and goes to fetch it from our storage (cut off here: 503 in words)', r.status === 503 && r.data?.message === 'That product photo could not be loaded just now. Please try again.', brief(r));
-  }
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: 'nope' });
-  check('a photo id that is not one: 400 "Choose one of the product photos."', r.status === 400 && r.data?.message === 'Choose one of the product photos.', brief(r));
   const otherProduct = await prisma.product.create({ data: { clientId: OTHER, productCode: `OT-${STAMP}`, slug: `ot-${STAMP}`, title: 'Theirs', category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, basePrice: 1, status: 'ACTIVE' as any } as any });
   const otherImage = await prisma.productImage.create({ data: { productId: otherProduct.id, url: ourPhoto, imageType: 'GALLERY' as any, orderIndex: 0, isPrimary: true } as any });
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: otherImage.id });
-  check('another shop\'s product photo: 404 "That product photo was not found."', r.status === 404 && r.data?.message === 'That product photo was not found.', brief(r));
-  const outside = await prisma.productImage.create({ data: { productId: product.id, url: 'https://example.com/elsewhere.jpg', imageType: 'GALLERY' as any, orderIndex: 1, isPrimary: false } as any });
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: outside.id });
-  check('a photo stored somewhere else: refused in words (never fetched)', r.status === 400 && /not stored with ScaleEzy/.test(r.data?.message), brief(r));
 
-  console.log('\n5. WORST CASES (CRM\'s list, 18 Nov)');
-  const SAVE_WORDS = 'The picture could not be saved just now. Please try again.';
+  console.log('\n1. WHO MAY READ THE PRODUCT PHOTOS');
+  let r = await call('GET', crm('/product-photos'), tokenFor({ scope: ['session:read'] }));
+  check('a token without modules:crm: refused', r.status === 403 && /modules:crm/.test(r.data?.message), brief(r));
+  r = await call('GET', crm('/product-photos', OTHER), as(theirs, OTHER));
+  check('a shop that has not switched CRM on: 404 in words', r.status === 404 && r.data?.message === 'This shop has not switched CRM on.', brief(r));
+  r = await call('GET', crm('/product-photos'), as(theirs, OTHER));
+  check('a token for another shop: refused', r.status === 403 && /another shop/.test(r.data?.message), brief(r));
+  r = await call('GET', crm('/product-photos'), tokenFor());
+  check('nobody named: refused', r.status === 403 && /Say who this is for/.test(r.data?.message), brief(r));
+  r = await call('GET', crm('/product-photos'), as(store));
+  check('a storekeeper (may not send messages): refused, naming both permissions', r.status === 403 && r.data?.message === 'That person may not do this in Inventory (needs campaign:send or crm:messages:send).', brief(r));
+  r = await call('GET', crm('/product-photos'), as(gone));
+  check('a person whose account is switched off: refused', r.status === 403 && /switched off/.test(r.data?.message), brief(r));
+
+  console.log('\n2. THE OLD PICTURE-MAKING ROUTES ARE GONE (CRM makes its own pictures since 19 Nov)');
+  const small = await sharp({ create: { width: 400, height: 300, channels: 3, background: '#8b1a2b' } }).jpeg().toBuffer();
+  r = await call('POST', crm('/campaign-media'), as(owner), { base64: small.toString('base64') });
+  check('POST campaign-media for the owner: 410 in words (retired), nothing stored', r.status === 410 && /made in ScaleEzy CRM/.test(r.data?.message) && (await prisma.campaignMedia.count({ where: { clientId: SHOP } })) === 0, brief(r));
+  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: image.id });
+  check('POST campaign-media/from-product for the owner: 410 in words (retired), nothing stored', r.status === 410 && /made in ScaleEzy CRM/.test(r.data?.message) && (await prisma.campaignMedia.count({ where: { clientId: SHOP } })) === 0, brief(r));
+  r = await call('GET', crm('/campaign-media'), tokenFor({ clientId: SHOP }));
+  check('...while reading the shop\'s pictures (GET campaign-media) still answers', r.status === 200 && Array.isArray(r.data?.data), brief(r));
+
+  console.log('\n3. PICTURE PREPARATION (Inventory\'s own pictures still go through it)');
+  const big = await sharp({ create: { width: 2400, height: 1800, channels: 3, background: '#8b1a2b' } }).withMetadata({ exif: { IFD0: { Copyright: 'camera' } } } as any).jpeg({ quality: 92 }).toBuffer();
+  const ready = await prepareImage(big);
+  const readyMeta = await sharp(ready.jpeg).metadata();
+  check('a 2400 x 1800 photo: made WhatsApp-ready, 1,600 px on its longer side, under 1 MB, no camera data', readyMeta.format === 'jpeg' && ready.width === 1600 && ready.height === 1200 && ready.jpeg.length < 1024 * 1024 && !readyMeta.exif, { w: ready.width, h: ready.height, bytes: ready.jpeg.length, exif: !!readyMeta.exif });
   const NOT_A_PICTURE = 'That file is not a picture ScaleEzy can read. Use a JPEG or PNG photo.';
-  const upload = (buf: Buffer | string, who: { id: string } = owner, shop = SHOP) =>
-    call('POST', crm('/campaign-media', shop), as(who, shop), { base64: typeof buf === 'string' ? buf : buf.toString('base64') });
-  // "Reached the saving step" here = 503 in the app's words (storage cut off); with real storage = 200 and a row.
-  const reachedSaving = (x: any) => STORAGE ? x.status === 200 && !!x.data?.data?.id : x.status === 503 && x.data?.message === SAVE_WORDS;
-
-  const bomb = bombPng();
+  const words = async (buf: Buffer) => (await throws(() => prepareImage(buf)))?.message ?? 'accepted';
   let t0 = Date.now();
-  r = await upload(bomb);
-  check(`a picture bomb (${Math.round(bomb.length / 1024)} KB that unpacks to 400 megapixels): 400 in words, refused from its header in ${Date.now() - t0} ms, nothing stored`,
-    r.status === 400 && r.data?.message === 'The picture is too large (more than 40 megapixels). Choose a smaller one.' && Date.now() - t0 < 3000
-    && (await prisma.campaignMedia.count({ where: { clientId: SHOP } })) === 0, brief(r));
-
-  r = await upload(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800"><script>alert(document.cookie)</script><rect width="800" height="800" fill="red"/></svg>'));
-  check('an SVG with a <script> inside: 400 "not a picture ScaleEzy can read" (SVG is never accepted, so never stored or served)', r.status === 400 && r.data?.message === NOT_A_PICTURE, brief(r));
-  r = await upload(`data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800"><rect width="800" height="800"/></svg>').toString('base64')}`);
-  check('...a plain SVG named as one in a data: address: refused the same way', r.status === 400 && r.data?.message === NOT_A_PICTURE, brief(r));
-
+  const bomb = bombPng();
+  check(`a picture bomb (${Math.round(bomb.length / 1024)} KB that unpacks to 400 megapixels): refused from its header, in ${Date.now() - t0} ms`, (await words(bomb)) === 'The picture is too large (more than 40 megapixels). Choose a smaller one.' && Date.now() - t0 < 3000);
+  check('an SVG with a <script> inside: "not a picture ScaleEzy can read"', (await words(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800"><script>alert(document.cookie)</script><rect width="800" height="800" fill="red"/></svg>'))) === NOT_A_PICTURE);
   const frameA = await sharp({ create: { width: 600, height: 800, channels: 3, background: '#aa0000' } }).png().toBuffer();
   const frameB = await sharp({ create: { width: 600, height: 800, channels: 3, background: '#0000aa' } }).png().toBuffer();
   const gif = await sharp([frameA, frameB], { join: { animated: true } }).gif({ delay: [300, 300] }).toBuffer();
-  check('(the moving GIF really has 2 frames)', (await sharp(gif).metadata()).pages === 2);
   const still = await prepareImage(gif);
   const stillMeta = await sharp(still.jpeg).metadata();
-  const firstPixel = (await sharp(still.jpeg).raw().toBuffer())[0];
-  check('a moving GIF becomes ONE still JPEG, its first frame (red, not blue), same size', stillMeta.format === 'jpeg' && (stillMeta.pages ?? 1) === 1 && stillMeta.width === 600 && stillMeta.height === 800 && firstPixel > 150, { format: stillMeta.format, pages: stillMeta.pages, w: stillMeta.width, firstPixel });
-  r = await upload(gif);
-  check('...and through the route it passes every check and reaches the saving step', reachedSaving(r), brief(r));
-
-  // An iPhone photo: an HEIF container whose brand says heic. (No HEVC encoder here, so the container is an AVIF
-  // relabelled the way an iPhone labels its own; the check reads that label, as it would on a real one.)
+  check('a moving GIF (2 frames) becomes ONE still JPEG of its first frame (red), same size', (await sharp(gif).metadata()).pages === 2 && stillMeta.format === 'jpeg' && (stillMeta.pages ?? 1) === 1 && stillMeta.width === 600 && (await sharp(still.jpeg).raw().toBuffer())[0] > 150);
   const avif = await sharp(frameA).avif().toBuffer();
   const heic = Buffer.from(avif.toString('latin1').replace(/avif/g, 'heic').replace(/av01/g, 'hvc1').replace(/av1C/g, 'hvcC'), 'latin1');
-  r = await upload(heic);
-  check('an iPhone HEIC photo: 400 with what to do ("Share it as a JPEG ... Most Compatible")', r.status === 400 && r.data?.message === 'This is an iPhone HEIC photo. Share it as a JPEG (or set the camera to "Most Compatible") and choose it again.', brief(r));
-  r = await upload(avif);
-  check('an AVIF photo (Android / Chrome): accepted, NOT told it is an iPhone photo (it was before 18 Nov)', reachedSaving(r), brief(r));
-  const avifStill = await prepareImage(avif);
-  check('...and it is turned into a JPEG like any other', (await sharp(avifStill.jpeg).metadata()).format === 'jpeg');
-
+  check('an iPhone HEIC photo: what to do, in words', (await words(heic)) === 'This is an iPhone HEIC photo. Share it as a JPEG (or set the camera to "Most Compatible") and choose it again.');
+  check('an AVIF photo (Android / Chrome): accepted and made a JPEG, not told it is an iPhone photo', (await sharp((await prepareImage(avif)).jpeg).metadata()).format === 'jpeg');
+  check('an empty file: refused in words', /empty/i.test(await words(Buffer.alloc(0))));
+  check('a text file: "not a picture"', (await words(Buffer.from('this is a text file, not a picture'))) === NOT_A_PICTURE);
   const MB15 = 15 * 1024 * 1024;
-  r = await upload(Buffer.alloc(MB15));
-  check('exactly 15 MB: NOT refused for size (it is allowed); refused only because it is not a picture', r.status === 400 && r.data?.message === NOT_A_PICTURE, brief(r));
-  r = await upload(Buffer.alloc(MB15 + 1));
-  check('15 MB and one byte: 400 "larger than 15 MB"', r.status === 400 && r.data?.message === 'The picture is larger than 15 MB. Choose a smaller one.', brief(r));
-  r = await call('POST', crm('/campaign-media'), as(owner), { base64: 'A'.repeat(22 * 1024 * 1024) });
-  check('a body bigger than the 21 MB the route reads: 413 in the same words, never parsed', r.status === 413 && r.data?.message === 'The picture is larger than 15 MB. Choose a smaller one.', brief(r));
+  check('exactly 15 MB: not refused for size (only for not being a picture)', (await words(Buffer.alloc(MB15))) === NOT_A_PICTURE);
+  check('15 MB and one byte: "larger than 15 MB"', (await words(Buffer.alloc(MB15 + 1))) === 'The picture is larger than 15 MB. Choose a smaller one.');
 
-  r = await upload(jpeg, theirs, SHOP);
-  check('a token for THIS shop naming a person from another shop: 403 "That person is not in this shop."', r.status === 403 && r.data?.message === 'That person is not in this shop.', brief(r));
-  r = await call('GET', crm('/product-photos'), as(theirs, SHOP));
-  check('...the photo list too', r.status === 403 && r.data?.message === 'That person is not in this shop.', brief(r));
-  r = await call('POST', crm('/campaign-media/from-product'), as(gone), { productImageId: image.id });
-  check('a switched-off person cannot make one from a product photo either', r.status === 403 && /switched off/.test(r.data?.message), brief(r));
-
-  // The search: what is typed is looked for as written. Before the fix "%" listed every product with a photo.
+  console.log('\n4. THE PRODUCT PHOTOS CRM CHOOSES FROM');
+  r = await call('GET', crm('/product-photos'), as(owner));
+  const list = r.data?.data ?? [];
+  check('the list: this shop\'s products that HAVE photos, names and photos only', r.status === 200 && list.length === 1 && list[0].id === product.id
+    && JSON.stringify(Object.keys(list[0]).sort()) === '["id","images","title"]' && list[0].images[0]?.id === image.id && JSON.stringify(Object.keys(list[0].images[0]).sort()) === '["id","url"]', brief(r));
   const deal = await prisma.product.create({ data: { clientId: SHOP, productCode: `CM3-${STAMP}`, slug: `cm3-${STAMP}`, title: 'Diwali 50% off silk', category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, basePrice: 500, status: 'ACTIVE' as any } as any });
   await prisma.productImage.create({ data: { productId: deal.id, url: ourPhoto, imageType: 'GALLERY' as any, orderIndex: 0, isPrimary: true } as any });
   const found = async (q: string) => { const x = await call('GET', crm(`/product-photos?q=${encodeURIComponent(q)}`), as(owner)); return x.status === 200 ? (x.data?.data ?? []).map((p: any) => p.title).sort().join(' + ') : `HTTP ${x.status}`; };
-  check('search "%": only the product with a % in its name (not every product)', (await found('%')) === 'Diwali 50% off silk', await found('%'));
-  check('search "50%": finds it', (await found('50%')) === 'Diwali 50% off silk', await found('50%'));
-  check('search "_": nothing (no name has an underscore)', (await found('_')) === '', await found('_'));
-  check('search "k_nchi": nothing ("_" is not "any letter")', (await found('k_nchi')) === '', await found('k_nchi'));
-  check('search "\\": nothing, and no error', (await found('\\')) === '', await found('\\'));
-  check('search "silk": both, any letter case', (await found('SILK')) === 'Diwali 50% off silk + Kanchi silk saree', await found('SILK'));
+  check('search "kanchi": found, any letter case', (await found('KANCHI')) === 'Kanchi silk saree');
+  check('search "%": only the name with a % in it (taken literally)', (await found('%')) === 'Diwali 50% off silk', await found('%'));
+  check('search "_" and "k_nchi": nothing ("_" is not "any letter")', (await found('_')) === '' && (await found('k_nchi')) === '');
+  check('search "\\": nothing, and no error', (await found('\\')) === '');
+  check('search "silk": both', (await found('silk')) === 'Diwali 50% off silk + Kanchi silk saree', await found('silk'));
 
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: image.id.toUpperCase() });
-  check('the photo id in CAPITALS: the same photo (passes every check, reaches the fetch step)', STORAGE ? r.status === 200 : r.status === 503 && r.data?.message === 'That product photo could not be loaded just now. Please try again.', brief(r));
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: otherImage.id.toUpperCase() });
-  check('...another shop\'s photo id in CAPITALS: still 404', r.status === 404 && r.data?.message === 'That product photo was not found.', brief(r));
-
-  const ARCHIVED_WORDS = 'That product is archived or in the bin, so its photos are not used. Bring the product back, or upload the picture instead.';
-  for (const status of ['ARCHIVED', 'TRASHED']) {
-    await prisma.product.update({ where: { id: product.id }, data: { status: status as any } });
-    r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: image.id });
-    check(`a photo of a product that is ${status}: 400 in words, nothing fetched or stored`, r.status === 400 && r.data?.message === ARCHIVED_WORDS, brief(r));
-    check(`...and the ${status} product is not in the photo list`, !(await found('kanchi')).includes('Kanchi'), await found('kanchi'));
-  }
-  await prisma.product.update({ where: { id: product.id }, data: { status: 'ACTIVE' as any } });
-
+  r = await call('GET', crm(`/product-photos/${image.id}`), as(owner));
+  check('one photo: exactly { id, url, productId, title }, this shop\'s', r.status === 200 && Object.keys(r.data?.data ?? {}).sort().join() === 'id,productId,title,url'
+    && r.data.data.id === image.id && r.data.data.url === ourPhoto && r.data.data.productId === product.id && r.data.data.title === 'Kanchi silk saree', brief(r));
+  r = await call('GET', crm(`/product-photos/${image.id.toUpperCase()}`), as(owner));
+  check('...its id in capitals is the same photo', r.status === 200 && r.data.data.id === image.id, brief(r));
   const myVariant = await prisma.productVariant.create({ data: { productId: product.id, clientId: SHOP, variantCode: `CMV-${STAMP}`, sku: `CMV-${STAMP}` } as any });
   const theirVariant = await prisma.productVariant.create({ data: { productId: otherProduct.id, clientId: OTHER, variantCode: `OTV-${STAMP}`, sku: `OTV-${STAMP}` } as any });
   const myVariantPhoto = await prisma.productImage.create({ data: { variantId: myVariant.id, url: ourPhoto, imageType: 'GALLERY' as any, orderIndex: 0, isPrimary: false } as any });
   const theirVariantPhoto = await prisma.productImage.create({ data: { variantId: theirVariant.id, url: ourPhoto, imageType: 'GALLERY' as any, orderIndex: 0, isPrimary: false } as any });
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: theirVariantPhoto.id });
-  check('a colour-only photo (no product on the photo) whose colour belongs to ANOTHER shop: 404', r.status === 404 && r.data?.message === 'That product photo was not found.', brief(r));
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: myVariantPhoto.id });
-  check('...this shop\'s own colour-only photo: allowed (reaches the fetch step)', STORAGE ? r.status === 200 : r.status === 503, brief(r));
-  await prisma.product.update({ where: { id: product.id }, data: { status: 'ARCHIVED' as any } });
-  r = await call('POST', crm('/campaign-media/from-product'), as(owner), { productImageId: myVariantPhoto.id });
-  check('...but not when that colour\'s product is archived', r.status === 400 && r.data?.message === ARCHIVED_WORDS, brief(r));
-  await prisma.product.update({ where: { id: product.id }, data: { status: 'ACTIVE' as any } });
-
-  const before = await prisma.campaignMedia.count({ where: { clientId: SHOP } });
-  t0 = Date.now();
-  const ten = await Promise.all(Array.from({ length: 10 }, () => upload(jpeg)));
-  const after = await prisma.campaignMedia.count({ where: { clientId: SHOP } });
-  if (STORAGE) {
-    const ids = new Set(ten.map(x => x.data?.data?.id));
-    check(`ten uploads at once (${Date.now() - t0} ms): ten pictures, ten rows, no two the same`, ten.every(x => x.status === 200) && ids.size === 10 && after - before === 10, ten.map(x => x.status));
-  } else {
-    check(`ten uploads at once while storage fails (${Date.now() - t0} ms): every one answered in words, NOT ONE half-made row left`, ten.every(x => x.status === 503 && x.data?.message === SAVE_WORDS) && after === before, { statuses: ten.map(x => x.status), before, after });
-  }
-  r = await call('GET', '/health');
-  check('...and the server is still answering (any answer below 500; this address asks for a sign-in)', typeof r.status === 'number' && r.status < 500, brief(r));
-
-  console.log('\n6. WHAT CRM READS TO KEEP ITS OWN PICTURES AND WISHES');
-  r = await call('GET', crm(`/product-photos/${image.id}`), as(owner));
-  check('one product photo: 200, exactly { id, url, productId, title }, this shop\'s', r.status === 200 && Object.keys(r.data?.data ?? {}).sort().join() === 'id,productId,title,url'
-    && r.data.data.id === image.id && r.data.data.url === ourPhoto && r.data.data.productId === product.id && r.data.data.title === 'Kanchi silk saree', brief(r));
-  r = await call('GET', crm(`/product-photos/${image.id.toUpperCase()}`), as(owner));
-  check('...the id in capitals is the same photo', r.status === 200 && r.data.data.id === image.id, brief(r));
+  const outside = await prisma.productImage.create({ data: { productId: product.id, url: 'https://example.com/elsewhere.jpg', imageType: 'GALLERY' as any, orderIndex: 1, isPrimary: false } as any });
   r = await call('GET', crm(`/product-photos/${myVariantPhoto.id}`), as(owner));
   check('...a colour-only photo names its product and title', r.status === 200 && r.data.data.productId === product.id && r.data.data.title === 'Kanchi silk saree', brief(r));
-  for (const [what, id, status, words] of [
+  for (const [what, id, status, msg] of [
     ['another shop\'s photo', otherImage.id, 404, 'That product photo was not found.'],
     ['another shop\'s colour-only photo', theirVariantPhoto.id, 404, 'That product photo was not found.'],
     ['an id that is not one', 'nope', 400, 'Choose one of the product photos.'],
     ['a photo stored somewhere else (never handed out to fetch)', outside.id, 400, 'That product photo is not stored with ScaleEzy, so it cannot be used. Upload the picture instead.']
   ] as const) {
     r = await call('GET', crm(`/product-photos/${id}`), as(owner));
-    check(`...${what}: ${status} in words`, r.status === status && r.data?.message === words, brief(r));
+    check(`...${what}: ${status} in words`, r.status === status && r.data?.message === msg, brief(r));
   }
-  await prisma.product.update({ where: { id: product.id }, data: { status: 'TRASHED' as any } });
-  r = await call('GET', crm(`/product-photos/${image.id}`), as(owner));
-  check('...a binned product\'s photo: 400 in the same words as before', r.status === 400 && r.data?.message === ARCHIVED_WORDS, brief(r));
+  const ARCHIVED_WORDS = 'That product is archived or in the bin, so its photos are not used. Bring the product back, or upload the picture instead.';
+  for (const status of ['ARCHIVED', 'TRASHED']) {
+    await prisma.product.update({ where: { id: product.id }, data: { status: status as any } });
+    r = await call('GET', crm(`/product-photos/${image.id}`), as(owner));
+    const r2 = await call('GET', crm(`/product-photos/${myVariantPhoto.id}`), as(owner));
+    check(`a product that is ${status}: its photo and its colour's photo refused in words, and it leaves the list`, r.status === 400 && r.data?.message === ARCHIVED_WORDS && r2.status === 400 && !(await found('kanchi')).includes('Kanchi'), brief(r));
+  }
   await prisma.product.update({ where: { id: product.id }, data: { status: 'ACTIVE' as any } });
-  r = await call('GET', crm(`/product-photos/${image.id}`), as(store));
-  check('...a storekeeper (may not send messages): 403', r.status === 403, brief(r));
-  r = await call('GET', crm(`/product-photos/${image.id}`), tokenFor());
-  check('...nobody named: 403', r.status === 403 && /Say who this is for/.test(r.data?.message), brief(r));
-  r = await call('GET', crm(`/product-photos/${image.id}`, OTHER), as(theirs, OTHER));
-  check('...a shop without CRM: 404', r.status === 404, brief(r));
 
-  // The shop's pictures, newest first, for CRM to copy once with the same ids.
-  const older = await prisma.campaignMedia.create({ data: { clientId: SHOP, storagePath: `whatsapp-media/r1-${STAMP}.jpg`, url: 'https://example.invalid/r1.jpg', width: 800, height: 600, byteSize: 1000, source: 'UPLOAD', createdAt: new Date(Date.now() - 3600_000) } });
-  const newer = await prisma.campaignMedia.create({ data: { clientId: SHOP, storagePath: `whatsapp-media/r2-${STAMP}.jpg`, url: 'https://example.invalid/r2.jpg', width: 1600, height: 1200, byteSize: 2000, source: 'PRODUCT' } });
-  const theirsPic = await prisma.campaignMedia.create({ data: { clientId: OTHER, storagePath: `whatsapp-media/r3-${STAMP}.jpg`, url: 'https://example.invalid/r3.jpg', width: 1, height: 1, byteSize: 1, source: 'UPLOAD' } });
+  console.log('\n5. INVENTORY\'S HOUSEKEEPING NEVER REMOVES CRM\'S PICTURES');
+  const old = new Date(Date.now() - UNUSED_RETENTION_MS - 86_400_000);
+  const crmA = await prisma.campaignMedia.create({ data: { clientId: SHOP, storagePath: `whatsapp-media/crm-a-${STAMP}.jpg`, url: 'https://example.invalid/a.jpg', width: 1600, height: 1200, byteSize: 90000, source: 'CRM', createdById: owner.id, createdAt: old } });
+  const crmB = await prisma.campaignMedia.create({ data: { clientId: SHOP, storagePath: `whatsapp-media/crm-b-${STAMP}.jpg`, url: 'https://example.invalid/b.jpg', width: 1600, height: 1200, byteSize: 90000, source: 'CRM', productId: product.id, createdById: owner.id, createdAt: old } });
+  const own = await prisma.campaignMedia.create({ data: { clientId: SHOP, storagePath: `whatsapp-media/test-${STAMP}.jpg`, url: 'https://example.invalid/x.jpg', width: 1, height: 1, byteSize: 1, source: 'UPLOAD', createdAt: old } });
+  const removed = await purgeUnusedCampaignMedia(new Date(), { onlyClients: [SHOP] });
+  const left = await prisma.campaignMedia.findMany({ where: { clientId: SHOP }, select: { id: true } });
+  check('three days old, used by nothing Inventory can see: CRM\'s two pictures stay', [crmA.id, crmB.id].every(id => left.some(x => x.id === id)), left);
+  check('...while an unused upload made in Inventory is still cleared', removed === 1 && !left.some(x => x.id === own.id), { removed, left });
+
+  console.log('\n6. THE REST CRM READS');
   r = await call('GET', crm('/campaign-media'), tokenFor({ clientId: SHOP }));
-  const pics = r.data?.data ?? [];
-  check('the shop\'s pictures (no person needed): newest first, exactly { id, url, width, height, createdAt }', r.status === 200 && pics.length === 2 && pics[0].id === newer.id && pics[1].id === older.id
-    && Object.keys(pics[0]).sort().join() === 'createdAt,height,id,url,width' && pics[0].width === 1600, brief(r));
-  check('...never another shop\'s', !pics.some((x: any) => x.id === theirsPic.id));
-
-  // The old wish settings, for CRM to copy once.
+  check('the shop\'s pictures (no person needed): newest first, exactly { id, url, width, height, createdAt }', r.status === 200 && r.data.data.length === 2
+    && Object.keys(r.data.data[0]).sort().join() === 'createdAt,height,id,url,width', brief(r));
   r = await call('GET', crm('/wish-settings'), tokenFor({ clientId: SHOP }));
   check('wish settings of a shop that never set any: both off, no words, no picture', r.status === 200 && JSON.stringify(r.data.data) === JSON.stringify({ birthday: { on: false, text: null, media: null }, anniversary: { on: false, text: null, media: null } }), brief(r));
-  await prisma.loyaltySettings.create({ data: { clientId: SHOP, birthdayWish: true, birthdayText: 'Happy birthday {name}!', birthdayMediaId: newer.id, anniversaryWish: false, anniversaryText: 'Happy anniversary', anniversaryMediaId: theirsPic.id } as any });
+  const theirPic = await prisma.campaignMedia.create({ data: { clientId: OTHER, storagePath: `whatsapp-media/r3-${STAMP}.jpg`, url: 'https://example.invalid/r3.jpg', width: 1, height: 1, byteSize: 1, source: 'UPLOAD' } });
+  await prisma.loyaltySettings.create({ data: { clientId: SHOP, birthdayWish: true, birthdayText: 'Happy birthday {name}!', birthdayMediaId: crmA.id, anniversaryWish: false, anniversaryText: 'Happy anniversary', anniversaryMediaId: theirPic.id } as any });
   r = await call('GET', crm('/wish-settings'), tokenFor({ clientId: SHOP }));
   const ws = r.data?.data;
   check('...with them set: on, the words, and the picture with its address and size', r.status === 200 && ws.birthday.on === true && ws.birthday.text === 'Happy birthday {name}!'
-    && JSON.stringify(ws.birthday.media) === JSON.stringify({ id: newer.id, url: newer.url, width: 1600, height: 1200 }) && ws.anniversary.on === false && ws.anniversary.text === 'Happy anniversary', brief(r));
+    && JSON.stringify(ws.birthday.media) === JSON.stringify({ id: crmA.id, url: crmA.url, width: 1600, height: 1200 }) && ws.anniversary.on === false, brief(r));
   check('...a picture id that points at ANOTHER shop\'s picture is not handed out', ws?.anniversary.media === null, ws?.anniversary);
   r = await call('GET', crm('/wish-settings'), tokenFor({ clientId: SHOP, userId: store.id }));
   check('...a storekeeper named (may not see customers): 403, naming the permission', r.status === 403 && /customer:view/.test(r.data?.message), brief(r));
   await prisma.loyaltySettings.delete({ where: { clientId: SHOP } });
-  await prisma.campaignMedia.deleteMany({ where: { id: { in: [older.id, newer.id, theirsPic.id] } } });
-
-  // The first day CRM wishes: always there for a CRM shop, worked out once, never sliding.
-  const todayKey = localDayKey(new Date(), 'Asia/Kolkata');
-  const tomorrowKey = (() => { const [y, m, d] = todayKey.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10); })();
-  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: {} } });
-  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
-  check(`a CRM shop that never moved wishes: GET moved says CRM wishes from today (${todayKey})`, r.status === 200 && r.data.data.wishes?.fromDay === todayKey, brief(r));
-  const stored = await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, select: { moved: true } });
-  check('...and it is kept, so it never slides to a later day', (stored?.moved as any)?.wishes?.fromDay === todayKey, stored?.moved);
-  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: { wishes: { fromDay: '2026-11-01' } } } });
-  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
-  check('...a shop that moved before keeps its own stored day', r.data?.data?.wishes?.fromDay === '2026-11-01', brief(r));
-  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: {} } });
-  const lotToday = await prisma.campaign.create({ data: { clientId: SHOP, source: 'BIRTHDAY', name: `Birthday wishes, today ${STAMP}`, text: 'Happy birthday', status: 'DONE', startedAt: new Date() } as any });
-  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
-  check(`...an older Inventory build already wished this shop today: CRM starts TOMORROW (${tomorrowKey}), never both`, r.data?.data?.wishes?.fromDay === tomorrowKey, brief(r));
-  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: {} } });
-  await prisma.campaign.update({ where: { id: lotToday.id }, data: { status: 'CANCELLED' } });
-  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
-  check(`...but a wish lot STOPPED before anyone got it wished nobody: CRM starts today (${todayKey}), never neither`, r.data?.data?.wishes?.fromDay === todayKey, brief(r));
-  await prisma.campaign.delete({ where: { id: lotToday.id } });
 
   // Points stay Inventory's: CRM's birthday wish reads the total and this year's gift.
+  const todayKey = localDayKey(new Date(), 'Asia/Kolkata');
   const mkCustomer = (clientId: string, name: string, points: number) => prisma.customer.create({ data: { clientId, customerCode: `PT-${name}-${STAMP}`, name, phone: `+9198${String(STAMP).slice(-6)}${points % 100}`.slice(0, 13), loyaltyPoints: points } as any });
   const asha = await mkCustomer(SHOP, 'Asha', 250), ravi = await mkCustomer(SHOP, 'Ravi', 0), foreign = await mkCustomer(OTHER, 'Foreign', 999);
   const pts = (ids: string, shop = SHOP) => call('GET', crm(`/customers/points?ids=${encodeURIComponent(ids)}`, shop), tokenFor({ clientId: shop }));
   r = await pts(`${asha.id},${ravi.id}`);
-  check('points switched off for the shop: each customer with points null, no gift, giftPoints 0 (no gift to wait for)', r.status === 200 && r.data.data.length === 2 && r.data.data.every((x: any) => x.points === null && x.birthdayGift === null && x.giftPoints === 0), brief(r));
+  check('points switched off: points null, no gift, giftPoints 0', r.status === 200 && r.data.data.length === 2 && r.data.data.every((x: any) => x.points === null && x.birthdayGift === null && x.giftPoints === 0), brief(r));
   await prisma.loyaltySettings.create({ data: { clientId: SHOP, enabled: true, birthdayPoints: 100 } as any });
   const year = Number(todayKey.slice(0, 4));
   await giveBirthdayPoints(SHOP, asha.id, year);
-  await giveBirthdayPoints(SHOP, asha.id, year);   // twice, as a retried job would: given once
+  await giveBirthdayPoints(SHOP, asha.id, year);
   r = await pts(`${asha.id.toUpperCase()},${ravi.id},${foreign.id},00000000-0000-4000-8000-000000000000`);
   const byId = Object.fromEntries((r.data?.data ?? []).map((x: any) => [x.customerId, x]));
-  check('points on: Asha 350 (250 + the 100 gift given ONCE), with this year\'s gift given today', r.status === 200 && byId[asha.id]?.points === 350
-    && JSON.stringify(byId[asha.id]?.birthdayGift) === JSON.stringify({ points: 100, givenOn: todayKey }), brief(r));
-  check('...Ravi: 0 points, no gift', byId[ravi.id]?.points === 0 && byId[ravi.id]?.birthdayGift === null, byId[ravi.id]);
-  check('...another shop\'s customer and an unknown id are left out (ids in capitals still match)', r.data.data.length === 2 && !byId[foreign.id], r.data?.data);
-  check('...exactly { customerId, points, birthdayGift, giftPoints }, giftPoints being the gift the shop gives (100)', Object.keys(byId[asha.id] ?? {}).sort().join() === 'birthdayGift,customerId,giftPoints,points' && byId[asha.id]?.giftPoints === 100 && byId[ravi.id]?.giftPoints === 100);
-  await prisma.loyaltyEntry.updateMany({ where: { customerId: asha.id, kind: 'BIRTHDAY' as any }, data: { createdAt: new Date(Date.now() - 3 * 86400000) } });
-  r = await pts(asha.id);
-  check('...a gift given 3 days ago says so (CRM adds the line only on the day)', r.data?.data?.[0]?.birthdayGift?.givenOn !== todayKey && /^\d{4}-\d{2}-\d{2}$/.test(r.data?.data?.[0]?.birthdayGift?.givenOn), brief(r));
-  for (const [what, ids, words] of [
-    ['no ids', '', 'Say which customers: ids=<id>,<id> (up to 200).'],
-    ['201 ids', Array.from({ length: 201 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`).join(','), 'Ask for at most 200 customers at a time.'],
-    ['a name instead of an id', 'Asha', 'Every id must be a customer id from Inventory.']
-  ] as const) {
+  check('points on: Asha 350 (the gift once), given today, giftPoints 100; Ravi 0, no gift', r.status === 200 && byId[asha.id]?.points === 350 && JSON.stringify(byId[asha.id]?.birthdayGift) === JSON.stringify({ points: 100, givenOn: todayKey })
+    && byId[asha.id]?.giftPoints === 100 && byId[ravi.id]?.points === 0 && byId[ravi.id]?.birthdayGift === null, brief(r));
+  check('...another shop\'s customer and an unknown id are left out', r.data.data.length === 2 && !byId[foreign.id]);
+  for (const [what, ids, msg] of [['no ids', '', 'Say which customers: ids=<id>,<id> (up to 200).'], ['a name instead of an id', 'Asha', 'Every id must be a customer id from Inventory.']] as const) {
     r = await pts(ids);
-    check(`...${what}: 400 in words`, r.status === 400 && r.data?.message === words, brief(r));
+    check(`...${what}: 400 in words`, r.status === 400 && r.data?.message === msg, brief(r));
   }
-  r = await call('GET', crm(`/customers/points?ids=${asha.id}`), tokenFor({ clientId: SHOP, userId: store.id }));
-  check('...a storekeeper named (may not see customers): 403', r.status === 403, brief(r));
-  r = await pts(foreign.id, OTHER);
-  check('...a shop without CRM: 404', r.status === 404, brief(r));
-  await prisma.loyaltySettings.delete({ where: { clientId: SHOP } });
-  r = await call('GET', crm('/moved', OTHER), tokenFor({ clientId: OTHER }));
-  check('...a shop without CRM: 404, nothing written for it', r.status === 404 && !(await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: OTHER, module: 'crm' } } })), brief(r));
 
-  console.log('\n4. INVENTORY\'S HOUSEKEEPING NEVER REMOVES CRM\'S PICTURES');
-  const old = new Date(Date.now() - UNUSED_RETENTION_MS - 86_400_000);
-  // CRM's pictures as the routes record them (source CRM; one from a product), three days old, used by nothing
-  // Inventory can see. With real storage they were made above; here they are written as the routes would.
-  if (!STORAGE) {
-    await prisma.campaignMedia.create({ data: { id: '00000000-0000-4000-8000-00000000c001', clientId: SHOP, storagePath: `whatsapp-media/crm-a-${STAMP}.jpg`, url: 'https://example.invalid/a.jpg', width: 1600, height: 1200, byteSize: 90000, source: 'CRM', createdById: owner.id } });
-    await prisma.campaignMedia.create({ data: { id: '00000000-0000-4000-8000-00000000c002', clientId: SHOP, storagePath: `whatsapp-media/crm-b-${STAMP}.jpg`, url: 'https://example.invalid/b.jpg', width: 1600, height: 1200, byteSize: 90000, source: 'CRM', productId: product.id, createdById: owner.id } });
-  }
-  const crmIds = STORAGE ? [up?.id, fromP?.id] : ['00000000-0000-4000-8000-00000000c001', '00000000-0000-4000-8000-00000000c002'];
-  await prisma.campaignMedia.updateMany({ where: { clientId: SHOP }, data: { createdAt: old } });
-  // An unused picture made in Inventory itself, as old: that one must still go.
-  const own = await prisma.campaignMedia.create({ data: { clientId: SHOP, storagePath: `whatsapp-media/test-${STAMP}.jpg`, url: 'https://example.invalid/x.jpg', width: 1, height: 1, byteSize: 1, source: 'UPLOAD', createdAt: old } });
-  const crmBefore = await prisma.campaignMedia.count({ where: { clientId: SHOP, source: 'CRM' } });
-  const removed = await purgeUnusedCampaignMedia(new Date(), { onlyClients: [SHOP] });
-  const left = await prisma.campaignMedia.findMany({ where: { clientId: SHOP }, select: { id: true, source: true } });
-  check('three days old, used by nothing Inventory can see: CRM\'s two pictures stay', crmBefore >= 2 && left.filter(x => x.source === 'CRM').length === crmBefore && crmIds.every(id => left.some(x => x.id === id)), left);
-  check('...while an unused upload made in Inventory is still cleared, as before', removed === 1 && !left.some(x => x.id === own.id), { removed, left });
+  // The hand-over switch: campaigns and wishes are CRM's for every shop, so the switch no longer has them.
+  await prisma.moduleSubscription.update({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, data: { moved: { profile: true, campaigns: true, wishes: { fromDay: '2026-11-01' } } } });
+  r = await call('GET', crm('/moved'), tokenFor({ clientId: SHOP }));
+  check('GET moved: an old row that still holds campaigns and wishes gives back only what is still a switch', r.status === 200 && JSON.stringify(r.data.data) === '{"profile":true}', brief(r));
+  r = await call('PUT', crm('/moved'), as(owner), { campaigns: true, wishes: true, notes: true });
+  const storedMoved = (await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, select: { moved: true } }))?.moved;
+  check('PUT moved that still sends campaigns and wishes: accepted, they are ignored and cleared from the row', r.status === 200 && JSON.stringify(Object.entries(r.data.data).sort()) === JSON.stringify([['notes', true], ['profile', true]]) && JSON.stringify(Object.entries(storedMoved as any).sort()) === JSON.stringify([['notes', true], ['profile', true]]), `${brief(r)} stored ${JSON.stringify(storedMoved)}`);
+  r = await call('PUT', crm('/moved'), as(owner), { notes: 'yes' });
+  check('...a wrong value is still refused in words', r.status === 400 && /notes, onlineViews, card, groups and profile/.test(r.data?.message), brief(r));
+  r = await call('GET', crm('/moved', OTHER), tokenFor({ clientId: OTHER }));
+  check('a shop without CRM: 404, nothing written for it', r.status === 404 && !(await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: OTHER, module: 'crm' } } })), brief(r));
 }
 
 async function cleanup() {

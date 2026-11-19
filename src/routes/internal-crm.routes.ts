@@ -8,7 +8,7 @@ import { customerGroups } from '../services/customer-groups';
 import * as shopReviews from '../services/shop-reviews';
 import { crmHandover } from '../services/crm-handover';
 import { offersState, setOffersConsent, campaigns } from '../services/campaigns';
-import { fromUpload, fromProductImage, productPhoto, mediaOfShop } from '../services/campaigns/media';
+import { productPhoto, mediaOfShop } from '../services/campaigns/media';
 import { wishSettingsOf, pointsForCrm } from '../services/loyalty/loyalty.service';
 import { crmGroups } from '../services/crm-groups';
 import * as crmReads from '../services/crm-reads';
@@ -259,16 +259,15 @@ router.delete('/shops/:clientId/customers/:customerId', shop, person(null),
 
 // ---- The hand-over switch ---------------------------------------------------------------------------
 
-// ---- Campaign pictures (18 Nov 2026) --------------------------------------------------------------
-// Campaigns are made in CRM; Inventory still prepares and stores their pictures (one JPEG, under 1 MB, no
-// hidden camera or GPS data) exactly as its own Campaigns screen did. Made for a person who may send
-// messages. Rows carry source 'CRM' so Inventory's housekeeping never removes them (CRM's database holds
-// what uses them). CRM reads its list of pictures straight from campaign_media by client_id.
+// ---- Pictures for CRM's messages -------------------------------------------------------------------
+// CRM prepares and stores its pictures itself (19 Nov 2026: Inventory's POST campaign-media and
+// campaign-media/from-product are gone). It reads the product photos to choose from, one checked photo
+// to fetch, and (once, at its takeover) the pictures this shop already had. For a person who may send messages.
 const mayPicture = person(['campaign:send', 'crm:messages:send']);
-const pictureBy = (req: Request) => ((req as any).actor?.id as string | undefined) ?? null;
-router.post('/shops/:clientId/campaign-media', shop, mayPicture, act(req => fromUpload(cid(req), pictureBy(req), req.body?.base64, 'CRM'), () => ['PICTURE_ADDED', 'n/a'], 'CAMPAIGN_MEDIA'));
-router.post('/shops/:clientId/campaign-media/from-product', shop, mayPicture,
-  act(req => fromProductImage(cid(req), pictureBy(req), req.body?.productImageId, 'CRM'), () => ['PICTURE_ADDED', 'n/a'], 'CAMPAIGN_MEDIA'));
+// The two retired routes answer in words (410), not with the sign-in refusal an unknown path falls through to.
+const retired = (_req: Request, res: Response) => res.status(410).json({ success: false, message: 'Pictures for messages are made in ScaleEzy CRM now. Inventory no longer makes them.' });
+router.post('/shops/:clientId/campaign-media', shop, retired);
+router.post('/shops/:clientId/campaign-media/from-product', shop, retired);
 router.get('/shops/:clientId/product-photos', shop, mayPicture, act(req => campaigns.productPhotosOf(cid(req), req.query.q)));
 // 18 Nov 2026: CRM prepares and stores pictures itself. It asks for one product photo, checked here (this
 // shop's, not archived or in the bin, in our storage), and fetches the address on its own. And it copies,
@@ -289,7 +288,7 @@ router.get('/shops/:clientId/product-likes', shop, readable, act(req => crmReads
 router.get('/shops/:clientId/products/:productId/photos', shop, readable, act(req => crmReads.photosOf(cid(req), String(req.params.productId))));
 
 router.get('/shops/:clientId/moved', shop, async (req, res) => {
-  try { res.json({ success: true, data: await crmHandover.forCrm(clientIdOf(req)) }); }
+  try { res.json({ success: true, data: await crmHandover.get(clientIdOf(req)) }); }
   catch (error) { return respondWithError(res, error, { status: 500 }); }
 });
 

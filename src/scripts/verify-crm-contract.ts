@@ -132,8 +132,6 @@ async function main() {
     { m: 'POST', p: '/checkins/:checkinId/reopen', guard: 'person' },
     { m: 'PUT', p: '/customers/:customerId/dates', guard: 'person', body: {} },
     { m: 'GET', p: '/customers/:customerId/delete-preview', guard: 'person' },
-    { m: 'POST', p: '/campaign-media', guard: 'person', body: {} },
-    { m: 'POST', p: '/campaign-media/from-product', guard: 'person', body: { productImageId: 'nope' } },
     { m: 'GET', p: '/product-photos', guard: 'person' },
     { m: 'GET', p: '/product-photos/:imageId', guard: 'person' },
     { m: 'GET', p: '/campaign-media', guard: 'readable' },
@@ -244,8 +242,12 @@ async function main() {
       if (x.status >= 400 && !plain(x.data?.message)) unplain.push(`${r.m} ${r.p} -> ${x.status} ${JSON.stringify(x.data).slice(0, 80)}`);
     }
     // Locally the picture upload reaches storage, which is cut off on purpose: 503 in words is its answer.
-    check('every route answers the owner without a crash (no 5xx; the picture upload\'s storage 503 aside)', crashes.filter(c => !/campaign-media/.test(c)).length === 0, crashes);
+    check('every route answers the owner without a crash (no 5xx)', crashes.length === 0, crashes);
     check('...and every refusal is in plain words (no stack, no database talk)', unplain.length === 0, unplain.slice(0, 6));
+  }
+  for (const p of ['/campaign-media', '/campaign-media/from-product']) {
+    const gone = await call('POST', `/internal/modules/crm/shops/${SHOP}${p}`, forShop(SHOP, owner.id), { base64: 'AA==', productImageId: image.id });
+    check(`POST ${p} is retired (19 Nov, CRM makes its own pictures): 410 in words for the owner`, gone.status === 410 && /made in ScaleEzy CRM/.test(gone.data?.message), brief(gone));
   }
   const ev0 = await call('GET', `/internal/modules/crm/shops/${SHOP}/events?after=abc`, key());
   check('the change feed with a bad "after": 400 in words', ev0.status === 400 && plain(ev0.data?.message), brief(ev0));

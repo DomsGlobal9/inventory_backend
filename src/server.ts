@@ -154,11 +154,6 @@ app.use(/^\/api\/v1\/internal\/modules\/crm\/shops\/[^/]+\/groups\/projection$/,
     err?.type === 'entity.too.large'
       ? res.status(413).json({ success: false, message: 'That is more than 8 MB of groups. Send at most 50,000 customers at once.' })
       : next(err));
-app.use(/^\/api\/v1\/internal\/modules\/crm\/shops\/[^/]+\/campaign-media$/, express.json({ limit: '21mb' }),
-  (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) =>
-    err?.type === 'entity.too.large'
-      ? res.status(413).json({ success: false, message: 'The picture is larger than 15 MB. Choose a smaller one.' })
-      : next(err));
 app.use('/api/v1/campaigns/media', carriesLogin, express.json({ limit: '21mb' }),
   (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) =>
     err?.type === 'entity.too.large'

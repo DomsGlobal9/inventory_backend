@@ -7,8 +7,8 @@
  *   1. the Customer card's suggestions and the store list for CRM;
  *   2. customer groups: CRM's (18 Nov 2026), written only through its copy; the old routes refuse;
  *   3. groups, campaigns, campaign templates and pictures reach the change feed;
- *   4. the hand-over switch and its safety rules; since 18 Nov 2026 campaigns and wishes are CRM's for
- *      every shop, so Inventory's jobs send neither whatever the switch says (the keys are still kept);
+ *   4. the hand-over switch; since 19 Nov 2026 it has no campaigns or wishes (CRM's for every shop): a change
+ *      still carrying them is accepted and they are ignored, and Inventory's jobs send neither;
  *   5. the session says which modules the shop has on.
  *
  * Needs the local server (launch config backend-localdb: local DB, TRUSTED_SERVICES_KEYS with the test
@@ -235,77 +235,54 @@ async function main() {
   const notOnShop = await call('PUT', `/internal/modules/crm/shops/${OTHER}/moved`, tokenFor({ clientId: OTHER, userId: ownerB.id }), { notes: true });
   check('a shop without CRM cannot hand anything over: 404', notOnShop.status === 404, brief(notOnShop));
 
-  // Campaigns: refused while one of the shop's own is still going out.
+  // 19 Nov 2026: campaigns and wishes are no longer on the switch (they are CRM's for every shop). A change
+  // that still sends them is accepted and they are ignored: never stored, never given back, nothing checked.
   const actor = { id: owner.id, clientId: SHOP, name: 'Owner Asha', permissions: ['*'], roles: ['SUPER_ADMIN'] };
   const sending = await prisma.campaign.create({ data: { clientId: SHOP, name: 'Diwali offer', text: 'Hi {name}', status: 'SENDING', startedAt: new Date() } });
-  const blocked = await call('PUT', crm('/moved'), asOwnerViaCrm, { campaigns: true });
-  check('campaigns cannot move while "Diwali offer" is sending: 409 naming it', blocked.status === 409 && /Diwali offer \(sending\)/.test(blocked.data?.message), brief(blocked));
-  for (const st of ['PAUSED', 'PREPARING'] as const) {
-    await prisma.campaign.update({ where: { id: sending.id }, data: { status: st } });
-    const b = await call('PUT', crm('/moved'), asOwnerViaCrm, { campaigns: true });
-    check(`...nor while it is ${st.toLowerCase()}`, b.status === 409, brief(b));
-  }
-  // A birthday lot still going out is Inventory's own automatic message, not a campaign that moves.
+  const ignored = await call('PUT', crm('/moved'), asOwnerViaCrm, { campaigns: true, wishes: true });
+  check('PUT moved with campaigns and wishes (even with an old campaign still "sending"): 200, both ignored, the flags as they were', ignored.status === 200
+    && JSON.stringify(ignored.data.data) === '{"notes":true,"onlineViews":true}', brief(ignored));
+  const raw = (await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: SHOP, module: 'crm' } }, select: { moved: true } }))?.moved;
+  check('...and neither key is written to the row', JSON.stringify(raw) === '{"notes":true,"onlineViews":true}', JSON.stringify(raw));
   await prisma.campaign.update({ where: { id: sending.id }, data: { status: 'DONE', finishedAt: new Date() } });
-  const bday = await prisma.campaign.create({ data: { clientId: SHOP, name: 'Birthday wishes, test', text: 'Happy birthday', source: 'BIRTHDAY', status: 'SENDING', startedAt: new Date() } });
-  const moved = await call('PUT', crm('/moved'), asOwnerViaCrm, { campaigns: true });
-  check('once it is done, campaigns move (a birthday lot sending does not block it)', moved.status === 200 && moved.data.data.campaigns === true && moved.data.data.notes === true, brief(moved));
 
-  // 18 Nov 2026: campaigns and wishes are CRM's for EVERY shop. An old campaign or wish lot left SENDING is
-  // never sent from here, whatever moved says. Each has somebody waiting, so the tick's sweep leaves them.
+  // An old campaign or wish lot left SENDING is never sent from here. Each has somebody waiting, so the tick's sweep leaves them.
+  const bday = await prisma.campaign.create({ data: { clientId: SHOP, name: 'Birthday wishes, test', text: 'Happy birthday', source: 'BIRTHDAY', status: 'SENDING', startedAt: new Date() } });
   const manual = await prisma.campaign.create({ data: { clientId: SHOP, name: 'Sneaked in', text: 'Hi', status: 'SENDING', startedAt: new Date() } });
   await prisma.campaignRecipient.create({ data: { campaignId: manual.id, clientId: SHOP, customerId: customer.id } });
   await prisma.campaignRecipient.create({ data: { campaignId: bday.id, clientId: SHOP, customerId: customer.id } });
-  for (const flag of [true, false]) {
-    await crmHandover.set(SHOP, { campaigns: flag });
-    const tick = await runCampaignTick(new Date(), { onlyClients: [SHOP], ignoreHours: true });
-    const waiting = await prisma.campaignRecipient.count({ where: { campaignId: { in: [manual.id, bday.id] }, state: 'WAITING' } });
-    check(`moved.campaigns ${flag}: the tick leaves the shop's old campaign AND old birthday lot alone (nothing handed, both still waiting)`, !tick.some(r => r.clientId === SHOP) && waiting === 2, `${JSON.stringify(tick)} waiting=${waiting}`);
-  }
+  const tick = await runCampaignTick(new Date(), { onlyClients: [SHOP], ignoreHours: true });
+  const waiting = await prisma.campaignRecipient.count({ where: { campaignId: { in: [manual.id, bday.id] }, state: 'WAITING' } });
+  check('the tick leaves the shop\'s old campaign AND old birthday lot alone (nothing handed, both still waiting)', !tick.some(r => r.clientId === SHOP) && waiting === 2, `${JSON.stringify(tick)} waiting=${waiting}`);
   await prisma.campaign.updateMany({ where: { id: { in: [manual.id, bday.id] } }, data: { status: 'CANCELLED' } });
 
-  // Making or starting one in Inventory is refused, with CRM's campaigns switch on or off.
+  // Making or starting one in Inventory is refused.
   await prisma.customer.update({ where: { id: customer.id }, data: { whatsappOffers: true, whatsappOffersAt: new Date() } });
   const oldDraft = await prisma.campaign.create({ data: { clientId: SHOP, name: `Old draft ${STAMP}`, text: 'Hello {name}', status: 'DRAFT', audience: {} } as any });
-  for (const flag of [true, false]) {
-    await crmHandover.set(SHOP, { campaigns: flag });
-    const made = await campaigns.create(actor, { name: `After move ${STAMP}`, text: 'Hello {name}, new arrivals are in.', audience: {} }).then(() => null, (e: any) => e);
-    const started = await campaigns.start(actor, oldDraft.id).then(() => null, (e: any) => e);
-    check(`moved.campaigns ${flag}: making one and starting an old draft are both refused, 409 "sent from ScaleEzy CRM"`, made?.statusCode === 409 && started?.statusCode === 409 && /ScaleEzy CRM/.test(started.message), `${made?.message} / ${started?.message}`);
-  }
+  const made = await campaigns.create(actor, { name: `After move ${STAMP}`, text: 'Hello {name}, new arrivals are in.', audience: {} }).then(() => null, (e: any) => e);
+  const started = await campaigns.start(actor, oldDraft.id).then(() => null, (e: any) => e);
+  check('making one and starting an old draft are both refused, 409 "sent from ScaleEzy CRM"', made?.statusCode === 409 && started?.statusCode === 409 && /ScaleEzy CRM/.test(started.message), `${made?.message} / ${started?.message}`);
   check('...the draft stays a draft, and no other campaign was written', (await prisma.campaign.findUnique({ where: { id: oldDraft.id }, select: { status: true } }))?.status === 'DRAFT'
     && (await prisma.campaign.count({ where: { clientId: SHOP, name: `After move ${STAMP}` } })) === 0);
-  const back = await call('PUT', crm('/moved'), asOwnerViaCrm, { campaigns: false });
-  check('the campaigns key is still stored and given back for CRM (true/false), though Inventory no longer reads it', back.status === 200 && back.data.data.campaigns === false, brief(back));
   await prisma.campaign.update({ where: { id: oldDraft.id }, data: { status: 'CANCELLED' } });
 
-  // Wishes: the key is still stored (CRM's build may send it), and Inventory's daily job makes no wish either way.
+  // Wishes: Inventory's daily job makes no wish, whatever was left switched on before.
   const today = localDayKey(new Date(), TZ);
   const dayAfter = (k: string, d = 1) => { const [y, m, dd] = k.split('-').map(Number); return new Date(Date.UTC(y, m - 1, dd + d)).toISOString().slice(0, 10); };
   const yesterday = dayAfter(today, -1);
-  // A shop with wishes left switched on from before, and points on (the daily job runs for points).
   await prisma.loyaltySettings.create({ data: { clientId: SHOP, enabled: true, birthdayWish: true, anniversaryWish: true, autoPreparedFor: yesterday } as any });
   await prisma.customer.update({ where: { id: customer.id }, data: { birthday: today.slice(5), anniversary: today.slice(5) } });
-  const w1 = await call('PUT', crm('/moved'), asOwnerViaCrm, { wishes: true });
-  check(`wishes: true is still accepted and kept (from ${today})`, w1.status === 200 && w1.data.data.wishes?.fromDay === today, brief(w1));
-  for (const [label, wishes] of [['moved', true], ['given back', false]] as const) {
-    await crmHandover.set(SHOP, { wishes });
-    await prisma.loyaltySettings.update({ where: { clientId: SHOP }, data: { autoPreparedFor: yesterday } });
-    await prisma.campaign.deleteMany({ where: { clientId: SHOP, source: { in: ['BIRTHDAY', 'ANNIVERSARY'] }, status: { not: 'CANCELLED' } } });
-    const prep = await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
-    const lots = await prisma.campaign.count({ where: { clientId: SHOP, source: { in: ['BIRTHDAY', 'ANNIVERSARY'] }, status: { not: 'CANCELLED' } } });
-    check(`wishes ${label}: Inventory's daily job runs (points are Inventory's) but makes NO birthday or anniversary wish`, prep !== null && prep.birthdays === 0 && prep.anniversaries === 0 && lots === 0, `${JSON.stringify(prep)} lots=${lots}`);
-  }
-  check('...the day is still marked prepared', (await prisma.loyaltySettings.findUnique({ where: { clientId: SHOP } }))?.autoPreparedFor === today);
-  await crmHandover.set(SHOP, { wishes: false });
-  await crmHandover.set(SHOP, { campaigns: false });
+  const prep = await prepareShopDay(SHOP, new Date(), { ignoreHours: true });
+  const lots = await prisma.campaign.count({ where: { clientId: SHOP, source: { in: ['BIRTHDAY', 'ANNIVERSARY'] }, status: { not: 'CANCELLED' } } });
+  check('Inventory\'s daily job runs (points are Inventory\'s) but makes NO birthday or anniversary wish', prep !== null && prep.birthdays === 0 && prep.anniversaries === 0 && lots === 0, `${JSON.stringify(prep)} lots=${lots}`);
+  check('...the day is marked prepared', (await prisma.loyaltySettings.findUnique({ where: { clientId: SHOP } }))?.autoPreparedFor === today);
 
   const listed = await call('GET', '/internal/modules/crm/shops', CRM);
   const row = listed.data?.data?.find((r: any) => r.clientId === SHOP);
-  check('the shops list shows movedToCrm for the shop', JSON.stringify(row?.movedToCrm) === '{"notes":true,"onlineViews":true,"campaigns":false,"wishes":null}', JSON.stringify(row));
+  check('the shops list shows movedToCrm for the shop, with no campaigns or wishes in it', JSON.stringify(row?.movedToCrm) === '{"notes":true,"onlineViews":true}', JSON.stringify(row));
   await new Promise(r => setTimeout(r, 1000));
   const hoLog = await prisma.auditLog.count({ where: { clientId: SHOP, entityType: 'CRM_HANDOVER', userId: owner.id } });
-  check('each hand-over change made through the route is in the activity log under the owner (notes, campaigns on, campaigns back, wishes: 4)', hoLog === 4, String(hoLog));
+  check('each hand-over change made through the route is in the activity log under the owner (notes, then the one carrying old keys: 2)', hoLog === 2, String(hoLog));
 
   console.log('\n5. THE SESSION SAYS WHICH MODULES ARE ON');
   const sess = await call('GET', '/auth/session', asOwner);
