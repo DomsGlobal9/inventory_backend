@@ -127,7 +127,7 @@ export async function wishSettingsOf(clientId: string) {
 }
 
 /** Birthday and anniversary wishes are ScaleEzy CRM's (18 Nov 2026), so they cannot be switched on here. */
-export const WISHES_IN_CRM = 'Birthday and anniversary wishes are sent from ScaleEzy CRM now, under Messages.';
+export const WISHES_IN_CRM = 'Birthday and anniversary wishes are sent from ScaleEzy CRM now.';
 
 export async function saveSettings(actor: Actor, input: Record<string, unknown>) {
   if (!may(actor, 'loyalty:manage')) throw forbidden('Setting loyalty points is not part of your role. Ask the owner.');
@@ -603,6 +603,7 @@ export async function giveBirthdayPoints(clientId: string, customerId: string, y
  * For ScaleEzy CRM's birthday wish (18 Nov 2026): each customer's points and this year's birthday gift, read
  * only. Points switched off: points and gift null. A customer of another shop, or unknown: left out.
  * givenOn is the shop's day the gift was given, so CRM adds the gift line only on that day.
+ * pointValuePaise: what one point is worth in paise (null when points are off), so a wish can say "worth Rs X".
  */
 export async function pointsForCrm(clientId: string, rawIds: unknown) {
   const ids = [...new Set(String(rawIds ?? '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean))];
@@ -613,7 +614,7 @@ export async function pointsForCrm(clientId: string, rawIds: unknown) {
   const { timezone } = await getShopSettings(clientId);
   const customers = await prisma.customer.findMany({ where: { clientId, id: { in: ids }, deletedAt: null }, select: { id: true, loyaltyPoints: true } });
   // giftPoints: the shop's birthday gift (0 = none), so CRM need not wait for a gift that never comes.
-  if (!s.enabled) return customers.map(c => ({ customerId: c.id, points: null, birthdayGift: null, giftPoints: 0 }));
+  if (!s.enabled) return customers.map(c => ({ customerId: c.id, points: null, birthdayGift: null, giftPoints: 0, pointValuePaise: null }));
   const year = localDayKey(new Date(), timezone).slice(0, 4);
   const gifts = await prisma.loyaltyEntry.findMany({
     where: { clientId, onceKey: { in: customers.map(c => `BIRTHDAY:${c.id}:${year}`) } },
@@ -621,7 +622,7 @@ export async function pointsForCrm(clientId: string, rawIds: unknown) {
   });
   return customers.map(c => {
     const g = gifts.find(x => x.customerId === c.id);
-    return { customerId: c.id, points: c.loyaltyPoints, birthdayGift: g ? { points: g.points, givenOn: localDayKey(g.createdAt, timezone) } : null, giftPoints: s.birthdayPoints };
+    return { customerId: c.id, points: c.loyaltyPoints, birthdayGift: g ? { points: g.points, givenOn: localDayKey(g.createdAt, timezone) } : null, giftPoints: s.birthdayPoints, pointValuePaise: s.pointValuePaise };
   });
 }
 

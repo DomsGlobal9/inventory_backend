@@ -28,7 +28,6 @@ import { platformAdminService } from '../services/platform-admin.service';
 import { crmHandover } from '../services/crm-handover';
 import { prepareShopDay } from '../services/campaigns/auto';
 import { runCampaignTick } from '../services/campaigns/sender';
-import * as campaigns from '../services/campaigns/campaign.service';
 import { localDayKey } from '../utils/businessDay';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1';
@@ -259,9 +258,11 @@ async function main() {
   // Making or starting one in Inventory is refused.
   await prisma.customer.update({ where: { id: customer.id }, data: { whatsappOffers: true, whatsappOffersAt: new Date() } });
   const oldDraft = await prisma.campaign.create({ data: { clientId: SHOP, name: `Old draft ${STAMP}`, text: 'Hello {name}', status: 'DRAFT', audience: {} } as any });
-  const made = await campaigns.create(actor, { name: `After move ${STAMP}`, text: 'Hello {name}, new arrivals are in.', audience: {} }).then(() => null, (e: any) => e);
-  const started = await campaigns.start(actor, oldDraft.id).then(() => null, (e: any) => e);
-  check('making one and starting an old draft are both refused, 409 "sent from ScaleEzy CRM"', made?.statusCode === 409 && started?.statusCode === 409 && /ScaleEzy CRM/.test(started.message), `${made?.message} / ${started?.message}`);
+  // 19 Nov 2026: Inventory has no campaign routes at all (campaigns are a service of ScaleEzy CRM).
+  void actor;
+  const made = await call('POST', '/campaigns', asOwner, { name: `After move ${STAMP}`, text: 'Hello {name}', audience: {} });
+  const started = await call('POST', `/campaigns/${oldDraft.id}/start`, asOwner, {});
+  check('making one and starting an old draft: there is no such address in Inventory (404 in words)', made.status === 404 && started.status === 404 && made.data?.message === 'There is nothing at this address.', `${brief(made)} / ${brief(started)}`);
   check('...the draft stays a draft, and no other campaign was written', (await prisma.campaign.findUnique({ where: { id: oldDraft.id }, select: { status: true } }))?.status === 'DRAFT'
     && (await prisma.campaign.count({ where: { clientId: SHOP, name: `After move ${STAMP}` } })) === 0);
   await prisma.campaign.update({ where: { id: oldDraft.id }, data: { status: 'CANCELLED' } });

@@ -154,11 +154,6 @@ app.use(/^\/api\/v1\/internal\/modules\/crm\/shops\/[^/]+\/groups\/projection$/,
     err?.type === 'entity.too.large'
       ? res.status(413).json({ success: false, message: 'That is more than 8 MB of groups. Send at most 50,000 customers at once.' })
       : next(err));
-app.use('/api/v1/campaigns/media', carriesLogin, express.json({ limit: '21mb' }),
-  (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) =>
-    err?.type === 'entity.too.large'
-      ? res.status(413).json({ success: false, message: 'The picture is larger than 15 MB. Choose a smaller one.' })
-      : next(err));
 
 /*
  * Two more paths that carry a photograph, and one bug they shared.
@@ -265,6 +260,9 @@ import apiRoutes from './routes/api.routes';
 
 // Mount Routes
 app.use('/api/v1', apiRoutes);
+// An address no route answers: said in words, as every other answer is, never Express's own HTML page
+// ("Cannot POST /api/v1/campaigns" after campaigns left Inventory, 19 Nov 2026).
+app.use('/api', (_req, res) => res.status(404).json({ success: false, message: 'There is nothing at this address.' }));
 // Global Error Handler (Must be last)
 app.use(errorHandler);
 

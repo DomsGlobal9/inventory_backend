@@ -34,7 +34,15 @@ import { markStopped } from './consent';
 import { recentlyOffered } from './audience';
 import { quietGroupOf } from '../customer-groups';
 import { links } from '../links';
-import type { Snapshot } from './campaign.service';
+
+/** What was frozen when a lot was made (today only the points reminder; older lots may carry a link). */
+interface Snapshot {
+  text: string;
+  media: { id: string; url: string; width: number; height: number } | null;
+  link: unknown | null;
+  shopName: string;
+  frozenAt: string;
+}
 
 export const IN_FLIGHT = 3;
 export const SEND_FROM_HOUR = 10;
@@ -66,10 +74,6 @@ type ShopResult = { clientId: string; handed: number; skipped: number; failed: n
  * `ignoreHours` is for tests too.
  */
 export async function runCampaignTick(now = new Date(), opts: { onlyClients?: string[]; ignoreHours?: boolean } = {}) {
-  // Campaigns still making their links: finish those first (a later run carries on if it is big).
-  const { prepareAll } = await import('./campaign.service');
-  await prepareAll({ onlyClients: opts.onlyClients }).catch(e => console.error('[campaigns] preparing links failed:', (e as Error)?.message));
-
   // A claim left by a crash goes back in the queue; its key makes the retry safe.
   await prisma.campaignRecipient.updateMany({
     where: { state: 'HANDING', handedAt: { lt: new Date(now.getTime() - STALE_CLAIM_MS) }, ...(opts.onlyClients ? { clientId: { in: opts.onlyClients } } : {}) },

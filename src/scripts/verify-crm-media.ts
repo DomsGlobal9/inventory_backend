@@ -223,13 +223,41 @@ async function main() {
   check('...a storekeeper named (may not see customers): 403, naming the permission', r.status === 403 && /customer:view/.test(r.data?.message), brief(r));
   await prisma.loyaltySettings.delete({ where: { clientId: SHOP } });
 
+  // The templates the shop saved before campaigns moved, for CRM to copy once: this shop's only, oldest first.
+  r = await call('GET', crm('/campaign-templates'), tokenFor({ clientId: SHOP }));
+  check('campaign templates of a shop that saved none: an empty list, not an error', r.status === 200 && Array.isArray(r.data?.data) && r.data.data.length === 0, brief(r));
+  const t1 = await prisma.campaignTemplate.create({ data: { clientId: SHOP, name: `Diwali ${STAMP}`, text: 'Happy Diwali {name}!', mediaId: crmA.id, link: { type: 'EXTERNAL', target: 'https://shop.example/diwali', days: 30 } as any, createdAt: new Date(Date.now() - 180_000) } });
+  const t2 = await prisma.campaignTemplate.create({ data: { clientId: SHOP, name: `Plain ${STAMP}`, text: 'New sarees are in', createdAt: new Date(Date.now() - 120_000) } });
+  const t3 = await prisma.campaignTemplate.create({ data: { clientId: SHOP, name: `Chat ${STAMP}`, text: 'Ask us', link: { type: 'WHATSAPP', target: 'https://wa.me/919800000000', phone: '+919800000000', chatText: 'Hi', days: 30 } as any, createdAt: new Date(Date.now() - 60_000) } });
+  const t4 = await prisma.campaignTemplate.create({ data: { clientId: SHOP, name: `Odd ${STAMP}`, text: 'Old link', mediaId: theirPic.id, link: { type: 'SOMETHING' } as any } });
+  await prisma.campaignTemplate.create({ data: { clientId: OTHER, name: `Theirs ${STAMP}`, text: 'not yours' } });
+  r = await call('GET', crm('/campaign-templates'), tokenFor({ clientId: SHOP }));
+  const tl = r.data?.data ?? [];
+  check('...with four saved: all four, oldest first, exactly { id, name, text, media, link, updatedAt }', r.status === 200 && tl.map((t: any) => t.id).join() === [t1.id, t2.id, t3.id, t4.id].join()
+    && tl.every((t: any) => Object.keys(t).sort().join() === 'id,link,media,name,text,updatedAt'), brief(r));
+  check('...the words, and the picture with the same id GET campaign-media lists, its address and size', tl[0]?.text === 'Happy Diwali {name}!' && tl[0]?.name === `Diwali ${STAMP}`
+    && JSON.stringify(tl[0]?.media) === JSON.stringify({ id: crmA.id, url: crmA.url, width: 1600, height: 1200 }) && tl[1]?.media === null, tl);
+  check('...a web-page link as { type: EXTERNAL, url }, a chat link as { type: WHATSAPP } (no phone or chat text), none as null', JSON.stringify(tl[0]?.link) === '{"type":"EXTERNAL","url":"https://shop.example/diwali"}'
+    && JSON.stringify(tl[2]?.link) === '{"type":"WHATSAPP"}' && tl[1]?.link === null, tl);
+  check('...a link it cannot read is null, and a picture id pointing at ANOTHER shop\'s picture is not handed out', tl[3]?.link === null && tl[3]?.media === null, tl[3]);
+  check('...another shop\'s template is never in the list', !tl.some((t: any) => t.text === 'not yours'), tl);
+  r = await call('GET', crm('/campaign-templates'), tokenFor({ clientId: SHOP, userId: store.id }));
+  check('...a storekeeper named (may not see customers): 403, naming the permission', r.status === 403 && /customer:view/.test(r.data?.message), brief(r));
+  r = await call('GET', crm('/campaign-templates', OTHER), tokenFor({ clientId: SHOP }));
+  check('...a key for one shop asking for another shop\'s templates: refused, 403 "This token is for another shop."', r.status === 403 && r.data?.message === 'This token is for another shop.', brief(r));
+  r = await call('POST', crm('/campaign-templates'), as(owner), { name: 'x', text: 'y' });
+  // No POST route exists, so the request falls through to the app's sign-in check and is refused there.
+  check('...and nothing can be written there: refused (no such route), and no template made', r.status === 401
+    && (await prisma.campaignTemplate.count({ where: { clientId: SHOP, name: 'x' } })) === 0, brief(r));
+  await prisma.campaignTemplate.deleteMany({ where: { clientId: { in: [SHOP, OTHER] } } });
+
   // Points stay Inventory's: CRM's birthday wish reads the total and this year's gift.
   const todayKey = localDayKey(new Date(), 'Asia/Kolkata');
   const mkCustomer = (clientId: string, name: string, points: number) => prisma.customer.create({ data: { clientId, customerCode: `PT-${name}-${STAMP}`, name, phone: `+9198${String(STAMP).slice(-6)}${points % 100}`.slice(0, 13), loyaltyPoints: points } as any });
   const asha = await mkCustomer(SHOP, 'Asha', 250), ravi = await mkCustomer(SHOP, 'Ravi', 0), foreign = await mkCustomer(OTHER, 'Foreign', 999);
   const pts = (ids: string, shop = SHOP) => call('GET', crm(`/customers/points?ids=${encodeURIComponent(ids)}`, shop), tokenFor({ clientId: shop }));
   r = await pts(`${asha.id},${ravi.id}`);
-  check('points switched off: points null, no gift, giftPoints 0', r.status === 200 && r.data.data.length === 2 && r.data.data.every((x: any) => x.points === null && x.birthdayGift === null && x.giftPoints === 0), brief(r));
+  check('points switched off: points null, no gift, giftPoints 0', r.status === 200 && r.data.data.length === 2 && r.data.data.every((x: any) => x.points === null && x.birthdayGift === null && x.giftPoints === 0 && x.pointValuePaise === null), brief(r));
   await prisma.loyaltySettings.create({ data: { clientId: SHOP, enabled: true, birthdayPoints: 100 } as any });
   const year = Number(todayKey.slice(0, 4));
   await giveBirthdayPoints(SHOP, asha.id, year);
@@ -238,7 +266,11 @@ async function main() {
   const byId = Object.fromEntries((r.data?.data ?? []).map((x: any) => [x.customerId, x]));
   check('points on: Asha 350 (the gift once), given today, giftPoints 100; Ravi 0, no gift', r.status === 200 && byId[asha.id]?.points === 350 && JSON.stringify(byId[asha.id]?.birthdayGift) === JSON.stringify({ points: 100, givenOn: todayKey })
     && byId[asha.id]?.giftPoints === 100 && byId[ravi.id]?.points === 0 && byId[ravi.id]?.birthdayGift === null, brief(r));
+  check('...and each row says what a point is worth: the default, 100 paise (Rs 1)', byId[asha.id]?.pointValuePaise === 100 && byId[ravi.id]?.pointValuePaise === 100, brief(r));
   check('...another shop\'s customer and an unknown id are left out', r.data.data.length === 2 && !byId[foreign.id]);
+  await prisma.loyaltySettings.update({ where: { clientId: SHOP }, data: { pointValuePaise: 25 } });
+  r = await pts(asha.id);
+  check('...the shop makes a point worth 25 paise: the next read says 25, at once', r.status === 200 && r.data.data[0]?.pointValuePaise === 25 && r.data.data[0]?.points === 350, brief(r));
   for (const [what, ids, msg] of [['no ids', '', 'Say which customers: ids=<id>,<id> (up to 200).'], ['a name instead of an id', 'Asha', 'Every id must be a customer id from Inventory.']] as const) {
     r = await pts(ids);
     check(`...${what}: 400 in words`, r.status === 400 && r.data?.message === msg, brief(r));

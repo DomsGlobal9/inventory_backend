@@ -7,8 +7,8 @@ import { customerCard } from '../services/customer-card';
 import { customerGroups } from '../services/customer-groups';
 import * as shopReviews from '../services/shop-reviews';
 import { crmHandover } from '../services/crm-handover';
-import { offersState, setOffersConsent, campaigns } from '../services/campaigns';
-import { productPhoto, mediaOfShop } from '../services/campaigns/media';
+import { offersState, setOffersConsent, productPhotosOf } from '../services/campaigns';
+import { productPhoto, mediaOfShop, templatesOfShop } from '../services/campaigns/media';
 import { wishSettingsOf, pointsForCrm } from '../services/loyalty/loyalty.service';
 import { crmGroups } from '../services/crm-groups';
 import * as crmReads from '../services/crm-reads';
@@ -268,13 +268,15 @@ const mayPicture = person(['campaign:send', 'crm:messages:send']);
 const retired = (_req: Request, res: Response) => res.status(410).json({ success: false, message: 'Pictures for messages are made in ScaleEzy CRM now. Inventory no longer makes them.' });
 router.post('/shops/:clientId/campaign-media', shop, retired);
 router.post('/shops/:clientId/campaign-media/from-product', shop, retired);
-router.get('/shops/:clientId/product-photos', shop, mayPicture, act(req => campaigns.productPhotosOf(cid(req), req.query.q)));
+router.get('/shops/:clientId/product-photos', shop, mayPicture, act(req => productPhotosOf(cid(req), req.query.q)));
 // 18 Nov 2026: CRM prepares and stores pictures itself. It asks for one product photo, checked here (this
 // shop's, not archived or in the bin, in our storage), and fetches the address on its own. And it copies,
 // once, the pictures and wish settings this shop already has, so its drafts and wishes keep working.
 router.get('/shops/:clientId/product-photos/:imageId', shop, mayPicture, act(req => productPhoto(cid(req), req.params.imageId)));
 router.get('/shops/:clientId/campaign-media', shop, readable, act(req => mediaOfShop(cid(req))));
 router.get('/shops/:clientId/wish-settings', shop, readable, act(req => wishSettingsOf(cid(req))));
+// The campaign templates the shop saved before the move, for CRM to copy once (read only).
+router.get('/shops/:clientId/campaign-templates', shop, readable, act(req => templatesOfShop(cid(req))));
 // Points stay Inventory's: CRM's birthday wish reads the total and this year's gift (read only, up to 200).
 router.get('/shops/:clientId/customers/points', shop, readable, act(req => pointsForCrm(cid(req), req.query.ids)));
 // The shop, its online shop and its new pieces, so CRM's messages never read Inventory's tables.

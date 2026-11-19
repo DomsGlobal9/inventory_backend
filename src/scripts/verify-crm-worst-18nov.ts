@@ -151,9 +151,9 @@ async function main() {
   r = await call('PUT', '/loyalty/settings', app, { enabled: true, birthdayWish: false, birthdayText: 'x'.repeat(900), anniversaryWish: false, anniversaryText: 'y', birthdayMediaId: '00000000-0000-4000-8000-000000000001' });
   check('the old Loyalty screen saving its wish fields switched off (even a too-long old text): saved, the wish fields ignored', r.status === 200 && r.data.data?.birthdayWish === false, brief(r));
   r = await call('PUT', '/loyalty/settings', app, { birthdayWish: true });
-  check('...switching a wish on there: 400 in words', r.status === 400 && r.data?.message === 'Birthday and anniversary wishes are sent from ScaleEzy CRM now, under Messages.', brief(r));
+  check('...switching a wish on there: 400 in words', r.status === 400 && r.data?.message === 'Birthday and anniversary wishes are sent from ScaleEzy CRM now.', brief(r));
   r = await call('POST', '/campaigns', app, { name: 'Diwali', text: 'Hello {name}', audience: {} });
-  check('the old Campaigns screen making one: 409 in words', r.status === 409 && r.data?.message === 'Campaigns are made and sent from ScaleEzy CRM now, under Messages.', brief(r));
+  check('the old Campaigns screen making one: no such address any more (404 in words)', r.status === 404 && r.data?.message === 'There is nothing at this address.', brief(r));
   const raviBefore = await tagsOf(ravi.id);
   r = await call('POST', '/customer-groups/members', app, { group: 'VIP', customerIds: [ravi.id] });
   check('the old group screen adding a member: 409 in words, nothing changed', r.status === 409 && r.data?.message === 'Customer groups are made and changed in ScaleEzy CRM now.' && await tagsOf(ravi.id) === raviBefore, brief(r));

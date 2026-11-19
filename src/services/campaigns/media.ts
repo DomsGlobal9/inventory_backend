@@ -1,32 +1,20 @@
 /**
- * Pictures for campaigns and wishes, made ready for WhatsApp.
+ * What is left in Inventory of campaign pictures (19 Nov 2026: campaigns are ScaleEzy CRM's alone, and CRM
+ * makes and stores its own pictures).
  *
- * Whatever the shop gives us -- a product photo, a phone picture, a PNG with a see-through
- * background, a 40-megapixel camera file -- becomes one plain JPEG: at most 1,600 px on its longer
- * side, under 1 MB, sRGB colour, turned the right way up, and with nothing hidden inside it (no GPS
- * position, no camera details). WhatsApp is fussy about big or unusual files; customers' phones on
- * slow networks are too.
- *
- * Each picture is stored ONCE, at a random address in inventory-images/whatsapp-media/, and never
- * changed or replaced: a campaign's page must be able to show exactly the picture that went. The
- * address says nothing about the shop, the campaign or the product. Choosing another picture makes
- * another; ones nothing uses any more are removed by the housekeeping job after a few days.
- *
- * 18 Nov 2026: campaigns are made in ScaleEzy CRM, which asks for its pictures through internal routes
- * (routes/internal-crm.routes.ts). Those rows carry source 'CRM' and are NEVER purged here: the messages
- * and templates that use them live in CRM's own database, which this job cannot see. CRM removes a
- * picture's row once nothing of its own points at it.
+ * - productPhoto / productPhotosOf: the shop's product photos CRM may choose from (checked here).
+ * - mediaOfShop / templatesOfShop: what the shop had saved, for CRM to copy once at its takeover.
+ * - purgeUnused: the housekeeping job removing old pictures nothing uses any more.
+ * - prepareImage: the WhatsApp-sized conversion, kept with its checks (lib/imagePrep does the work).
  */
-import { randomBytes } from 'crypto';
 import { prepareImage as prep, type Prepared } from '../../lib/imagePrep';
 import { prisma } from '../../lib/prisma';
 import { supabase } from '../../lib/supabase';
 import { env } from '../../config/env';
 import { badRequest, notFound } from '../../utils/httpError';
+import { literal } from '../../utils/likeText';
 
 export const BUCKET = 'inventory-images';
-export const FOLDER = 'whatsapp-media';
-export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 export const MAX_PIXELS = 40_000_000;
 export const MAX_SIDE = 1600;
 export const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -49,56 +37,9 @@ export const prepareImage = (input: Buffer) =>
     tooBig: 'That picture could not be made small enough for WhatsApp. Try a simpler photo.'
   });
 
-export const mediaView = (m: { id: string; url: string; width: number; height: number; byteSize: number }) =>
-  ({ id: m.id, url: m.url, width: m.width, height: m.height, byteSize: m.byteSize });
-
-/** Where a picture came from: an upload or a product photo in Inventory, or anything CRM asked for. */
-export type MediaSource = 'UPLOAD' | 'PRODUCT' | 'CRM';
-
-async function store(clientId: string, p: Prepared, extra: { source: MediaSource; productId?: string | null; createdById: string | null }) {
-  const storagePath = `${FOLDER}/${randomBytes(16).toString('hex')}.jpg`;
-  const { error } = await supabase.storage.from(BUCKET).upload(storagePath, p.jpeg, {
-    contentType: 'image/jpeg',
-    upsert: false, // never replace: a new picture is a new address
-    // An hour, not longer: the storage network keeps a copy for as long as this says, even after the
-    // file is deleted (a removed picture, a deleted shop). A campaign's sends are covered anyway --
-    // the WhatsApp Service keeps its own copy while sending.
-    cacheControl: '3600'
-  });
-  if (error) {
-    console.error('[campaign media] upload failed:', error.message);
-    throw Object.assign(new Error('The picture could not be saved just now. Please try again.'), { statusCode: 503 });
-  }
-  const url = supabase.storage.from(BUCKET).getPublicUrl(storagePath).data.publicUrl;
-  try {
-    const row = await prisma.campaignMedia.create({
-      data: { clientId, storagePath, url, width: p.width, height: p.height, byteSize: p.jpeg.length, source: extra.source, productId: extra.productId ?? null, createdById: extra.createdById }
-    });
-    return mediaView(row);
-  } catch (e) {
-    // Nothing points at the file: take it away again rather than leave it in the bucket.
-    await supabase.storage.from(BUCKET).remove([storagePath]).catch(() => undefined);
-    throw e;
-  }
-}
-
-/** A picture the shop uploaded, as base64 (a data: address is fine too). */
-export async function fromUpload(clientId: string, userId: string | null, base64: unknown, source: MediaSource = 'UPLOAD') {
-  if (typeof base64 !== 'string' || !base64) throw badRequest('Choose a picture to upload.');
-  const clean = base64.replace(/^data:[^;,]{0,100};base64,/, '').replace(/\s+/g, '');
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) throw badRequest('The picture could not be read. Choose it again.');
-  // Judged on the encoded length first, so a huge upload is never decoded.
-  if (Math.floor((clean.length * 3) / 4) > MAX_UPLOAD_BYTES + 3) throw badRequest('The picture is larger than 15 MB. Choose a smaller one.');
-  return store(clientId, await prepareImage(Buffer.from(clean, 'base64')), { source, createdById: userId });
-}
-
-/**
- * One of the shop's own product photos. Fetched only from our own storage -- the address comes from
- * the database, and is checked to be ours anyway, so this can never be pointed somewhere else.
- */
 /**
  * One of the shop's own product photos, checked: this shop's product or colour, not archived or in the bin,
- * and stored in our own storage. Used to make a picture here, and (18 Nov 2026) by ScaleEzy CRM, which
+ * and stored in our own storage. Used by ScaleEzy CRM, which
  * fetches the address itself and keeps its own copy (GET internal .../product-photos/:imageId).
  */
 export async function productPhoto(clientId: string, productImageId: unknown) {
@@ -131,29 +72,35 @@ export async function mediaOfShop(clientId: string) {
   });
 }
 
-export async function fromProductImage(clientId: string, userId: string | null, productImageId: unknown, source: MediaSource = 'PRODUCT') {
-  const img = await productPhoto(clientId, productImageId);
-  let bytes: Buffer;
-  try {
-    const res = await fetch(img.url, { redirect: 'error', signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) throw new Error(String(res.status));
-    const declared = Number(res.headers.get('content-length') ?? '');
-    if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) throw badRequest('That product photo is larger than 15 MB. Upload a smaller copy instead.');
-    bytes = Buffer.from(await res.arrayBuffer());
-  } catch (e) {
-    if ((e as any)?.statusCode === 400) throw e;
-    throw Object.assign(new Error('That product photo could not be loaded just now. Please try again.'), { statusCode: 503 });
-  }
-  return store(clientId, await prepareImage(bytes), { source, productId: img.productId, createdById: userId });
+/**
+ * The campaign templates this shop saved while campaigns were Inventory's, read once by ScaleEzy CRM at its
+ * takeover (19 Nov 2026) so nothing the owner saved is lost. Read only; Inventory no longer makes them.
+ * The picture keeps its id (the same one GET campaign-media lists) and only this shop's picture is given.
+ * The link as CRM keeps it: { type: 'EXTERNAL', url } or { type: 'WHATSAPP' }; anything unreadable is null.
+ */
+export async function templatesOfShop(clientId: string) {
+  const rows = await prisma.campaignTemplate.findMany({
+    where: { clientId },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, name: true, text: true, link: true, updatedAt: true, media: { select: { id: true, url: true, width: true, height: true, clientId: true } } }
+  });
+  return rows.map(t => ({
+    id: t.id,
+    name: t.name,
+    text: t.text,
+    media: t.media && t.media.clientId === clientId ? { id: t.media.id, url: t.media.url, width: t.media.width, height: t.media.height } : null,
+    link: linkForCrm(t.link),
+    updatedAt: t.updatedAt
+  }));
 }
 
-/** A picture id sent by the shop: it must be one of its own. */
-export async function ownMedia(clientId: string, id: unknown) {
-  if (id === null || id === undefined || id === '') return null;
-  if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) throw badRequest('That picture was not found. Choose it again.');
-  const m = await prisma.campaignMedia.findFirst({ where: { id, clientId } });
-  if (!m) throw badRequest('That picture was not found. Choose it again.');
-  return m;
+function linkForCrm(raw: unknown): { type: 'EXTERNAL'; url: string } | { type: 'WHATSAPP' } | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.type === 'WHATSAPP') return { type: 'WHATSAPP' };
+  const url = typeof r.target === 'string' ? r.target : typeof r.url === 'string' ? r.url : '';
+  if (r.type === 'EXTERNAL' && /^https?:\/\//i.test(url)) return { type: 'EXTERNAL', url };
+  return null;
 }
 
 /**
@@ -189,4 +136,30 @@ export async function purgeUnused(now = new Date(), opts: { onlyClients?: string
   // A file left behind is only wasted space; the next run cannot find it again, so say so.
   if (error) console.error('[campaign media] rows removed but files left:', gone.join(', '), error.message);
   return gone.length;
+}
+
+/** The shop's products with photos, for ScaleEzy CRM's picture picker (routes/internal-crm, whose person is checked there). */
+export async function productPhotosOf(clientId: string, search: unknown) {
+  const q = typeof search === 'string' ? search.trim().slice(0, 80) : '';
+  const rows = await prisma.product.findMany({
+    where: {
+      clientId,
+      status: { notIn: ['ARCHIVED', 'TRASHED'] },
+      images: { some: {} },
+      // Taken literally: Prisma's contains is an unescaped LIKE, so "%" listed every product and "_" any letter.
+      ...(q ? { OR: [{ title: { contains: literal(q), mode: 'insensitive' } }, { productCode: { contains: literal(q), mode: 'insensitive' } }] } : {})
+    },
+    // No `take` on the photographs any more, and six distinct ones kept below instead.
+    // One photograph of a colour is registered against every size of that colour, so a saree in
+    // three sizes gave the same picture three times -- and six rows could be two pictures shown
+    // three times each. 24 products x a handful of photographs is a small read.
+    select: { id: true, title: true, images: { select: { id: true, url: true, isPrimary: true }, orderBy: [{ isPrimary: 'desc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }] } },
+    orderBy: { updatedAt: 'desc' },
+    take: 24
+  });
+  return rows.map(p => {
+    const seen = new Set<string>();
+    const images = p.images.filter(i => !seen.has(i.url) && seen.add(i.url)).slice(0, 6);
+    return { id: p.id, title: p.title, images: images.map(i => ({ id: i.id, url: i.url })) };
+  });
 }

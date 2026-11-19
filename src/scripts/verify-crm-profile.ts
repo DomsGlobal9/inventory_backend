@@ -109,7 +109,7 @@ async function main() {
   check('delete preview for the owner: removed for good, last 4 digits', r.status === 200 && r.data?.data?.mode === 'REMOVE' && r.data?.data?.phoneLast4 === '3344', brief(r));
 
   console.log('\n2. THE HAND-OVER');
-  r = await call('PUT', `/campaigns/consent/${meena.id}`, asSales, { agreed: false });
+  r = await call('PUT', `/offers-consent/${meena.id}`, asSales, { agreed: false });
   check('profile not moved yet: the app still changes the offers answer', r.status === 200 && r.data?.data?.agreed === false, brief(r));
   r = await call('PUT', crm('/moved'), as(owner), { profile: 'yes' });
   check('the switch takes true or false only', r.status === 400, brief(r));
@@ -120,10 +120,10 @@ async function main() {
   r = await call('GET', '/auth/session', asSales);
   check('the session tells the screens', r.data?.crmMoved?.profile === true, brief(r));
 
-  r = await call('PUT', `/campaigns/consent/${meena.id}`, asSales, { agreed: true });
+  r = await call('PUT', `/offers-consent/${meena.id}`, asSales, { agreed: true });
   check('app: ticking offers is refused, saying where', r.status === 409 && r.data?.message === MOVED_WORDS, brief(r));
-  r = await call('POST', '/campaigns/consent/bulk', asOwner, { customerIds: [meena.id], confirm: true });
-  check('app: marking many agreed is refused too', r.status === 409 && r.data?.message === MOVED_WORDS, brief(r));
+  r = await call('POST', '/offers-consent/bulk', asOwner, { customerIds: [meena.id], confirm: true });
+  check('app: marking many agreed at once is gone (it was the old Campaigns screen\'s): 404 in words', r.status === 404 && r.data?.message === 'There is nothing at this address.', brief(r));
   r = await call('PATCH', `/customers/${meena.id}`, asSales, { birthday: '05-05' });
   check('app: changing the birthday is refused', r.status === 409 && r.data?.message === MOVED_WORDS, brief(r));
   r = await call('PATCH', `/customers/${meena.id}`, asSales, { name: 'Meena S Iyer' });

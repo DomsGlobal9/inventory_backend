@@ -136,6 +136,7 @@ async function main() {
     { m: 'GET', p: '/product-photos/:imageId', guard: 'person' },
     { m: 'GET', p: '/campaign-media', guard: 'readable' },
     { m: 'GET', p: '/wish-settings', guard: 'readable' },
+    { m: 'GET', p: '/campaign-templates', guard: 'readable' },
     { m: 'GET', p: `/customers/points?ids=${customer.id}`, guard: 'readable' },
     { m: 'GET', p: '/profile', guard: 'readable' },
     { m: 'GET', p: '/shop-link', guard: 'readable' },
@@ -276,7 +277,7 @@ async function main() {
 
   console.log('\nD3. CONSENT AND DATES SET IN CRM SHOW IN INVENTORY');
   const yes = await call('PUT', `/internal/modules/crm/shops/${SHOP}/customers/${customer.id}/offers`, forShop(SHOP, owner.id), { agreed: true });
-  const appConsent = await call('GET', `/campaigns/consent/${customer.id}`, app);
+  const appConsent = await call('GET', `/offers-consent/${customer.id}`, app);
   check('CRM records her yes to offers: Inventory\'s app shows yes', yes.status === 200 && appConsent.status === 200 && appConsent.data?.data?.agreed === true, `${brief(yes)} | ${brief(appConsent)}`);
   const dates = await call('PUT', `/internal/modules/crm/shops/${SHOP}/customers/${customer.id}/dates`, forShop(SHOP, owner.id), { birthday: '03-15', anniversary: '12-01' });
   const row = await prisma.customer.findUnique({ where: { id: customer.id }, select: { birthday: true, anniversary: true } });

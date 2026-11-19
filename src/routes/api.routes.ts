@@ -59,7 +59,7 @@ import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
 import dayBookRoutes from './daybook.routes';
 import whatsappRoutes, { whatsappEvents } from './whatsapp.routes';
-import campaignRoutes from './campaign.routes';
+import offersConsentRoutes from './offers-consent.routes';
 import reelLinkRoutes from './reel-links.routes';
 import onlineShopRoutes from './online-shop.routes';
 import loyaltyRoutes from './loyalty.routes';
@@ -233,7 +233,10 @@ router.use('/shelves', hideCost, shelvesRoutes);
 router.use('/support-tickets', supportTicketRoutes);
 router.use('/team', teamRoutes);
 router.use('/whatsapp', whatsappRoutes);
-router.use('/campaigns', campaignRoutes);
+router.use('/offers-consent', offersConsentRoutes);
+// The same three, at the address the app used before 19 Nov, for a browser still holding the old app for a few
+// minutes after a deploy. Only /consent/... answers there; there are no campaign routes in Inventory.
+router.use('/campaigns/consent', offersConsentRoutes);
 // Reel links: the pieces from an Instagram reel behind one link (PLAN-reel-links.md).
 router.use('/reel-links', reelLinkRoutes);
 router.use('/online-shop', onlineShopRoutes);

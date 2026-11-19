@@ -44,6 +44,8 @@ export type PermissionDef = {
    * change a number they cannot read, and the screen they land on is empty.
    */
   implies?: string[];
+  /** No longer used for anything a person does in Inventory: valid on a role, never shown on the roles screen. */
+  retired?: boolean;
   /**
    * True when holding this necessarily exposes what the business paid.
    *
@@ -186,7 +188,9 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   // away, and a campaign speaks to many customers at once from the shop's own number.
   { key: 'loyalty:manage',  group: 'Selling', label: "Set the loyalty points rules, and change a customer's points by hand",
     implies: ['customer:view'], sensitive: true },
-  { key: 'campaign:view',   group: 'Selling', label: 'See WhatsApp campaigns and how they did', implies: ['customer:view'] },
+  // Retired 19 Nov 2026 (campaigns are ScaleEzy CRM's: crm:messages:*). Kept valid so roles that hold them still
+  // save, never shown on the roles screen, and nothing in Inventory checks them except CRM's photo reads.
+  { key: 'campaign:view',   group: 'Selling', label: 'See WhatsApp campaigns and how they did', implies: ['customer:view'], retired: true },
 
   // Gift vouchers (PLAN-gift-vouchers.md). Selling and spending one happens at the POS till with its
   // own key. In Inventory: seeing who holds what, and the few hand changes a shop needs.
@@ -194,7 +198,7 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'voucher:manage',  group: 'Selling', label: 'Switch gift vouchers on, set their rules, and extend or block a voucher',
     implies: ['voucher:view'], sensitive: true },
   { key: 'campaign:send',   group: 'Selling', label: 'Write and send WhatsApp campaigns to customers',
-    implies: ['campaign:view'], sensitive: true },
+    implies: ['campaign:view'], sensitive: true, retired: true },
 
   // Reel links (PLAN-reel-links.md): the pieces from an Instagram reel, behind one link to the online shop.
   { key: 'reel_link:view',   group: 'Selling', label: 'See reel links and how many people opened them' },
@@ -265,9 +269,9 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'crm:customer:merge', group: 'CRM', module: 'crm', implies: ['crm:customer:view'], sensitive: true,
     label: 'Merge duplicate customers' },
   { key: 'crm:lists', group: 'CRM', module: 'crm', implies: ['crm:customer:view'], label: 'Saved lists and customer groups' },
-  { key: 'crm:messages:view', group: 'CRM', module: 'crm', label: 'See WhatsApp messages and how they went' },
+  { key: 'crm:messages:view', group: 'CRM', module: 'crm', label: 'See WhatsApp campaigns and how they went' },
   { key: 'crm:messages:send', group: 'CRM', module: 'crm', implies: ['crm:messages:view'], sensitive: true,
-    label: 'Write and send WhatsApp messages' },
+    label: 'Write and send WhatsApp campaigns' },
   { key: 'crm:reviews', group: 'CRM', module: 'crm', label: 'Reply to and hide reviews' },
   { key: 'crm:team:view', group: 'CRM', module: 'crm', label: 'See This week (how the team did)' },
   { key: 'crm:shop', group: 'CRM', module: 'crm', label: 'Festivals and price ranges' }
@@ -380,7 +384,7 @@ export function grants(granted: readonly string[], required: string): boolean {
 export function catalogueByGroup(modules?: readonly string[]): { group: PermissionGroup; permissions: PermissionDef[] }[] {
   const order: PermissionGroup[] = ['Products', 'Stock', 'Buying', 'Selling', 'Money', 'The shop', 'CRM'];
   // `modules` given: another module's keys only for a shop that has that module. Left out: everything.
-  const shown = (p: PermissionDef) => !p.module || !modules || modules.includes(p.module);
+  const shown = (p: PermissionDef) => !p.retired && (!p.module || !modules || modules.includes(p.module));
   return order
     .map(group => ({ group, permissions: PERMISSIONS.filter(p => p.group === group && shown(p)) }))
     .filter(g => g.permissions.length > 0);

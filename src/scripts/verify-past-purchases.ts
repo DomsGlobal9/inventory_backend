@@ -12,6 +12,7 @@ if (!String(process.env.DATABASE_URL || '').includes(LOCAL) || !String(process.e
   console.error(`Refusing to run: DATABASE_URL and DIRECT_URL must both point at the local copy (${LOCAL}).`);
   process.exit(2);
 }
+import { preview as previewAudience } from '../services/campaigns/audience';
 import fs from 'node:fs';
 import http from 'node:http';
 import jwt from 'jsonwebtoken';
@@ -172,7 +173,7 @@ async function main() {
   eq('...and writes nothing', await shape(), before);
   eq('...not even the record of a load', await prisma.pastPurchaseImport.count({ where: { clientId: C, source: SOURCE } }), 0);
 
-  const offersBefore = (await as('POST', '/campaigns/preview', { audience: {} })).body?.data;
+  const offersBefore = await previewAudience(C, {});
   const myDayBefore = (await as('GET', '/dashboard/my-day')).body?.data?.customersToday;
   const r = await applyImport(C, SOURCE, file, hash);
   eq('loaded', [r.already, r.created, r.matched, r.added], [false, 3, 1, 5]);
@@ -399,7 +400,7 @@ async function main() {
   console.log('\n7. MESSAGES');
   const reachable = await prisma.customer.count({ where: { clientId: C, importSource: { startsWith: SOURCE }, OR: [{ whatsappOffers: true }, { whatsappOffersAt: { not: null } }] } });
   eq('nobody from a load is reachable for offers', reachable, 0);
-  const offersNow = (await as('POST', '/campaigns/preview', { audience: {} })).body?.data;
+  const offersNow = await previewAudience(C, {});
   check('a campaign preview answers', typeof offersNow?.agreedToOffers === 'number' && typeof offersBefore?.agreedToOffers === 'number', offersNow);
   eq('a campaign to everybody reaches exactly as many people as before the load', [offersNow?.agreedToOffers, offersNow?.count], [offersBefore?.agreedToOffers, offersBefore?.count]);
   check('...the numbers are there, waiting for a yes', offersNow?.customersWithPhone > offersBefore?.customersWithPhone, [offersBefore?.customersWithPhone, offersNow?.customersWithPhone]);
