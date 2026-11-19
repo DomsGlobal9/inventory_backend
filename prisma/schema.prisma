@@ -1356,6 +1356,7 @@ model Customer {
   addresses          CustomerAddress[]
   pastPurchases      PastPurchase[]
   boutiqueProfiles   CustomerBoutiqueProfile[]
+  crmLink            CrmCustomerLink?
 
   deletedAt DateTime? @map("deleted_at")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -1366,6 +1367,67 @@ model Customer {
   @@index([clientId])
   @@index([clientId, sourceStore])
   @@map("customers")
+}
+
+/// ScaleEzy CRM owns who a customer is for a shop with CRM on (19 Nov 2026). This is the link from Inventory's
+/// customer to CRM's, and the link job's own retry state. Kept OFF the customers table on purpose: a write there
+/// fires the change feed to CRM, and linking must not send CRM thousands of pointless "changed" events.
+/// Several Inventory copies may point at one CRM customer until CRM's merge event joins them.
+model CrmCustomerLink {
+  customerId    String    @id @map("customer_id")
+  customer      Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  clientId      String    @map("client_id")
+  crmCustomerId String?   @map("crm_customer_id")
+  linkedAt      DateTime? @map("linked_at")
+  attempts      Int       @default(0)
+  nextTryAt     DateTime  @default(now()) @map("next_try_at")
+  lastError     String?   @map("last_error")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([clientId, crmCustomerId])
+  @@index([nextTryAt])
+  @@map("crm_customer_links")
+}
+
+/// ScaleEzy CRM joined two customers: what Inventory moved from the joined copy to the kept one, so CRM's undo
+/// puts back exactly that. Points and store credit move as one ledger line each way, never by rewriting history.
+model CrmCustomerMerge {
+  id           String    @id @default(uuid())
+  clientId     String    @map("client_id")
+  keptId       String    @map("kept_id")
+  droppedId    String    @map("dropped_id")
+  crmKeptId    String    @map("crm_kept_id")
+  crmDroppedId String    @map("crm_dropped_id")
+  crmEventId   String    @map("crm_event_id")
+  /// { "<table>": ["<row id>", ...] } -- the rows that were the joined copy's and became the kept one's
+  moved        Json
+  points       Int       @default(0)
+  creditPaise  Int       @default(0) @map("credit_paise")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  undoneAt     DateTime? @map("undone_at")
+  undoEventId  String?   @map("undo_event_id")
+  /// What the undo could not put back (points or credit already spent), in words.
+  undoNote     String?   @map("undo_note")
+
+  @@unique([crmEventId, droppedId])
+  @@index([clientId, crmDroppedId])
+  @@map("crm_customer_merges")
+}
+
+/// Every event ScaleEzy CRM sent to Inventory, kept so each is applied once (CRM may send one again).
+model CrmInboundEvent {
+  id         String   @id
+  clientId   String   @map("client_id")
+  kind       String
+  subjectId  String?  @map("subject_id")
+  receivedAt DateTime @default(now()) @map("received_at")
+  /// applied | duplicate-skipped | ignored | phone-clash | blocked | not-found ...
+  outcome    String
+  detail     Json?
+
+  @@index([clientId, receivedAt])
+  @@map("crm_inbound_events")
 }
 
 enum SalesOrderStatus {

@@ -61,8 +61,15 @@ export async function deleteCustomer(clientId: string, id: string, confirmRaw: u
   if (!confirm || confirm.toLowerCase() !== expected.toLowerCase()) {
     throw badRequest(last4 ? 'Type the last 4 digits of their number to confirm.' : 'Type their name to confirm.');
   }
-  const phone = c.phone;
+  await removeOrErase(clientId, id, c.phone, mode);
+  return { mode, name: c.name };
+}
 
+/**
+ * The delete itself, after the checks. Also used when ScaleEzy CRM removes a customer it owns
+ * (services/crm-identity): the same erase, the bills kept, the till told.
+ */
+export async function removeOrErase(clientId: string, id: string, phone: string | null, mode: 'ERASE' | 'REMOVE') {
   let reviewPhotos: Awaited<ReturnType<typeof forgetNumberRows>> = [];
   await prisma.$transaction(async (tx) => {
     // For the POS till to erase its own copy: the number they had, noted now (it is gone from the row next).
@@ -103,5 +110,16 @@ export async function deleteCustomer(clientId: string, id: string, confirmRaw: u
     }
   });
   void forgetPhotos(reviewPhotos);
-  return { mode, name: c.name };
+}
+
+/**
+ * ScaleEzy CRM removed a customer it owns: Inventory erases its copy the same way (or removes it, with no
+ * money history). Not done while money is owed or goods are still to go -- the reason is returned instead,
+ * and the copy stays until the shop sorts it out.
+ */
+export async function removeForCrm(clientId: string, id: string): Promise<{ done: true; mode: 'ERASE' | 'REMOVE' } | { done: false; why: string }> {
+  const { c, mode, blocked } = await load(clientId, id);
+  if (blocked) return { done: false, why: blocked };
+  await removeOrErase(clientId, id, c.phone, mode);
+  return { done: true, mode };
 }

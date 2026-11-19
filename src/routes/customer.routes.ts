@@ -25,6 +25,8 @@ const ownerOnlyTakeBack = (req: any, res: any, next: any) => holdsEverything(req
   ? next()
   : res.status(403).json({ success: false, message: 'Only the shop owner can take an import back out.' });
 
+import { forwardStaffEdit } from '../services/crm-identity/staff';
+
 const router = Router();
 
 router.use(tenantMiddleware);
@@ -153,6 +155,9 @@ router.get('/:id', requirePermission('customer:view'), getCustomerById);
 router.patch('/:id', requirePermission('customer:update'), async (req, res, next) => {
   try {
     if (req.body && ('birthday' in req.body || 'anniversary' in req.body)) await refuseIfProfileMoved((req as any).clientId);
+    // A shop whose customers ScaleEzy CRM owns: who they are is changed in CRM first (services/crm-identity).
+    const user = (req as any).user;
+    await forwardStaffEdit((req as any).clientId, String(req.params.id), req.body ?? {}, { id: user?.id, name: user?.name ?? null });
     next();
   } catch (error) { return respondWithError(res, error, { status: 500 }); }
 }, updateCustomer);

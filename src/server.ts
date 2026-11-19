@@ -17,6 +17,7 @@ import { errorHandler } from './middleware/error.middleware';
 import { prisma } from './lib/prisma';
 import { tenantRateLimiter } from './middleware/rate-limiter.middleware';
 import { ModuleOutboxDispatcher } from './services/module-outbox';
+import { CrmLinkWorker } from './services/crm-identity';
 import { SnapshotScheduler } from './jobs/snapshot.scheduler';
 import { HousekeepingScheduler } from './jobs/housekeeping.scheduler';
 import { WhatsAppDayBookScheduler } from './jobs/whatsapp-daybook.scheduler';
@@ -143,6 +144,8 @@ app.use('/api/v1/customers/import', carriesLogin, express.json({ limit: '8mb' })
 // their own paths so nothing else gains a larger body.
 app.use('/api/v1/whatsapp/send', carriesLogin, express.json({ limit: '8mb' }));
 app.use('/api/v1/whatsapp/events', express.raw({ type: '*/*', limit: '1mb' }));
+// ScaleEzy CRM's customer events, signed over the raw bytes like the two above (services/crm-identity).
+app.use('/api/v1/webhooks/crm/events', express.raw({ type: '*/*', limit: '256kb' }));
 // Razorpay signs its webhooks over the raw bytes, exactly like Shopify above. A real delivery is a few
 // kilobytes; the cap keeps a stranger who has learnt the address from sending anything large.
 app.use('/api/v1/payments/webhooks', express.raw({ type: '*/*', limit: '256kb' }));
@@ -243,7 +246,7 @@ app.get('/ready', async (req, res) => {
 // Razorpay's payment webhooks likewise: every shop's confirmations arrive from Razorpay's few
 // addresses, and a limiter counting them together would drop one shop's payments for another's.
 app.use('/api', (req, res, next) =>
-  /^\/v1\/(shopify|storefront|payments\/webhooks|internal)\/|^\/v1\/whatsapp\/events$/.test(req.path) ? next() : tenantRateLimiter(req, res, next));
+  /^\/v1\/(shopify|storefront|payments\/webhooks|internal)\/|^\/v1\/(whatsapp\/events|webhooks\/crm\/events)$/.test(req.path) ? next() : tenantRateLimiter(req, res, next));
 
 // Every response here is per-authenticated-user data (never a static public asset),
 // and Express auto-generates an ETag on JSON bodies by default. Without an explicit
@@ -289,6 +292,8 @@ app.listen(PORT, () => {
     SnapshotScheduler.start();
     StorefrontDispatcherService.start();
     ModuleOutboxDispatcher.start();
+    // Every customer of a shop with CRM on gets CRM's id (waits quietly until both sides are set up).
+    CrmLinkWorker.start();
     HousekeepingScheduler.start();
     WhatsAppDayBookScheduler.start();
     CampaignsScheduler.start();

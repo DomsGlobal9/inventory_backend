@@ -81,7 +81,10 @@ async function main() {
   const plainCat = await roles.getCatalogue(plainActor);
   check('a shop without CRM: no CRM group, the six Inventory groups as before',
     !plainCat.groups.some(g => g.group === 'CRM') && plainCat.groups.length === 6, plainCat.groups.map(g => g.group));
-  check('no Inventory group gained or lost a key', plainCat.groups.reduce((n, g) => n + g.permissions.length, 0) === PERMISSIONS.length - CRM_KEYS.length);
+  // Retired keys (campaign:view/send, 19 Nov: campaigns are CRM's) stay on old roles but are never offered.
+  const offered = PERMISSIONS.filter(p => !(p as any).retired);
+  check('no Inventory group gained or lost a key (retired keys are not offered)', plainCat.groups.reduce((n, g) => n + g.permissions.length, 0) === offered.length - CRM_KEYS.length
+    && !plainCat.groups.some(g => g.permissions.some((p: any) => /^campaign:/.test(p.key))), { shown: plainCat.groups.reduce((n, g) => n + g.permissions.length, 0), expected: offered.length - CRM_KEYS.length });
   const viaApiOwner = await prisma.user.create({ data: { clientId: SHOP, email: `api-owner-${STAMP}@example.com`, name: 'Owner Asha', password: hash, status: 'ACTIVE' as any } });
   await prisma.userRole.create({ data: { userId: viaApiOwner.id, roleId: seeded.SUPER_ADMIN } });
   const app = (u: { id: string }, clientId = SHOP) => ({ Authorization: `Bearer ${AuthService.generateToken({ userId: u.id, clientId })}` });

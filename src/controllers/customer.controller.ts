@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { afterStaffAdd } from '../services/crm-identity/staff';
 import { customerService } from '../services/customer.service';
 import { customerSchema, customerUpdateSchema } from '../validations/customer.schema';
 import { respondWithError } from '../utils/respondWithError';
@@ -26,7 +27,9 @@ export const createCustomer = async (req: Request, res: Response) => {
     if (!parsed.success) return invalid(res, parsed.error.errors);
 
     const customer = await customerService.createCustomer(clientId, parsed.data);
-    res.status(201).json({ success: true, data: customer });
+    // A shop whose customers ScaleEzy CRM owns: linked to CRM at once, and CRM's name for them wins.
+    const crm = await afterStaffAdd(clientId, customer.id).catch(() => null);
+    res.status(201).json({ success: true, data: crm?.name ? { ...customer, name: crm.name } : customer, ...(crm ? { crm } : {}) });
   } catch (error: any) {
     if (error.existingCustomerId) return taken(res, error);
     // `message`, not `error` -- every other endpoint on this API answers with `message`, and the

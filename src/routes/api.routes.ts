@@ -59,6 +59,7 @@ import supplierProductRoutes from './supplier-product.routes';
 import reorderRoutes from './reorder.routes';
 import dayBookRoutes from './daybook.routes';
 import whatsappRoutes, { whatsappEvents } from './whatsapp.routes';
+import { crmEvents } from './crm-events.routes';
 import offersConsentRoutes from './offers-consent.routes';
 import reelLinkRoutes from './reel-links.routes';
 import onlineShopRoutes from './online-shop.routes';
@@ -118,6 +119,10 @@ router.use('/public/tryon', shopperTryOnPublicRoutes);
 // Delivery ticks and account changes from the ScaleEzy WhatsApp Service. Ahead of the gate: the
 // service has no session, and proves itself with a signature checked before anything is read.
 router.post('/whatsapp/events', whatsappEvents);
+
+// ScaleEzy CRM's customer events (it owns who a customer is). Ahead of the gate: CRM's server has no session
+// and proves itself with a signature checked before anything is read.
+router.post('/webhooks/crm/events', crmEvents);
 
 // Payment confirmations from the shops' own Razorpay accounts. Ahead of the gate: Razorpay's servers
 // carry no session. Each delivery is checked against the signature of the shop its address names.
