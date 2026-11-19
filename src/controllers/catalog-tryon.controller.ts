@@ -173,7 +173,12 @@ export class CatalogTryOnController {
       // The same name the job was started under, or the far end is asked to stop something else.
       const result = await catalogTryOnService.cancelJob(clientId, jobKeyFor(clientId, (req.body ?? {}).jobId));
       res.status(200).json({ success: true, data: result });
-    } catch (error) {
+    } catch (error: any) {
+      // The photo studio not answering is not this server breaking: said in words, as starting a job does,
+      // never the bare "fetch failed" a network error carries.
+      if (!error?.statusCode && /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network|socket/i.test(String(error?.message ?? error?.cause?.code ?? ''))) {
+        return res.status(503).json({ success: false, message: 'The photo studio could not be reached just now, so the job was not stopped. Please try again in a minute.' });
+      }
       next(error);
     }
   }

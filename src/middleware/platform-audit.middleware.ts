@@ -46,7 +46,12 @@ const ROUTES: { method: string; pattern: RegExp; action: string; targetType: str
   { method: 'POST',   pattern: /^\/links\/([A-Za-z0-9]{7})\/enable$/,  action: 'ENABLE_SHORT_LINK',           targetType: 'SHORT_LINK' },
   // ScaleEzy's own WhatsApp number linked again, or woken up.
   { method: 'POST',   pattern: /^\/whatsapp\/scaleezy\/link$/,        action: 'LINK_SCALEEZY_WHATSAPP',      targetType: 'WHATSAPP' },
-  { method: 'POST',   pattern: /^\/whatsapp\/scaleezy\/reconnect$/,   action: 'RECONNECT_SCALEEZY_WHATSAPP', targetType: 'WHATSAPP' }
+  { method: 'POST',   pattern: /^\/whatsapp\/scaleezy\/reconnect$/,   action: 'RECONNECT_SCALEEZY_WHATSAPP', targetType: 'WHATSAPP' },
+  // The ScaleEzy Boutique (CRM-B) on a client, and a boutique's request to join Inventory (14-16 Nov 2026).
+  { method: 'PUT',    pattern: /^\/clients\/([^/]+)\/boutique$/,      action: 'LINK_BOUTIQUE',               targetType: 'CLIENT' },
+  { method: 'DELETE', pattern: /^\/clients\/([^/]+)\/boutique$/,      action: 'UNLINK_BOUTIQUE',             targetType: 'CLIENT' },
+  { method: 'POST',   pattern: /^\/boutique-join-requests\/([^/]+)\/accept$/,  action: 'ACCEPT_BOUTIQUE_JOIN',  targetType: 'BOUTIQUE_JOIN_REQUEST' },
+  { method: 'POST',   pattern: /^\/boutique-join-requests\/([^/]+)\/decline$/, action: 'DECLINE_BOUTIQUE_JOIN', targetType: 'BOUTIQUE_JOIN_REQUEST' }
 ];
 
 const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);

@@ -116,6 +116,9 @@ export const crmGroups = {
     const wanted = new Map<string, string[]>();
     for (const [id, names] of entries) {
       if (!ID.test(id)) throw badRequest(`"${id.slice(0, 40)}" is not a customer id from Inventory.`);
+      // The same id in small letters and in capitals is one customer: listed twice is a mistake, never
+      // "the last one wins" (which of two different answers is right cannot be known here).
+      if (wanted.has(id.toLowerCase())) throw badRequest(`Customer ${id.slice(0, 8)} is listed twice (once in capitals). Send each customer once.`);
       wanted.set(id.toLowerCase(), namesFor(names, byKey, `Customer ${id.slice(0, 8)}`));
     }
 

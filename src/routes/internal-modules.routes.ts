@@ -30,9 +30,15 @@ const moduleParam = (req: Request, res: Response): ModuleName | null => {
   res.status(404).json({ success: false, message: 'No such module.' });
   return null;
 };
-// A service may only act for its own module: scope "modules:crm" for CRM.
-const ownModule = (req: Request, res: Response, next: () => void) =>
-  service(req)?.scopes?.includes(`modules:${req.params.module}`) ? next() : res.status(403).json({ success: false, message: 'This service may not act for that module.' });
+// A service may only act for its own module: scope "modules:crm" for CRM. And a key made for ONE shop (it
+// carries clientId) may only switch that shop on or off and read that shop's feed, as every route under
+// /modules/crm/shops/:clientId already insists (internal-crm.routes `shop`). A key for no shop acts for all.
+const ownModule = (req: Request, res: Response, next: () => void) => {
+  if (!service(req)?.scopes?.includes(`modules:${req.params.module}`)) return res.status(403).json({ success: false, message: 'This service may not act for that module.' });
+  const forShop = (service(req) as any)?.clientId as string | undefined;
+  if (forShop && req.params.clientId && forShop !== req.params.clientId) return res.status(403).json({ success: false, message: 'This token is for another shop.' });
+  next();
+};
 
 router.use(rateLimit({
   windowMs: 60 * 1000,
