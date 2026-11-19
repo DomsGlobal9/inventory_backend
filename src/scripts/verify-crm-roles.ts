@@ -140,7 +140,8 @@ async function main() {
   check('the old SALES role still changes consent', r.status === 200 && r.data?.data?.agreed === false, brief(r));
 
   r = await call('POST', crm('/groups'), as(listerUser), { name: `VIP ${STAMP % 1000}` });
-  check('crm:lists makes a customer group', r.status === 200, brief(r));
+  // 18 Nov 2026: groups are CRM's; the old route checks the permission first, then refuses for everybody.
+  check('crm:lists passes the permission check, and the change is refused: groups are made in CRM\'s copy', r.status === 409 && r.data?.message === 'Customer groups are made and changed in ScaleEzy CRM now.', brief(r));
   r = await call('POST', crm('/groups'), as(writerUser), { name: 'Nope group' });
   check('crm:customer:update alone may not', r.status === 403, brief(r));
   r = await call('GET', crm('/groups'), as(floorUser));

@@ -117,8 +117,9 @@ async function main() {
   console.log('\nC. CHANGING A CUSTOMER');
   const old = await prisma.customer.create({ data: { clientId: CLIENT, customerCode: `CUS-PH-${STAMP}`, name: 'Saved Before Phones', status: 'ACTIVE' } });
   made.customerIds.push(old.id);
-  const tagsOnly = await sales.patch(`/customers/${old.id}`, { tags: ['VIP'] });
-  check('groups alone still change for a customer saved without a phone', tagsOnly.status === 200 && tagsOnly.data.data.tags.includes('VIP') && tagsOnly.data.data.phone === null, brief(tagsOnly));
+  // Groups are CRM's since 18 Nov 2026, so the edit that must still work without a phone is a name change.
+  const nameOnly = await sales.patch(`/customers/${old.id}`, { name: 'Saved Before Phones (renamed)' });
+  check('a customer saved without a phone can still be changed (their name), and keeps no phone', nameOnly.status === 200 && nameOnly.data.data.name === 'Saved Before Phones (renamed)' && nameOnly.data.data.phone === null, brief(nameOnly));
   const id = priya.data.data.id;
   for (const [label, body] of [['null', { phone: null }], ['blank', { phone: '' }], ['spaces', { phone: '   ' }]] as [string, any][]) {
     const r = await sales.patch(`/customers/${id}`, body);

@@ -136,7 +136,9 @@ async function main() {
 
   console.log('\n3. THE LOAD');
   // Already a customer of this shop, with their own name, group and consent.
-  const already = await customerService.createCustomer(C, { name: 'Their Own Name', phone: phone(2), tags: ['VIP'] });
+  const already = await customerService.createCustomer(C, { name: 'Their Own Name', phone: phone(2) });
+  // In VIP, as ScaleEzy CRM's groups copy would have put her (groups are CRM's since 18 Nov 2026).
+  await prisma.customer.update({ where: { id: already.id }, data: { tags: ['VIP'] } });
   await setOffersConsent({ id: owner.id, clientId: C, permissions: ['*'], roles: ['SUPER_ADMIN'] } as any, already.id, true).catch(() => null);
   const consentBefore = await prisma.customer.findUniqueOrThrow({ where: { id: already.id }, select: { whatsappOffers: true, whatsappOffersAt: true, tags: true, name: true, customerCode: true, updatedAt: true, importSource: true } });
   // Deleted earlier: their old row must not be picked up, and the number is free.
@@ -320,7 +322,7 @@ async function main() {
   eq('by-phone finds the same row', byPhone?.data?.id ?? byPhone?.id, one.id);
 
   const store = await prisma.stockLocation.findFirstOrThrow({ where: { clientId: C, active: true, type: 'STORE' as any }, select: { id: true } });
-  const variant = await prisma.productVariant.findFirstOrThrow({ where: { clientId: C, sellingPrice: { gt: 0 }, product: { status: 'ACTIVE', trashedAt: null } }, select: { id: true, variantCode: true, sellingPrice: true } });
+  const variant = await prisma.productVariant.findFirstOrThrow({ where: { clientId: C, sellingPrice: { gt: 0 }, product: { status: 'ACTIVE', trashedAt: null, soldBy: 'PIECE' } }, select: { id: true, variantCode: true, sellingPrice: true } });
   await inventoryMutationService.applyMovement({ clientId: C, variantId: variant.id, locationId: store.id, movementType: 'IN', reason: 'PURCHASE_RECEIPT', quantityDelta: 10, unitCost: 1, notes: 'verify-past-purchases top-up', createdBy: 'verify-past-purchases' } as any);
 
   // An order from the app: the screen finds them by number, then bills that row.

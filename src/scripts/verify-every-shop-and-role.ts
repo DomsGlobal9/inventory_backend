@@ -155,9 +155,13 @@ async function partA() {
   const firstQuote = await paced(() => people.SALES.api.post('/pricing/quote', { locationId: store.id, lines: line }));
   check('  ...a salesperson now prices the saree at 10% off', un(firstQuote)?.discountTotal === 500, brief(firstQuote));
 
-  const vipCustomer = await paced(() => people.SALES.api.post('/customers', { name: 'First VIP', phone: `7${String(STAMP).slice(-9)}`, tags: ['VIP'] }));
+  const withGroup = await paced(() => people.SALES.api.post('/customers', { name: 'Group First', phone: `6${String(STAMP).slice(-9)}`, tags: ['VIP'] }));
+  check("a salesperson cannot put a new customer in a group from Inventory (groups are ScaleEzy CRM's)", withGroup.status === 409 && withGroup.data?.message === 'Customer groups are made and changed in ScaleEzy CRM now.', brief(withGroup));
+  const vipCustomer = await paced(() => people.SALES.api.post('/customers', { name: 'First VIP', phone: `7${String(STAMP).slice(-9)}` }));
   const vipId = un(vipCustomer)?.id;
-  check("a salesperson adds the shop's first customer, straight into the VIP group", vipCustomer.status === 201 && (un(vipCustomer)?.tags ?? []).includes('VIP'), brief(vipCustomer));
+  // CRM's copy puts her in VIP (it writes customers.tags, as PUT internal .../groups/projection does).
+  if (vipId) await prisma.customer.update({ where: { id: vipId }, data: { tags: ['VIP'] } });
+  check("a salesperson adds the shop's first customer; CRM's copy puts her in VIP", vipCustomer.status === 201 && !!vipId, brief(vipCustomer));
   const walkIn = await prisma.customer.create({ data: { clientId: SHOP, customerCode: 'CUS-W', name: 'Walk-in', status: 'ACTIVE' } });
   const vipOffer = await offerService.create(SHOP, { ...draftFor('VIP extra 5%'), value: 5, stackable: true, customerTags: ['vip'] } as any, people.ADMIN.id) as any;
   await offerService.setStatus(SHOP, vipOffer.id, 'ACTIVE', people.ADMIN.id);

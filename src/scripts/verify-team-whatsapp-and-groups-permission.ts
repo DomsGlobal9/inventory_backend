@@ -4,8 +4,9 @@
  *   A  adding a team member takes their mobile, stored the app's one way; a bad number is refused in words
  *   B  "send login on WhatsApp": asks for a number when there is none, saves one typed, refuses an
  *      Admin sending a Super Admin's login, and says in words when the shop's WhatsApp is not connected
- *   C  customer:manage_groups: Sales (customer:update only) may put customers in a group but not change
- *      its rules, name, merge or delete it; Admin may; every shop's ADMIN holds the new permission
+ *   C  customer groups are ScaleEzy CRM's since 18 Nov 2026: the permission is still checked first (Sales may
+ *      not touch a group's rules, name or existence: 403), and then every change is refused for everybody,
+ *      Admin included (409 in words); every shop's ADMIN still holds customer:manage_groups (CRM twins it)
  *
  * Needs the local backend on 4006. Nothing is sent to a real phone: the demo shop has no connected
  * WhatsApp, which is exactly the refusal B checks. Removes the people and groups it made.
@@ -70,7 +71,7 @@ async function main() {
   console.log('\nC. MANAGE CUSTOMER GROUPS');
   const cust = await prisma.customer.create({ data: { clientId: C, customerCode: `EGP-${STAMP % 1e6}`, name: 'Edge Perm Customer' } });
   r = await sales.post('/customer-groups/members', { group: 'Edge Perm Group', customerIds: [cust.id] });
-  check('Sales may put a customer in a group (customer:update, as on the customer page)', r.status === 200 && r.data?.added === 1, r);
+  check('Sales putting a customer in a group: 409, groups are made in ScaleEzy CRM', r.status === 409 && r.message === 'Customer groups are made and changed in ScaleEzy CRM now.', r);
   r = await sales.patch(`/customer-groups/${encodeURIComponent('edge perm group')}/rules`, { noOfferMessages: true });
   check('...but not switch "no offer messages" (403)', r.status === 403, r.status);
   r = await sales.post(`/customer-groups/${encodeURIComponent('edge perm group')}/rename`, { name: 'Edge Renamed' });
@@ -80,12 +81,11 @@ async function main() {
   r = await sales.post('/customer-groups', { name: 'Edge Sales Made' });
   check('...nor make an empty group in Settings (403)', r.status === 403, r.status);
   r = await sales.del(`/customer-groups/${encodeURIComponent('edge perm group')}/members/${cust.id}`);
-  check('...and may take the customer out again', r.status === 200, r);
-  await sales.post('/customer-groups/members', { group: 'Edge Perm Group', customerIds: [cust.id] });
+  check('...and taking a customer out: 409 too', r.status === 409 && r.message === 'Customer groups are made and changed in ScaleEzy CRM now.', r);
   r = await admin.patch(`/customer-groups/${encodeURIComponent('edge perm group')}/rules`, { noOfferMessages: true });
-  check('Admin may change the rules', r.status === 200 && r.data?.noOfferMessages === true, r);
+  check('Admin passes the permission check, and the change is refused: 409 in words', r.status === 409 && r.message === 'Customer groups are made and changed in ScaleEzy CRM now.', r);
   r = await admin.del(`/customer-groups/${encodeURIComponent('edge perm group')}`);
-  check('Admin may delete the group', r.status === 200, r);
+  check('...deleting a group too', r.status === 409 && r.message === 'Customer groups are made and changed in ScaleEzy CRM now.', r);
   await prisma.customer.delete({ where: { id: cust.id } });
   const lacking = await prisma.role.count({ where: { name: 'ADMIN', NOT: { permissions: { some: { permission: { key: 'customer:manage_groups' } } } } } });
   check("every shop's ADMIN holds customer:manage_groups", lacking === 0, lacking);

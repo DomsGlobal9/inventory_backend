@@ -15,6 +15,7 @@
  *
  *   npx tsx src/scripts/verify-offer-rules-b.ts
  */
+import { normaliseTags } from '../services/offers/rules';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
@@ -163,8 +164,11 @@ async function main() {
 
   // ── C. CUSTOMER GROUPS ─────────────────────────────────────────────────
   console.log('\nC. VIP CUSTOMERS ONLY');
-  const tagged: any = await customerService.updateCustomer(CLIENT, meena, { tags: [' vip ', 'VIP', 'Wedding  party'] });
-  check('customer groups are tidied: trimmed, one VIP, spaces squeezed', JSON.stringify(tagged.tags) === JSON.stringify(['vip', 'Wedding party']), JSON.stringify(tagged.tags));
+  // Groups are CRM's since 18 Nov 2026: Inventory refuses the change, and CRM's copy writes the tidied names.
+  const refusedTags = await customerService.updateCustomer(CLIENT, meena, { tags: ['VIP'] }).then(() => null, (e: any) => e);
+  check('changing a customer\'s groups in Inventory is refused (they are CRM\'s)', refusedTags?.statusCode === 409, refusedTags?.message ?? 'it was allowed');
+  check('group names are tidied the same way everywhere: trimmed, one VIP, spaces squeezed', JSON.stringify(normaliseTags([' vip ', 'VIP', 'Wedding  party'])) === JSON.stringify(['vip', 'Wedding party']));
+  await prisma.customer.update({ where: { id: meena }, data: { tags: ['vip', 'Wedding party'] } });
   await live({ name: 'VIP', value: 15, customerTags: ['VIP'] });
   check('Meena, tagged vip, gets the VIP offer', (await quote([{ variantId: V.cotton, quantity: 1 }], { customerId: meena })).discountTotal === 300);
   check('Lakshmi, in no group, does not', (await quote([{ variantId: V.cotton, quantity: 1 }], { customerId: lakshmi })).discountTotal === 0);

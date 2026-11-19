@@ -10,7 +10,7 @@ import { PrismaClient } from '@prisma/client';
 dotenv.config();
 
 const prisma = new PrismaClient();
-const BASE = 'http://localhost:4006/api/v1';
+const BASE = process.env.VERIFY_API_URL || 'http://localhost:4006/api/v1';
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_v1';
 
 let passed = 0, failed = 0;

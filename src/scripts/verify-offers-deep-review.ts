@@ -8,7 +8,8 @@
  *      single-use codes, junk days, numbers and lists, a copy of an offer whose shop closed
  *   D  till settings said, not assumed; the till limit counted across lines and bill together
  *   E  giving back: a deleted draft frees its card; two cancels at once give one use back
- *   F  a customer created in a group stays in it; codes are only listed to those who may make them
+ *   F  a customer cannot be created in a group here (groups are ScaleEzy CRM's); codes are only listed to
+ *      those who may make them
  *
  * Throwaway tenant, deleted at the end. Needs the API running.
  *
@@ -253,10 +254,12 @@ async function main() {
 
   // ── F. CUSTOMERS AND CODES ─────────────────────────────────────────────
   console.log('\nF. CUSTOMERS AND CODES');
-  const created: any = await customerService.createCustomer(CLIENT, { name: 'Radha', phone: `9${String(STAMP).slice(-9)}`, tags: [' vip ', 'VIP', 'Staff'] });
-  check('a customer created in groups is saved in them, tidied', JSON.stringify(created.tags) === JSON.stringify(['vip', 'Staff']), JSON.stringify(created.tags));
+  const created = await customerService.createCustomer(CLIENT, { name: 'Radha', phone: `9${String(STAMP).slice(-9)}`, tags: [' vip ', 'VIP', 'Staff'] }).then(() => null, (e: any) => e);
+  check('a customer cannot be created in groups here: 409, groups are made in ScaleEzy CRM', created?.statusCode === 409 && created.message === 'Customer groups are made and changed in ScaleEzy CRM now.', created?.message ?? 'it was allowed');
   const overHttp = await owner.post('/customers', { name: 'Lalitha', phone: `8${String(STAMP).slice(-9)}`, tags: ['Wholesale'] });
-  check('  ...over HTTP too', (un(overHttp)?.tags ?? []).includes('Wholesale'), `${overHttp.status} ${JSON.stringify(overHttp.data).slice(0, 160)}`);
+  check('  ...over HTTP too, in the same words', overHttp.status === 409 && overHttp.data?.message === 'Customer groups are made and changed in ScaleEzy CRM now.', `${overHttp.status} ${JSON.stringify(overHttp.data).slice(0, 160)}`);
+  const plainNew: any = await customerService.createCustomer(CLIENT, { name: 'Radha', phone: `9${String(STAMP).slice(-9)}` });
+  check('  ...and without groups she is created as usual', !!plainNew?.id && plainNew.tags.length === 0);
 
   const listCashier = await cashier.get(`/offers/${cards.id}/codes`, { params: { all: 1 } });
   check('a cashier cannot copy out the single-use codes', listCashier.status === 403, String(listCashier.status));

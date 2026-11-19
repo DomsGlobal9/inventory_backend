@@ -27,7 +27,8 @@ const OTHER = `support-other-${Date.now()}`;
 // LOCAL by default, like every other suite. This used to default to the production API, so running
 // the regression without TEST_API_URL posted synthetic crash reports at the live service. Point it at
 // production deliberately, with TEST_API_URL, or not at all.
-const API = process.env.TEST_API_URL || 'http://localhost:4006';
+// The server's own address, without /api/v1 (TEST_API_URL is given either way by the run scripts).
+const API = (process.env.TEST_API_URL || 'http://localhost:4006').replace(/\/api\/v1\/?$/, '');
 
 async function main() {
   let userId = '';

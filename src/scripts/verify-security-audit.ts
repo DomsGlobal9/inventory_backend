@@ -167,7 +167,10 @@ async function main() {
   // Doors that are public by design, or belong to another realm, are tested in D.
   const isPublicOrOtherRealm = (p: string) => /^\/(auth|leads|client-errors|storefront\/v1|shopify|public\/tryon|internal|admin)(\/|$)/.test(p);
   // Calls that reach a paid or external service even when refused later -- never sent, even to probe.
-  const neverSend = (m: string, p: string) => (m === 'POST' && /^\/catalog-tryon\/generate-catalog/.test(p)) || (m === 'POST' && /^\/shopify-connect\/install/.test(p));
+  // GET /live is the live-updates stream (12 Nov): it stays open on purpose, so a probe would wait out its
+  // whole timeout on every pass. Its tenancy is checked in verify-live.
+  const neverSend = (m: string, p: string) => (m === 'POST' && /^\/catalog-tryon\/generate-catalog/.test(p)) || (m === 'POST' && /^\/shopify-connect\/install/.test(p))
+    || (m === 'GET' && /^\/live\/?$/.test(p));
 
   // ── A. Another shop's ids ───────────────────────────────────────────────────────────────────
   console.log('\nA. SHOP B\'S OWNER, WITH SHOP A\'S IDS IN EVERY URL');
@@ -181,7 +184,10 @@ async function main() {
     const res = await attacker.request({ method: r.method as any, url, data: r.method === 'GET' ? undefined : bodyFor(r.path), params: r.method === 'GET' ? { search: MARK, q: MARK, locationId: storeA.id, clientId: A } : undefined });
     idorTried++;
     if (leaks(res)) idorProblems.push(`${r.method} ${r.path} leaked shop A data: ${brief(res)}`);
-    if (res.status >= 500) idorProblems.push(`${r.method} ${r.path} crashed: ${brief(res)}`);
+    // A service this copy cannot reach (storage, the photo studio, WhatsApp) answers 502/503 in words, which is
+    // the right answer, not a crash. A 500, or a 502/503 without a plain sentence, still is.
+    const serviceDown = (res.status === 502 || res.status === 503) && typeof res.data?.message === 'string' && /[a-z]{3}/i.test(res.data.message) && !/fetch failed|ECONN|stack/i.test(res.data.message);
+    if (res.status >= 500 && !serviceDown) idorProblems.push(`${r.method} ${r.path} crashed: ${brief(res)}`);
     if (internals(res)) idorProblems.push(`${r.method} ${r.path} exposed internals: ${brief(res)}`);
   }
   const after = await fingerprintA();
@@ -196,7 +202,9 @@ async function main() {
     'GET /branding/', 'GET /services/', 'GET /support-tickets/', 'POST /support-tickets/',
     'GET /search/', 'GET /roles/catalogue', 'GET /catalog/config', 'GET /services/tryon-usage',
     // The store list, on purpose since 14 Oct (location.routes.ts): every store picker in the app needs it.
-    'GET /locations/'
+    'GET /locations/',
+    // What the shop sells (14 Nov, shop-setup.routes.ts): every screen shapes itself by it, for everyone signed in.
+    'GET /setup/'
   ]);
   const beforeB = await fingerprintA();
   const allowedWithout: string[] = [];
