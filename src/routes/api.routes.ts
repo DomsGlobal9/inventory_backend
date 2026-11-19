@@ -60,6 +60,7 @@ import reorderRoutes from './reorder.routes';
 import dayBookRoutes from './daybook.routes';
 import whatsappRoutes, { whatsappEvents } from './whatsapp.routes';
 import { crmEvents } from './crm-events.routes';
+import serviceDoorRoutes from './service-door.routes';
 import offersConsentRoutes from './offers-consent.routes';
 import reelLinkRoutes from './reel-links.routes';
 import onlineShopRoutes from './online-shop.routes';
@@ -123,6 +124,11 @@ router.post('/whatsapp/events', whatsappEvents);
 // ScaleEzy CRM's customer events (it owns who a customer is). Ahead of the gate: CRM's server has no session
 // and proves itself with a signature checked before anything is read.
 router.post('/webhooks/crm/events', crmEvents);
+
+// Inventory as a service for other ScaleEzy modules (services/service-door). Ahead of the gate: a module has no
+// session; it signs a short pass with its own key, checked before anything is read, then goes through the app's
+// own routes, limited to the published list (GET /api/v1/service/openapi.json).
+router.use('/service', serviceDoorRoutes);
 
 // Payment confirmations from the shops' own Razorpay accounts. Ahead of the gate: Razorpay's servers
 // carry no session. Each delivery is checked against the signature of the shop its address names.

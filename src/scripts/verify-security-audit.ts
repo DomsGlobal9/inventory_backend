@@ -204,7 +204,10 @@ async function main() {
     // The store list, on purpose since 14 Oct (location.routes.ts): every store picker in the app needs it.
     'GET /locations/',
     // What the shop sells (14 Nov, shop-setup.routes.ts): every screen shapes itself by it, for everyone signed in.
-    'GET /setup/'
+    'GET /setup/',
+    // The service door's health check and menu (19 Nov, service-door.routes.ts): open to anyone, like CRM's. Everything
+    // else behind the door needs a module's signed pass, and a person's sign-in is refused there (verify-service-door).
+    'GET /service/health', 'GET /service/openapi.json'
   ]);
   const beforeB = await fingerprintA();
   const allowedWithout: string[] = [];

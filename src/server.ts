@@ -246,7 +246,7 @@ app.get('/ready', async (req, res) => {
 // Razorpay's payment webhooks likewise: every shop's confirmations arrive from Razorpay's few
 // addresses, and a limiter counting them together would drop one shop's payments for another's.
 app.use('/api', (req, res, next) =>
-  /^\/v1\/(shopify|storefront|payments\/webhooks|internal)\/|^\/v1\/(whatsapp\/events|webhooks\/crm\/events)$/.test(req.path) ? next() : tenantRateLimiter(req, res, next));
+  /^\/v1\/(shopify|storefront|payments\/webhooks|internal|service)\/|^\/v1\/(whatsapp\/events|webhooks\/crm\/events)$/.test(req.path) ? next() : tenantRateLimiter(req, res, next));
 
 // Every response here is per-authenticated-user data (never a static public asset),
 // and Express auto-generates an ETag on JSON bodies by default. Without an explicit
