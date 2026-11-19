@@ -499,6 +499,13 @@ const KIND_LABEL: Record<LoyaltyEntryKind, string> = {
   ADJUSTED: 'Changed by hand'
 };
 
+/** A line ScaleEzy CRM's join (or its undo) wrote is not "changed by hand": said as what it was (services/crm-identity/merges.ts). */
+const labelOf = (kind: keyof typeof KIND_LABEL, onceKey: string | null) =>
+  onceKey?.startsWith('CRM-JOIN:') ? 'Joined with another customer in ScaleEzy CRM'
+  : onceKey?.startsWith('CRM-UNJOIN:') ? 'Join undone in ScaleEzy CRM'
+  : KIND_LABEL[kind];
+
+
 export function lapseDate(activeAt: Date | null, months: number): Date | null {
   if (!activeAt || months <= 0) return null;
   const d = new Date(activeAt);
@@ -516,7 +523,7 @@ export async function customerPoints(clientId: string, customerId: string) {
     where: { clientId, customerId },
     orderBy: { createdAt: 'desc' },
     take: 100,
-    select: { id: true, kind: true, points: true, balance: true, note: true, salesOrderId: true, salesReturnId: true, createdAt: true }
+    select: { id: true, kind: true, points: true, balance: true, note: true, salesOrderId: true, salesReturnId: true, createdAt: true, onceKey: true }
   });
   const orderIds = [...new Set(entries.map(e => e.salesOrderId).filter(Boolean) as string[])];
   const orders = orderIds.length
@@ -530,7 +537,7 @@ export async function customerPoints(clientId: string, customerId: string) {
     value: valueOf(Math.max(0, customer.loyaltyPoints), s) / 100,
     lapsesOn: lapses,
     entries: entries.map(e => ({
-      id: e.id, kind: e.kind, label: KIND_LABEL[e.kind], points: e.points, balance: e.balance, note: e.note,
+      id: e.id, kind: e.kind, label: labelOf(e.kind, e.onceKey), points: e.points, balance: e.balance, note: e.note,
       orderId: e.salesOrderId, orderNumber: e.salesOrderId ? numberOf.get(e.salesOrderId) ?? null : null,
       returnId: e.salesReturnId, at: e.createdAt
     }))

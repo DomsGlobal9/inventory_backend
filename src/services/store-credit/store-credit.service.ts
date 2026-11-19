@@ -78,12 +78,19 @@ const KIND_LABEL: Record<StoreCreditKind, string> = {
   ADJUSTED: 'Changed by hand'
 };
 
+/** A line ScaleEzy CRM's join (or its undo) wrote is not "changed by hand": said as what it was (services/crm-identity/merges.ts). */
+const labelOf = (kind: keyof typeof KIND_LABEL, onceKey: string | null) =>
+  onceKey?.startsWith('CRM-JOIN:') ? 'Joined with another customer in ScaleEzy CRM'
+  : onceKey?.startsWith('CRM-UNJOIN:') ? 'Join undone in ScaleEzy CRM'
+  : KIND_LABEL[kind];
+
+
 export async function customerCredit(clientId: string, customerId: string) {
   const c = await prisma.customer.findFirst({ where: { id: customerId, clientId, deletedAt: null }, select: { storeCreditPaise: true } });
   if (!c) throw notFound('Customer not found');
   const entries = await prisma.storeCreditEntry.findMany({
     where: { clientId, customerId }, orderBy: { createdAt: 'desc' }, take: 100,
-    select: { id: true, kind: true, amountPaise: true, balancePaise: true, note: true, salesOrderId: true, salesReturnId: true, createdAt: true }
+    select: { id: true, kind: true, amountPaise: true, balancePaise: true, note: true, salesOrderId: true, salesReturnId: true, createdAt: true, onceKey: true }
   });
   const orderIds = [...new Set(entries.map(e => e.salesOrderId).filter(Boolean) as string[])];
   const returnIds = [...new Set(entries.map(e => e.salesReturnId).filter(Boolean) as string[])];
@@ -96,7 +103,7 @@ export async function customerCredit(clientId: string, customerId: string) {
   return {
     credit: c.storeCreditPaise / 100,
     entries: entries.map(e => ({
-      id: e.id, kind: e.kind, label: KIND_LABEL[e.kind], amount: e.amountPaise / 100, balance: e.balancePaise / 100, note: e.note,
+      id: e.id, kind: e.kind, label: labelOf(e.kind, e.onceKey), amount: e.amountPaise / 100, balance: e.balancePaise / 100, note: e.note,
       orderId: e.salesOrderId, orderNumber: e.salesOrderId ? orderNo.get(e.salesOrderId) ?? null : null,
       returnId: e.salesReturnId, returnNumber: e.salesReturnId ? returnNo.get(e.salesReturnId) ?? null : null,
       at: e.createdAt
