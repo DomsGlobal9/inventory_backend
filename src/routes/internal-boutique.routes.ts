@@ -15,6 +15,7 @@ import * as customers from '../services/boutique/customers';
 import * as removal from '../services/boutique/remove';
 import * as barcodes from '../services/boutique/barcodes';
 import { labelsFor } from '../services/boutique/labels';
+import { priceCheck } from '../services/boutique/price-check';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -153,6 +154,8 @@ router.post('/photos', read(req => extra.photoUploads(actorOf(req), req.body ?? 
 // sheet of 50 x 25 mm labels as a PDF for the label printer.
 router.get('/items/scan', read(req => barcodes.scan(actorOf(req), req.query.code)));
 router.post('/items/barcodes/fill', write((tx, a) => barcodes.fillMissing(tx, a)));
+// The exact total of a counter bill before it is made: offers, GST, round-off (nothing saved; the bill is POS's).
+router.post('/price-check', read(req => priceCheck(actorOf(req), req.body ?? {})));
 router.post('/labels', async (req, res) => {
   try {
     const pdf = await labelsFor(actorOf(req), req.body ?? {});
