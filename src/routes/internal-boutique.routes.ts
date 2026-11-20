@@ -20,6 +20,7 @@ import * as boutiqueOffers from '../services/boutique/offers';
 import * as shopSettings from '../services/boutique/settings';
 import * as boutiqueOrders from '../services/boutique/orders';
 import * as buyMore from '../services/boutique/buying-more';
+import * as retailMore from '../services/boutique/retail-more';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -344,6 +345,18 @@ router.post('/reorder/draft-orders', viaLedger((a, req) => buyMore.reorderDrafts
 router.post('/purchase-orders/:id/status', viaLedger((a, req) => buyMore.orderStatus(a, String(req.params.id), req.body?.status)));
 router.put('/purchase-orders/:id/deliver-to', viaLedger((a, req) => buyMore.deliverTo(a, String(req.params.id), req.body?.storeId)));
 router.post('/purchase-orders/:id/email', viaLedger((a, req) => buyMore.emailOrder(a, String(req.params.id))));
+// ── more retail services (20 Nov 2026, PLAN-boutique-backend.md part 6) ─────────────────────────────────────
+router.get('/reports/sales', read(req => retailMore.sales(actorOf(req), req.query as any)));
+router.get('/reports/stock-value', read(req => retailMore.stockValue(actorOf(req))));
+router.get('/reports/stock-on-hand', read(req => retailMore.stockOnHand(actorOf(req), req.query as any)));
+router.get('/reports/running-low', read(req => retailMore.runningLow(actorOf(req), req.query as any)));
+router.get('/websites', read(req => retailMore.websites(actorOf(req))));
+router.post('/websites', viaLedger((a, req) => retailMore.addWebsite(a, req.body ?? {}), 201));
+router.delete('/websites/:id', viaLedger((a, req) => retailMore.removeWebsite(a, String(req.params.id))));
+router.get('/shopify', read(req => retailMore.shopifyStatus(actorOf(req))));
+router.post('/shopify/connect-link', viaLedger((a, req) => retailMore.shopifyConnectLink(a, req.body ?? {})));
+router.get('/settings/daybook-whatsapp', read(req => retailMore.dayBookSending(actorOf(req))));
+router.put('/settings/daybook-whatsapp', viaLedger((a, req) => retailMore.saveDayBookSending(a, req.body ?? {})));
 // ── reports (CRM-B checklist section 9): each needs reports:view ───────────────────────────────────
 router.get('/reports/purchase-spend', read(req => { reports.mustReport(actorOf(req)); return buying.purchaseSpend(actorOf(req), req.query as any); }));
 router.get('/reports/stock-summary', read(req => reports.stockSummary(actorOf(req), req.query as any)));
