@@ -55,8 +55,11 @@ async function main() {
   const clientId = tenant.clientId;
 
   const supplier = await prisma.supplier.findFirst({ where: { clientId }, select: { id: true, name: true } });
+  // An item reorder can suggest: on sale and counted in pieces. "The first variant" (no order) picked whatever the
+  // shop's rows gave first -- on 20 Nov a cloth item (1,860 cm), which reorder rightly leaves out, failing 17 checks.
   const variant = await prisma.productVariant.findFirst({
-    where: { clientId },
+    where: { clientId, product: { soldBy: 'PIECE' as any, status: 'ACTIVE' as any, trashedAt: null } },
+    orderBy: { createdAt: 'asc' },
     select: { id: true, sku: true, reorderLevel: true, reorderQty: true, stocks: { select: { quantity: true } } }
   });
   if (!supplier || !variant) throw new Error('Test tenant needs a supplier and a variant');

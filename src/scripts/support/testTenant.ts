@@ -20,6 +20,9 @@
  * real person's login is not something a test is allowed to do by accident.
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import bcrypt from 'bcryptjs';
 import { prisma } from '../../lib/prisma';
 import { AuthService } from '../../services/auth.service';
 import { seedRolesForClient } from '../../services/rbac-seed.service';
@@ -52,7 +55,13 @@ export async function ensureTestTenant(): Promise<TestTenant> {
   }
 
   const clientId = TEST_TENANT_ID;
-  const password = crypto.randomBytes(12).toString('base64url');
+  /*
+   * A FIXED password when one is known (20 Nov 2026, agreed with the CRM chat). A new random one on every run signed
+   * out ScaleEzy CRM's suites, which sign in to this same shop as this same owner. Known, in order: TEST_TENANT_PASSWORD,
+   * CRM_TEST_PASSWORD, or CRM's own local test default read from its repo (never copied here). Only when none exists does
+   * it fall back to a random one, as before. Local test shop only.
+   */
+  const password = process.env.TEST_TENANT_PASSWORD || process.env.CRM_TEST_PASSWORD || crmTestPassword() || crypto.randomBytes(12).toString('base64url');
   const hashed = await AuthService.hashPassword(password);
 
   let owner = await prisma.user.findFirst({ where: { clientId, email: TEST_TENANT_EMAIL } });
@@ -71,7 +80,9 @@ export async function ensureTestTenant(): Promise<TestTenant> {
     });
     await prisma.userRole.create({ data: { userId: owner.id, roleId: roleIds.SUPER_ADMIN } });
   } else {
-    await prisma.user.update({ where: { id: owner.id }, data: { password: hashed, status: 'ACTIVE' } });
+    // Left alone when it already is this password (bcrypt check): no rewrite, so nothing signed in elsewhere is upset.
+    const same = owner.password ? await bcrypt.compare(password, owner.password).catch(() => false) : false;
+    if (!same || owner.status !== 'ACTIVE') await prisma.user.update({ where: { id: owner.id }, data: { ...(same ? {} : { password: hashed }), status: 'ACTIVE' } });
   }
 
   let location = await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
@@ -169,4 +180,16 @@ async function ensureHistory(clientId: string, locationId: string, userId: strin
   await new SnapshotService().catchUpTenant(clientId);
 
   console.log(`[test tenant] history written: 40 received three days ago, 4 sold and shipped two days ago`);
+}
+
+/**
+ * ScaleEzy CRM's local test password for this shop's owner, read from CRM's own test helper (its default for
+ * CRM_TEST_PASSWORD), so both modules' suites sign in with the same one. Null when the CRM repo is not beside this one.
+ */
+function crmTestPassword(): string | null {
+  try {
+    const file = path.resolve(__dirname, '../../../../../crm/backend/src/scripts/support/testLogin.ts');
+    const m = /TEST_PASSWORD\s*=\s*process\.env\.CRM_TEST_PASSWORD\s*\|\|\s*'([^']+)'/.exec(fs.readFileSync(file, 'utf8'));
+    return m ? m[1] : null;
+  } catch { return null; }
 }
