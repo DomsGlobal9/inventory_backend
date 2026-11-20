@@ -65,7 +65,7 @@ async function main() {
 
   console.log('\nASKING FOR A LINK');
   const noRzp = await crm('POST', `/customers/dues/${order.id}/pay-link`);
-  check('the shop has no Razorpay: 409 saying it does not take online payments yet', noRzp.status === 409 && /online payments/.test(noRzp.message ?? ''), noRzp);
+  check('the shop has no Razorpay: 409 saying it does not take online payments yet', noRzp.status === 409 && /online payments/.test(noRzp.message ?? '') && !/\.\.$/.test(noRzp.message ?? '') && /\.$/.test(noRzp.message ?? ''), noRzp);
   // A connected Razorpay account, as Settings -> Payments leaves it (never used here: nothing calls Razorpay).
   await prisma.shopPaymentAccount.create({ data: { clientId: SHOP, gateway: 'RAZORPAY', keyId: `rzp_live_PLTEST${S}`.slice(0, 30), keySecretEncrypted: 'x', webhookSecretEncrypted: 'x', webhookToken: `pl-${S}`, mode: 'LIVE', status: 'CONNECTED' } as any });
   const made = await crm('POST', `/customers/dues/${order.id}/pay-link`);

@@ -43,7 +43,7 @@ export async function make(clientId: string, orderId: string, by: string) {
   const refused = whyNotCollect(d.order as any, d.due);
   if (refused) throw conflict(refused);
   const ready = await paymentAccounts.readiness(clientId);
-  if (!ready.ready) throw conflict(`This shop does not take online payments yet: ${ready.why ?? 'its Razorpay is not connected'}.`);
+  if (!ready.ready) throw conflict(`This shop does not take online payments yet: ${String(ready.why ?? 'its Razorpay is not connected').replace(/[.\s]+$/, '')}.`);
   const live = await prisma.orderPayLink.findFirst({ where: { clientId, salesOrderId: orderId, status: 'WAITING', amountPaise: d.due, expiresAt: { gt: new Date() } }, orderBy: { createdAt: 'desc' } });
   const link = live ?? await prisma.orderPayLink.create({ data: {
     clientId, salesOrderId: orderId, amountPaise: d.due, token: crypto.randomBytes(24).toString('base64url'),
