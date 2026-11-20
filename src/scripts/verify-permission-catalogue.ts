@@ -67,7 +67,8 @@ async function main() {
   console.log('\nC. UNUSED KEYS');
   const used = new Set([...backendKeys.keys(), ...frontendKeys.keys()]);
   // A key of another module (CRM) is checked on that module's own server, not here (PermissionDef.module).
-  const unused = [...catalogue].filter(k => !used.has(k) && !getPermission(k)?.module);
+  // A retired key (campaign:view since campaigns moved to CRM, 19 Nov) is off the Roles screen and checked nowhere, on purpose.
+  const unused = [...catalogue].filter(k => !used.has(k) && !getPermission(k)?.module && !getPermission(k)?.retired);
   check('every key on the Roles screen is checked somewhere', unused.length === 0, unused);
   console.log('\nD. BUILT-IN ROLE TEMPLATES');
   for (const [name, r] of Object.entries(RBAC_DATA.roles)) {

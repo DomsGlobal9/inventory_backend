@@ -321,7 +321,8 @@ export class OfferInsightService {
         id: v.id,
         version: v.version,
         createdAt: v.createdAt,
-        changedBy: v.changedBy ? (userById.get(v.changedBy) ?? 'A former user') : null,
+        // A change made through the boutique API is recorded by name, "Lakshmi (Boutique)": shown as it is.
+        changedBy: v.changedBy ? (userById.get(v.changedBy) ?? (v.changedBy.endsWith(' (Boutique)') ? v.changedBy : 'A former user')) : null,
         note: v.changeNote,
         changes: previous ? describeChanges(previous.snapshot as any, v.snapshot as any, labels) : []
       };
