@@ -19,6 +19,7 @@ import { priceCheck } from '../services/boutique/price-check';
 import * as boutiqueOffers from '../services/boutique/offers';
 import * as shopSettings from '../services/boutique/settings';
 import * as boutiqueOrders from '../services/boutique/orders';
+import * as buyMore from '../services/boutique/buying-more';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -331,6 +332,18 @@ router.get('/orders/:orderNumber', read(req => boutiqueOrders.getOne(actorOf(req
 router.post('/orders/:orderNumber/cancel', viaLedger((a, req) => boutiqueOrders.cancel(a, String(req.params.orderNumber))));
 router.post('/orders/:orderNumber/refund', viaLedger((a, req, key) => boutiqueOrders.refund(a, String(req.params.orderNumber), req.body ?? {}, key)));
 router.post('/orders/:orderNumber/pack', viaLedger((a, req) => boutiqueOrders.pack(a, String(req.params.orderNumber), req.body ?? {})));
+// ── buying in full (20 Nov 2026, PLAN-boutique-backend.md part 5): the same services as Inventory's Buying screens ──
+router.get('/suppliers/:id/items', read(req => buyMore.supplierItems(actorOf(req), String(req.params.id), req.query.search)));
+router.get('/items/:itemCode/suppliers', read(req => buyMore.itemSuppliers(actorOf(req), String(req.params.itemCode))));
+router.post('/supplier-items', viaLedger((a, req) => buyMore.linkSupplierItem(a, req.body ?? {}), 201));
+router.post('/supplier-items/:id/preferred', viaLedger((a, req) => buyMore.setPreferred(a, String(req.params.id))));
+router.delete('/supplier-items/:id', viaLedger((a, req) => buyMore.unlinkSupplierItem(a, String(req.params.id))));
+router.delete('/suppliers/:id', viaLedger((a, req) => buyMore.removeSupplier(a, String(req.params.id))));
+router.get('/reorder', read(req => buyMore.reorderSuggestions(actorOf(req), req.query.storeId)));
+router.post('/reorder/draft-orders', viaLedger((a, req) => buyMore.reorderDrafts(a, req.body ?? {}), 201));
+router.post('/purchase-orders/:id/status', viaLedger((a, req) => buyMore.orderStatus(a, String(req.params.id), req.body?.status)));
+router.put('/purchase-orders/:id/deliver-to', viaLedger((a, req) => buyMore.deliverTo(a, String(req.params.id), req.body?.storeId)));
+router.post('/purchase-orders/:id/email', viaLedger((a, req) => buyMore.emailOrder(a, String(req.params.id))));
 // ── reports (CRM-B checklist section 9): each needs reports:view ───────────────────────────────────
 router.get('/reports/purchase-spend', read(req => { reports.mustReport(actorOf(req)); return buying.purchaseSpend(actorOf(req), req.query as any); }));
 router.get('/reports/stock-summary', read(req => reports.stockSummary(actorOf(req), req.query as any)));

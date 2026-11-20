@@ -5,7 +5,7 @@ import { generateSequentialCode } from '../utils/codeGenerator';
 import { inventoryMutationService } from './inventory-mutation.service';
 import { mailService } from './mail.service';
 import { getShopSettings } from '../lib/clientSettings';
-import { isMeasured } from '../lib/units';
+import { isMeasured, factorOf } from '../lib/units';
 
 /**
  * Every rejection below carries an explicit statusCode. Thrown bare they inherited
@@ -599,6 +599,8 @@ export class PurchaseOrderService {
       );
     }
 
+    const unitOf = new Map((await prisma.productVariant.findMany({ where: { id: { in: po.items.map(i => i.variantId).filter(Boolean) as string[] } }, select: { id: true, product: { select: { soldBy: true } } } }))
+      .map(v => [v.id, String(v.product.soldBy)]));
     const { businessName } = await getShopSettings(clientId);
     const letterhead = await prisma.clientSettings.findUnique({ where: { clientId }, select: { businessAddress: true, businessPhone: true } });
 
@@ -617,13 +619,20 @@ export class PurchaseOrderService {
         phone: po.location.phone || letterhead?.businessPhone || null
       },
       notes: po.notes,
-      items: po.items.map(i => ({
-        title: i.productTitle,
-        sku: i.sku,
-        variantLabel: [i.color, i.size].filter(Boolean).join(' / ') || undefined,
-        quantity: i.orderedQty,
-        unitPrice: Number(i.unitPrice)
-      })),
+      // Cloth and things sold by weight are kept per centimetre / gram (a boutique's orders hold them, 20 Nov 2026):
+      // the supplier reads metres and kilograms, at the price per metre or kilogram -- never "850 x Rs 3".
+      items: po.items.map(i => {
+        const soldBy = unitOf.get(i.variantId);
+        const f = factorOf(soldBy);
+        const per = soldBy === 'METRE' ? 'metres' : soldBy === 'KILOGRAM' ? 'kg' : null;
+        return {
+          title: i.productTitle,
+          sku: i.sku,
+          variantLabel: [i.color, i.size, per].filter(Boolean).join(' / ') || undefined,
+          quantity: i.orderedQty / f,
+          unitPrice: Math.round(Number(i.unitPrice) * f * 100) / 100
+        };
+      }),
       total: po.items.reduce((sum, i) => sum + i.orderedQty * Number(i.unitPrice), 0)
     });
 

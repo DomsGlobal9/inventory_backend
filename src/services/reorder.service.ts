@@ -80,7 +80,11 @@ export class ReorderService {
    * Orders with no store chosen are not counted -- where they will arrive is unknown -- but are
    * reported so the screen can say so.
    */
-  async getSuggestions(clientId: string, locationId?: string | null) {
+  /**
+   * `withLengths` (20 Nov 2026): also cloth and things sold by weight, for the boutique API, whose purchase orders take
+   * metres. Inventory's own screen leaves them out (its purchase orders count whole pieces), so it does not pass it.
+   */
+  async getSuggestions(clientId: string, locationId?: string | null, opts: { withLengths?: boolean } = {}) {
     const location = locationId
       ? await prisma.stockLocation.findFirst({ where: { id: locationId, clientId }, select: { id: true, name: true, code: true } })
       : null;
@@ -149,7 +153,7 @@ export class ReorderService {
       // wants an order for something they have deliberately taken out of the catalogue.
       if (variant.product?.status === 'TRASHED' || variant.product?.status === 'ARCHIVED') continue;
       // Fabric by the metre is not ordered on a purchase order (those count pieces); its low stock still raises an alert.
-      if (isMeasured((variant.product as any)?.soldBy)) continue;
+      if (!opts.withLengths && isMeasured((variant.product as any)?.soldBy)) continue;
 
       const currentStock = variant.stocks.reduce((sum, s) => sum + s.quantity, 0);
       if (currentStock > variant.reorderLevel) continue;
