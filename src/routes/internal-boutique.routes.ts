@@ -23,6 +23,7 @@ import * as buyMore from '../services/boutique/buying-more';
 import * as retailMore from '../services/boutique/retail-more';
 import * as btqPay from '../services/boutique/payments';
 import * as cr from '../services/boutique/counts-returns';
+import * as bulkPhotos from '../services/boutique/bulk-photos';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -382,6 +383,9 @@ router.post('/returns/:id/receive', viaLedger((a, req) => cr.receiveReturn(a, St
 router.post('/returns/:id/inspect', viaLedger((a, req) => cr.inspectReturn(a, String(req.params.id), req.body ?? {})));
 router.post('/returns/:id/complete', viaLedger((a, req) => cr.completeReturn(a, String(req.params.id))));
 router.post('/returns/:id/reject', viaLedger((a, req) => cr.rejectReturn(a, String(req.params.id))));
+// ── photos for many items at once (20 Nov 2026): match file names to items; a photo from a link ──────────────
+router.post('/photos/match', read(req => bulkPhotos.match(actorOf(req), req.body ?? {})));
+router.post('/photos/from-link', viaLedger((a, req) => bulkPhotos.fromLink(a, req.body ?? {})));
 // ── reports (CRM-B checklist section 9): each needs reports:view ───────────────────────────────────
 router.get('/reports/purchase-spend', read(req => { reports.mustReport(actorOf(req)); return buying.purchaseSpend(actorOf(req), req.query as any); }));
 router.get('/reports/stock-summary', read(req => reports.stockSummary(actorOf(req), req.query as any)));
