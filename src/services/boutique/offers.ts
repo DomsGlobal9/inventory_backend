@@ -1,5 +1,7 @@
 import { prisma } from '../../lib/prisma';
-import { offerService } from '../offers';
+import { offerService, offerInsightService } from '../offers';
+import { offerMirrorService } from '../shopify-discounts';
+import { adminApiFor } from '../shopify-mapping';
 import { problem, type Actor } from './index';
 
 /**
@@ -128,6 +130,73 @@ export async function makeCodes(a: Actor, id: string, body: any) {
   await offerService.getById(a.clientId, id);
   return offerService.makeCodes(a.clientId, id, String(body?.prefix ?? ''), Number(body?.count));
 }
+/**
+ * What an offer can be for (20 Nov, the owner: "offers also should be used by them"): the departments and garment
+ * types (CATEGORY / DRESS_TYPE names, each with how many designs it covers), the stores, the channels and the
+ * customer groups -- the same lists Inventory's offer screen picks from.
+ */
+export async function choices(a: Actor) {
+  const o = await offerInsightService.options(a.clientId);
+  return {
+    departments: o.departments.map((d: any) => ({ name: d.value, label: d.label, designs: d.count })),
+    dressTypes: o.dressTypes.map((d: any) => ({ name: d.value, designs: d.count })),
+    stores: o.locations.map((l: any) => ({ storeId: l.id, name: l.name, code: l.code, type: l.type })),
+    channels: o.channels,
+    customerTags: o.customerTags.map((t: any) => ({ name: t.value, customers: t.count }))
+  };
+}
+
+/** Find a design (scope PRODUCT) or an item (scope VARIANT) to put in targets/exclusions: 20 at most, by code. */
+export async function find(a: Actor, q: { scope?: unknown; q?: unknown }) {
+  const scope = String(q.scope ?? 'VARIANT').toUpperCase();
+  if (scope !== 'PRODUCT' && scope !== 'VARIANT') throw problem('scope is PRODUCT (a whole design) or VARIANT (one item).');
+  const rows = await offerInsightService.search(a.clientId, scope, String(q.q ?? '').slice(0, 80));
+  const ids = rows.map((r: any) => r.id);
+  if (scope === 'PRODUCT') {
+    const ps = await prisma.product.findMany({ where: { clientId: a.clientId, id: { in: ids } }, select: { id: true, productCode: true } });
+    const code = new Map(ps.map(p => [p.id, p.productCode]));
+    return rows.filter((r: any) => code.get(r.id)).map((r: any) => ({ scope, code: code.get(r.id), name: r.label, about: r.sub }));
+  }
+  const vs = await prisma.productVariant.findMany({ where: { clientId: a.clientId, id: { in: ids }, boutiqueDeletedAt: null }, select: { id: true, boutiqueRef: true, variantCode: true } });
+  const code = new Map(vs.map(v => [v.id, v.boutiqueRef ?? v.variantCode]));
+  return rows.filter((r: any) => code.get(r.id)).map((r: any) => ({ scope, code: code.get(r.id), name: r.label, about: r.sub }));
+}
+
+/** A copy to start from: always a draft, never the original's single-use codes or uses (Inventory's "Duplicate"). */
+export async function copy(a: Actor, id: string) {
+  mustWrite(a);
+  const made = await offerService.duplicate(a.clientId, id, by(a));
+  return getOne(a, made.id);
+}
+
+/**
+ * The offer on the shop's Shopify store (the same copy Inventory's offer screen keeps). ScaleEzy stays the one that
+ * decides: Shopify gets a copy, and a change made in Shopify waits until someone accepts it here.
+ */
+export async function shopify(a: Actor, id: string) {
+  return offerMirrorService.overview(a.clientId, id);
+}
+export async function shopifyOn(a: Actor, id: string) {
+  mustWrite(a);
+  await offerMirrorService.enable(a.clientId, id, by(a));
+  return offerMirrorService.overview(a.clientId, id);
+}
+export async function shopifyOff(a: Actor, id: string) {
+  mustWrite(a);
+  await offerMirrorService.disable(a.clientId, id);
+  return offerMirrorService.overview(a.clientId, id);
+}
+export async function shopifyPush(a: Actor, id: string) {
+  mustWrite(a);
+  await offerMirrorService.pushOurs(a.clientId, id);
+  return offerMirrorService.overview(a.clientId, id);
+}
+export async function shopifyAccept(a: Actor, id: string) {
+  mustWrite(a);
+  await offerMirrorService.acceptTheirs(a.clientId, id, by(a), (i: { id: string; shopDomain: string }) => adminApiFor(i.id, i.shopDomain));
+  return { offer: await getOne(a, id), shopify: await offerMirrorService.overview(a.clientId, id) };
+}
+
 export async function listCodes(a: Actor, id: string, q: any) {
   await offerService.getById(a.clientId, id);
   return offerService.listCodes(a.clientId, id, { status: q.status ? String(q.status).toUpperCase() : undefined, q: q.q ? String(q.q) : undefined, take: Math.min(200, Number(q.limit) || 50), skip: Math.max(0, Number(q.skip) || 0) });

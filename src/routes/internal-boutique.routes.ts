@@ -314,7 +314,16 @@ router.post('/purchase-orders/:id/receive', viaLedger((a, req, key) => buying.re
 // ── offers and shop settings (20 Nov 2026, PLAN-boutique-backend.md part 3) ─────────────────────────────
 // The same offer engine and settings as Inventory's screens. Offers: offers:write to change. Settings: settings:write.
 router.get('/offers', read(req => boutiqueOffers.list(actorOf(req), req.query as any)));
+router.get('/offers/choices', read(req => boutiqueOffers.choices(actorOf(req))));
+router.get('/offers/find', read(req => boutiqueOffers.find(actorOf(req), req.query as any)));
 router.get('/offers/:id', read(req => boutiqueOffers.getOne(actorOf(req), String(req.params.id))));
+router.post('/offers/:id/copy', viaLedger((a, req) => boutiqueOffers.copy(a, String(req.params.id)), 201));
+// The offer on the shop's Shopify store (as Inventory's offer screen): see, put on, take off, push ours again, accept theirs.
+router.get('/offers/:id/shopify', read(req => boutiqueOffers.shopify(actorOf(req), String(req.params.id))));
+router.post('/offers/:id/shopify', viaLedger((a, req) => boutiqueOffers.shopifyOn(a, String(req.params.id))));
+router.delete('/offers/:id/shopify', viaLedger((a, req) => boutiqueOffers.shopifyOff(a, String(req.params.id))));
+router.post('/offers/:id/shopify/push', viaLedger((a, req) => boutiqueOffers.shopifyPush(a, String(req.params.id))));
+router.post('/offers/:id/shopify/accept', viaLedger((a, req) => boutiqueOffers.shopifyAccept(a, String(req.params.id))));
 router.get('/offers/:id/codes', read(req => boutiqueOffers.listCodes(actorOf(req), String(req.params.id), req.query as any)));
 router.post('/offers', viaLedger((a, req) => boutiqueOffers.create(a, req.body ?? {}), 201));
 router.put('/offers/:id', viaLedger((a, req) => boutiqueOffers.change(a, String(req.params.id), req.body ?? {})));
