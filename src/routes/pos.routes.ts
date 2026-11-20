@@ -350,7 +350,18 @@ router.post('/events', async (req: Request, res: Response, next: NextFunction) =
        * between the two systems is the kind of disagreement that surfaces months later in a
        * reconciliation nobody can unpick.
        */
-      const problem = await checkReturnAmounts(
+      /*
+       * A credit note we already hold (sent again by a till retrying, or one going back over its queue) is answered
+       * from what we did with it -- ALREADY_APPLIED, or its place in the queue -- like a sale sent again. Checking its
+       * quantities first counted it against itself ("2 returned against 1 sold") and refused a return that had
+       * gone through (found by the POS session, 20 Nov). Only a REJECTED one is checked again: a resend re-opens it.
+       */
+      const creditNoteNo = String(event.creditNoteNo ?? '').trim();
+      const seenBefore = creditNoteNo ? await prisma.posInboundEvent.findUnique({
+        where: { clientId_kind_invoiceNo: { clientId: ctx.clientId, kind: 'sale.returned', invoiceNo: creditNoteNo } },
+        select: { status: true }
+      }) : null;
+      const problem = seenBefore && seenBefore.status !== 'REJECTED' ? null : await checkReturnAmounts(
         ctx.clientId,
         String(event.againstInvoiceNo ?? ''),
         Array.isArray(event.lines) ? event.lines : []
