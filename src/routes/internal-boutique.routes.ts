@@ -22,6 +22,7 @@ import * as boutiqueOrders from '../services/boutique/orders';
 import * as buyMore from '../services/boutique/buying-more';
 import * as retailMore from '../services/boutique/retail-more';
 import * as btqPay from '../services/boutique/payments';
+import * as cr from '../services/boutique/counts-returns';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -366,6 +367,21 @@ router.get('/payments/:id', read(req => btqPay.getOne(actorOf(req), String(req.p
 router.post('/payments/:id/check', read(req => btqPay.check(actorOf(req), String(req.params.id))));
 router.post('/payments/:id/cancel', viaLedger((a, req) => btqPay.cancel(a, String(req.params.id))));
 router.post('/payments/:id/refund', viaLedger((a, req, key) => btqPay.refund(a, String(req.params.id), req.body ?? {}, key)));
+// ── stock count sessions and returns of online orders (20 Nov 2026) ──────────────────────────────────────────
+router.get('/stock-counts', read(req => cr.counts(actorOf(req))));
+router.get('/stock-counts/:id', read(req => cr.count(actorOf(req), String(req.params.id))));
+router.post('/stock-counts', viaLedger((a, req) => cr.newCount(a, req.body ?? {}), 201));
+router.post('/stock-counts/:id/start', viaLedger((a, req) => cr.startCount(a, String(req.params.id))));
+router.put('/stock-counts/:id/items', viaLedger((a, req) => cr.countItem(a, String(req.params.id), req.body ?? {})));
+router.post('/stock-counts/:id/complete', viaLedger((a, req) => cr.completeCount(a, String(req.params.id))));
+router.post('/stock-counts/:id/cancel', viaLedger((a, req) => cr.cancelCount(a, String(req.params.id))));
+router.get('/returns', read(req => cr.returns(actorOf(req), req.query as any)));
+router.get('/returns/:id', read(req => cr.getReturn(actorOf(req), String(req.params.id))));
+router.post('/orders/:orderNumber/returns', viaLedger((a, req) => cr.askReturn(a, String(req.params.orderNumber), req.body ?? {}), 201));
+router.post('/returns/:id/receive', viaLedger((a, req) => cr.receiveReturn(a, String(req.params.id))));
+router.post('/returns/:id/inspect', viaLedger((a, req) => cr.inspectReturn(a, String(req.params.id), req.body ?? {})));
+router.post('/returns/:id/complete', viaLedger((a, req) => cr.completeReturn(a, String(req.params.id))));
+router.post('/returns/:id/reject', viaLedger((a, req) => cr.rejectReturn(a, String(req.params.id))));
 // ── reports (CRM-B checklist section 9): each needs reports:view ───────────────────────────────────
 router.get('/reports/purchase-spend', read(req => { reports.mustReport(actorOf(req)); return buying.purchaseSpend(actorOf(req), req.query as any); }));
 router.get('/reports/stock-summary', read(req => reports.stockSummary(actorOf(req), req.query as any)));
