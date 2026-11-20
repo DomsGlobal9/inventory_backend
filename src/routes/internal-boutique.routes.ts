@@ -21,6 +21,7 @@ import * as shopSettings from '../services/boutique/settings';
 import * as boutiqueOrders from '../services/boutique/orders';
 import * as buyMore from '../services/boutique/buying-more';
 import * as retailMore from '../services/boutique/retail-more';
+import * as btqPay from '../services/boutique/payments';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -36,6 +37,7 @@ import * as retailMore from '../services/boutique/retail-more';
  *               offers:write    make, change, switch on and off the shop's offers (20 Nov 2026)
  *               settings:write  change the shop's settings: details, GST, points, returns, payment keys (owner)
  *               orders:write    cancel, refund and pack online orders (20 Nov 2026)
+ *               payments:take   ask for a payment for boutique work (Razorpay checkout or UPI QR); payments:refund to refund
  *   exp         at most 15 minutes after iat
  * The shop is found from the tenant (boutique_links); a pass can never name its own shop.
  *
@@ -43,7 +45,7 @@ import * as retailMore from '../services/boutique/retail-more';
  * first answer and changes nothing.
  */
 const router = Router();
-const KNOWN_CAN = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write', 'orders:write'];
+const KNOWN_CAN = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write', 'orders:write', 'payments:take', 'payments:refund'];
 type Pass = { id: string; scopes: string[]; tenant?: string; clientId?: string; issuedAt?: number; expiresAt?: number; onBehalfOf?: { userId: string; name?: string; can?: string[] } };
 const pass = (req: Request) => (req as any).service as Pass;
 // `more`: what a refusal can add for a program to act on (a delete's `code`, `blockers`, `canForce`).
@@ -357,6 +359,13 @@ router.get('/shopify', read(req => retailMore.shopifyStatus(actorOf(req))));
 router.post('/shopify/connect-link', viaLedger((a, req) => retailMore.shopifyConnectLink(a, req.body ?? {})));
 router.get('/settings/daybook-whatsapp', read(req => retailMore.dayBookSending(actorOf(req))));
 router.put('/settings/daybook-whatsapp', viaLedger((a, req) => retailMore.saveDayBookSending(a, req.body ?? {})));
+// ── boutique payments (20 Nov 2026): money for boutique work through the shop's own Razorpay ─────────────────────
+router.post('/payments', viaLedger((a, req) => btqPay.ask(a, req.body ?? {}), 201));
+router.get('/payments', read(req => btqPay.list(actorOf(req), req.query as any)));
+router.get('/payments/:id', read(req => btqPay.getOne(actorOf(req), String(req.params.id))));
+router.post('/payments/:id/check', read(req => btqPay.check(actorOf(req), String(req.params.id))));
+router.post('/payments/:id/cancel', viaLedger((a, req) => btqPay.cancel(a, String(req.params.id))));
+router.post('/payments/:id/refund', viaLedger((a, req, key) => btqPay.refund(a, String(req.params.id), req.body ?? {}, key)));
 // ── reports (CRM-B checklist section 9): each needs reports:view ───────────────────────────────────
 router.get('/reports/purchase-spend', read(req => { reports.mustReport(actorOf(req)); return buying.purchaseSpend(actorOf(req), req.query as any); }));
 router.get('/reports/stock-summary', read(req => reports.stockSummary(actorOf(req), req.query as any)));

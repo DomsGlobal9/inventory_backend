@@ -1,3 +1,4 @@
+import * as boutiquePayments from '../boutique/payments';
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import * as posUpiQr from '../pos/pos-upi-qr.service';
@@ -965,11 +966,16 @@ export async function refundOfReturn(clientId: string, returnId: string) {
 export async function applyWebhook(clientId: string, gateway: PaymentGateway, ev: WebhookEvent): Promise<'APPLIED' | 'IGNORED'> {
   // A UPI QR at the POS till was paid (pos-upi-qr.service). Its payment.captured carries no order, so
   // it is ignored below; this event is the one that counts.
-  if (ev.kind === 'QR_CREDITED') return posUpiQr.onQrCredited(clientId, ev.qrCodeId);
+  if (ev.kind === 'QR_CREDITED') {
+    const till = await posUpiQr.onQrCredited(clientId, ev.qrCodeId);
+    // Not the till's: perhaps a boutique payment's QR (20 Nov 2026).
+    return till === 'APPLIED' ? till : boutiquePayments.onQrCredited(clientId, ev.qrCodeId);
+  }
   if (ev.kind === 'PAID' || ev.kind === 'FAILED') {
     if (!ev.gatewayOrderId || !ev.paymentId) return 'IGNORED';
     const row = await prisma.onlinePayment.findFirst({ where: { clientId, gatewayOrderId: ev.gatewayOrderId } });
-    if (!row) return 'IGNORED';
+    // Not an online-shop order's: perhaps a boutique payment's checkout (20 Nov 2026).
+    if (!row) return ev.kind === 'PAID' ? boutiquePayments.onOrderPaid(clientId, ev.gatewayOrderId) : 'IGNORED';
     const g = await gatewayOfPayment(row);
     if (!g) return 'IGNORED';
     const detail = await g.fetchPayment(ev.paymentId);

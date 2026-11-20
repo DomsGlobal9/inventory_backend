@@ -5718,3 +5718,38 @@ model ShopAppKey {
   @@index([tenant])
   @@map("shop_app_keys")
 }
+
+/// Money for boutique work (a stitching advance, an alteration) taken through the shop's own Razorpay, asked for by the
+/// Boutique app (20 Nov 2026). Not a shop sale: kept apart and told to the app. Status and method are text (shared DB).
+model BoutiquePayment {
+  id             String    @id @default(uuid())
+  clientId       String    @map("client_id")
+  reference      String
+  purpose        String
+  amountPaise    Int       @map("amount_paise")
+  customerName   String?   @map("customer_name")
+  customerPhone  String?   @map("customer_phone")
+  /// CHECKOUT (Razorpay's own checkout, opened by the app) or UPI_QR (a QR for this amount).
+  method         String
+  /// WAITING, PAID, CANCELLED, EXPIRED, REFUNDED, PART_REFUNDED.
+  status         String    @default("WAITING")
+  gatewayOrderId String?   @map("gateway_order_id")
+  qrId           String?   @map("qr_id")
+  qrImageUrl     String?   @map("qr_image_url")
+  closeBy        DateTime? @map("close_by")
+  paymentId      String?   @map("payment_id")
+  utr            String?
+  paidPaise      Int       @default(0) @map("paid_paise")
+  refundedPaise  Int       @default(0) @map("refunded_paise")
+  paidAt         DateTime? @map("paid_at")
+  refunds        Json      @default("[]")
+  createdBy      String?   @map("created_by")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientId, createdAt])
+  @@index([clientId, reference])
+  @@index([gatewayOrderId])
+  @@index([qrId])
+  @@map("boutique_payments")
+}
