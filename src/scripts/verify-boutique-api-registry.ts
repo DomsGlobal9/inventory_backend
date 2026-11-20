@@ -28,7 +28,7 @@ const OUT_DIR = path.resolve(__dirname, '../../../handouts');
 
 const S = Date.now().toString(36);
 const TEN = `apidoc-${S}`, TEN_JOIN = `apidoc-${S}-new`, TEN_OTHER = `apidoc-${S}-other`;
-const ALL = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write', 'orders:write'];
+const ALL = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write', 'orders:write', 'payments:take', 'payments:refund'];
 
 type Rec = {
   group: string; title: string; does: string; method: string; template: string; path: string; can: string;
@@ -317,6 +317,16 @@ async function main() {
     notes: ['On ScaleEzy\'s test server Shopify is not configured, so the example may be that refusal. On the live server the answer is { shopDomain, openThisLink, note }.'] });
   await rec({ group: G18, title: 'Nightly Day Book (read)', does: 'Whether the Day Book PDF goes to a WhatsApp number each evening, and when.', method: 'GET', template: '/settings/daybook-whatsapp', path: '/settings/daybook-whatsapp', expect: 200 });
   await rec({ group: G18, title: 'Nightly Day Book (switch on)', does: 'enabled, time ("22:00", the shop\'s time), to (the owner\'s WhatsApp number).', method: 'PUT', template: '/settings/daybook-whatsapp', path: '/settings/daybook-whatsapp', needs: 'settings:write', body: { enabled: true, time: '22:00', to: '+919848012345' }, expect: 200 });
+
+  console.log('\n19. Payments for boutique work');
+  const G19 = '19. Payments for boutique work';
+  await rec({ group: G19, title: 'Ask for a payment (refused example)', does: 'Money for your own work through the shop\'s own Razorpay: method CHECKOUT (the answer\'s `checkout` goes to Razorpay\'s phone SDK) or UPI_QR (`qrImageUrl`, open for `minutes`, 5-120). The money goes to the shop\'s bank.', method: 'POST', template: '/payments', path: '/payments', needs: 'payments:take',
+    body: { amount: 1500, purpose: 'Blouse stitching advance', reference: 'ST-101', customer: { name: 'Asha', phone: '+919848012399' }, method: 'UPI_QR', minutes: 30 }, expect: 409,
+    notes: ['This test shop has not connected Razorpay, so the answer says how to (PUT /settings/payments). Connected, the answer is the payment: id, status WAITING, and checkout or qrImageUrl.'] });
+  await rec({ group: G19, title: 'A wrong amount', does: 'Every refusal is said before Razorpay is asked.', method: 'POST', template: '/payments', path: '/payments', needs: 'payments:take', body: { amount: 10.005, purpose: 'Advance', reference: 'ST-101', method: 'CHECKOUT' }, expect: 400 });
+  await rec({ group: G19, title: 'Payments', does: 'Newest first; status (WAITING, PAID, CANCELLED, EXPIRED, REFUNDED, PART_REFUNDED) and reference filters.', method: 'GET', template: '/payments', path: '/payments', query: { reference: 'ST-101' }, expect: 200 });
+  await rec({ group: G19, title: 'One payment', does: 'Status, what was paid and refunded, the UPI reference (utr).', method: 'GET', template: '/payments/{paymentId}', path: '/payments/00000000-0000-0000-0000-000000000000', expect: 404,
+    notes: ['Shown for an id that is not this shop\'s. POST /payments/{id}/check asks Razorpay whether it is paid; /cancel stops a waiting one; /refund { amount, reason } (payments:refund) gives all or part back.'] });
 
   console.log('\n' + G14);
   await rec({ group: G14, kind: 'error', title: 'No pass', does: 'Every call needs Authorization: Bearer <pass>.', method: 'GET', template: '/items', path: '/items', noPass: true, expect: 401 });
