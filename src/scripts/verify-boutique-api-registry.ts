@@ -28,7 +28,7 @@ const OUT_DIR = path.resolve(__dirname, '../../../handouts');
 
 const S = Date.now().toString(36);
 const TEN = `apidoc-${S}`, TEN_JOIN = `apidoc-${S}-new`, TEN_OTHER = `apidoc-${S}-other`;
-const ALL = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write', 'orders:write', 'payments:take', 'payments:refund'];
+const ALL = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'reels:write', 'settings:write', 'orders:write', 'payments:take', 'payments:refund'];
 
 type Rec = {
   group: string; title: string; does: string; method: string; template: string; path: string; can: string;
@@ -74,7 +74,7 @@ async function rec(o: {
 async function main() {
   const G1 = '1. Connecting', G2 = '2. Stores', G3 = '3. Items', G4 = '4. Stock', G5 = '5. Cloth held for stitching orders', G6 = '6. Customers',
     G7 = '7. Suppliers and buying', G8 = '8. Racks and shelves', G9 = '9. Barcodes, scanning and labels', G10 = '10. Price check',
-    G11 = '11. Offers', G12 = '12. Shop settings', G13 = '13. Reports', G14 = '14. Errors you will meet', G15 = '15. Online shop and its orders', G16 = '16. Shop API v1 (the app\'s shop, for shoppers)', G17 = '17. Buying in full', G18 = '18. Website, Shopify and the nightly Day Book';
+    G11 = '11. Offers', G12 = '12. Shop settings', G13 = '13. Reports', G14 = '14. Errors you will meet', G15 = '15. Online shop and its orders', G16 = '16. Shop API v1 (the app\'s shop, for shoppers)', G17 = '17. Buying in full', G18 = '18. Website, Shopify and the nightly Day Book', G20 = '20. Reel links';
 
   console.log('\n' + G1);
   await rec({ group: G1, title: 'Is it up?', does: 'Answers when ScaleEzy is reachable and your pass is good. Needs a pass, not a linked shop.', method: 'GET', template: '/status', path: '/status', expect: 200 });
@@ -306,6 +306,19 @@ async function main() {
   const tokenV1 = placedV1.raw?.data?.token ?? placedV1.raw?.data?.orderToken;
   if (tokenV1) await rec({ group: G16, title: 'The shopper\'s order', does: `By its token (secret, in the shopper's link). ${SH}`, method: 'GET', template: '/shop/v1/{shop}/orders/{token}', path: `/shop/v1/${SLUG}/orders/${tokenV1}`, shopKey: appKey, expect: 200 });
   await rec({ group: G16, kind: 'error', title: 'Another boutique\'s shop, or no key', does: 'A key reaches only its own boutique\'s shops; anything else is "not found". No key: 401.', method: 'GET', template: '/shop/v1/{shop}', path: '/shop/v1/someone-elses-shop', shopKey: appKey, expect: 404 });
+
+  console.log('\n' + G20);
+  await rec({ group: G20, title: 'Can reel links be made here', does: 'shopReady (the online shop has an address), shopLive, and the Instagram bio link (every reel, newest first).', method: 'GET', template: '/reel-links/overview', path: '/reel-links/overview', expect: 200 });
+  const reel = await rec({ group: G20, title: 'Make a reel link', does: 'One link per Instagram reel with only the pieces it shows (up to 12, in order). Each piece: a product code, or an item code / barcode / SKU (then that item\'s colour); colour optional. title optional ("Reel 1", "Reel 2"... when left out); reelUrl optional (https). Switched on at once.', method: 'POST', template: '/reel-links', path: '/reel-links', needs: 'reels:write',
+    body: { title: 'Diwali blouses', reelUrl: 'https://www.instagram.com/reel/C0abcdEFGH/', pieces: [{ code: 'BLS-0001' }] }, expect: 201,
+    notes: ['Shoppers open it on the shop: pageUrl here, or through Shop API v1 at /shop/v1/{shop}/looks/{code}; the bio page is /shop/v1/{shop}/reels.'] });
+  const reelId = reel.raw?.data?.id;
+  await rec({ group: G20, title: 'Reel links', does: 'Newest first, with pieces, opens, sold-out pieces and the links to share.', method: 'GET', template: '/reel-links', path: '/reel-links', expect: 200 });
+  await rec({ group: G20, title: 'One reel link', does: 'With each piece: price, stock, colours, sizes, and your item codes (itemCodes).', method: 'GET', template: '/reel-links/{id}', path: `/reel-links/${reelId}`, expect: 200 });
+  await rec({ group: G20, title: 'Change a reel link', does: 'Only what you send: title, reelUrl, pieces (the whole list, in order). The link itself never changes.', method: 'PUT', template: '/reel-links/{id}', path: `/reel-links/${reelId}`, needs: 'reels:write', body: { title: 'Diwali blouses, part 2' }, expect: 200 });
+  await rec({ group: G20, title: 'Switch a reel link off', does: 'Shoppers who open it see "no longer available" with the shop\'s new arrivals. POST .../on switches it back on.', method: 'POST', template: '/reel-links/{id}/off', path: `/reel-links/${reelId}/off`, needs: 'reels:write', body: {}, expect: 200 });
+  await rec({ group: G20, title: 'Switch a reel link on', does: 'Shoppers see its pieces again.', method: 'POST', template: '/reel-links/{id}/on', path: `/reel-links/${reelId}/on`, needs: 'reels:write', body: {}, expect: 200 });
+  await rec({ group: G20, title: 'Delete a reel link', does: 'Gone from the list and the bio page. The link keeps answering shoppers with "no longer available", never an error page. Titles keep counting: the next one is not given this one\'s number.', method: 'DELETE', template: '/reel-links/{id}', path: `/reel-links/${reelId}`, needs: 'reels:write', expect: 200 });
 
   console.log('\n' + G15 + ' (orders)');
   const ordersList = await rec({ group: G15, title: 'Online orders', does: 'Newest first, 20 a page; fromApp=1 only those placed in your app; status filter.', method: 'GET', template: '/orders', path: '/orders', query: { fromApp: 1 }, expect: 200 });

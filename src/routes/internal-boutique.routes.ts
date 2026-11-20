@@ -24,6 +24,7 @@ import * as retailMore from '../services/boutique/retail-more';
 import * as btqPay from '../services/boutique/payments';
 import * as cr from '../services/boutique/counts-returns';
 import * as bulkPhotos from '../services/boutique/bulk-photos';
+import * as reels from '../services/boutique/reels';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -37,6 +38,7 @@ import * as bulkPhotos from '../services/boutique/bulk-photos';
  *               products:delete delete items for good (17 Nov 2026)
  *               stitching:issue hold, cut and use cloth for orders, record waste and unused returns
  *               offers:write    make, change, switch on and off the shop's offers (20 Nov 2026)
+ *               reels:write     make, change, switch on and off, delete reel links (20 Nov 2026)
  *               settings:write  change the shop's settings: details, GST, points, returns, payment keys (owner)
  *               orders:write    cancel, refund and pack online orders (20 Nov 2026)
  *               payments:take   ask for a payment for boutique work (Razorpay checkout or UPI QR); payments:refund to refund
@@ -47,7 +49,7 @@ import * as bulkPhotos from '../services/boutique/bulk-photos';
  * first answer and changes nothing.
  */
 const router = Router();
-const KNOWN_CAN = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write', 'orders:write', 'payments:take', 'payments:refund'];
+const KNOWN_CAN = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'reels:write', 'settings:write', 'orders:write', 'payments:take', 'payments:refund'];
 type Pass = { id: string; scopes: string[]; tenant?: string; clientId?: string; issuedAt?: number; expiresAt?: number; onBehalfOf?: { userId: string; name?: string; can?: string[] } };
 const pass = (req: Request) => (req as any).service as Pass;
 // `more`: what a refusal can add for a program to act on (a delete's `code`, `blockers`, `canForce`).
@@ -334,7 +336,16 @@ router.get('/settings', read(req => shopSettings.read(actorOf(req), apiBase(req)
 router.put('/settings/shop', viaLedger((a, req) => shopSettings.saveShop(a, req.body ?? {})));
 router.put('/settings/what-you-sell', viaLedger((a, req) => shopSettings.saveSells(a, req.body ?? {})));
 router.put('/settings/points', viaLedger((a, req) => shopSettings.savePoints(a, req.body ?? {})));
-router.put('/settings/offers', viaLedger((a, req) => shopSettings.saveOffers(a, req.body ?? {})));
+// Reel links (20 Nov 2026, #17): one link per Instagram reel with only the pieces it shows. reels:write to change.
+router.get('/reel-links/overview', read(req => reels.overview(actorOf(req))));
+router.get('/reel-links', read(req => reels.list(actorOf(req))));
+router.get('/reel-links/:id', read(req => reels.getOne(actorOf(req), String(req.params.id))));
+router.post('/reel-links', viaLedger((a, req) => reels.create(a, req.body ?? {}), 201));
+router.put('/reel-links/:id', viaLedger((a, req) => reels.change(a, String(req.params.id), req.body ?? {})));
+router.post('/reel-links/:id/on', viaLedger((a, req) => reels.setOn(a, String(req.params.id), true)));
+router.post('/reel-links/:id/off', viaLedger((a, req) => reels.setOn(a, String(req.params.id), false)));
+router.delete('/reel-links/:id', viaLedger((a, req) => reels.remove(a, String(req.params.id))));
+router.put('/settings/offers',viaLedger((a, req) => shopSettings.saveOffers(a, req.body ?? {})));
 router.put('/settings/returns', viaLedger((a, req) => shopSettings.saveReturns(a, req.body ?? {})));
 router.put('/settings/payments', viaLedger((a, req) => shopSettings.savePayments(a, req.body ?? {}, apiBase(req))));
 router.post('/settings/payments/check', viaLedger((a, req) => shopSettings.checkPayments(a, apiBase(req))));
