@@ -39,6 +39,7 @@ import {
 } from '../controllers/platform-admin.controller';
 import { readOnboardingForm } from '../controllers/platform-admin.controller';
 import { platformAdminService } from '../services/platform-admin.service';
+import * as shopAppKeys from '../services/shop-app-keys';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 import * as boutique from '../services/boutique';
 import * as join from '../services/boutique/join';
@@ -127,6 +128,21 @@ consoleRouter.patch('/support-tickets/:id', updateSupportTicketStatus);
 // hierarchy guard applies (unlike team.routes.ts's equivalent, client-scoped endpoints).
 consoleRouter.post('/users/:id/password/view', viewUserPassword);
 consoleRouter.post('/users/:id/password', setUserPassword);
+
+// Partner app keys for Shop API v1 (20 Nov 2026): made here, shown once, switched off here. A key reaches only the shops
+// linked to its boutique account. The Console screen for these is still to be designed; the calls work today.
+const appKeyAction = (fn: (req: any) => Promise<unknown>, status = 200) => async (req: any, res: any) => {
+  try { res.status(status).json({ success: true, data: await fn(req) }); }
+  catch (e: any) {
+    if (e instanceof shopAppKeys.AppKeyError) return res.status(e.statusCode).json({ success: false, message: e.message });
+    console.error('[shop app keys] failed:', e?.message);
+    res.status(500).json({ success: false, message: 'That could not be done just now. Nothing was changed; try again.' });
+  }
+};
+consoleRouter.get('/shop-app-keys', appKeyAction(req => shopAppKeys.list(req.query.tenant)));
+consoleRouter.post('/shop-app-keys', appKeyAction(req => shopAppKeys.make(req.body ?? {}, req.platformAdmin?.id ?? null), 201));
+consoleRouter.post('/shop-app-keys/:id/off', appKeyAction(req => shopAppKeys.setActive(String(req.params.id), false)));
+consoleRouter.post('/shop-app-keys/:id/on', appKeyAction(req => shopAppKeys.setActive(String(req.params.id), true)));
 
 // Boutique clients asking to join ScaleEzy Inventory from the boutique app (16 Nov). Accepting runs this Console's own
 // onboarding with the boutique account, so the client is made exactly as the Onboarding screen makes one.

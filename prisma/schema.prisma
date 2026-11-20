@@ -1447,6 +1447,8 @@ model SalesOrder {
   sourceSystem    String? @map("source_system")
   /// The reel link (or CRM picks link) the shopper came from, for an online order (20 Nov 2026). Credit only, never price.
   reelLinkCode    String? @map("reel_link_code")
+  /// The partner app the order was placed in (Shop API v1, X-Shop-App-Key), e.g. "Boutique app"; null for our own shop.
+  originApp       String? @map("origin_app")
 
   /// The selling system's own "last changed" stamp for this order.
   ///
@@ -5697,4 +5699,22 @@ model CustomerBoutiqueProfile {
   @@index([clientId, customerId])
   @@index([clientId, removedAt])
   @@map("customer_boutique_profiles")
+}
+
+/// A partner app's key for Shop API v1 (/shop/v1, 20 Nov 2026): which app is calling, and only for the shops linked to
+/// its boutique account (tenant). Made and switched off in the Platform Console. The key is shown once; only its hash is kept.
+model ShopAppKey {
+  id         String    @id @default(uuid())
+  name       String
+  tenant     String
+  keyPrefix  String    @unique @map("key_prefix")
+  keyHash    String    @map("key_hash")
+  active     Boolean   @default(true)
+  createdBy  String?   @map("created_by")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  switchedAt DateTime? @map("switched_at")
+  lastUsedAt DateTime? @map("last_used_at")
+
+  @@index([tenant])
+  @@map("shop_app_keys")
 }

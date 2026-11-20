@@ -370,6 +370,8 @@ export type PlaceInput = {
   token?: unknown;
   /** The reel link (or CRM picks link) the shopper came from, if any: credit only, never a price. */
   fromLook?: unknown;
+  /** The partner app the order is placed in (Shop API v1). Set by the route from the checked app key, NEVER from the body. */
+  fromApp?: unknown;
 };
 
 /** A PIN code as India writes them: six digits, and never starting at zero. */
@@ -417,6 +419,8 @@ export type OrderInput = {
   items: { variantId: string; variantCode: string; quantity: number; title: string; colour: string | null; size: string | null }[];
   /** The shop's own reel link code the shopper came from (checked), or null. Absent on payments started before 20 Nov. */
   fromLook?: string | null;
+  /** The partner app it was placed in (Shop API v1), or null for our own shop. Absent on payments started before 20 Nov. */
+  fromApp?: string | null;
 };
 
 export type PreparedCheckout = OrderInput & {
@@ -538,7 +542,8 @@ export async function prepareCheckout(
     locationId, couponCodes, quoteId: quote.quoteId, quoteReq,
     delivery: bag.delivery,
     items: items.map(i => ({ variantId: i.variantId, variantCode: i.variantCode, quantity: i.quantity, title: i.title, colour: i.colour, size: i.size })),
-    fromLook
+    fromLook,
+    fromApp: typeof input.fromApp === 'string' && input.fromApp.trim() ? input.fromApp.trim().slice(0, 80) : null
   };
 }
 
@@ -657,7 +662,7 @@ export async function writeOrderInTx(
   );
 
   // Bought through a reel link or a CRM picks link: remembered on the sale, so CRM can credit whoever sent it.
-  if (p.fromLook) await tx.salesOrder.update({ where: { id: order.id }, data: { reelLinkCode: p.fromLook } });
+  if (p.fromLook || p.fromApp) await tx.salesOrder.update({ where: { id: order.id }, data: { ...(p.fromLook ? { reelLinkCode: p.fromLook } : {}), ...(p.fromApp ? { originApp: p.fromApp } : {}) } });
 
   await tx.onlineShopOrder.create({
     data: {
@@ -698,13 +703,37 @@ export function goneMessage(e: any, items: OrderInput['items']): string | null {
     : 'Something in your bag has just been bought by someone else. Refresh the page and try again.';
 }
 
+/**
+ * The Boutique app is told of an order placed in it, through the module outbox (module "boutique", sent signed to
+ * BOUTIQUE_EVENTS_URL, retried until it lands, in order per shop). Its boutique account is named, so one CRM-B service
+ * can serve every boutique. Never throws: the order is placed whatever happens here.
+ */
+async function tellTheApp(clientId: string, salesOrderId: string, token: string, app: string) {
+  try {
+    const [link, order] = await Promise.all([
+      prisma.boutiqueLink.findUnique({ where: { clientId }, select: { tenant: true, unlinkedAt: true } }),
+      prisma.salesOrder.findUnique({ where: { id: salesOrderId }, select: { orderNumber: true, total: true, status: true, createdAt: true } })
+    ]);
+    if (!link || link.unlinkedAt || !order) return;
+    await prisma.moduleEvent.create({ data: {
+      clientId, module: 'boutique', kind: 'order.placed', sourceTable: 'sales_orders', rowId: salesOrderId,
+      payload: { tenant: link.tenant, app, orderNumber: order.orderNumber, orderToken: token, total: Number(order.total), status: order.status, placedAt: order.createdAt.toISOString() }
+    } });
+  } catch (e: any) { console.error('[shop v1] could not tell the app of', salesOrderId, e?.message); }
+}
+
 /** Tell everybody once the order is really there -- never from inside a transaction that could still fail. */
 export function announcePlaced(clientId: string, token: string, salesOrderId: string, customerId: string | null, p: OrderInput) {
   afterCommit(() => {
     // Three separate promises on purpose: WhatsApp being refused to somebody who said STOP must
     // not stop their email, and neither must stop the shop being told.
-    void sendOrderPlacedNotice(clientId, token);
-    void emailOrderPlaced(clientId, token);
+    // Placed in a partner app (Shop API v1): the app tells its shopper in its own name, so we send them nothing,
+    // and the app is told the order is there (the boutique module's signed feed).
+    if (p.fromApp) void tellTheApp(clientId, salesOrderId, token, p.fromApp);
+    else {
+      void sendOrderPlacedNotice(clientId, token);
+      void emailOrderPlaced(clientId, token);
+    }
     void tellTheShop(clientId, salesOrderId);
     /*
      * The address book fills itself, for a proved customer only.

@@ -28,7 +28,9 @@ export const RESERVED_SLUGS = new Set([
   'admin', 'api', 'app', 'assets', 'account', 'billing', 'cart', 'checkout', 'console', 'dashboard',
   'go', 'help', 'inventory', 'login', 'logout', 'order', 'orders', 'pay', 'payment', 'privacy',
   's', 'scaleezy', 'settings', 'shop', 'shops', 'signin', 'signup', 'static', 'status', 'support',
-  'terms', 'tryon', 'www'
+  'terms', 'tryon', 'www',
+  // Shop API v1 lives at /shop/v1 (20 Nov 2026).
+  'v1', 'v2'
 ]);
 
 /**

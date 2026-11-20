@@ -10,6 +10,7 @@ import cors from 'cors';
 import { env } from './config/env';
 import { requestLogger } from './middleware/request-logger';
 import { linkHostGate, linkPathRouter } from './routes/link-open.routes';
+import { shopV1Gate } from './routes/shop-v1.gate';
 import shopPublicRoutes from './routes/shop-public.routes';
 import { shopHostGate } from './routes/shop-page.routes';
 import { errorHandler } from './middleware/error.middleware';
@@ -64,6 +65,9 @@ app.use(shopHostGate);
 // browser will not attach anyone's session to these calls, so nothing here can act as anybody.
 // POST is allowed because a customer buys here; what stops that being abused is the rate limit on
 // those routes and the fact that placing an order proves nothing about who is asking.
+// Shop API v1 (20 Nov 2026, PLAN-shop-api.md): the same shop routes at a fixed address for partner apps (the Boutique
+// app), behind a partner app key that reaches only its own boutique's shops. Ahead of /shop so /shop/v1 is never a shop.
+app.use('/shop/v1', cors({ origin: '*', credentials: false, methods: ['GET', 'POST'] }), shopV1Gate, shopPublicRoutes);
 app.use('/shop', cors({ origin: '*', credentials: false, methods: ['GET', 'POST'] }), shopPublicRoutes);
 // The app's own origin, and only it, may send cookies.
 const appCors = cors({

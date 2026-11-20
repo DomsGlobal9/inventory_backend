@@ -18,6 +18,7 @@ import { labelsFor } from '../services/boutique/labels';
 import { priceCheck } from '../services/boutique/price-check';
 import * as boutiqueOffers from '../services/boutique/offers';
 import * as shopSettings from '../services/boutique/settings';
+import * as boutiqueOrders from '../services/boutique/orders';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -32,6 +33,7 @@ import * as shopSettings from '../services/boutique/settings';
  *               stitching:issue hold, cut and use cloth for orders, record waste and unused returns
  *               offers:write    make, change, switch on and off the shop's offers (20 Nov 2026)
  *               settings:write  change the shop's settings: details, GST, points, returns, payment keys (owner)
+ *               orders:write    cancel, refund and pack online orders (20 Nov 2026)
  *   exp         at most 15 minutes after iat
  * The shop is found from the tenant (boutique_links); a pass can never name its own shop.
  *
@@ -39,7 +41,7 @@ import * as shopSettings from '../services/boutique/settings';
  * first answer and changes nothing.
  */
 const router = Router();
-const KNOWN_CAN = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write'];
+const KNOWN_CAN = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write', 'orders:write'];
 type Pass = { id: string; scopes: string[]; tenant?: string; clientId?: string; issuedAt?: number; expiresAt?: number; onBehalfOf?: { userId: string; name?: string; can?: string[] } };
 const pass = (req: Request) => (req as any).service as Pass;
 // `more`: what a refusal can add for a program to act on (a delete's `code`, `blockers`, `canForce`).
@@ -322,6 +324,13 @@ router.put('/settings/returns', viaLedger((a, req) => shopSettings.saveReturns(a
 router.put('/settings/payments', viaLedger((a, req) => shopSettings.savePayments(a, req.body ?? {}, apiBase(req))));
 router.post('/settings/payments/check', viaLedger((a, req) => shopSettings.checkPayments(a, apiBase(req))));
 router.delete('/settings/payments', viaLedger((a, req) => shopSettings.removePayments(a, apiBase(req))));
+// ── the online shop and its orders (20 Nov 2026, PLAN-shop-api.md): the app's shop runs on Shop API v1 ──────
+router.get('/online-shop', read(req => boutiqueOrders.whichShop(actorOf(req))));
+router.get('/orders', read(req => boutiqueOrders.list(actorOf(req), req.query as any)));
+router.get('/orders/:orderNumber', read(req => boutiqueOrders.getOne(actorOf(req), String(req.params.orderNumber))));
+router.post('/orders/:orderNumber/cancel', viaLedger((a, req) => boutiqueOrders.cancel(a, String(req.params.orderNumber))));
+router.post('/orders/:orderNumber/refund', viaLedger((a, req, key) => boutiqueOrders.refund(a, String(req.params.orderNumber), req.body ?? {}, key)));
+router.post('/orders/:orderNumber/pack', viaLedger((a, req) => boutiqueOrders.pack(a, String(req.params.orderNumber), req.body ?? {})));
 // ── reports (CRM-B checklist section 9): each needs reports:view ───────────────────────────────────
 router.get('/reports/purchase-spend', read(req => { reports.mustReport(actorOf(req)); return buying.purchaseSpend(actorOf(req), req.query as any); }));
 router.get('/reports/stock-summary', read(req => reports.stockSummary(actorOf(req), req.query as any)));

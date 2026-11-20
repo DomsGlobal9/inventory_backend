@@ -349,7 +349,8 @@ router.post('/:slug/orders', buyLimiter, buying(async (req) => {
    */
   const paid = await onlinePayments.beforeOrderingOnDelivery(shop.clientId, req.body?.placementKey);
   if (paid) return shopCheckout.summary(shop.clientId, paid);
-  return shopCheckout.place(shop.clientId, req.body ?? {});
+  // fromApp only from the checked app key (Shop API v1), never from the body: a shopper cannot silence our messages.
+  return shopCheckout.place(shop.clientId, { ...(req.body ?? {}), fromApp: (req as any).shopApp?.name ?? null });
 }));
 
 /*
@@ -364,7 +365,7 @@ router.post('/:slug/pay', buyLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);
   if (shop.state !== 'OPEN') throw new OnlineShopRuleError('This shop is not open just now.');
   const visible = shop as { name?: string; accent?: string | null };
-  return onlinePayments.start(shop.clientId, visible.name ?? 'the shop', visible.accent ?? null, req.body ?? {});
+  return onlinePayments.start(shop.clientId, visible.name ?? 'the shop', visible.accent ?? null, { ...(req.body ?? {}), fromApp: (req as any).shopApp?.name ?? null });
 }));
 
 router.post('/:slug/pay/:token/confirm', buyLimiter, buying(async (req) => {
