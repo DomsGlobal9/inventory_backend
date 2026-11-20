@@ -1445,6 +1445,8 @@ model SalesOrder {
 
   externalOrderId String? @map("external_order_id")
   sourceSystem    String? @map("source_system")
+  /// The reel link (or CRM picks link) the shopper came from, for an online order (20 Nov 2026). Credit only, never price.
+  reelLinkCode    String? @map("reel_link_code")
 
   /// The selling system's own "last changed" stamp for this order.
   ///
@@ -4013,6 +4015,10 @@ model LoyaltySettings {
   /// The last shop-local day ("YYYY-MM-DD") the automatic messages were prepared for.
   autoPreparedFor String? @map("auto_prepared_for")
 
+  /// Customer levels (20 Nov 2026): a points rate per CRM customer group, e.g. [{ "groupKey": "gold", "pointsPer100": 2 }].
+  /// A customer earns at the best rate of the groups they are in, else at pointsPer100. Set by ScaleEzy CRM.
+  levelRates Json @default("[]") @map("level_rates")
+
   updatedBy String?  @map("updated_by")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -5597,6 +5603,10 @@ model ReelLink {
   active   Boolean @default(true)
   /// The go.scaleezy.com code, once made. Null while short links are not set up on this server.
   shortCode String? @map("short_code")
+  /// REEL (public, from Instagram) or PICKS (20 Nov 2026: private, made by ScaleEzy CRM for one customer; never listed).
+  purpose    String  @default("REEL")
+  customerId String? @map("customer_id")
+  sentByName String? @map("sent_by_name")
 
   createdById String?   @map("created_by_id")
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -5607,6 +5617,7 @@ model ReelLink {
   items ReelLinkItem[]
 
   @@index([clientId, createdAt])
+  @@index([clientId, purpose])
   @@map("reel_links")
 }
 

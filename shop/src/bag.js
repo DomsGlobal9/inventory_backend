@@ -111,3 +111,19 @@ export function useBag(slug) {
   }, [slug]);
   return lines;
 }
+
+/*
+ * The reel link (or a picks link from the shop's CRM) the shopper last opened, kept 7 days in this browser.
+ * Sent with an order so the shop knows which link it came from (credit for whoever sent it; never a price).
+ */
+const LOOK_KEY = (slug) => `se-shop-look:${slug}`;
+const LOOK_DAYS = 7;
+export function rememberLook(slug, code) {
+  try { window.localStorage.setItem(LOOK_KEY(slug), JSON.stringify({ code, at: Date.now() })); } catch { /* private window: no credit, nothing else */ }
+}
+export function lookCodeFor(slug) {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(LOOK_KEY(slug)) || 'null');
+    return v && typeof v.code === 'string' && Date.now() - Number(v.at) < LOOK_DAYS * 86_400_000 ? v.code : null;
+  } catch { return null; }
+}

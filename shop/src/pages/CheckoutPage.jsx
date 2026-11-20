@@ -8,7 +8,7 @@ import {
 } from '../api';
 import { openCheckout } from '../razorpay';
 import { signedIn, sameNumber, onAccountChange } from '../account';
-import { useBag, emptyBag, placementKey, clearPlacementKey } from '../bag';
+import { useBag, emptyBag, placementKey, clearPlacementKey, lookCodeFor } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag } from '../components/Motion';
 
@@ -303,7 +303,9 @@ export default function CheckoutPage({ shop }) {
         name: form.name, phone: form.phone, email: form.email,
         address: form.address, pincode: form.pincode, payWay: form.payWay,
         // This browser's own pass: the shop treats it as proof only for the number it belongs to.
-        token: heldProof(slug) ?? undefined
+        token: heldProof(slug) ?? undefined,
+        // The reel or picks link they came from, if within 7 days: credit only.
+        fromLook: lookCodeFor(slug) ?? undefined
       };
 
       if (form.payWay === 'ONLINE') {

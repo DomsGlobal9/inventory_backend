@@ -9,7 +9,9 @@ import * as shopReviews from '../services/shop-reviews';
 import { crmHandover } from '../services/crm-handover';
 import { offersState, setOffersConsent, productPhotosOf } from '../services/campaigns';
 import { productPhoto, mediaOfShop, templatesOfShop } from '../services/campaigns/media';
-import { wishSettingsOf, pointsForCrm } from '../services/loyalty/loyalty.service';
+import { wishSettingsOf, pointsForCrm, setLevelRates, levelRatesOf, crmPoints } from '../services/loyalty/loyalty.service';
+import * as crmExtras from '../services/crm-extras';
+import { createPicks } from '../services/reel-links';
 import { crmGroups } from '../services/crm-groups';
 import * as crmReads from '../services/crm-reads';
 import { customerService } from '../services/customer.service';
@@ -279,6 +281,16 @@ router.get('/shops/:clientId/wish-settings', shop, readable, act(req => wishSett
 router.get('/shops/:clientId/campaign-templates', shop, readable, act(req => templatesOfShop(cid(req))));
 // Points stay Inventory's: CRM's birthday wish reads the total and this year's gift (read only, up to 200).
 router.get('/shops/:clientId/customers/points', shop, readable, act(req => pointsForCrm(cid(req), req.query.ids)));
+// Customer levels (20 Nov 2026): a points rate per CRM group; a customer earns at the best rate of their groups.
+router.get('/shops/:clientId/loyalty/level-rates', shop, act(req => levelRatesOf(cid(req))));
+router.put('/shops/:clientId/loyalty/level-rates', shop, act(req => setLevelRates(cid(req), req.body, 'ScaleEzy CRM'), () => ['LEVEL_RATES', 'all'], 'LOYALTY'));
+// Send picks (20 Nov 2026): pieces in stock at a store (optionally in a size), and a private picks link for one customer.
+router.get('/shops/:clientId/picks', shop, readable, act(req => crmExtras.picks(cid(req), req.query as any)));
+router.post('/shops/:clientId/picks/link', shop, act(req => createPicks(cid(req), req.body), (req, data) => ['PICKS_LINK', String(data?.code ?? '')], 'REEL_LINK'));
+// Money owed (20 Nov 2026): what customers still owe, and where each bill can be paid (till, shop, online).
+router.get('/shops/:clientId/customers/dues', shop, readable, act(req => crmExtras.dues(cid(req), req.query.ids)));
+// Bring a friend (20 Nov 2026): points with a reason, once per idempotencyKey.
+router.post('/shops/:clientId/customers/:customerId/points', shop, act(req => crmPoints(cid(req), customerIdOf(req), req.body), req => ['POINTS', customerIdOf(req)], 'CUSTOMER'));
 // The shop, its online shop and its new pieces, so CRM's messages never read Inventory's tables.
 router.get('/shops/:clientId/profile', shop, readable, act(req => crmReads.profile(cid(req))));
 router.get('/shops/:clientId/shop-link', shop, readable, act(req => crmReads.shopLink(cid(req))));

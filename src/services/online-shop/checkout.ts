@@ -368,6 +368,8 @@ export type PlaceInput = {
   payWay?: unknown;
   /** The browser's own pass (a sign-in, or a code check's): proof for THIS number only, if it is its. */
   token?: unknown;
+  /** The reel link (or CRM picks link) the shopper came from, if any: credit only, never a price. */
+  fromLook?: unknown;
 };
 
 /** A PIN code as India writes them: six digits, and never starting at zero. */
@@ -413,6 +415,8 @@ export type OrderInput = {
   delivery: number;
   /** The pieces, with enough of each to name it in a sentence ("Kanchi Silk (Red, Free size)"). */
   items: { variantId: string; variantCode: string; quantity: number; title: string; colour: string | null; size: string | null }[];
+  /** The shop's own reel link code the shopper came from (checked), or null. Absent on payments started before 20 Nov. */
+  fromLook?: string | null;
 };
 
 export type PreparedCheckout = OrderInput & {
@@ -525,6 +529,7 @@ export async function prepareCheckout(
    * appending it blindly printed "Telangana - 500029" and then "500029" again on the packing slip.
    */
   const fullAddress = address.includes(pincode) ? address : `${address}\n${pincode}`;
+  const fromLook = await lookOf(clientId, input.fromLook);
 
   return {
     shop, bag,
@@ -532,8 +537,17 @@ export async function prepareCheckout(
     name, phone: phone.value, email, address, fullAddress, pincode, proved,
     locationId, couponCodes, quoteId: quote.quoteId, quoteReq,
     delivery: bag.delivery,
-    items: items.map(i => ({ variantId: i.variantId, variantCode: i.variantCode, quantity: i.quantity, title: i.title, colour: i.colour, size: i.size }))
+    items: items.map(i => ({ variantId: i.variantId, variantCode: i.variantCode, quantity: i.quantity, title: i.title, colour: i.colour, size: i.size })),
+    fromLook
   };
+}
+
+/** A reel link code is kept on the order only when it is this shop's own; anything else is quietly dropped (never an error). */
+async function lookOf(clientId: string, raw: unknown): Promise<string | null> {
+  const code = typeof raw === 'string' ? raw.trim() : '';
+  if (!/^[A-Za-z0-9]{4,32}$/.test(code)) return null;
+  const r = await prisma.reelLink.findFirst({ where: { clientId, code }, select: { code: true } });
+  return r?.code ?? null;
 }
 
 /** Only what writing the order needs, for keeping on a payment until the money is confirmed. */
@@ -641,6 +655,9 @@ export async function writeOrderInTx(
     // came from the shop's own prices and its own offers.
     { userId: null, manualLimitPercent: null, mayOverridePrices: false, lean: true }
   );
+
+  // Bought through a reel link or a CRM picks link: remembered on the sale, so CRM can credit whoever sent it.
+  if (p.fromLook) await tx.salesOrder.update({ where: { id: order.id }, data: { reelLinkCode: p.fromLook } });
 
   await tx.onlineShopOrder.create({
     data: {

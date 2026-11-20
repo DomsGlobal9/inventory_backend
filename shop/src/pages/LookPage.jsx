@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { getLook, getReels, money, offerWords } from '../api';
-import { addToBag, getBag, useBag, bagCount } from '../bag';
+import { addToBag, getBag, useBag, bagCount, rememberLook } from '../bag';
 import { wishlistOn } from '../account';
 import Tile, { saving } from '../components/Tile';
 import Shot from '../components/Shot';
@@ -455,6 +455,7 @@ export default function LookPage({ slug, code, shop, footer, announcement }) {
         // "?piece=<code>" opens the reel AT that piece (a tile on the reels page; Back from a piece's own page).
         const want = new URLSearchParams(window.location.search).get('piece');
         const list = look.available ? look.pieces ?? [] : [];
+        if (look.available) rememberLook(slug, code);
         const at = want ? list.findIndex(p => p.productCode === want) : -1;
         setCurrent(at >= 0 ? at : want === 'all' ? list.length : 0);
         setState({ loading: false, error: null, look });

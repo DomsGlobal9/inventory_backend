@@ -16,7 +16,8 @@
  */
 import { LoyaltyEntryKind, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
-import { badRequest, forbidden, notFound } from '../../utils/httpError';
+import { badRequest, conflict, forbidden, notFound } from '../../utils/httpError';
+import { keyOf } from '../customer-groups';
 import { getShopSettings } from '../../lib/clientSettings';
 import { localDayKey } from '../../utils/businessDay';
 import { grants, holdsEverything } from '../../config/permissions';
@@ -45,7 +46,10 @@ export type LoyaltySettingsView = LoyaltyRules & {
   earnAtCounter: boolean;
   earnOnlineShop: boolean;
   earnShopify: boolean;
+  /** Customer levels: a points rate per CRM customer group (best one wins). */
+  levelRates: LevelRate[];
 };
+export type LevelRate = { groupKey: string; pointsPer100: number };
 
 export const DEFAULT_BIRTHDAY_TEXT = 'Happy birthday, {name}! Wishing you a wonderful year from all of us at {shop}.';
 export const DEFAULT_ANNIVERSARY_TEXT = 'Happy anniversary, {name}! Warm wishes from all of us at {shop}.';
@@ -70,8 +74,80 @@ export async function getSettings(clientId: string, db: Tx | typeof prisma = pri
     expiryReminder: row?.expiryReminder ?? false,
     earnAtCounter: row?.earnAtCounter ?? true,
     earnOnlineShop: row?.earnOnlineShop ?? false,
-    earnShopify: row?.earnShopify ?? false
+    earnShopify: row?.earnShopify ?? false,
+    levelRates: readLevelRates((row as any)?.levelRates)
   };
+}
+
+function readLevelRates(raw: unknown): LevelRate[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((r: any) => r && typeof r.groupKey === 'string' && Number.isFinite(Number(r.pointsPer100)))
+    .map((r: any) => ({ groupKey: keyOf(r.groupKey), pointsPer100: Number(r.pointsPer100) }));
+}
+
+/**
+ * The rate this customer earns at: the best of their levels (CRM customer groups with a rate), or the shop's own
+ * rate. Never lower than the shop's rate -- a level is a reward, not a cut.
+ */
+export async function rateFor(db: Tx | typeof prisma, clientId: string, customerId: string | null | undefined, s: LoyaltySettingsView): Promise<number> {
+  if (!customerId || !s.levelRates.length) return s.pointsPer100;
+  const c = await db.customer.findFirst({ where: { id: customerId, clientId }, select: { tags: true } });
+  const mine = new Set((c?.tags ?? []).map(t => keyOf(t)));
+  return s.levelRates.reduce((best, r) => (mine.has(r.groupKey) && r.pointsPer100 > best ? r.pointsPer100 : best), s.pointsPer100);
+}
+
+const LEVELS_MAX = 20;
+/** Customer levels from ScaleEzy CRM: the whole list each time (an empty list ends them). */
+export async function setLevelRates(clientId: string, raw: unknown, by: string | null) {
+  const list = (raw as any)?.rates;
+  if (!Array.isArray(list)) throw badRequest('Send the levels as rates: [{ groupKey, pointsPer100 }].');
+  if (list.length > LEVELS_MAX) throw badRequest(`At most ${LEVELS_MAX} levels.`);
+  const seen = new Set<string>();
+  const rates: LevelRate[] = list.map((r: any, i: number) => {
+    const key = typeof r?.groupKey === 'string' ? keyOf(r.groupKey) : '';
+    if (!key || key.length > 60) throw badRequest(`Level ${i + 1}: give the group's key (up to 60 letters).`);
+    if (seen.has(key)) throw badRequest(`The group "${key}" is listed twice.`);
+    seen.add(key);
+    const n = Number(r?.pointsPer100);
+    if (!Number.isFinite(n) || n < 0 || n > 100) throw badRequest(`Level "${key}": points for every ₹100 must be between 0 and 100.`);
+    return { groupKey: key, pointsPer100: Math.round(n * 100) / 100 };
+  });
+  await prisma.loyaltySettings.upsert({
+    where: { clientId },
+    create: { clientId, levelRates: rates as any, updatedBy: by } as any,
+    update: { levelRates: rates as any, updatedBy: by } as any
+  });
+  return { rates };
+}
+
+export async function levelRatesOf(clientId: string) {
+  const s = await getSettings(clientId);
+  return { rates: s.levelRates, normalPointsPer100: s.pointsPer100, enabled: s.enabled };
+}
+
+/**
+ * Points given by ScaleEzy CRM (bring a friend, 20 Nov 2026): once per idempotencyKey, with the reason in the
+ * history. Negative takes back, never below zero. Loyalty off: refused in words.
+ */
+export async function crmPoints(clientId: string, customerId: string, body: any) {
+  const s = await getSettings(clientId);
+  if (!s.enabled) throw conflict('Loyalty points are switched off for this shop.');
+  const points = Number(body?.points);
+  if (!Number.isInteger(points) || points === 0 || Math.abs(points) > 100_000) throw badRequest('Give the points as a whole number, not 0 (at most 100,000).');
+  const reason = typeof body?.reason === 'string' ? body.reason.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+  if (!reason) throw badRequest('Say why, for the points history the customer sees.');
+  const key = typeof body?.idempotencyKey === 'string' ? body.idempotencyKey.trim() : '';
+  if (!/^[A-Za-z0-9._:-]{8,100}$/.test(key)) throw badRequest('Send an idempotencyKey: 8 to 100 letters, digits, . _ : or -.');
+  const c = await prisma.customer.findFirst({ where: { id: customerId, clientId, deletedAt: null }, select: { id: true, loyaltyPoints: true } });
+  if (!c) throw notFound('That customer was not found.');
+  const onceKey = `CRM-POINTS:${clientId}:${key}`;
+  const balance = await prisma.$transaction(tx => post(tx, { clientId, customerId, kind: 'ADJUSTED', points, onceKey, note: reason }));
+  if (balance === null) {
+    const now = await prisma.customer.findUnique({ where: { id: customerId }, select: { loyaltyPoints: true } });
+    return { balance: now?.loyaltyPoints ?? 0, already: true };
+  }
+  return { balance, already: false };
 }
 
 /** The settings as the Loyalty & wishes screen shows them: with the wishes' pictures to look at. */
@@ -237,7 +313,7 @@ export async function forCounter(clientId: string, customerId: string | null, bi
     maxRedeemPercent: s.maxRedeemPercent,
     usablePoints: usable,
     usableValue: valueOf(usable, s) / 100,
-    earnsPer100: s.pointsPer100
+    earnsPer100: await rateFor(prisma, clientId, customerId, s)
   };
 }
 
@@ -297,7 +373,9 @@ export async function settleSale(tx: Tx, input: {
   }
 
   // Unticking the counter stops earning there; points can still be spent.
-  const earned = s.earnAtCounter ? pointsEarned(input.billMinor - input.pointsPaidMinor - Math.max(0, input.owedMinor ?? 0), s) : 0;
+  const earned = s.earnAtCounter
+    ? pointsEarned(input.billMinor - input.pointsPaidMinor - Math.max(0, input.owedMinor ?? 0), { pointsPer100: await rateFor(tx, input.clientId, input.customerId, s) })
+    : 0;
   if (earned > 0) {
     balance = await post(tx, {
       clientId: input.clientId, customerId: input.customerId, kind: 'EARNED', points: earned,
@@ -332,7 +410,7 @@ export async function earnOnCollection(tx: Tx, clientId: string, orderId: string
     if (p.kind === 'PAYMENT') { if (isMoney) money += minor; else notMoney += minor; }
     else if (isMoney && !p.salesReturnId) money -= minor; // a bounced cheque; a return's refund is the return's business
   }
-  const target = pointsEarned(Math.min(money, toMinor(order.total as any) - notMoney), s);
+  const target = pointsEarned(Math.min(money, toMinor(order.total as any) - notMoney), { pointsPer100: await rateFor(tx, clientId, order.customerId, s) });
   const already = (await tx.loyaltyEntry.aggregate({ where: { clientId, salesOrderId: orderId, kind: 'EARNED' }, _sum: { points: true } }))._sum.points ?? 0;
   if (target <= already) return null;
   const balance = await post(tx, {
@@ -375,7 +453,7 @@ export async function settleSentOut(tx: Tx, clientId: string, orderId: string) {
   const sentMinor = allSent
     ? toMinor(order.total as any)
     : order.items.reduce((a, i) => a + portionOf(toMinor(i.totalPrice as any), i.quantity, 0, Math.min(i.fulfilledQty, i.quantity)), 0);
-  const earned = pointsEarned(sentMinor, s);
+  const earned = pointsEarned(sentMinor, { pointsPer100: await rateFor(tx, clientId, order.customerId, s) });
   if (earned <= 0) return null;
   const balance = await post(tx, {
     clientId, customerId: order.customerId, kind: 'EARNED', points: earned,

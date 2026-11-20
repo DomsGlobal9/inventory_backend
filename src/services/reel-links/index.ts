@@ -267,7 +267,8 @@ export async function list(clientId: string) {
   const [shop, rows] = await Promise.all([
     shopOf(clientId),
     prisma.reelLink.findMany({
-      where: { clientId, deletedAt: null },
+      // Picks links (ScaleEzy CRM, one customer each) are private: never in the shop's own list.
+      where: { clientId, deletedAt: null, purpose: 'REEL' },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true, clientId: true, code: true, title: true, active: true, shortCode: true, createdAt: true, createdById: true, reelUrl: true,
@@ -304,7 +305,7 @@ export async function list(clientId: string) {
 }
 
 async function own(clientId: string, id: string) {
-  const r = typeof id === 'string' && id ? await prisma.reelLink.findFirst({ where: { id, clientId, deletedAt: null } }) : null;
+  const r = typeof id === 'string' && id ? await prisma.reelLink.findFirst({ where: { id, clientId, deletedAt: null, purpose: 'REEL' } }) : null;
   if (!r) fail(404, 'That reel link is no longer here. It may have been deleted.');
   return r!;
 }
@@ -347,7 +348,7 @@ async function writeItems(tx: Prisma.TransactionClient, reelLinkId: string, piec
 
 /** The title a new reel link starts with: "Reel 1", "Reel 2", ... counting every one the shop has made. */
 export async function nextTitle(clientId: string) {
-  const n = await prisma.reelLink.count({ where: { clientId } });
+  const n = await prisma.reelLink.count({ where: { clientId, purpose: 'REEL' } });
   return `Reel ${n + 1}`;
 }
 
@@ -480,7 +481,7 @@ export async function forShopper(clientId: string, raw: unknown) {
  */
 export async function bioForShopper(clientId: string, limit = 40) {
   const rows = await prisma.reelLink.findMany({
-    where: { clientId, active: true, deletedAt: null, items: { some: { product: ELIGIBLE_PRODUCT } } },
+    where: { clientId, active: true, deletedAt: null, purpose: 'REEL', items: { some: { product: ELIGIBLE_PRODUCT } } },
     orderBy: { createdAt: 'desc' },
     take: limit,
     select: {
@@ -489,4 +490,67 @@ export async function bioForShopper(clientId: string, limit = 40) {
     }
   });
   return rows.map(r => ({ code: r.code, title: r.title, pieces: r.items.map(i => ({ productCode: i.product.productCode, colour: i.colour })) }));
+}
+
+// ── Picks for one customer (ScaleEzy CRM's "Send picks", 20 Nov 2026) ─────────────────────────
+
+const PICK_VARIANTS_MAX = 30;
+
+/**
+ * A PRIVATE reel link of the pieces a salesperson picked for one customer: the same page and short link as a reel link,
+ * with try-on, but never on the shop's reels page or in its Reel links list. Chosen as variants (a colour and size);
+ * the page shows each piece in that colour. Remembers the customer and who sent it, so a later order bought through it
+ * (sales_orders.reel_link_code) can be credited by CRM.
+ */
+export async function createPicks(clientId: string, body: any) {
+  await needShop(clientId);
+  const ids = Array.isArray(body?.variantIds) ? [...new Set(body.variantIds.filter((v: unknown) => typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v as string)).map((v: string) => v.toLowerCase()))] as string[] : [];
+  if (!ids.length) fail(400, 'Choose at least one piece (variantIds).');
+  if (ids.length > PICK_VARIANTS_MAX) fail(400, `Choose at most ${PICK_VARIANTS_MAX} pieces.`);
+  const variants = await prisma.productVariant.findMany({
+    where: { id: { in: ids }, clientId },
+    select: { id: true, colorName: true, product: { select: { id: true, title: true, status: true, trashedAt: true, sellInShop: true } } }
+  });
+  if (variants.length !== ids.length) fail(400, 'One of the pieces is no longer in this shop. Choose again.');
+  const pieces: PieceIn[] = [];
+  for (const v of variants) {
+    const prod = v.product;
+    if (prod.trashedAt || prod.status !== 'ACTIVE' || !prod.sellInShop) fail(400, `"${prod.title}" is not for sale online just now. Leave it out.`);
+    const colour = v.colorName?.trim() || null;
+    if (!pieces.some(p => p.productId === prod.id && (p.colour ?? '').toLowerCase() === (colour ?? '').toLowerCase())) pieces.push({ productId: prod.id, colour });
+  }
+  if (pieces.length > MAX_PIECES) fail(400, `A picks link can show up to ${MAX_PIECES} pieces (colours of a piece count apart).`);
+
+  let customerId: string | null = null, firstName: string | null = null;
+  if (body?.customerId != null && body.customerId !== '') {
+    const c = typeof body.customerId === 'string' ? await prisma.customer.findFirst({ where: { id: body.customerId.toLowerCase(), clientId, deletedAt: null }, select: { id: true, name: true } }) : null;
+    if (!c) fail(400, 'That customer is not in this shop.');
+    customerId = c!.id;
+    firstName = c!.name.trim().split(/\s+/)[0] || null;
+  }
+  const by = body?.sentBy && typeof body.sentBy === 'object' ? body.sentBy : null;
+  const sentByName = typeof by?.name === 'string' && by.name.trim() ? by.name.trim().slice(0, 80) : null;
+  const byUser = typeof by?.userId === 'string' ? await prisma.user.findFirst({ where: { id: by.userId, clientId }, select: { id: true } }) : null;
+  const title = (firstName ? `Picks for ${firstName}` : 'Picks for you').slice(0, TITLE_MAX);
+
+  let made: { id: string; clientId: string; code: string; shortCode: string | null } | null = null;
+  for (let attempt = 0; attempt < 5 && !made; attempt++) {
+    try {
+      made = await prisma.$transaction(async tx => {
+        const r = await tx.reelLink.create({
+          data: { clientId, code: newCode(), title, createdById: byUser?.id ?? null, purpose: 'PICKS', customerId, sentByName },
+          select: { id: true, clientId: true, code: true, shortCode: true }
+        });
+        await writeItems(tx, r.id, pieces);
+        return r;
+      });
+    } catch (e) {
+      if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002')) throw e;
+    }
+  }
+  if (!made) fail(500, 'The picks link could not be made. Please try again.');
+  const shortCode = await ensureShortLink(made!, byUser?.id ?? null);
+  const shop = await shopOf(clientId);
+  const pageUrl = lookUrl(shop?.slug ?? null, made!.code);
+  return { code: made!.code, url: shortUrlOf(shortCode) ?? pageUrl, pageUrl, title, pieces: pieces.length };
 }

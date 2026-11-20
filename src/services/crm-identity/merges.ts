@@ -30,7 +30,9 @@ const MOVES: { table: string; column: string }[] = [
   { table: 'pricing_quotes', column: 'customer_id' },
   { table: 'store_checkins', column: 'customer_id' },
   { table: 'counter_lookups', column: 'customer_id' },
-  { table: 'gift_vouchers', column: 'buyer_customer_id' }
+  { table: 'gift_vouchers', column: 'buyer_customer_id' },
+  // CRM picks links made for the joined copy follow to the kept customer (20 Nov 2026), so a later order's credit stays right.
+  { table: 'reel_links', column: 'customer_id' }
 ];
 /** Columns that point at a customer and are deliberately NOT moved (with why). The merge suite checks that the
  * database has no customer column outside MOVES and this list, so a new feature cannot be forgotten here. */
