@@ -7,6 +7,16 @@ import { pack as logisticsPack } from '../logistics/parcels';
 import { SHOP_SOURCE } from '../online-shop/checkout';
 import { factorOf } from '../../lib/units';
 import { problem, type Actor } from './index';
+import { OnlineShopRuleError } from '../online-shop';
+import { GatewayError } from '../payments/gateway';
+
+/** A refusal the reused services raise without an HTTP status ("not paid online"), as a 400 with its sentence, never a 500. */
+async function said<T>(run: () => Promise<T>): Promise<T> {
+  try { return await run(); } catch (e: any) {
+    if (e instanceof OnlineShopRuleError || e instanceof GatewayError) throw problem(e.message, 400);
+    throw e;
+  }
+}
 
 /**
  * Online orders through the boutique API (20 Nov 2026, PLAN-shop-api.md "Orders are run in the Boutique app").
@@ -89,7 +99,7 @@ export async function getOne(a: Actor, orderNumber: string) {
 export async function cancel(a: Actor, orderNumber: string) {
   mustAct(a);
   const o = await own(a, orderNumber);
-  await salesOrderService.cancelOrder(a.clientId, o.id);
+  await said(() => salesOrderService.cancelOrder(a.clientId, o.id));
   const refund = await onlinePayments.afterCancelled(a.clientId, o.id, null).catch((e: any) => ({ error: e?.message }));
   return { order: await getOne(a, orderNumber), refund };
 }
@@ -98,7 +108,7 @@ export async function cancel(a: Actor, orderNumber: string) {
 export async function refund(a: Actor, orderNumber: string, body: any, key: string) {
   mustAct(a);
   const o = await own(a, orderNumber);
-  const out = await onlinePayments.refundByOwner(a.clientId, null, { salesOrderId: o.id, amount: body?.amount, reason: `${String(body?.reason ?? '').slice(0, 200)} -- ${by(a)}`, requestKey: body?.requestKey ?? key });
+  const out = await said(() => onlinePayments.refundByOwner(a.clientId, null, { salesOrderId: o.id, amount: body?.amount, reason: `${String(body?.reason ?? '').slice(0, 200)} -- ${by(a)}`, requestKey: body?.requestKey ?? key }));
   return { order: await getOne(a, orderNumber), refund: out };
 }
 
@@ -109,6 +119,6 @@ export async function refund(a: Actor, orderNumber: string, body: any, key: stri
 export async function pack(a: Actor, orderNumber: string, body: any) {
   mustAct(a);
   const o = await own(a, orderNumber);
-  const parcel = await logisticsPack(a.clientId, { id: null, name: by(a) }, { ...(body ?? {}), salesOrderId: o.id });
+  const parcel = await said(() => logisticsPack(a.clientId, { id: null, name: by(a) }, { ...(body ?? {}), salesOrderId: o.id }));
   return { order: await getOne(a, orderNumber), parcel };
 }

@@ -16,6 +16,7 @@ import path from 'node:path';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
+import * as appKeys from '../services/shop-app-keys';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4036/api/v1';
 for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
@@ -27,7 +28,7 @@ const OUT_DIR = path.resolve(__dirname, '../../../handouts');
 
 const S = Date.now().toString(36);
 const TEN = `apidoc-${S}`, TEN_JOIN = `apidoc-${S}-new`, TEN_OTHER = `apidoc-${S}-other`;
-const ALL = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write'];
+const ALL = ['products:write', 'products:delete', 'stock:write', 'stitching:issue', 'stock:transfer', 'suppliers:write', 'reports:view', 'customers:write', 'offers:write', 'settings:write', 'orders:write'];
 
 type Rec = {
   group: string; title: string; does: string; method: string; template: string; path: string; can: string;
@@ -43,19 +44,21 @@ const pass = (tenant: string, can: string[]) => jwt.sign({ sub: 'crm-b', scope: 
 function trim(v: any, depth = 0): any {
   if (Array.isArray(v)) return v.length > 3 ? [...v.slice(0, 2).map(x => trim(x, depth + 1)), `… ${v.length - 2} more`] : v.map(x => trim(x, depth + 1));
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, depth > 6 ? '…' : trim(x, depth + 1)]));
+  // A key or secret in an answer (a website key, shown once) is masked: the registry never carries one.
+  if (typeof v === 'string' && /^(sk|sak)_[A-Za-z0-9]+_[A-Za-z0-9_-]{8,}$/.test(v)) return `${v.split('_').slice(0, 2).join('_')}_…(shown once, in full)`;
   if (typeof v === 'string' && v.length > 240) return `${v.slice(0, 240)}…`;
   return v;
 }
 let n = 0;
 async function rec(o: {
   group: string; title: string; does: string; method: string; template: string; path: string; can?: string[]; needs?: string;
-  query?: Record<string, unknown>; body?: unknown; expect: number | number[]; tenant?: string; raw?: boolean; notes?: string[]; kind?: 'example' | 'error'; noPass?: boolean; key?: string;
+  query?: Record<string, unknown>; body?: unknown; expect: number | number[]; tenant?: string; raw?: boolean; notes?: string[]; kind?: 'example' | 'error'; noPass?: boolean; key?: string; shopKey?: string;
 }) {
   const qs = o.query ? '?' + Object.entries(o.query).map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join('&') : '';
   const r = await axios.request({
-    method: o.method, url: `${BASE}/internal/boutique${o.path}${qs}`, data: o.body, validateStatus: () => true, timeout: 90_000,
+    method: o.method, url: o.shopKey ? `${BASE.replace(/\/api\/v1\/?$/, '')}${o.path}${qs}` : `${BASE}/internal/boutique${o.path}${qs}`, data: o.body, validateStatus: () => true, timeout: 90_000,
     responseType: o.raw ? 'arraybuffer' : 'json',
-    headers: { ...(o.noPass ? {} : { Authorization: `Bearer ${pass(o.tenant ?? TEN, o.can ?? ALL)}` }), ...(o.method !== 'GET' ? { 'Idempotency-Key': o.key ?? `apidoc-${S}-${++n}` } : {}) }
+    headers: o.shopKey ? { 'X-Shop-App-Key': o.shopKey } : { ...(o.noPass ? {} : { Authorization: `Bearer ${pass(o.tenant ?? TEN, o.can ?? ALL)}` }), ...(o.method !== 'GET' ? { 'Idempotency-Key': o.key ?? `apidoc-${S}-${++n}` } : {}) }
   });
   const want = Array.isArray(o.expect) ? o.expect : [o.expect];
   const ok = want.includes(r.status);
@@ -71,7 +74,7 @@ async function rec(o: {
 async function main() {
   const G1 = '1. Connecting', G2 = '2. Stores', G3 = '3. Items', G4 = '4. Stock', G5 = '5. Cloth held for stitching orders', G6 = '6. Customers',
     G7 = '7. Suppliers and buying', G8 = '8. Racks and shelves', G9 = '9. Barcodes, scanning and labels', G10 = '10. Price check',
-    G11 = '11. Offers', G12 = '12. Shop settings', G13 = '13. Reports', G14 = '14. Errors you will meet';
+    G11 = '11. Offers', G12 = '12. Shop settings', G13 = '13. Reports', G14 = '14. Errors you will meet', G15 = '15. Online shop and its orders', G16 = '16. Shop API v1 (the app\'s shop, for shoppers)', G17 = '17. Buying in full', G18 = '18. Website, Shopify and the nightly Day Book';
 
   console.log('\n' + G1);
   await rec({ group: G1, title: 'Is it up?', does: 'Answers when ScaleEzy is reachable and your pass is good. Needs a pass, not a linked shop.', method: 'GET', template: '/status', path: '/status', expect: 200 });
@@ -244,6 +247,77 @@ async function main() {
     await rec({ group: G13, title, does, method: 'GET', template: p, path: p, query: q as any, needs: 'reports:view', expect: 200 });
   }
 
+  console.log('\n' + G13 + ' (more)');
+  for (const [p, title, does, q] of [
+    ['/reports/sales', 'Sales', 'Billed, GST, returns, by day and the best sellers, for a period: period=today|7d|30d|month, or from/to; locationId.', { period: '30d' }],
+    ['/reports/stock-value', 'Stock value', 'What the stock is worth at cost, by category.', undefined],
+    ['/reports/stock-on-hand', 'Stock on hand', 'What is in stock, grouped (group=category|...).', undefined],
+    ['/reports/running-low', 'Running low', 'Items at or below their level, with how fast they sell; locationId.', undefined]
+  ] as const) {
+    await rec({ group: G13, title, does, method: 'GET', template: p, path: p, query: q as any, needs: 'reports:view', expect: 200 });
+  }
+
+  console.log('\n' + G17);
+  const noMail = await rec({ group: G7, title: 'Add a supplier (no email)', does: 'A second supplier, used below to show the email refusal.', method: 'POST', template: '/suppliers', path: '/suppliers', needs: 'suppliers:write', body: { name: 'Meena Trims', phone: '9849011111' }, expect: [200, 201] });
+  const meenaId = noMail.raw?.data?.id;
+  const lk = await rec({ group: G17, title: 'Say a supplier sells an item', does: 'Their code for it, price per unit (per metre for cloth), lead time, minimum order, preferred. The same supplier and item again changes it.', method: 'POST', template: '/supplier-items', path: '/supplier-items', needs: 'suppliers:write',
+    body: { supplierId: meenaId, itemCode: 'SLK-0001', supplierSku: 'MT-KANCHI-G', costPrice: 300, minOrderQty: 5, leadTimeDays: 3, preferred: true }, expect: 201 });
+  await rec({ group: G17, title: 'An item\'s suppliers', does: 'Who sells it, at what price, which one is preferred.', method: 'GET', template: '/items/{itemCode}/suppliers', path: '/items/SLK-0001/suppliers', expect: 200 });
+  await rec({ group: G17, title: 'A supplier\'s items', does: 'What a supplier sells; search.', method: 'GET', template: '/suppliers/{supplierId}/items', path: `/suppliers/${meenaId}/items`, expect: 200 });
+  await rec({ group: G17, title: 'Make a supplier the preferred one', does: 'For that item; any other preferred supplier of it stops being.', method: 'POST', template: '/supplier-items/{linkId}/preferred', path: `/supplier-items/${lk.raw?.data?.id}/preferred`, needs: 'suppliers:write', body: {}, expect: 200 });
+  await rec({ group: G17, title: 'What to buy again', does: 'Everything at or below its level, grouped by the preferred supplier, with a suggested quantity (raised to the supplier\'s minimum); cloth in metres. storeId narrows.', method: 'GET', template: '/reorder', path: '/reorder', expect: 200 });
+  const drafts = await rec({ group: G17, title: 'Draft orders in one go', does: 'One DRAFT purchase order per supplier from the chosen lines. Every line is checked before any order is made.', method: 'POST', template: '/reorder/draft-orders', path: '/reorder/draft-orders', needs: 'suppliers:write',
+    body: { storeId: main0, groups: [{ supplierId: meenaId, lines: [{ itemCode: 'SLK-0001', quantity: 8.5, unitCost: 300 }] }] }, expect: 201 });
+  const draftId = drafts.raw?.data?.orders?.[0]?.id;
+  await rec({ group: G17, title: 'Where an order is delivered', does: 'The store the supplier delivers to (needed before emailing it).', method: 'PUT', template: '/purchase-orders/{poId}/deliver-to', path: `/purchase-orders/${draftId}/deliver-to`, needs: 'suppliers:write', body: { storeId: main0 }, expect: 200 });
+  await rec({ group: G17, title: 'Email an order to the supplier (refused example)', does: 'Sends the order, as the PDF Inventory sends, to the supplier\'s email address; a DRAFT becomes SENT. Cloth reads in metres at the price per metre.', method: 'POST', template: '/purchase-orders/{poId}/email', path: `/purchase-orders/${draftId}/email`, needs: 'suppliers:write', body: {}, expect: [400, 422],
+    notes: ['Shown for a supplier with no email address, so no real email is sent here. With an address the answer is { sent: true, to, poNumber, statusChanged }.'] });
+  await rec({ group: G17, title: 'Change an order\'s status', does: 'SENT, CANCELLED or back to DRAFT; receiving goods sets the rest.', method: 'POST', template: '/purchase-orders/{poId}/status', path: `/purchase-orders/${draftId}/status`, needs: 'suppliers:write', body: { status: 'SENT' }, expect: 200 });
+  await rec({ group: G17, title: 'Stop saying a supplier sells an item', does: 'Removes the link; the supplier and the item stay.', method: 'DELETE', template: '/supplier-items/{linkId}', path: `/supplier-items/${lk.raw?.data?.id}`, needs: 'suppliers:write', expect: 200 });
+  await rec({ group: G17, title: 'Remove a supplier (refused example)', does: 'A supplier with purchase orders is kept for their history: switch it off instead. One with none is removed.', method: 'DELETE', template: '/suppliers/{supplierId}', path: `/suppliers/${meenaId}`, needs: 'suppliers:write', expect: 409 });
+
+  console.log('\n' + G15);
+  await prisma.stockLocation.update({ where: { id: main0 }, data: { address: '12 Road No. 3, Banjara Hills, Hyderabad 500034', phone: '9000000001' } });
+  const SLUG = `apidoc-${S}`;
+  await prisma.onlineShop.create({ data: { clientId, slug: SLUG, isLive: true, acceptsOrders: true, payOnDelivery: true, locationIds: [main0], deliverPincodes: [] } as any });
+  await rec({ group: G15, title: 'Which online shop', does: 'The client\'s online shop: its address (slug), whether it is open and taking orders, and the Shop API v1 path the app uses.', method: 'GET', template: '/online-shop', path: '/online-shop', expect: 200 });
+  const appKey = (await appKeys.make({ name: 'Boutique app (Android)', tenant: TEN }, null)).key;
+  const blProduct = (await prisma.productVariant.findFirst({ where: { clientId, boutiqueRef: 'BLS-0001' }, select: { product: { select: { productCode: true } } } }))!.product.productCode;
+
+  console.log('\n' + G16);
+  const SH = 'Shop API v1: the X-Shop-App-Key header (ScaleEzy makes the key for your app), no pass.';
+  await rec({ group: G16, title: 'The shop', does: `Name, logo, colours, whether it takes orders, how it delivers and is paid. ${SH}`, method: 'GET', template: '/shop/v1/{shop}', path: `/shop/v1/${SLUG}`, shopKey: appKey, expect: 200 });
+  await rec({ group: G16, title: 'Products', does: `What the shop sells online, with prices and stock (filters as our own shop). ${SH}`, method: 'GET', template: '/shop/v1/{shop}/products', path: `/shop/v1/${SLUG}/products`, shopKey: appKey, expect: 200 });
+  await rec({ group: G16, title: 'One product', does: `Colours, sizes, photos, stock. ${SH}`, method: 'GET', template: '/shop/v1/{shop}/products/{productCode}', path: `/shop/v1/${SLUG}/products/${blProduct}`, shopKey: appKey, expect: 200 });
+  await rec({ group: G16, title: 'Price the bag', does: `The bag priced by the shop's own rules and offers, with delivery. ${SH}`, method: 'POST', template: '/shop/v1/{shop}/bag', path: `/shop/v1/${SLUG}/bag`, shopKey: appKey, body: { lines: [{ variantCode: 'BV-BLS-0001', quantity: 1 }] }, expect: 200 });
+  const placedV1 = await rec({ group: G16, title: 'Place an order (pay on delivery)', does: `The stock is held at once. The order is the app's: the shopper gets no message from ScaleEzy (the app sends its own), and the app is told (the boutique feed, "order.placed"). Paying online: POST .../pay, then .../pay/{token}/confirm. ${SH}`, method: 'POST', template: '/shop/v1/{shop}/orders', path: `/shop/v1/${SLUG}/orders`, shopKey: appKey,
+    body: { placementKey: `apidoc-${S}-bag-1`, lines: [{ variantCode: 'BV-BLS-0001', quantity: 1 }], name: 'Asha', phone: '9848012399', email: '', address: 'Flat 4, Road 3, Hyderabad', pincode: '500034', payWay: 'ON_DELIVERY' }, expect: 200 });
+  const tokenV1 = placedV1.raw?.data?.token ?? placedV1.raw?.data?.orderToken;
+  if (tokenV1) await rec({ group: G16, title: 'The shopper\'s order', does: `By its token (secret, in the shopper's link). ${SH}`, method: 'GET', template: '/shop/v1/{shop}/orders/{token}', path: `/shop/v1/${SLUG}/orders/${tokenV1}`, shopKey: appKey, expect: 200 });
+  await rec({ group: G16, kind: 'error', title: 'Another boutique\'s shop, or no key', does: 'A key reaches only its own boutique\'s shops; anything else is "not found". No key: 401.', method: 'GET', template: '/shop/v1/{shop}', path: '/shop/v1/someone-elses-shop', shopKey: appKey, expect: 404 });
+
+  console.log('\n' + G15 + ' (orders)');
+  const ordersList = await rec({ group: G15, title: 'Online orders', does: 'Newest first, 20 a page; fromApp=1 only those placed in your app; status filter.', method: 'GET', template: '/orders', path: '/orders', query: { fromApp: 1 }, expect: 200 });
+  const on = ordersList.raw?.data?.orders?.[0]?.orderNumber;
+  if (on) {
+    await rec({ group: G15, title: 'One online order', does: 'Customer, delivery address, items by your codes, paid and due, parcels with tracking.', method: 'GET', template: '/orders/{orderNumber}', path: `/orders/${on}`, expect: 200 });
+    await rec({ group: G15, title: 'Pack for shipping (refused example)', does: 'Box (one of the shop\'s sizes, or sides in cm) and weight; optionally which items. The stock leaves with the parcel and ScaleEzy Logistics books the courier; status and tracking then show on the order.', method: 'POST', template: '/orders/{orderNumber}/pack', path: `/orders/${on}/pack`, needs: 'orders:write', body: { weightKg: 0.4, lengthCm: 30, breadthCm: 20, heightCm: 5 }, expect: 409,
+      notes: ['This test shop has not switched Logistics on, so the answer is the refusal. With Logistics on, the answer is the order and its parcel (READY until Logistics books it).'] });
+    await rec({ group: G15, title: 'Refund part of an online payment (refused example)', does: 'For an order paid online: amount in rupees and a reason; the money goes back through the shop\'s Razorpay.', method: 'POST', template: '/orders/{orderNumber}/refund', path: `/orders/${on}/refund`, needs: 'orders:write', body: { amount: 500, reason: 'Size exchange' }, expect: 400,
+      notes: ['This order is paid on delivery, so there is nothing to refund online; the answer says so.'] });
+    await rec({ group: G15, title: 'Cancel an order', does: 'The held stock goes back on sale; money paid online goes back to the customer.', method: 'POST', template: '/orders/{orderNumber}/cancel', path: `/orders/${on}/cancel`, needs: 'orders:write', body: {}, expect: 200 });
+  }
+
+  console.log('\n' + G18);
+  const site = await rec({ group: G18, title: 'Add the shop\'s own website', does: 'A key for a site that sells from the same stock (it reads products, offers and prices, and is told of changes at its url). The key is shown once.', method: 'POST', template: '/websites', path: '/websites', needs: 'settings:write', body: { name: 'labelswathyreddy.com', url: 'https://example.com/hooks/scaleezy' }, expect: 201 });
+  await rec({ group: G18, title: 'The shop\'s websites', does: 'Without their keys.', method: 'GET', template: '/websites', path: '/websites', expect: 200 });
+  await rec({ group: G18, title: 'Remove a website', does: 'Its key stops working.', method: 'DELETE', template: '/websites/{websiteId}', path: `/websites/${site.raw?.data?.id}`, needs: 'settings:write', expect: 200 });
+  await rec({ group: G18, title: 'Shopify connection', does: 'Whether the shop\'s Shopify store is connected.', method: 'GET', template: '/shopify', path: '/shopify', expect: 200 });
+  await rec({ group: G18, title: 'Shopify connect link', does: 'Shopify\'s own approval page for the store (shop: name.myshopify.com). The owner opens it once, signed in to Shopify, and approves; then products, stock and orders flow by themselves.', method: 'POST', template: '/shopify/connect-link', path: '/shopify/connect-link', needs: 'settings:write', body: { shop: 'lakshmi-boutique.myshopify.com' }, expect: [200, 400],
+    notes: ['On ScaleEzy\'s test server Shopify is not configured, so the example may be that refusal. On the live server the answer is { shopDomain, openThisLink, note }.'] });
+  await rec({ group: G18, title: 'Nightly Day Book (read)', does: 'Whether the Day Book PDF goes to a WhatsApp number each evening, and when.', method: 'GET', template: '/settings/daybook-whatsapp', path: '/settings/daybook-whatsapp', expect: 200 });
+  await rec({ group: G18, title: 'Nightly Day Book (switch on)', does: 'enabled, time ("22:00", the shop\'s time), to (the owner\'s WhatsApp number).', method: 'PUT', template: '/settings/daybook-whatsapp', path: '/settings/daybook-whatsapp', needs: 'settings:write', body: { enabled: true, time: '22:00', to: '+919848012345' }, expect: 200 });
+
   console.log('\n' + G14);
   await rec({ group: G14, kind: 'error', title: 'No pass', does: 'Every call needs Authorization: Bearer <pass>.', method: 'GET', template: '/items', path: '/items', noPass: true, expect: 401 });
   await rec({ group: G14, kind: 'error', title: 'The person may not', does: 'The pass\'s `can` list lacks the word this call needs: nothing changes.', method: 'PUT', template: '/items/{itemCode}', path: '/items/SLK-0001', can: ['stock:write'], body: { sellingPrice: 1 }, expect: 403 });
@@ -325,7 +399,11 @@ test server, in a throwaway shop, and recording what came back. **Every example 
 async function cleanup() {
   const ids = (await prisma.boutiqueLink.findMany({ where: { tenant: { startsWith: 'apidoc-' } }, select: { clientId: true } })).map(l => l.clientId);
   await prisma.boutiqueJoinRequest.deleteMany({ where: { tenant: { startsWith: 'apidoc-' } } }).catch(e => console.error('join', e.message));
+  await prisma.shopAppKey.deleteMany({ where: { tenant: { startsWith: 'apidoc-' } } }).catch(e => console.error('app keys', e.message));
   if (!ids.length) return;
+  await prisma.moduleEvent.deleteMany({ where: { clientId: { in: ids } } }).catch(() => undefined);
+  await prisma.$executeRawUnsafe(`DELETE FROM storefront_deliveries WHERE connection_id IN (SELECT id FROM storefront_connections WHERE client_id = ANY($1))`, ids).catch(() => undefined);
+  await prisma.$executeRawUnsafe(`DELETE FROM supplier_products WHERE supplier_id IN (SELECT id FROM suppliers WHERE client_id = ANY($1))`, ids).catch(() => undefined);
   await prisma.$executeRawUnsafe(`DELETE FROM offers WHERE client_id = ANY($1)`, ids).catch(e => console.error('offers', e.message));
   const tables = await prisma.$queryRaw<{ table_name: string }[]>`SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'client_id'`;
   await prisma.$executeRawUnsafe(`DELETE FROM variant_location_profiles WHERE variant_id IN (SELECT id FROM inventory_product_variants WHERE client_id = ANY($1))`, ids).catch(() => undefined);
