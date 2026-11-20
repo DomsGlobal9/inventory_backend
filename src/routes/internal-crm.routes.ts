@@ -288,7 +288,8 @@ router.put('/shops/:clientId/loyalty/level-rates', shop, act(req => setLevelRate
 router.get('/shops/:clientId/picks', shop, readable, act(req => crmExtras.picks(cid(req), req.query as any)));
 router.post('/shops/:clientId/picks/link', shop, act(req => createPicks(cid(req), req.body), (req, data) => ['PICKS_LINK', String(data?.code ?? '')], 'REEL_LINK'));
 // Money owed (20 Nov 2026): what customers still owe, and where each bill can be paid (till, shop, online).
-router.get('/shops/:clientId/customers/dues', shop, readable, act(req => crmExtras.dues(cid(req), req.query.ids)));
+router.get('/shops/:clientId/customers/dues', shop, readable, act(req => req.query.ids === undefined ? crmExtras.duesPage(cid(req), req.query as any) : crmExtras.dues(cid(req), req.query.ids)));
+// No ids: everyone who owes, a page at a time ({ customers, next }; ?after=<next>&limit=1..500), for the reminder schedule.
 // Bring a friend (20 Nov 2026): points with a reason, once per idempotencyKey.
 router.post('/shops/:clientId/customers/:customerId/points', shop, act(req => crmPoints(cid(req), customerIdOf(req), req.body), req => ['POINTS', customerIdOf(req)], 'CUSTOMER'));
 // The shop, its online shop and its new pieces, so CRM's messages never read Inventory's tables.

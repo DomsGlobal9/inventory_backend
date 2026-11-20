@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { badRequest } from '../../utils/httpError';
 import { toMinor } from '../pricing/money';
@@ -64,13 +65,37 @@ export async function picks(clientId: string, q: Record<string, unknown>) {
  * What each customer still owes: bills with money due, oldest first. Each item says where it can be paid -- a till
  * bill's balance is taken on the till (the till must know), anything else can be collected through Inventory.
  */
-export async function dues(clientId: string, rawIds: unknown) {
+/**
+ * Everyone in the shop who owes (C7, the owner's reminder schedule), a page at a time: customers are walked in id
+ * order, `limit` of them a page (1 to 500), and only those who owe are listed -- so a page may hold fewer, and the
+ * caller follows `next` until it is null. Each entry is in exactly the shape `dues(ids)` gives.
+ */
+export async function duesPage(clientId: string, q: Record<string, unknown>) {
+  const limit = q.limit === undefined || q.limit === '' ? 500 : Number(q.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw badRequest('limit is a whole number from 1 to 500.');
+  const after = typeof q.after === 'string' && q.after.trim() ? q.after.trim().toLowerCase() : null;
+  if (after && !UUID.test(after)) throw badRequest('after is the `next` of the page before.');
+  // Customers who have at least one bill that could still be owed on, in id order after the cursor.
+  const rows = await prisma.$queryRaw<{ customer_id: string }[]>`
+    SELECT DISTINCT o.customer_id FROM sales_orders o
+    WHERE o.client_id = ${clientId} AND o.customer_id IS NOT NULL AND o.deleted_at IS NULL
+      AND o.status NOT IN ('CANCELLED', 'DRAFT') AND o.source_system IS DISTINCT FROM 'SHOPIFY'
+      ${after ? Prisma.sql`AND o.customer_id > ${after}` : Prisma.empty}
+    ORDER BY o.customer_id LIMIT ${limit}`;
+  const ids = rows.map(r => r.customer_id);
+  const customers = ids.length ? await dues(clientId, ids.join(','), 500) : [];
+  return { customers, next: ids.length === limit ? ids[ids.length - 1] : null };
+}
+
+export async function dues(clientId: string, rawIds: unknown, max = 200) {
   const ids = [...new Set(String(rawIds ?? '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean))];
   if (!ids.length) throw badRequest('Say which customers: ids=<id>,<id> (up to 200).');
-  if (ids.length > 200) throw badRequest('Ask for at most 200 customers at a time.');
+  if (ids.length > max) throw badRequest(`Ask for at most ${max} customers at a time.`);
   if (ids.some(id => !UUID.test(id))) throw badRequest('Every id must be a customer id from Inventory.');
   const orders = await prisma.salesOrder.findMany({
-    where: { clientId, customerId: { in: ids }, deletedAt: null, status: { notIn: ['CANCELLED', 'DRAFT'] as any }, sourceSystem: { not: 'SHOPIFY' } },
+    // Not Shopify's (Shopify collects its own money). `not` alone would also drop bills with no source -- the app's
+    // own older orders -- so they are asked for by name (found 20 Nov: 20 such bills were invisible here).
+    where: { clientId, customerId: { in: ids }, deletedAt: null, status: { notIn: ['CANCELLED', 'DRAFT'] as any }, OR: [{ sourceSystem: { not: 'SHOPIFY' } }, { sourceSystem: null }] },
     select: {
       id: true, orderNumber: true, customerId: true, createdAt: true, sourceSystem: true, status: true, deletedAt: true,
       total: true, roundOff: true, writtenOff: true, promisedAt: true, handedOverAt: true,

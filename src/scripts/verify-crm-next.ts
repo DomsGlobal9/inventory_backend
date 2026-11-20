@@ -214,6 +214,32 @@ const phone = (n: number) => `+9195${String(STAMP).slice(-6)}${String(n).padStar
     r = await crm('GET', '/customers/dues?ids=nope');
     check('not an id: 400 in words', r.status === 400, brief(r));
 
+    console.log('\n5b. C7 EVERYONE WHO OWES (the reminder schedule, 20 Nov)');
+    // An older bill of the app's own carries no source at all; it must still count (found 20 Nov: it was invisible).
+    await prisma.salesOrder.update({ where: { id: so1!.id }, data: { sourceSystem: null } });
+    r = await crm('GET', '/customers/dues');
+    const everyone = r.data?.data;
+    const latha = everyone?.customers?.find((x: any) => x.customerId === owes.id);
+    check('no ids: everyone who owes, in the same shape, next null when done', r.status === 200 && Array.isArray(everyone?.customers) && everyone.next === null && latha?.totalPaise === 200000 && latha?.items?.[0]?.payAt === 'till' && typeof latha?.oldestDays === 'number', brief(r));
+    check('...a bill with no source (the app\'s own older order) still counts', everyone?.customers?.some((x: any) => x.items.some((i: any) => i.orderId === so1!.id)), everyone?.customers?.map((x: any) => x.items.map((i: any) => i.orderNumber)));
+    check('...nobody who owes nothing is listed', everyone?.customers?.every((x: any) => x.totalPaise > 0 && x.items.length > 0), everyone);
+    const walked: string[] = [];
+    let after: string | null = null, pages = 0;
+    do {
+      const pg = await crm('GET', `/customers/dues?limit=1${after ? `&after=${after}` : ''}`);
+      if (pg.status !== 200) { walked.push(`ERR ${pg.status}`); break; }
+      walked.push(...pg.data.data.customers.map((x: any) => x.customerId));
+      after = pg.data.data.next; pages++;
+    } while (after && pages < 50);
+    const all = (everyone?.customers ?? []).map((x: any) => x.customerId).sort();
+    check('paging one customer at a time finds exactly the same people, none twice', walked.slice().sort().join() === all.join() && new Set(walked).size === walked.length, { walked, all });
+    for (const q of ['limit=0', 'limit=501', 'limit=x', 'after=nope']) {
+      r = await crm('GET', `/customers/dues?${q}`);
+      check(`${q}: 400 in words`, r.status === 400, brief(r));
+    }
+    r = await crm('GET', '/customers/dues', undefined, OTHER);
+    check('another shop\'s list never has this shop\'s customers (or that shop is refused outright)', r.status === 403 || r.status === 200 && !(r.data?.data?.customers ?? []).some((x: any) => x.customerId === owes.id), brief(r));
+
     console.log('\n6. C10 COURIER NAME IN THE FEED');
     const courier = await prisma.shopCourier.create({ data: { clientId: SHOP, name: 'DTDC', key: 'dtdc' } as any });
     const disp = await prisma.dispatch.create({ data: { clientId: SHOP, salesOrderId: so1!.id, dispatchNumber: `DSP-${STAMP}`, courierId: courier.id, status: 'SHIPPED', trackingUrl: 'https://track.example/1' } as any });
