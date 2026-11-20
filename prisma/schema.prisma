@@ -5753,3 +5753,25 @@ model BoutiquePayment {
   @@index([qrId])
   @@map("boutique_payments")
 }
+
+/// A link to pay what is still due on one order, online, through the shop's own Razorpay (20 Nov 2026). ScaleEzy CRM
+/// asks for it for a money-owed reminder; the customer opens shop.scaleezy.com/pay/<token>. Status text (shared DB).
+model OrderPayLink {
+  id             String    @id @default(uuid())
+  clientId       String    @map("client_id")
+  token          String    @unique
+  salesOrderId   String    @map("sales_order_id")
+  amountPaise    Int       @map("amount_paise")
+  /// WAITING, PAID, CANCELLED.
+  status         String    @default("WAITING")
+  gatewayOrderId String?   @map("gateway_order_id")
+  paymentId      String?   @map("payment_id")
+  paidAt         DateTime? @map("paid_at")
+  expiresAt      DateTime  @map("expires_at")
+  createdBy      String?   @map("created_by")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([clientId, salesOrderId])
+  @@index([gatewayOrderId])
+  @@map("order_pay_links")
+}

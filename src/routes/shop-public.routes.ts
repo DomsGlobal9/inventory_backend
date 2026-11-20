@@ -7,6 +7,7 @@ import { prisma } from '../lib/prisma';
 import * as shopViews from '../services/shop-views';
 import { NumberNeededError } from '../services/shopper-tryon/who.service';
 import * as reelLinks from '../services/reel-links';
+import * as payLinks from '../services/pay-links';
 
 /**
  * What a shopper's browser asks for at `shop.scaleezy.com/<slug>`.
@@ -135,6 +136,23 @@ const notOpen = (res: Response, state: 'UNKNOWN' | 'CLOSED', name?: string) =>
  * every reel it ever posted must keep working. This answers where the reel lives now; the page server sends the
  * shopper there (and the app does the same while developing).
  */
+/*
+ * ── Pay links (20 Nov 2026): what is due on one order, paid online (services/pay-links) ──────────────────────────
+ * /_pay/<token> is not a shop's address: the token alone finds the order (and its shop). The page is
+ * shop.scaleezy.com/pay/<token>; nothing private is shown, and paid is always asked of Razorpay.
+ */
+const paying = (fn: (req: Request) => Promise<unknown>) => async (req: Request, res: Response) => {
+  try { res.set('Cache-Control', 'no-store').json({ success: true, data: await fn(req) }); }
+  catch (e: any) {
+    if (e?.statusCode && e.statusCode < 500) return res.status(e.statusCode).json({ success: false, message: e.message });
+    console.error('[pay link] failed:', e?.message);
+    res.status(500).json({ success: false, message: 'Something went wrong. Please try again in a minute.' });
+  }
+};
+router.get('/_pay/:token', priceLimiter, paying(req => payLinks.view(req.params.token)));
+router.post('/_pay/:token/checkout', buyLimiter, paying(req => payLinks.checkout(req.params.token)));
+router.post('/_pay/:token/confirm', buyLimiter, paying(req => payLinks.confirm(req.params.token)));
+
 router.get('/_look/:code', async (req: Request, res: Response) => {
   const slug = await reelLinks.slugForCode(req.params.code).catch(() => null);
   if (!slug) return res.status(404).json({ success: false, message: 'This link is not available.' });

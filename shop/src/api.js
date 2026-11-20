@@ -313,3 +313,8 @@ export const shareThis = (shopName, product) => {
 ${url}`)}`
   };
 };
+
+/* ── Pay links (20 Nov 2026): what is due on one order, paid online from a link the shop sent ── */
+export const payLinkView = (token, opts) => get(`/shop/_pay/${encodeURIComponent(token)}`, opts);
+export const payLinkCheckout = (token) => get(`/shop/_pay/${encodeURIComponent(token)}/checkout`, { send: {} });
+export const payLinkConfirm = (token) => get(`/shop/_pay/${encodeURIComponent(token)}/confirm`, { send: {} });

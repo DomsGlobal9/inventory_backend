@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, useParams, Navigate, useLocation, useNavigationType, useNavigate } from 'react-router-dom';
+import PayLinkPage from './pages/PayLinkPage';
 import { getShop, findLook } from './api';
 import ShopHome from './pages/ShopHome';
 import ProductPage from './pages/ProductPage';
@@ -195,6 +196,7 @@ export default function App() {
         <Route path="/:slug" element={<Shop page="home" />} />
         <Route path="/:slug/p/:code" element={<Shop page="product" />} />
         <Route path="/_look/:code" element={<LookRedirect />} />
+        <Route path="/pay/:token" element={<PayLinkPage />} />
         <Route path="/:slug/look/:code" element={<Shop page="look" />} />
         <Route path="/:slug/reels" element={<Shop page="reels" />} />
         <Route path="/:slug/bag" element={<Shop page="bag" />} />

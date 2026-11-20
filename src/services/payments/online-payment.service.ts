@@ -1,4 +1,5 @@
 import * as boutiquePayments from '../boutique/payments';
+import * as payLinks from '../pay-links';
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import * as posUpiQr from '../pos/pos-upi-qr.service';
@@ -975,7 +976,12 @@ export async function applyWebhook(clientId: string, gateway: PaymentGateway, ev
     if (!ev.gatewayOrderId || !ev.paymentId) return 'IGNORED';
     const row = await prisma.onlinePayment.findFirst({ where: { clientId, gatewayOrderId: ev.gatewayOrderId } });
     // Not an online-shop order's: perhaps a boutique payment's checkout (20 Nov 2026).
-    if (!row) return ev.kind === 'PAID' ? boutiquePayments.onOrderPaid(clientId, ev.gatewayOrderId) : 'IGNORED';
+    if (!row) {
+      if (ev.kind !== 'PAID') return 'IGNORED';
+      // Not an online-shop order's: a boutique payment's checkout, or a pay link's (20 Nov 2026).
+      const boutique = await boutiquePayments.onOrderPaid(clientId, ev.gatewayOrderId);
+      return boutique === 'APPLIED' ? boutique : payLinks.onOrderPaid(clientId, ev.gatewayOrderId);
+    }
     const g = await gatewayOfPayment(row);
     if (!g) return 'IGNORED';
     const detail = await g.fetchPayment(ev.paymentId);
