@@ -59,6 +59,10 @@ async function setUpShop(tenant: string, slug: string) {
 }
 
 async function main() {
+  // Made FIRST: it blocks for a few seconds, and done mid-run the server closed the test's idle keep-alive connection,
+  // so the next call failed with ECONNRESET (a test artefact, not the server).
+  const { execSync } = await import('node:child_process');
+  const CONSOLE = execSync('npx tsx src/scripts/print-local-console-token.ts', { env: process.env, encoding: 'utf8' }).match(/eyJ[A-Za-z0-9._-]+/)![0];
   check('"v1" can never be a shop\'s address', (() => { try { checkSlug('v1'); return false; } catch { return true; } })());
   const SLUG = `v1shop-${S}`, SLUG2 = `v1other-${S}`;
   const A = await setUpShop(TEN, SLUG);
@@ -113,6 +117,24 @@ async function main() {
   const cancelled = await btq('POST', `/orders/${so!.orderNumber}/cancel`, {});
   const after = (await prisma.inventoryStock.findFirst({ where: { id: before.id } }))!;
   check('cancel: CANCELLED, its held piece free again', cancelled.status === 200 && cancelled.data?.order?.status === 'CANCELLED' && after.reservedQty === before.reservedQty - 1, [cancelled.status, cancelled.message, before.reservedQty, after.reservedQty]);
+
+  console.log('\nTHE CONSOLE (Partner app keys)');
+  const con = async (method: string, p: string, body?: unknown, signedIn = true) => {
+    const r = await axios.request({ method, url: `${API}/admin${p}`, data: body, validateStatus: () => true, timeout: 90_000,
+      headers: { ...(signedIn ? { Cookie: `platform_admin_token=${CONSOLE}` } : {}), Origin: 'http://localhost:5183' } });
+    return { status: r.status, data: r.data?.data, message: r.data?.message as string | undefined };
+  };
+  check('not signed in to the Console: refused', [401, 403].includes((await con('GET', '/shop-app-keys', undefined, false)).status));
+  const listed = await con('GET', `/shop-app-keys?tenant=${TEN}`);
+  check('the list: this boutique\'s key, without the key itself', listed.status === 200 && listed.data?.length === 1 && listed.data[0].id === made.id && !('key' in listed.data[0]) && !('keyHash' in listed.data[0]), listed);
+  const viaConsole = await con('POST', '/shop-app-keys', { name: 'Boutique app (iPhone)', tenant: TEN2 });
+  check('made in the Console: 201, the key shown once', viaConsole.status === 201 && /^sak_/.test(viaConsole.data?.key ?? ''), [viaConsole.status, viaConsole.message]);
+  check('for an account with no shop: 404 in words', (await con('POST', '/shop-app-keys', { name: 'x', tenant: `nobody-${S}` })).status === 404);
+  check('with no name: 400', (await con('POST', '/shop-app-keys', { tenant: TEN2 })).status === 400);
+  const offC = await con('POST', `/shop-app-keys/${viaConsole.data?.id}/off`);
+  const onC = await con('POST', `/shop-app-keys/${viaConsole.data?.id}/on`);
+  check('switched off and on again in the Console', offC.data?.active === false && onC.data?.active === true, [offC.data, onC.data]);
+  check('a key that does not exist: 404', (await con('POST', '/shop-app-keys/00000000-0000-0000-0000-000000000000/off')).status === 404);
 
   console.log('\nSWITCHED OFF');
   await appKeys.setActive(made.id, false);
