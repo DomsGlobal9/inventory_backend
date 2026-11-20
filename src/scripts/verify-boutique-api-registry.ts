@@ -277,6 +277,7 @@ test server, in a throwaway shop, and recording what came back. **Every example 
 | Answers | JSON \`{ "success": true, "data": … }\` or \`{ "success": false, "message": "…" }\` (the label sheet is a PDF) |
 | Money | rupees (\`450\`), except fields named …Paise |
 | Quantities | in the item's unit: \`2.25\` for 2.25 metres |
+| Counter bills | not here: the POS module's Boutique counter (its handout ScaleEzy-POS-Boutique-Counter-API.md). **POS takes paise (\`149900\`) and centimetres (\`225\`); this API takes rupees (\`1499\`) and metres (\`2.25\`).** |
 | Endpoints | ${new Set(recs.filter(r => r.kind === 'example').map(r => `${r.method} ${r.template}`)).size} |
 
 ## Contents
