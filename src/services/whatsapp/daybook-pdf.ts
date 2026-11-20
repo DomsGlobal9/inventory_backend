@@ -38,6 +38,13 @@ function moneyRows(d: any): string[][] {
   ]);
 }
 const num = (v: unknown) => Number(v || 0).toLocaleString('en-IN');
+// Pieces and lengths told apart, as on the Day Book screen (20 Nov 2026).
+const hasLengths = (sp: any) => !!sp && ((sp.metres || 0) > 0 || (sp.kilograms || 0) > 0);
+const qty = (units: unknown, sp: any) => !hasLengths(sp) ? num(units) : [
+  sp.pieces > 0 ? `${num(sp.pieces)} pcs` : null,
+  sp.metres > 0 ? `${Number(sp.metres).toLocaleString('en-IN', { maximumFractionDigits: 2 })} m` : null,
+  sp.kilograms > 0 ? `${Number(sp.kilograms).toLocaleString('en-IN', { maximumFractionDigits: 3 })} kg` : null
+].filter(Boolean).join(' · ');
 const signed = (v: unknown) => (Number(v) >= 0 ? '+' : '') + num(v);
 
 function buildStyles(StyleSheet: any) {
@@ -125,10 +132,10 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
         ...r.map((c, ci) => h(Text, { key: ci, style: [styles.td, { width: widths[ci], textAlign: align[ci] || 'left' }] }, c)))));
   };
 
-  const Figure = ({ label, units, value, note, bold }: { label: string; units: unknown; value: unknown; note?: string | null; bold?: boolean }) =>
+  const Figure = ({ label, units, split, value, note, bold }: { label: string; units: unknown; split?: unknown; value: unknown; note?: string | null; bold?: boolean }) =>
     h(View, { style: styles.figure },
       h(Text, { style: styles.figLabel }, label),
-      h(Text, { style: [styles.figUnits, bold ? { fontSize: 16 } : {}] }, num(units)),
+      h(Text, { style: [styles.figUnits, bold ? { fontSize: 16 } : {}] }, qty(units, split)),
       h(Text, { style: styles.figValue }, money(value)),
       note ? h(Text, { style: styles.figNote }, note) : null);
 
@@ -160,9 +167,9 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
         h(View, { style: styles.balanceRow },
           Figure({ label: 'Opening stock', units: d.opening.units, value: d.opening.value, note: d.opening.source === 'derived' ? 'worked back from today' : null }),
           h(Text, { style: styles.operator }, '+'),
-          Figure({ label: 'Came in', units: d.stockIn?.totalUnits, value: d.stockIn?.totalValue }),
+          Figure({ label: 'Came in', units: d.stockIn?.totalUnits, split: d.stockIn?.split, value: d.stockIn?.totalValue }),
           h(Text, { style: styles.operator }, '-'),
-          Figure({ label: 'Went out', units: d.stockOut?.totalUnits, value: d.stockOut?.totalValue }),
+          Figure({ label: 'Went out', units: d.stockOut?.totalUnits, split: d.stockOut?.split, value: d.stockOut?.totalValue }),
           h(Text, { style: styles.operator }, '='),
           Figure({ label: 'Closing stock', units: d.closing.units, value: d.closing.value, bold: true })),
         h(Text, { style: [styles.verdict, d.balanced === false ? styles.bad : styles.ok] },
@@ -176,7 +183,7 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
       (d.sales?.dispatchCount > 0 || d.sales?.returns?.count > 0) ? Section({ title: 'Sales dispatched', subtitle: 'Counted when the goods actually left, not when the order was written.' },
         h(View, { style: styles.statRow },
           stat('Dispatches', num(d.sales.dispatchCount)),
-          stat('Units sent', num(d.sales.unitsDispatched)),
+          stat(hasLengths(d.sales.dispatchedSplit) ? 'Sent' : 'Units sent', qty(d.sales.unitsDispatched, d.sales.dispatchedSplit)),
           stat('Billed', money(d.sales.revenue)),
           // Only where they exist, as on the screen: GST is not the shop's, and a return is not a sale.
           d.sales.gstCollected > 0 ? stat('GST in it', money(d.sales.gstCollected)) : null,
@@ -227,13 +234,13 @@ export async function renderDayBookPdf(input: DayBookPdfInput): Promise<Buffer> 
           ])
         })) : null,
 
-      Section({ title: 'Stock that came in', subtitle: `${num(d.stockIn?.totalUnits)} units, ${money(d.stockIn?.totalValue)}` },
+      Section({ title: 'Stock that came in', subtitle: `${hasLengths(d.stockIn?.split) ? qty(0, d.stockIn.split) : `${num(d.stockIn?.totalUnits)} units`}, ${money(d.stockIn?.totalValue)}` },
         Table({ head: ['Reason', 'Units', 'Value'], widths: ['60%', '18%', '22%'], align: ['left', 'right', 'right'],
-          rows: (d.stockIn?.lines || []).map((l: any) => [l.label || l.reason, num(l.units), money(l.value)]) })),
+          rows: (d.stockIn?.lines || []).map((l: any) => [l.label || l.reason, qty(l.units, l.split), money(l.value)]) })),
 
-      Section({ title: 'Stock that went out', subtitle: `${num(d.stockOut?.totalUnits)} units, ${money(d.stockOut?.totalValue)}` },
+      Section({ title: 'Stock that went out', subtitle: `${hasLengths(d.stockOut?.split) ? qty(0, d.stockOut.split) : `${num(d.stockOut?.totalUnits)} units`}, ${money(d.stockOut?.totalValue)}` },
         Table({ head: ['Reason', 'Units', 'Value'], widths: ['60%', '18%', '22%'], align: ['left', 'right', 'right'],
-          rows: (d.stockOut?.lines || []).map((l: any) => [l.label || l.reason, num(l.units), money(l.value)]) })),
+          rows: (d.stockOut?.lines || []).map((l: any) => [l.label || l.reason, qty(l.units, l.split), money(l.value)]) })),
 
       d.transfers?.unitsMoved > 0 ? Section({ title: 'Moved between your own locations', subtitle: 'Your total stock does not change - it just sits somewhere else.' },
         h(Text, { style: { fontSize: 9 } }, `${num(d.transfers.unitsMoved)} units moved`)) : null,

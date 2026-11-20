@@ -87,6 +87,21 @@ export interface DayBookLine {
   label: string;
   units: number;
   value: number;
+  /** The same units told apart: pieces, and lengths and weights in their own units (20 Nov 2026). */
+  split?: UnitSplit;
+}
+
+/**
+ * Units told apart (20 Nov 2026). A unit is a piece, a centimetre of cloth or a gram, so "681 units" for a day that
+ * sold 6 pieces and 6.75 m of silk said nothing. `units` stays exactly as it was (the books balance on it); `split`
+ * says it in words a shop reads: 6 pieces, 6.75 metres.
+ */
+export type UnitSplit = { pieces: number; metres: number; kilograms: number };
+const noSplit = (): UnitSplit => ({ pieces: 0, metres: 0, kilograms: 0 });
+function addTo(s: UnitSplit, soldBy: string | undefined, base: number) {
+  if (soldBy === 'METRE') s.metres = Math.round((s.metres + base / 100) * 100) / 100;
+  else if (soldBy === 'KILOGRAM') s.kilograms = Math.round((s.kilograms + base / 1000) * 1000) / 1000;
+  else s.pieces += base;
 }
 
 export class DayBookService {
@@ -270,7 +285,9 @@ export class DayBookService {
         where: movementWhere,
         select: {
           quantity: true, unitCost: true, reason: true, locationId: true,
-          sku: true, productTitle: true, variantId: true, createdBy: true, createdAt: true
+          sku: true, productTitle: true, variantId: true, createdBy: true, createdAt: true,
+          // How it is counted (piece, cm, gram), for the split -- read here, not in a query of its own.
+          variant: { select: { product: { select: { soldBy: true } } } }
         }
       }),
       prisma.stockLocation.findMany({
@@ -303,7 +320,7 @@ export class DayBookService {
             select: {
               quantity: true,
               // quantity and the three taxes: how much of the line's GST left with THIS dispatch.
-              salesOrderItem: { select: { unitPrice: true, variantId: true, quantity: true, cgst: true, sgst: true, igst: true } }
+              salesOrderItem: { select: { unitPrice: true, variantId: true, quantity: true, cgst: true, sgst: true, igst: true, variant: { select: { product: { select: { soldBy: true } } } } } }
             }
           }
         }
@@ -314,6 +331,12 @@ export class DayBookService {
       this.getOpening(clientId, fromKey, start, locationId),
       this.getMeasuredClosing(clientId, toKey, lastDayStart, end, inProgress, locationId)
     ]);
+
+    // How each variant is counted (piece, centimetre, gram), read with the movements and dispatches above.
+    const soldByOf = new Map<string, string>();
+    for (const m of movements) if (m.variantId && m.variant) soldByOf.set(m.variantId, String(m.variant.product.soldBy));
+    for (const d of dispatches) for (const i of d.items) if (i.salesOrderItem?.variant) soldByOf.set(i.salesOrderItem.variantId, String(i.salesOrderItem.variant.product.soldBy));
+    const transferSplit = noSplit();
 
     // ─── IN / OUT, GROUPED BY REASON ──────────────────────────────────────────
     const inbound = new Map<string, DayBookLine>();
@@ -353,7 +376,7 @@ export class DayBookService {
       // sold 2 reported a closing of minus 2. So when a location is selected the legs are
       // counted as ordinary movement, under their own label.
       if (m.reason === InventoryReason.TRANSFER) {
-        if (units < 0) transferUnits += Math.abs(units);
+        if (units < 0) { transferUnits += Math.abs(units); addTo(transferSplit, soldByOf.get(m.variantId ?? ''), Math.abs(units)); }
         if (!locationId) continue;
       }
 
@@ -371,8 +394,9 @@ export class DayBookService {
       const lineLabel = m.reason === InventoryReason.TRANSFER
         ? (units > 0 ? 'Moved in from another location' : 'Moved out to another location')
         : label(key);
-      const line = bucket.get(key) || { reason: key, label: lineLabel, units: 0, value: 0 };
+      const line = bucket.get(key) || { reason: key, label: lineLabel, units: 0, value: 0, split: noSplit() };
       line.units += Math.abs(units);
+      addTo(line.split!, soldByOf.get(m.variantId ?? ''), Math.abs(units));
       line.value += value;
       bucket.set(key, line);
     }
@@ -383,6 +407,8 @@ export class DayBookService {
     const outLines = [...outbound.values()].map(l => ({ ...l, value: round(l.value) }))
       .sort((a, b) => b.units - a.units);
 
+    const sumSplit = (ls: DayBookLine[]) => ls.reduce((t, l) => ({ pieces: t.pieces + (l.split?.pieces ?? 0), metres: Math.round((t.metres + (l.split?.metres ?? 0)) * 100) / 100, kilograms: Math.round((t.kilograms + (l.split?.kilograms ?? 0)) * 1000) / 1000 }), noSplit());
+    const inSplit = sumSplit(inLines), outSplit = sumSplit(outLines);
     const totalIn = inLines.reduce((s, l) => s + l.units, 0);
     const totalOut = outLines.reduce((s, l) => s + l.units, 0);
     const totalInValue = round(inLines.reduce((s, l) => s + l.value, 0));
@@ -434,6 +460,8 @@ export class DayBookService {
 
     const countable = dispatches.filter(d => d.salesOrder?.status !== SalesOrderStatus.CANCELLED);
 
+    const dispatchedSplit = noSplit();
+    for (const d of countable) for (const i of d.items) addTo(dispatchedSplit, soldByOf.get(i.salesOrderItem?.variantId ?? ''), i.quantity || 0);
     const dispatchedUnits = countable.reduce(
       (s, d) => s + d.items.reduce((a, i) => a + (i.quantity || 0), 0), 0
     );
@@ -690,14 +718,15 @@ export class DayBookService {
       valueGap,
       measuredClosingValue: measuredValue,
 
-      stockIn: { lines: inLines, totalUnits: totalIn, totalValue: totalInValue },
-      stockOut: { lines: outLines, totalUnits: totalOut, totalValue: totalOutValue },
+      stockIn: { lines: inLines, totalUnits: totalIn, totalValue: totalInValue, split: inSplit },
+      stockOut: { lines: outLines, totalUnits: totalOut, totalValue: totalOutValue, split: outSplit },
 
-      transfers: { unitsMoved: transferUnits },
+      transfers: { unitsMoved: transferUnits, split: transferSplit },
 
       sales: {
         dispatchCount: countable.length,
         unitsDispatched: dispatchedUnits,
+        dispatchedSplit,
         // Billed to customers, GST included -- the figure that agrees with the bills.
         revenue,
         // The GST in it. Zero for a shop that charges none.
