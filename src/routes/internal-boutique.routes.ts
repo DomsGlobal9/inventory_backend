@@ -13,6 +13,8 @@ import type { Actor } from '../services/boutique';
 import { respondWithError } from '../utils/respondWithError';
 import * as customers from '../services/boutique/customers';
 import * as removal from '../services/boutique/remove';
+import * as barcodes from '../services/boutique/barcodes';
+import { labelsFor } from '../services/boutique/labels';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -147,6 +149,16 @@ router.get('/movements', read(req => extra.listMovements(actorOf(req), req.query
 router.get('/changes', read(req => extra.changes(actorOf(req), req.query as any)));
 router.post('/availability', read(req => extra.availability(actorOf(req), req.body ?? {})));
 router.post('/photos', read(req => extra.photoUploads(actorOf(req), req.body ?? {})));
+// Barcodes and labels (20 Nov 2026): what a scanner read -> the item; every item without a barcode gets one; a
+// sheet of 50 x 25 mm labels as a PDF for the label printer.
+router.get('/items/scan', read(req => barcodes.scan(actorOf(req), req.query.code)));
+router.post('/items/barcodes/fill', write((tx, a) => barcodes.fillMissing(tx, a)));
+router.post('/labels', async (req, res) => {
+  try {
+    const pdf = await labelsFor(actorOf(req), req.body ?? {});
+    res.status(200).set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="labels.pdf"', 'Cache-Control': 'no-store' }).send(pdf);
+  } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
+});
 router.get('/items/:itemCode', read(async req => {
   const r = await boutique.listItems(actorOf(req), { itemCode: req.params.itemCode, limit: 1 });
   if (!r.items.length) throw Object.assign(new Error(`No item ${req.params.itemCode} in this shop.`), { statusCode: 404 });

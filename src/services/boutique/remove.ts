@@ -214,7 +214,9 @@ async function deleteOne(tx: Db, actor: Actor, itemCode: string, force: boolean)
     } });
     await tx.shopifyIdMap.deleteMany({ where: { variantId: v.id } });
     await tx.productVariant.update({ where: { id: v.id }, data: {
-      boutiqueDeletedAt: new Date(), boutiqueRef: deletedRef(itemCode, v.id), sku: deletedRef(v.sku, v.id), variantCode: deletedRef(v.variantCode, v.id)
+      boutiqueDeletedAt: new Date(), boutiqueRef: deletedRef(itemCode, v.id), sku: deletedRef(v.sku, v.id), variantCode: deletedRef(v.variantCode, v.id),
+      // Its barcode is freed too (20 Nov): the same cloth added again, with the maker's barcode, must be allowed.
+      ...(v.barcode ? { barcode: deletedRef(v.barcode, v.id) } : {})
     } });
   }
 

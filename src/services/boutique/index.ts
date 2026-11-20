@@ -16,6 +16,7 @@ import { afterCommit } from '../../lib/afterCommit';
 import { storefrontEventService } from '../storefront-event.service';
 import { inventoryMutationService } from '../inventory-mutation.service';
 import { factorOf, isMeasured, KIND_KEYS, storedPrice, pricePerUnit, formatQty, type SoldBy } from '../../lib/units';
+import { barcodeOf, mustBeFree, newBarcode } from './barcodes';
 
 export type Actor = { clientId: string; name: string; can: string[] };
 export const problem = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode, message });
@@ -412,6 +413,8 @@ export type ItemInput = {
   subCategory?: unknown; description?: unknown; minStock?: unknown; rackLocation?: unknown;
   /** true: only add, never change -- an item code already in use is refused (two people taking the same next code). */
   ifNew?: unknown;
+  /** The maker's own barcode, if the item carries one. Left out, a new item gets an SVM barcode of ours. */
+  barcode?: unknown;
 };
 
 /**
@@ -509,13 +512,15 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
   const subCategory = input.subCategory ? String(input.subCategory).trim().slice(0, 100) : null;
   const description = input.description ? String(input.description).trim().slice(0, 5000) : null;
   const rack = input.rackLocation ? String(input.rackLocation).trim().slice(0, 100) : null;
+  // A barcode can be changed, never taken off: a printed label must keep scanning to something.
+  const ownBarcode = barcodeOf(input.barcode, itemCode);
 
   {
     // Two new colours of one new design saved at the same moment make one design, not two.
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-design|${actor.clientId}|${importKey}`}))::text`;
     // A new code must not be a code the shop already uses for an item of its own (a SKU): that is a clash, said so.
     if (!existing) {
-      const taken = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, OR: [{ sku: itemCode.slice(0, 60) }, { variantCode: `BV-${itemCode}`.slice(0, 60) }] }, select: { sku: true } });
+      const taken = await tx.productVariant.findFirst({ where: { clientId: actor.clientId, OR: [{ sku: itemCode.slice(0, 60) }, { variantCode: `BV-${itemCode}`.slice(0, 60) }, { barcode: itemCode }] }, select: { sku: true } });
       if (taken) throw problem(`${itemCode}: the shop already uses this code for an item of its own. Give this item a different code.`, 409);
     }
     // The unit of an existing item: its stock, holds, orders and every stored number are in that unit.
@@ -574,8 +579,11 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
     if (reorder !== null && reorder < 0) throw problem(`${itemCode}: the reorder level cannot be below 0.`);
     const minimum = input.minStock == null || input.minStock === '' ? null : baseQty(input.minStock, soldBy, 'minimum stock');
     if (minimum !== null && minimum < 0) throw problem(`${itemCode}: the minimum stock cannot be below 0.`);
+    if (ownBarcode && ownBarcode !== existing?.barcode) await mustBeFree(tx, actor.clientId, ownBarcode, existing?.id ?? null, itemCode);
+    const barcode = ownBarcode ?? (existing?.barcode ? null : await newBarcode(tx));
     const variantData = {
       colorName: colour, size,
+      ...(barcode ? { barcode, barcodeType: 'INTERNAL_CODE128' } : {}),
       ...(given('colorHex') || !existing ? { hexCode: hex(input.colorHex) } : {}),
       ...(price !== null ? { sellingPrice: price } : !existing ? { sellingPrice: 0 } : convertPrice ? { sellingPrice: convertPrice(Number(existing.sellingPrice ?? 0)) } : {}),
       ...(cost !== null ? { costPrice: cost } : convertPrice && existing?.costPrice != null ? { costPrice: convertPrice(Number(existing.costPrice)) } : {}),
@@ -720,7 +728,8 @@ export function itemView(p: any, v: any, extra?: ItemExtra) {
     sellInShop: p.sellInShop, status: p.trashedAt ? 'IN_BIN' : p.status, inBin: !!p.trashedAt, category: p.boutiqueCategory ?? null, subCategory: p.boutiqueSubCategory ?? null,
     itemType: p.itemType ?? null, productType: p.productType, designGroup: p.boutiqueDesign ?? (p.importKey?.startsWith('boutique:') ? p.importKey.slice(9) : null),
     description: p.description ?? null, brand: p.brand ?? null, materialType: p.fabric ?? null,
-    reorderLevel: (v.reorderLevel ?? 0) / f, minStock: v.minStock != null ? v.minStock / f : null, rackLocation: v.rackNote ?? null
+    reorderLevel: (v.reorderLevel ?? 0) / f, minStock: v.minStock != null ? v.minStock / f : null, rackLocation: v.rackNote ?? null,
+    barcode: v.barcode ?? null
   };
   if (!extra) return base;
   const quantity = extra.stocks.reduce((n, s) => n + s.quantity, 0);

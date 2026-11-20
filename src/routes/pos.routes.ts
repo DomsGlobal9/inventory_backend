@@ -71,6 +71,20 @@ function printLogo(url: string): Promise<Buffer> {
   return made;
 }
 
+/**
+ * Which boutique (CRM-B account) this till's shop is linked to (20 Nov 2026), so POS can run the Boutique counter for
+ * it. Only the till's own shop: the key decides which. tenant null, or active false, means "no boutique now" -- an
+ * ended link still names the account it was, so POS can end exactly that one.
+ */
+router.get('/boutique-link', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    const l = await prisma.boutiqueLink.findUnique({ where: { clientId: ctx.clientId }, select: { tenant: true, linkedAt: true, unlinkedAt: true } });
+    res.set('Cache-Control', 'no-store').json({ success: true, data: { tenant: l?.tenant ?? null, linkedAt: l?.linkedAt ?? null, active: !!l && !l.unlinkedAt } });
+  } catch (e) { next(e); }
+});
+
 router.get('/catalogue', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ctx = storefrontContext(req, res);
