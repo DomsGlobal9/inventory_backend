@@ -160,6 +160,14 @@ async function main() {
   check('the silk and the blouses moved in: 3000 cm and 4 pieces, 250 cm still held', moved.length === 2 && qty('JY-SILK') === 3000 && qty('JY-BLOUSE') === 4 && held('JY-SILK') === 250, moved.map(v => [v.boutiqueRef, qty(v.boutiqueRef!), held(v.boutiqueRef!)]));
   check('nothing is left in the old boutique-only shop', (await prisma.productVariant.count({ where: { clientId: oldClient } })) === 0);
   check('the history came too (the purchases)', (await prisma.inventoryTransaction.count({ where: { clientId: newClient } })) >= 2);
+  // 23 Nov (Jyoti Atelier, live): onboarding made an empty "Main Store" next to the boutique's own place, the app opened
+  // on it, and the Inventory page showed every item out of stock.
+  const storesNow = await prisma.stockLocation.findMany({ where: { clientId: newClient }, select: { id: true, code: true, name: true, address: true, phone: true, active: true } });
+  const mainNow = storesNow.find(s => s.code === 'MAIN-STORE');
+  check('ONE store: the boutique\'s own place, now the main store (code MAIN-STORE), no empty "Main Store" beside it', storesNow.length === 1 && !!mainNow && mainNow.id === loc && mainNow.active, storesNow);
+  check('...it took the shop\'s address and phone from onboarding (it had none)', !!mainNow?.address && !!mainNow?.phone, mainNow);
+  const atMain = await prisma.inventoryStock.findMany({ where: { locationId: mainNow?.id ?? '-' }, select: { quantity: true, reservedQty: true } });
+  check('...and the main store holds the stock (3004 in all, 250 held): the app opens on stock, not on nothing', atMain.reduce((t, s) => t + s.quantity, 0) === 3004 && atMain.reduce((t, s) => t + s.reservedQty, 0) === 250, atMain);
   const items = await boutique('GET', '/items', J);
   check('the boutique\'s NEXT call, same account, reads the new shop', items.status === 200 && (items.data?.items ?? []).length === 2, items);
   const sell = await boutique('POST', '/movements', J, { itemCode: 'JY-BLOUSE', kind: 'SALE', quantity: 1 });

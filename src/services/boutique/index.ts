@@ -288,6 +288,44 @@ export async function enableForClient(clientId: string, tenantIn: string, shopNa
   }, { timeout: 120_000, maxWait: 15_000 });
 }
 
+/**
+ * A boutique joins ScaleEzy Inventory as a new client (the Console's onboarding with a boutique account, 23 Nov 2026).
+ * Onboarding makes an empty "Main Store" (code MAIN-STORE) a moment before the boutique's own place, stock and all,
+ * is moved in. The app opens on MAIN-STORE, and its Inventory page counts that one place, so every item read "out of
+ * stock" (Jyoti Atelier, found live 23 Nov) while the boutique's stock sat in "Boutique - 1".
+ *
+ * So the boutique's own place becomes the main store: it takes the code MAIN-STORE, and the shop's address and phone
+ * when it has none; the empty one is removed. Only when nothing at all points to the empty one yet (no stock, no
+ * movement, no order, no shelf, no price, no till sale), otherwise both stay as they are. Safe to run again.
+ */
+export async function adoptBoutiqueStore(clientId: string) {
+  return prisma.$transaction(async tx => {
+    const main = await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
+    if (!main) return { adopted: false, why: 'no MAIN-STORE' };
+    const theirs = await tx.stockLocation.findFirst({ where: { clientId, active: true, id: { not: main.id } }, orderBy: { createdAt: 'asc' } });
+    if (!theirs) return { adopted: false, why: 'no other store' };
+    // Every table that can point at a store, read from the database itself, so a new one is never missed.
+    const refs = await tx.$queryRaw<{ table_name: string; column_name: string }[]>`
+      SELECT kcu.table_name, kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+        JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+       WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public' AND ccu.table_name = 'inventory_locations'`;
+    for (const r of refs) {
+      const n = await tx.$queryRawUnsafe<{ n: bigint }[]>(`SELECT count(*) AS n FROM "${r.table_name}" WHERE "${r.column_name}" = $1`, main.id);
+      if (Number(n[0]?.n ?? 0) > 0) return { adopted: false, why: `MAIN-STORE is already used (${r.table_name})` };
+    }
+    // Lists of store ids kept as plain arrays (the online shop's places).
+    await tx.$executeRaw`UPDATE online_shops SET location_ids = array_remove(location_ids, ${main.id}) WHERE client_id = ${clientId}`;
+    await tx.stockLocation.delete({ where: { id: main.id } });
+    await tx.stockLocation.update({
+      where: { id: theirs.id },
+      data: { code: 'MAIN-STORE', ...(theirs.address ? {} : { address: main.address }), ...(theirs.phone ? {} : { phone: main.phone }) }
+    });
+    return { adopted: true, storeId: theirs.id, name: theirs.name };
+  });
+}
+
 /** ScaleEzy turns the Boutique module off: the boutique can no longer reach the shop. Products and stock stay. */
 export async function disableForClient(clientId: string) {
   return prisma.$transaction(async tx => {

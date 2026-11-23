@@ -1,5 +1,5 @@
 import { seedSells, type Sells } from './shop-setup';
-import { linkTrusted, clientIdInUse } from './boutique';
+import { linkTrusted, clientIdInUse, adoptBoutiqueStore } from './boutique';
 import crypto from 'crypto';
 import { readablePassword } from '../lib/readablePassword';
 import { whatsappClient, whatsappConfigured } from './whatsapp/client';
@@ -436,6 +436,8 @@ export class PlatformAdminService {
     // What the shop sells, when we know it (the owner confirms at first sign-in), and its boutique, linked at once.
     await seedSells(clientId, more.sells ?? null);
     const boutique = more.boutiqueTenant ? await linkTrusted(more.boutiqueTenant, clientId, companyName.trim() || null) : null;
+    // The boutique brought its own place, with its stock: that place is the main store, not the empty one made above.
+    if (boutique?.moved) await adoptBoutiqueStore(clientId);
 
     const user = await prisma.user.create({
       data: { clientId, name: adminName, email: adminEmail, phone: more.ownerPhone ?? null, password: hashed, passwordEncrypted, status: 'ACTIVE' }
