@@ -40,15 +40,20 @@ export async function shopHasTill(clientId: string, tx: Prisma.TransactionClient
 }
 
 /**
- * Write one catalogue.changed for the shop, unless one is already waiting or the shop has no till.
- * Returns whether an event was written.
+ * Write one catalogue.changed for the shop, unless one is already waiting (then that one is tried again now) or the
+ * shop has no till. Returns whether there is something to send now.
  */
 export async function queueCatalogueChanged(clientId: string, topics: string[], from: Date, to = new Date()) {
   if (!(await shopHasTill(clientId))) return false;
   const waiting = await prisma.moduleEvent.count({
     where: { module: POS_MODULE, clientId, kind: CATALOGUE_KIND, status: { in: ['PENDING', 'RETRYING'] } }
   });
-  if (waiting) return false;
+  if (waiting) {
+    // One is still waiting (POS was down, or restarting). A fresh change is a good moment to try it again rather
+    // than sit out its backoff: once POS is back the till hears at once (at most once per NUDGE_MS per shop).
+    await nudgeWaiting(clientId);
+    return true;
+  }
   await prisma.moduleEvent.create({
     data: {
       clientId, module: POS_MODULE, kind: CATALOGUE_KIND, sourceTable: 'live', rowId: clientId,
@@ -56,6 +61,19 @@ export async function queueCatalogueChanged(clientId: string, topics: string[], 
     }
   });
   return true;
+}
+
+/** A waiting push is tried again now when the shop changes again, at most this often (POS down: no hammering). */
+export const NUDGE_MS = 30_000;
+const nudged = new Map<string, number>();
+async function nudgeWaiting(clientId: string) {
+  const last = nudged.get(clientId) ?? 0;
+  if (Date.now() - last < NUDGE_MS) return;
+  nudged.set(clientId, Date.now());
+  await prisma.moduleEvent.updateMany({
+    where: { module: POS_MODULE, clientId, status: 'RETRYING', nextAttemptAt: { gt: new Date() } },
+    data: { nextAttemptAt: new Date() }
+  });
 }
 
 /**

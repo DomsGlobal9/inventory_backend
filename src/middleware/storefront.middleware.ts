@@ -2,6 +2,11 @@ import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import { prefixOf, credentialMatches } from '../utils/storefrontCredential';
 import { isPosConnection } from '../utils/posConnection';
+import { SWITCH_TILL_NAME } from '../services/pos-switch';
+import { tillKeyRefused } from '../services/pos-switch/doctor';
+
+/** How often a key's "last used" is written: enough to see a till stop, without a write on every call. */
+const USED_EVERY_MS = 5 * 60 * 1000;
 
 /**
  * Authenticating a storefront reading the catalogue.
@@ -74,7 +79,7 @@ export async function authenticateStorefront(req: Request, res: Response, next: 
     where: { credentialPrefix: prefix },
     select: {
       id: true, clientId: true, name: true, status: true,
-      credentialHash: true, locationIds: true, baseUrl: true
+      credentialHash: true, locationIds: true, baseUrl: true, lastUsedAt: true
     }
   });
 
@@ -82,6 +87,12 @@ export async function authenticateStorefront(req: Request, res: Response, next: 
   if (!connection) {
     res.status(401).json({ success: false, message: 'That storefront credential is not valid.' });
     return;
+  }
+
+  // A till still using a key ScaleEzy's POS switch retired or paused: POS lost the newer one. Mend it now (a fresh
+  // key handed to POS), rather than leave the counter shut until someone notices (services/pos-switch/doctor).
+  if ((connection.status === 'REVOKED' || connection.status === 'DISABLED') && isPosConnection(connection) && connection.name === SWITCH_TILL_NAME) {
+    tillKeyRefused(connection.clientId);
   }
 
   if (connection.status === 'REVOKED') {
@@ -98,6 +109,12 @@ export async function authenticateStorefront(req: Request, res: Response, next: 
       message: 'This storefront connection is paused. Ask the shop owner to re-enable it.'
     });
     return;
+  }
+
+  // When the key was last used, at most once every few minutes: the POS key doctor reads it to tell a till that
+  // has stopped calling (its key lost or broken on POS's side) from one that works.
+  if (!connection.lastUsedAt || Date.now() - connection.lastUsedAt.getTime() > USED_EVERY_MS) {
+    void prisma.storefrontConnection.update({ where: { id: connection.id }, data: { lastUsedAt: new Date() } }).catch(() => undefined);
   }
 
   req.storefront = {

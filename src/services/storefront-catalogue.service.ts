@@ -257,7 +257,7 @@ function toStorefrontVariant(
 const PRODUCT_SELECT = {
   id: true, productCode: true, title: true, description: true,
   category: true, productType: true, dressType: true, fabric: true, craft: true, brand: true,
-  basePrice: true, isService: true, publishedAt: true, createdAt: true, updatedAt: true,
+  basePrice: true, isService: true, publishedAt: true, createdAt: true, updatedAt: true, catalogueChangedAt: true,
   soldBy: true, minCut: true, widthCm: true, cutReturnable: true,
   status: true, trashedAt: true, sellInShop: true,
   images: {
@@ -454,12 +454,14 @@ export class StorefrontCatalogueService {
     const where: Prisma.ProductWhereInput = {
       clientId: scope.clientId,
       ...(opts.includeLeavers && (opts.cursor || opts.since) ? {} : (opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT)),
-      ...(opts.since ? { updatedAt: { gte: opts.since } } : {}),
+      // catalogueChangedAt, not updatedAt (25 Nov 2026): a size's price, stock, a store price, a photo or a reservation
+      // never moved the product's updatedAt, so a till's quick pull missed them (migration 20261125150000).
+      ...(opts.since ? { catalogueChangedAt: { gte: opts.since } } : {}),
       ...(decoded
         ? {
             OR: [
-              { updatedAt: { gt: decoded.updatedAt } },
-              { updatedAt: decoded.updatedAt, id: { gt: decoded.id } }
+              { catalogueChangedAt: { gt: decoded.updatedAt } },
+              { catalogueChangedAt: decoded.updatedAt, id: { gt: decoded.id } }
             ]
           }
         : {})
@@ -467,7 +469,7 @@ export class StorefrontCatalogueService {
 
     const rows = await prisma.product.findMany({
       where,
-      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+      orderBy: [{ catalogueChangedAt: 'asc' }, { id: 'asc' }],
       take: limit + 1, // one extra, purely to know whether another page exists
       select: PRODUCT_SELECT
     });
@@ -495,7 +497,7 @@ export class StorefrontCatalogueService {
       hasMore,
       // Present even on the last page: a storefront stores it and passes it back later as
       // `since` to ask what has changed, which is how reconciliation and recovery work.
-      nextCursor: last ? encodeCursor(last.updatedAt, last.id) : (opts.cursor ?? null)
+      nextCursor: last ? encodeCursor(last.catalogueChangedAt, last.id) : (opts.cursor ?? null)
     };
   }
 

@@ -654,6 +654,10 @@ model Product {
   previousStatus ProductStatus? @map("previous_status")
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
+  /// When anything a catalogue feed shows of this product last changed: the product, its sizes, stock, store
+  /// prices, photos, reservations. Set ONLY by database triggers (20261125150000_catalogue_changed_at); the
+  /// storefront/till sync feed pages and answers "changed since" on it (25 Nov 2026).
+  catalogueChangedAt DateTime   @default(now()) @map("catalogue_changed_at")
 
   @@unique([clientId, productCode])
   @@unique([clientId, importKey])
@@ -661,6 +665,7 @@ model Product {
   @@index([clientId, title])
   @@index([clientId, status])
   @@index([clientId, category])
+  @@index([clientId, catalogueChangedAt, id])
   @@map("inventory_products")
 }
 
@@ -2894,6 +2899,9 @@ model StorefrontConnection {
   syncCursor     String?   @map("sync_cursor")
   syncedAt       DateTime? @map("synced_at")
   lastDeliveryAt DateTime? @map("last_delivery_at")
+  /// When the key last opened Inventory (written at most every 5 minutes). The POS key doctor reads it to tell a till
+  /// that stopped calling from one that works (25 Nov 2026).
+  lastUsedAt     DateTime? @map("last_used_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

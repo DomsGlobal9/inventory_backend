@@ -135,5 +135,6 @@ export async function ownerLink(clientId: string, by: By, reset = false) {
   return callPos<Record<string, unknown>>('POST', '/owner-link', clientId, by, reset ? { reset: true } : {});
 }
 
-// A new key for a shop that has POS: ScaleEzy switches POS on again (switchOn hands over a fresh key and retires the
-// old one). The shop itself never makes or changes keys (25 Nov 2026).
+// A new key for a shop that has POS: made automatically. The key doctor (./doctor.ts) hands POS a fresh one whenever the
+// key is lost, retired, on a closed or empty store, or unused by POS; ScaleEzy pressing "Turn POS on" again does the
+// same. The shop itself never makes or changes keys (25 Nov 2026).

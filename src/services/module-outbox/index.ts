@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import fs from 'fs';
 import { DeliveryStatus, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { backoffMs } from '../../utils/retryBackoff';
@@ -30,11 +31,22 @@ export const MODULES = ['crm', 'logistics'] as const;
 export type ModuleName = typeof MODULES[number];
 
 type Destination = { url: string; secret: string };
+/** A secret kept in a file (`*_EVENTS_SECRET_PATH`, like CRM_INBOUND_EVENTS_SECRET_PATH): read once, never logged. */
+const secretFiles = new Map<string, string>();
+function secretFromFile(path: string | undefined) {
+  if (!path) return '';
+  if (!secretFiles.has(path)) {
+    let s = '';
+    try { s = fs.readFileSync(path, 'utf8').trim(); } catch { /* no file: treated as no secret */ }
+    secretFiles.set(path, s);
+  }
+  return secretFiles.get(path)!;
+}
 /** Where each module receives, from the environment. A module with no address keeps its events waiting. */
 export function destinationFor(module: string): Destination | null {
   const key = module.toUpperCase();
   const url = process.env[`${key}_EVENTS_URL`];
-  const secret = process.env[`${key}_EVENTS_SECRET`];
+  const secret = process.env[`${key}_EVENTS_SECRET`] || secretFromFile(process.env[`${key}_EVENTS_SECRET_PATH`]);
   return url && secret ? { url, secret } : null;
 }
 
