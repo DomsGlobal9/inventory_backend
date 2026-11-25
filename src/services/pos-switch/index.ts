@@ -56,6 +56,10 @@ async function callPos<T>(method: 'GET' | 'POST', path: string, clientId: string
   }
   const data: any = await res.json().catch(() => null);
   if (res.ok) return (data?.data ?? data) as T;
+  // A 503 that carries POS's own code (SETUP_OFF, INVENTORY_UNREACHABLE, ...) is a sentence POS wrote for people:
+  // passed on. A crash (500, 502, no code) never is: its text may be anything (25 Nov 2026, found by POS).
+  const posCode = data?.details?.code ?? data?.error?.code;
+  if (res.status === 503 && typeof posCode === 'string' && typeof data?.message === 'string' && data.message.trim()) fail(503, data.message.trim().slice(0, 300));
   if (res.status >= 500) fail(503, 'POS could not finish just now. Try again in a minute.');
   // POS's own refusal, in its own words (it writes them for people).
   return fail(res.status === 404 ? 404 : 409, String(data?.message ?? data?.error?.message ?? 'POS refused this.'));
