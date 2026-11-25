@@ -1,27 +1,23 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { z } from 'zod';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 import { posConnectionService } from '../services/pos/pos-connection.service';
-import { afterKeyReplaced } from '../services/pos-switch';
+import { posSwitchConfigured, status as posStatus } from '../services/pos-switch';
 
 /**
- * Settings → POS (billing counter): the owner's side of a till key.
+ * Settings → POS (billing counter): what the shop sees of its POS.
  *
- * Same permission as Connected websites (admin:locations): both hand out a key that reads the
- * catalogue and stock, and this one also writes sales, so it is not a lesser power.
+ * Since 25 Nov 2026 nothing about POS is done by hand (the owner: "the key shouldn't be added by the owner, nothing
+ * manual, all automatic"). ScaleEzy's POS switch -- the Platform Console, or the Boutique app's switch -- makes the till
+ * key and hands it to POS; switching on again hands over a fresh one. The shop only reads: whether POS is on, where to
+ * bill, its counters and the bills left out. Making, replacing or disconnecting a key here is refused in words.
+ *
+ * Same permission as Connected websites (admin:locations).
  */
 const router = Router();
 router.use(tenantMiddleware);
 
 const PERMISSION = 'admin:locations';
-
-const createSchema = z.object({
-  locationId: z.string({ required_error: 'Choose the stock location this counter sells from' })
-    .uuid('Choose the stock location this counter sells from'),
-  name: z.string().trim().max(80, 'Keep the name under 80 letters').optional()
-});
-
 const clientOf = (req: Request) => (req as any).clientId as string;
 
 function fail(res: Response, error: any, next: NextFunction) {
@@ -44,6 +40,29 @@ router.get('/billing-locations', requirePermission('sales_order:counter_sale'), 
   } catch (error) { fail(res, error, next); }
 });
 
+/*
+ * Is POS on for this shop? Only then does anything about POS show in Inventory. `managed`: ScaleEzy switched it on.
+ * A shop connected by hand before the switch existed still sees its section while it has a till key that works --
+ * unless POS says it is switched off. POS out of reach: answered from the keys alone, never an error page.
+ */
+router.get('/state', requirePermission(PERMISSION), async (req, res, next) => {
+  try {
+    const clientId = clientOf(req);
+    const handTills = (await posConnectionService.list(clientId)).filter(t => t.status === 'ACTIVE').length;
+    let pos: Record<string, any> | null = null;
+    if (posSwitchConfigured()) { try { pos = await posStatus(clientId) as any; } catch { pos = null; } }
+    const managed = pos?.posOn === true;
+    const switchedOff = pos?.posOn === false && !!pos?.shop;
+    res.json({ success: true, data: {
+      show: managed || (!switchedOff && handTills > 0),
+      managed,
+      posAddress: managed ? pos?.posAddress ?? null : null,
+      ownerSignsInWith: managed ? pos?.owner?.signInWith ?? null : null,
+      shopName: managed ? pos?.shop?.name ?? null : null
+    } });
+  } catch (error) { fail(res, error, next); }
+});
+
 router.get('/', requirePermission(PERMISSION), async (req, res, next) => {
   try {
     res.json({ success: true, data: await posConnectionService.list(clientOf(req)) });
@@ -56,32 +75,11 @@ router.get('/left-out', requirePermission(PERMISSION), async (req, res, next) =>
   } catch (error) { fail(res, error, next); }
 });
 
-router.post('/', requirePermission(PERMISSION), async (req, res, next) => {
-  try {
-    const parsed = createSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      res.status(400).json({ success: false, message: parsed.error.errors[0]?.message || 'Check the form and try again.' });
-      return;
-    }
-    const made = await posConnectionService.create(clientOf(req), parsed.data);
-    res.status(201).json({ success: true, data: { ...made, keyIsShownOnce: true } });
-  } catch (error) { fail(res, error, next); }
-});
-
-router.post('/:id/replace-key', requirePermission(PERMISSION), async (req, res, next) => {
-  try {
-    const made = await posConnectionService.replaceKey(clientOf(req), String(req.params.id));
-    // A shop POS was switched on for: POS gets the new key at once (25 Nov 2026). Never blocks the replacement.
-    const u = (req as any).user;
-    const pos = await afterKeyReplaced(clientOf(req), made.key, { userId: String(u?.id ?? 'owner'), name: u?.name ?? null });
-    res.json({ success: true, data: { ...made, keyIsShownOnce: true, posTold: pos.posTold, ...(pos.note ? { posNote: pos.note } : {}) } });
-  } catch (error) { fail(res, error, next); }
-});
-
-router.post('/:id/disconnect', requirePermission(PERMISSION), async (req, res, next) => {
-  try {
-    res.json({ success: true, data: await posConnectionService.disconnect(clientOf(req), String(req.params.id)) });
-  } catch (error) { fail(res, error, next); }
-});
+// Nothing by hand: refused in words, after the permission check, so who-may stays exactly as before.
+const BY_SCALEEZY = 'POS is switched on by ScaleEzy, and its till keys are made and changed automatically. Contact ScaleEzy to add a counter, change its key or turn POS off.';
+const automaticOnly = (_req: Request, res: Response) => { res.status(409).json({ success: false, message: BY_SCALEEZY }); };
+router.post('/', requirePermission(PERMISSION), automaticOnly);
+router.post('/:id/replace-key', requirePermission(PERMISSION), automaticOnly);
+router.post('/:id/disconnect', requirePermission(PERMISSION), automaticOnly);
 
 export default router;

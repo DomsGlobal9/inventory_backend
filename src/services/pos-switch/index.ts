@@ -135,18 +135,5 @@ export async function ownerLink(clientId: string, by: By, reset = false) {
   return callPos<Record<string, unknown>>('POST', '/owner-link', clientId, by, reset ? { reset: true } : {});
 }
 
-/**
- * Settings → POS replaced a till key: a shop that POS was switched on for gets the new key at once, so the counter
- * keeps billing. Never blocks the replacement: when POS cannot be told, the owner is told instead.
- */
-export async function afterKeyReplaced(clientId: string, newKey: string, by: By): Promise<{ posTold: boolean; note?: string }> {
-  if (!posSwitchConfigured()) return { posTold: false };
-  try {
-    const s = await callPos<{ posOn?: boolean }>('GET', '/status', clientId, null);
-    if (!s?.posOn) return { posTold: false };
-    await callPos('POST', '/enable', clientId, by, { shopName: await shopNameOf(clientId), tillKey: newKey });
-    return { posTold: true };
-  } catch (e: any) {
-    return { posTold: false, note: `POS could not be given the new key just now (${e?.message ?? 'no answer'}). Switch POS on again from the Console to hand it over.` };
-  }
-}
+// A new key for a shop that has POS: ScaleEzy switches POS on again (switchOn hands over a fresh key and retires the
+// old one). The shop itself never makes or changes keys (25 Nov 2026).

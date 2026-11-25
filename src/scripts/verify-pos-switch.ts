@@ -125,21 +125,26 @@ async function main() {
   t = await tills(clientId);
   check('POS refuses: 409 in POS\'s own words; the key made for it is taken back, the working one stays', refused.status === 409 && /another Inventory shop/.test(refused.message ?? '') && t.filter(x => x.status === 'ACTIVE').length === 1 && t[t.length - 1].status === 'REVOKED', { refused, t });
 
-  console.log('\nSETTINGS → POS: REPLACING THE KEY');
+  console.log('\nTHE SHOP\'S SETTINGS → POS: NOTHING BY HAND (25 Nov: all automatic)');
   const owner = await prisma.user.findFirst({ where: { clientId } });
   const token = AuthService.generateToken({ userId: owner!.id, clientId, sessionVersion: (owner as any).sessionVersion });
   const working = t.find(x => x.status === 'ACTIVE')!;
-  const before = calls.length;
-  const rep = await axios.post(`${BASE}/pos-connections/${working.id}/replace-key`, {}, { headers: { Authorization: `Bearer ${token}`, Origin: 'http://localhost:5183' }, validateStatus: () => true });
-  const handed = calls.slice(before).find(c => c.path.endsWith('/enable'));
-  check('the owner replaces the key: POS is handed the NEW key at once (posTold)', rep.status === 200 && rep.data?.data?.posTold === true && handed?.body?.tillKey === rep.data?.data?.key && handed?.keyWorks === true, { status: rep.status, posTold: rep.data?.data?.posTold, handed: !!handed });
+  const asOwner = (method: 'get' | 'post', p: string, body?: unknown) => axios.request({ method, url: `${BASE}/pos-connections${p}`, data: body, headers: { Authorization: `Bearer ${token}`, Origin: 'http://localhost:5183' }, validateStatus: () => true });
+  const st = await asOwner('get', '/state');
+  check('the shop sees its POS: on, switched on by ScaleEzy, with where to bill', st.status === 200 && st.data?.data?.show === true && st.data?.data?.managed === true && !!st.data?.data?.posAddress, st.data);
+  const mk = await asOwner('post', '', { locationId: working.locationIds[0] });
+  const rep = await asOwner('post', `/${working.id}/replace-key`);
+  const dis = await asOwner('post', `/${working.id}/disconnect`);
+  check('the owner cannot make, replace or disconnect a till key: 409, "made and changed automatically", nothing changed', [mk, rep, dis].every(r => r.status === 409 && /automatically/.test(r.data?.message ?? ''))
+    && (await tills(clientId)).filter(x => x.status === 'ACTIVE').length === t.filter(x => x.status === 'ACTIVE').length, [mk.status, rep.status, dis.status]);
 
   console.log('\nOFF, OWNER LINK');
   const link = await consoleApi('POST', `/clients/${clientId}/pos/owner-link`, { reset: true });
   check('new owner link with reset: POS was asked to reset', link.status === 200 && /reset/.test(link.data?.ownerLink ?? '') && calls[calls.length - 1].body?.reset === true, link);
   const off = await consoleApi('POST', `/clients/${clientId}/pos/off`);
   check('switched off: POS was told; the till key is kept (switching on later needs no paste)', off.status === 200 && off.data?.posOn === false && (await tills(clientId)).some(x => x.status === 'ACTIVE'), off);
-  check('...and a till key replaced now is NOT sent to a POS that is off', (await axios.post(`${BASE}/pos-connections/${working.id}/replace-key`, {}, { headers: { Authorization: `Bearer ${token}`, Origin: 'http://localhost:5183' }, validateStatus: () => true })).data?.data?.posTold === false);
+  const stOff = await asOwner('get', '/state');
+  check('...and the shop\'s POS section is hidden while POS is off', stOff.status === 200 && stOff.data?.data?.show === false && stOff.data?.data?.managed === false, stOff.data);
   check('a client that is not ours: 404', (await consoleApi('POST', `/clients/nope-${S}/pos/on`, {})).status === 404);
 
   console.log('\nPOS AWAY');
