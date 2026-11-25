@@ -18,7 +18,9 @@ import { posSwitchConfigured, status, switchOn, tillStore, SWITCH_TILL_NAME } fr
  *                silence is counted from the key's last use, its making, or this server's start, whichever is latest
  *   OLD_KEY_USED a till called with a retired or paused "POS" key: POS lost the newer one (repaired within seconds)
  *
- * It never acts while POS is unreachable or says the shop is switched off, never more than once per shop per
+ * It never acts while POS is unreachable, says the shop is switched off, or says the shop disconnected Inventory itself
+ * (inventoryLink.connected false), never calls a key "unused" in POS's first POS_SETTLE_MS after it answers again (an
+ * outage makes every key look silent), never more than once per shop per
  * REPAIR_GAP_MS, and waits BACKOFF_MS after a repair POS never used (a second key would not help; that is POS's to fix).
  * Shops connected by hand (no "POS" key) are not touched. Keys never expire by time; only these can break one.
  */
@@ -65,6 +67,10 @@ export async function diagnose(clientId: string, now = Date.now(), oldKeyUsed = 
   return null;
 }
 
+/** Since when POS has answered without a break (in this process). null: unknown, or POS was just unreachable. */
+let posUpSince: number | null = null;
+/** After POS comes back (or this server starts), how long before a silent key counts as "unused". */
+export const POS_SETTLE_MS = 15 * 60 * 1000;
 const lastTry = new Map<string, number>();
 /** For the doctor's own test: forget this process's recent attempts (the per-key gap still holds). */
 export const forgetRecentRepairs = () => lastTry.clear();
@@ -93,8 +99,15 @@ export async function checkShop(clientId: string, opts: { oldKeyUsed?: boolean; 
 
   // Only while POS says this shop is ON. Unreachable or switched off: leave everything as it is.
   let pos: any;
-  try { pos = await status(clientId); } catch (e: any) { return { clientId, action: 'skipped', why: `POS not reachable (${e?.message ?? e})` }; }
+  try { pos = await status(clientId); } catch (e: any) { posUpSince = null; return { clientId, action: 'skipped', why: `POS not reachable (${e?.message ?? e})` }; }
+  if (posUpSince === null) posUpSince = now;
   if (pos?.posOn !== true) return { clientId, action: 'skipped', why: 'POS is switched off for this shop' };
+  // The owner pressed Disconnect in POS: POS stops pulling on purpose. Never undo a person's choice.
+  if (pos?.inventoryLink?.connected === false) return { clientId, action: 'skipped', why: 'disconnected in POS by the shop' };
+  // POS just came back (a restart, an outage): every key looks unused until its first pulls. Give it time.
+  if (finding === 'NOT_USED' && now - posUpSince < POS_SETTLE_MS) {
+    return { clientId, action: 'skipped', why: 'POS only just came back; giving it time to pull' };
+  }
 
   lastTry.set(clientId, now);
   try {

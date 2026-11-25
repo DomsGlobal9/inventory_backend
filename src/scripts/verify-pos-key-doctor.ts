@@ -137,6 +137,19 @@ async function main() {
   const away = await doc.checkShop(C, { now: LATER() });
   process.env.POS_API_URL = POS;
   check('POS cannot be reached: left alone, nothing retired, no key made', away.action === 'skipped' && /not reachable/.test((away as any).why) && (await keys()).length === n && !!(await current()), away);
+
+  console.log('\nPOS BACK AFTER A LONG OUTAGE (every key looks unused until its first pulls)');
+  await sw.switchOn(C, { userId: 'verify', name: 'Doctor test' }, null);
+  const back = (await current())!;
+  await age(back.id, 300, 240);
+  doc.forgetRecentRepairs();
+  const T = LATER();
+  const early = await doc.checkShop(C, { now: T });
+  check('POS answers again: no "unused" repair in its first 15 minutes', early.action === 'skipped' && /just came back/.test((early as any).why), early);
+  doc.forgetRecentRepairs();
+  const late = await doc.checkShop(C, { now: T + 20 * MIN });
+  check('...still silent 20 minutes later: repaired', late.action === 'repaired' && (late as any).finding === 'NOT_USED', late);
+
   const hand = await doc.checkShop(`nobody-${S}`);
   check('a shop with no switch key (connected by hand, or no POS): not touched', hand.action === 'skipped' || hand.action === 'healthy', hand);
 }
