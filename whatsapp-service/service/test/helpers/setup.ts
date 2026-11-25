@@ -95,7 +95,7 @@ export async function seedClient(env: TestEnv, clientId: string, status: 'CONNEC
   });
 }
 
-export async function seedModule(env: TestEnv, name: string, opts: { canSendAsScaleEzy?: boolean; webhookUrl?: string } = {}) {
+export async function seedModule(env: TestEnv, name: string, opts: { canSendAsScaleEzy?: boolean; webhookUrl?: string; receivesMessages?: boolean } = {}) {
   const key = newModuleKey();
   const secret = newWebhookSecret();
   const mod = await env.db.moduleClient.create({
@@ -103,6 +103,7 @@ export async function seedModule(env: TestEnv, name: string, opts: { canSendAsSc
       name,
       keyHash: hashModuleKey(key),
       canSendAsScaleEzy: opts.canSendAsScaleEzy ?? false,
+      receivesMessages: opts.receivesMessages ?? false,
       webhookUrl: opts.webhookUrl ?? null,
       webhookSecretEncrypted: opts.webhookUrl ? encrypt(secret, env.ctx.config.ENCRYPTION_KEY) : null,
     },

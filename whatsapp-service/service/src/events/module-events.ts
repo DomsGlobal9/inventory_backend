@@ -13,7 +13,8 @@ export type ModuleEventType =
   | 'account.disconnected'
   | 'account.status'
   | 'contact.opted_out'
-  | 'contact.checked_in';
+  | 'contact.checked_in'
+  | 'message.received';
 
 type Tx = Prisma.TransactionClient;
 
@@ -36,6 +37,19 @@ export async function enqueueForAllModules(tx: Tx, type: ModuleEventType, data: 
   await tx.moduleEvent.createMany({
     data: mods.map((m) => ({ moduleId: m.id, type, payload: data as Prisma.InputJsonValue })),
   });
+}
+
+/**
+ * A customer's own message to a shop's number goes ONLY to modules that asked for it (receivesMessages, CRM):
+ * never to every module, so Inventory and the others never get a customer's words.
+ */
+export async function enqueueForMessageReaders(tx: Tx, data: Record<string, unknown>): Promise<number> {
+  const mods = await tx.moduleClient.findMany({ where: { active: true, receivesMessages: true, webhookUrl: { not: null } }, select: { id: true } });
+  if (mods.length === 0) return 0;
+  await tx.moduleEvent.createMany({
+    data: mods.map((m) => ({ moduleId: m.id, type: 'message.received', payload: data as Prisma.InputJsonValue })),
+  });
+  return mods.length;
 }
 
 export interface DispatchResult {

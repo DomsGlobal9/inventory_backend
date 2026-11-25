@@ -134,6 +134,9 @@ model ModuleClient {
   /// May see every number's status and link / reconnect ScaleEzy's own number (/v1/platform), so the
   /// platform console can do it without the service's ADMIN_KEY. Never send-as or read messages.
   canManageScaleEzy      Boolean  @default(false)
+  /// Receives customers' messages to a shop's number (message.received), to follow them up as leads. Opt-in
+  /// (create-module --receives-messages): every other module never gets a customer's words.
+  receivesMessages       Boolean  @default(false)
   active                 Boolean  @default(true)
   createdAt              DateTime @default(now())
 

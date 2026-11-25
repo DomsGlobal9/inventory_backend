@@ -3,7 +3,7 @@ import { mapConnectionState, mapEngineMessageStatus, advanceStatus } from '../do
 import { digitsFromJid } from '../lib/phone';
 import { applyMessageStatus, recordSent } from '../messages/status-apply';
 import { setAccountStatus } from '../accounts/service';
-import { enqueueForAllModules } from './module-events';
+import { enqueueForAllModules, enqueueForMessageReaders } from './module-events';
 import { checkInCode } from '../domain/checkin';
 
 // Events pushed by the engine (Evolution's global webhook). Each handler is idempotent: the
@@ -165,9 +165,9 @@ async function onMessagesUpsert(ctx: Ctx, instance: string, data: Record<string,
   const ext = (msg.extendedTextMessage ?? {}) as Record<string, unknown>;
   const words = typeof msg.conversation === 'string' ? msg.conversation : typeof ext.text === 'string' ? ext.text : '';
   const doorCode = checkInCode(words);
-  // Only a reply that is exactly a stop word, or one carrying a door code, counts; the text itself
-  // is never stored or logged.
-  if (!doorCode && !STOP_WORDS.has(words.trim().toUpperCase().replace(/[.!]+$/, ''))) return;
+  // Only a reply that is exactly a stop word, or one carrying a door code, counts here; the text itself
+  // is never stored or logged. Any other message goes to the modules that follow up leads (CRM).
+  if (!doorCode && !STOP_WORDS.has(words.trim().toUpperCase().replace(/[.!]+$/, ''))) return onCustomerMessage(ctx, instance, data);
   const from =
     digitsFromJid(typeof key.remoteJid === 'string' ? key.remoteJid : null) ??
     digitsFromJid(typeof key.remoteJidAlt === 'string' ? key.remoteJidAlt : null) ??
@@ -214,4 +214,75 @@ async function onMessagesUpsert(ctx: Ctx, instance: string, data: Record<string,
     }
   });
   ctx.log.info({ accountId: account.id }, 'contact opted out (STOP)');
+}
+
+const MAX_TEXT = 4096;
+const MEDIA: Record<string, 'image' | 'video' | 'audio' | 'document' | 'sticker'> = {
+  imageMessage: 'image', videoMessage: 'video', ptvMessage: 'video', audioMessage: 'audio',
+  documentMessage: 'document', documentWithCaptionMessage: 'document', stickerMessage: 'sticker',
+};
+
+/** The message inside WhatsApp's wrappers (disappearing, view-once, ...), at most a few levels deep. */
+function unwrap(msg: Record<string, unknown>): Record<string, unknown> {
+  let m = msg;
+  for (let i = 0; i < 4; i++) {
+    const inner = (['ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension', 'documentWithCaptionMessage', 'editedMessage']
+      .map((k) => (m[k] as Record<string, unknown> | undefined)?.message as Record<string, unknown> | undefined)
+      .find((x) => x && typeof x === 'object'));
+    if (!inner) break;
+    m = inner;
+  }
+  return m;
+}
+
+/** Seconds since 1970 as the engine sends them (a number, a string, or a {low, high} long), as an ISO time. */
+function whenSent(raw: unknown): string {
+  const n = typeof raw === 'number' ? raw
+    : typeof raw === 'string' ? Number(raw)
+    : raw && typeof raw === 'object' && typeof (raw as { low?: unknown }).low === 'number' ? (raw as { low: number }).low >>> 0
+    : NaN;
+  return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString() : new Date().toISOString();
+}
+
+/**
+ * A customer's own message to a shop's number (25 Nov 2026, the owner: WhatsApp messages to a shop become leads in
+ * CRM). Only a shop's own (CLIENT) number; never our own messages, group chats, status updates, broadcasts or
+ * reactions; only a message with words or a picture, video, voice note, document or sticker in it.
+ *
+ * It goes ONLY to the modules that asked for customers' messages (receivesMessages: CRM). Like a STOP, the words are
+ * never stored or logged here: they ride in the signed event, are delivered, and are gone.
+ */
+async function onCustomerMessage(ctx: Ctx, instance: string, data: Record<string, unknown>): Promise<void> {
+  const key = (data.key ?? {}) as Record<string, unknown>;
+  const jid = typeof key.remoteJid === 'string' ? key.remoteJid : '';
+  if (/@g\.us$|@broadcast$|@newsletter$/.test(jid) || jid === 'status@broadcast') return;
+  const raw = (data.message ?? {}) as Record<string, unknown>;
+  const msg = unwrap(raw);
+  if (msg.reactionMessage || raw.reactionMessage || msg.protocolMessage || raw.protocolMessage) return;
+  const mediaKey = Object.keys(MEDIA).find((k) => msg[k] && typeof msg[k] === 'object');
+  const media = mediaKey ? { type: MEDIA[mediaKey]! } : null;
+  const ext = (msg.extendedTextMessage ?? {}) as Record<string, unknown>;
+  const caption = mediaKey ? (msg[mediaKey] as Record<string, unknown>).caption : undefined;
+  const textRaw = typeof msg.conversation === 'string' ? msg.conversation
+    : typeof ext.text === 'string' ? ext.text
+    : typeof caption === 'string' ? caption : null;
+  const text = textRaw && textRaw.trim() ? textRaw.slice(0, MAX_TEXT) : null;
+  if (!text && !media) return;
+  const messageId = typeof key.id === 'string' ? key.id : null;
+  if (!messageId) return;
+  const from =
+    digitsFromJid(jid || null) ??
+    digitsFromJid(typeof key.remoteJidAlt === 'string' ? key.remoteJidAlt : null) ??
+    digitsFromJid(typeof key.senderPn === 'string' ? key.senderPn : null);
+  if (!from) return;
+  const account = await ctx.db.account.findUnique({ where: { instanceName: instance } });
+  if (!account || account.kind !== 'CLIENT') return;
+  const sent = await ctx.db.$transaction((tx) => enqueueForMessageReaders(tx, {
+    accountId: account.id, clientId: account.clientId, kind: account.kind,
+    contact: from, messageId, text, media,
+    pushName: typeof data.pushName === 'string' && data.pushName.trim() ? data.pushName.trim().slice(0, 100) : null,
+    at: whenSent(data.messageTimestamp),
+  }));
+  // Never the words, the number or the name: only that one arrived.
+  if (sent) ctx.log.info({ accountId: account.id, media: media?.type ?? null }, 'customer message passed on');
 }

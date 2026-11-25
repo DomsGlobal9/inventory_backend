@@ -5,6 +5,7 @@
 //   npm run module:create -- --name inventory --webhook-url https://.../whatsapp/events --can-send-as-scaleezy
 //   npm run module:create -- --name inventory --rotate-key
 //   npm run module:create -- --name inventory --can-manage-scaleezy   (permission only; the key stays the same)
+//   npm run module:create -- --name crm --receives-messages           (customers' messages to shops; CRM only)
 //   (production: node dist/scripts/create-module.js --name ...)
 
 import { PrismaClient } from '@prisma/client';
@@ -37,7 +38,7 @@ async function main(): Promise<void> {
 
     // Changing only a permission keeps the module's key: no new key to copy anywhere.
     const permissionOnly = existing && !flag('rotate-key') && webhookUrl === undefined
-      && ['can-send-as-scaleezy', 'no-send-as-scaleezy', 'can-manage-scaleezy', 'no-manage-scaleezy'].some(flag);
+      && ['can-send-as-scaleezy', 'no-send-as-scaleezy', 'can-manage-scaleezy', 'no-manage-scaleezy', 'receives-messages', 'no-receives-messages'].some(flag);
     if (permissionOnly) {
       const mod = await db.moduleClient.update({
         where: { id: existing!.id },
@@ -46,9 +47,11 @@ async function main(): Promise<void> {
           ...(flag('no-send-as-scaleezy') ? { canSendAsScaleEzy: false } : {}),
           ...(flag('can-manage-scaleezy') ? { canManageScaleEzy: true } : {}),
           ...(flag('no-manage-scaleezy') ? { canManageScaleEzy: false } : {}),
+          ...(flag('receives-messages') ? { receivesMessages: true } : {}),
+          ...(flag('no-receives-messages') ? { receivesMessages: false } : {}),
         },
       });
-      process.stdout.write(`Module: ${mod.name}\nCan send as ScaleEzy: ${mod.canSendAsScaleEzy ? 'yes' : 'no'}\nCan manage ScaleEzy's number: ${mod.canManageScaleEzy ? 'yes' : 'no'}\nKey unchanged.\n`);
+      process.stdout.write(`Module: ${mod.name}\nCan send as ScaleEzy: ${mod.canSendAsScaleEzy ? 'yes' : 'no'}\nCan manage ScaleEzy's number: ${mod.canManageScaleEzy ? 'yes' : 'no'}\nReceives customers' messages: ${mod.receivesMessages ? 'yes' : 'no'}\nKey unchanged.\n`);
       return;
     }
     if (existing && !flag('rotate-key')) {
@@ -61,6 +64,8 @@ async function main(): Promise<void> {
       ...(flag('no-send-as-scaleezy') ? { canSendAsScaleEzy: false } : {}),
       ...(flag('can-manage-scaleezy') ? { canManageScaleEzy: true } : {}),
       ...(flag('no-manage-scaleezy') ? { canManageScaleEzy: false } : {}),
+      ...(flag('receives-messages') ? { receivesMessages: true } : {}),
+      ...(flag('no-receives-messages') ? { receivesMessages: false } : {}),
     };
     const mod = existing
       ? await db.moduleClient.update({ where: { id: existing.id }, data })
@@ -71,6 +76,7 @@ async function main(): Promise<void> {
         `Module: ${mod.name} (${mod.id})`,
         `Can send as ScaleEzy: ${mod.canSendAsScaleEzy ? 'yes' : 'no'}`,
         `Can manage ScaleEzy's number: ${mod.canManageScaleEzy ? 'yes' : 'no'}`,
+        `Receives customers' messages: ${mod.receivesMessages ? 'yes' : 'no'}`,
         `Webhook: ${mod.webhookUrl ?? '(none)'}`,
         '',
         'Shown once. Store in the module\'s secret settings now:',

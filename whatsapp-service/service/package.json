@@ -16,6 +16,7 @@
     "test:integration": "tsx test/integration/run.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "module:create": "tsx scripts/create-module.ts",
+    "message:test": "tsx scripts/emit-test-message.ts",
     "db:migrate": "prisma migrate deploy",
     "smoke": "tsx scripts/smoke.ts",
     "link:scaleezy": "tsx scripts/link-scaleezy.ts",

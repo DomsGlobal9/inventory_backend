@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Account, ModuleClient } from '@prisma/client';
 import { hasTestDb, makeEnv, queueMessage, resetDb, seedClient, seedModule, seedScaleezy, sleep, waitFor, WebhookReceiver, type TestEnv } from '../helpers/setup';
 import { Sender } from '../../src/worker/sender';
@@ -382,6 +382,83 @@ describe.skipIf(!hasTestDb)('worker resilience', () => {
       data: { key: { remoteJid: '919876543210@s.whatsapp.net', fromMe: false, id: 'X3' }, message: { conversation: 'STOP' } },
     });
     expect(await env.db.moduleEvent.count({ where: { type: 'contact.opted_out' } })).toBe(1);
+  });
+
+  describe('customers\' messages to a shop (message.received, 25 Nov 2026: they become leads in CRM)', () => {
+    let crmHook: WebhookReceiver;
+    let crm: ModuleClient;
+    beforeEach(async () => {
+      crmHook = new WebhookReceiver();
+      await crmHook.start();
+      const seeded = await seedModule(env, 'crm', { webhookUrl: crmHook.url, receivesMessages: true });
+      crm = seeded.mod;
+      crmHook.secret = seeded.secret;
+    });
+    afterEach(async () => { await crmHook.stop(); });
+    const upsert = (data: Record<string, unknown>, instance = shop.instanceName) => handleEngineEvent(env.ctx, { event: 'messages.upsert', instance, data });
+    const received = () => env.db.moduleEvent.findMany({ where: { type: 'message.received' }, orderBy: { createdAt: 'asc' } });
+
+    it('a customer\'s words reach ONLY the module that asked (CRM), signed, with the agreed shape', async () => {
+      await upsert({ key: { remoteJid: '919876543210@s.whatsapp.net', fromMe: false, id: 'M1' }, message: { conversation: 'Do you have this saree in blue?' }, pushName: 'Asha', messageTimestamp: 1795000000 });
+      const evs = await received();
+      expect(evs).toHaveLength(1);
+      expect(evs[0]!.moduleId).toBe(crm.id);
+      expect(evs[0]!.payload).toEqual({
+        accountId: shop.id, clientId: 'shop1', kind: 'CLIENT', contact: '919876543210', messageId: 'M1',
+        text: 'Do you have this saree in blue?', media: null, pushName: 'Asha', at: new Date(1795000000 * 1000).toISOString(),
+      });
+      // Inventory (no permission) never gets a customer's words.
+      expect(await env.db.moduleEvent.count({ where: { moduleId: mod.id, type: 'message.received' } })).toBe(0);
+      await dispatchDueEvents(env.ctx);
+      await waitFor(async () => crmHook.received.length === 1);
+      expect(crmHook.received[0]).toMatchObject({ type: 'message.received', signatureOk: true, data: { messageId: 'M1', contact: '919876543210' } });
+      expect(hook.received.filter((r) => r.type === 'message.received')).toHaveLength(0);
+    });
+
+    it('a picture with a caption, a voice note, a document inside its wrapper, a disappearing message', async () => {
+      await upsert({ key: { remoteJid: '919876543211@s.whatsapp.net', fromMe: false, id: 'P1' }, message: { imageMessage: { caption: 'This one', mimetype: 'image/jpeg' } } });
+      await upsert({ key: { remoteJid: '919876543211@s.whatsapp.net', fromMe: false, id: 'P2' }, message: { audioMessage: { seconds: 4 } } });
+      await upsert({ key: { remoteJid: '919876543211@s.whatsapp.net', fromMe: false, id: 'P3' }, message: { documentWithCaptionMessage: { message: { documentMessage: { caption: 'measurements', fileName: 'm.pdf' } } } } });
+      await upsert({ key: { remoteJid: '919876543211@s.whatsapp.net', fromMe: false, id: 'P4' }, message: { ephemeralMessage: { message: { extendedTextMessage: { text: 'call me' } } } } });
+      const by = Object.fromEntries((await received()).map((e) => [(e.payload as any).messageId, e.payload as any]));
+      expect(by.P1).toMatchObject({ text: 'This one', media: { type: 'image' } });
+      expect(by.P2).toMatchObject({ text: null, media: { type: 'audio' } });
+      expect(by.P3).toMatchObject({ text: 'measurements', media: { type: 'document' } });
+      expect(by.P4).toMatchObject({ text: 'call me', media: null });
+    });
+
+    it('a very long message is cut to 4096 characters', async () => {
+      await upsert({ key: { remoteJid: '919876543212@s.whatsapp.net', fromMe: false, id: 'L1' }, message: { conversation: 'x'.repeat(5000) } });
+      expect(((await received())[0]!.payload as any).text).toHaveLength(4096);
+    });
+
+    it('nothing goes for our own messages, group chats, status, broadcasts, reactions, deletes, or an empty message', async () => {
+      await upsert({ key: { remoteJid: '919876543213@s.whatsapp.net', fromMe: true, id: 'N1' }, message: { conversation: 'sent by the shop' } });
+      await upsert({ key: { remoteJid: '120363000000000000@g.us', fromMe: false, id: 'N2', participant: '919876543213@s.whatsapp.net' }, message: { conversation: 'family group' } });
+      await upsert({ key: { remoteJid: 'status@broadcast', fromMe: false, id: 'N3' }, message: { imageMessage: { caption: 'my status' } } });
+      await upsert({ key: { remoteJid: '919876543213@s.whatsapp.net', fromMe: false, id: 'N4' }, message: { reactionMessage: { text: '👍', key: { id: 'M1' } } } });
+      await upsert({ key: { remoteJid: '919876543213@s.whatsapp.net', fromMe: false, id: 'N5' }, message: { protocolMessage: { type: 0 } } });
+      await upsert({ key: { remoteJid: '919876543213@s.whatsapp.net', fromMe: false, id: 'N6' }, message: { conversation: '   ' } });
+      expect(await received()).toHaveLength(0);
+    });
+
+    it('STOP and door codes stay as they were, and are not passed on as messages', async () => {
+      await upsert({ key: { remoteJid: '919876543214@s.whatsapp.net', fromMe: false, id: 'S1' }, message: { conversation: 'STOP' } });
+      expect(await env.db.moduleEvent.count({ where: { type: 'contact.opted_out' } })).toBe(2); // inventory and crm, as before
+      expect(await received()).toHaveLength(0);
+    });
+
+    it('only a shop\'s own number: a message to ScaleEzy\'s number is not a shop lead', async () => {
+      const sc = await env.db.account.findFirstOrThrow({ where: { kind: 'SCALEEZY' } });
+      await upsert({ key: { remoteJid: '919876543215@s.whatsapp.net', fromMe: false, id: 'Z1' }, message: { conversation: 'hello ScaleEzy' } }, sc.instanceName);
+      expect(await received()).toHaveLength(0);
+    });
+
+    it('a module without the permission, or switched off, gets nothing; none at all is not an error', async () => {
+      await env.db.moduleClient.update({ where: { id: crm.id }, data: { active: false } });
+      await upsert({ key: { remoteJid: '919876543216@s.whatsapp.net', fromMe: false, id: 'O1' }, message: { conversation: 'anyone there?' } });
+      expect(await received()).toHaveLength(0);
+    });
   });
 
   it('a STOP is answered once, and that is the only message the person ever gets again', async () => {
