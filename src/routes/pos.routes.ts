@@ -282,6 +282,15 @@ router.delete('/holds/:holdId', async (req: Request, res: Response, next: NextFu
  * Gift vouchers (PLAN-gift-vouchers.md): the till takes the money, then asks Inventory for the code;
  * a code is checked before it is spent, and spent through /holds with kind VOUCHER.
  */
+/** What the shop owes in unspent vouchers now, for the till's day close (25 Nov 2026). Read only; the shop's own. */
+router.get('/vouchers-summary', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ctx = storefrontContext(req, res);
+    if (!ctx) return;
+    const s = await giftVouchers.summary(ctx.clientId);
+    res.set('Cache-Control', 'no-store').json({ success: true, data: { owedPaise: s.owedPaise, openVouchers: s.openVouchers, expiringIn30Days: s.expiringIn30Days, soldThisMonthPaise: s.soldThisMonthPaise, soldThisMonth: s.soldThisMonth } });
+  } catch (error) { next(error); }
+});
 router.post('/vouchers', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ctx = storefrontContext(req, res);

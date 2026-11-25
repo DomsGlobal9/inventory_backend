@@ -510,6 +510,11 @@ export type ItemInput = {
   color?: unknown; colorHex?: unknown; size?: unknown; widthCm?: unknown;
   sellingPrice?: unknown; purchasePrice?: unknown; gstPercent?: unknown; hsnCode?: unknown;
   imageUrls?: unknown; sellInShop?: unknown;
+  /** Cut cloth of this item may be returned at the till (metre items; 25 Nov 2026). Default false. */
+  cutReturnable?: unknown;
+  /** The selling price already includes GST (default true). false: GST is added on top -- the till keeps such an item
+   * off sale until it is priced including GST (POS's rule). Stored as the product's priceIsExclusive. */
+  priceIncludesGst?: unknown;
   /** The boutique's group and sort of thing (CRM-B Category / CatalogItem.item_type), and its other details. */
   category?: unknown; itemType?: unknown; brand?: unknown; materialType?: unknown; reorderLevel?: unknown;
   /** true archives the item, false brings it back on sale, left out keeps it as it is. */
@@ -599,6 +604,8 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
   if (width !== null && !(width > 0 && width < 1000)) throw problem(`${itemCode}: the width is in centimetres, above 0.`);
   if (given('sellInShop') && typeof input.sellInShop !== 'boolean') throw problem(`${itemCode}: "sellInShop" is true or false.`);
   const sellInShop = typeof input.sellInShop === 'boolean' ? input.sellInShop : (P ? P.sellInShop : false);
+  if (given('cutReturnable') && typeof input.cutReturnable !== 'boolean') throw problem(`${itemCode}: "cutReturnable" is true or false.`);
+  if (given('priceIncludesGst') && typeof input.priceIncludesGst !== 'boolean') throw problem(`${itemCode}: "priceIncludesGst" is true or false.`);
   const keptDesign = P ? (P.boutiqueDesign ?? (P.importKey?.startsWith('boutique:') ? P.importKey.slice(9) : null)) : null;
   const design = String(input.designGroup ?? '').trim() || keptDesign || itemCode;
   const importKey = `boutique:${design}`.slice(0, 120);
@@ -649,6 +656,8 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
       ...(given('widthCm') || !existing ? { widthCm: width } : {}),
       ...(given('hsnCode') || !existing ? { hsnCode: hsn } : {}),
       ...(given('gstPercent') || !existing ? { taxRateBps: gst } : {}),
+      ...(typeof input.cutReturnable === 'boolean' ? { cutReturnable: input.cutReturnable } : {}),
+      ...(typeof input.priceIncludesGst === 'boolean' ? { priceIsExclusive: !input.priceIncludesGst } : {}),
       ...(brand ? { brand } : {}), ...(material ? { fabric: material } : {}),
       ...(subCategory ? { boutiqueSubCategory: subCategory } : {}), ...(description ? { description } : {})
     };
@@ -830,6 +839,7 @@ export function itemView(p: any, v: any, extra?: ItemExtra) {
     sellingPrice: pricePerUnit(Number(v.sellingPrice ?? p.basePrice ?? 0), p.soldBy),
     purchasePrice: v.costPrice != null ? pricePerUnit(Number(v.costPrice), p.soldBy) : null,
     gstPercent: p.taxRateBps != null ? p.taxRateBps / 100 : null, hsnCode: p.hsnCode ?? null,
+    priceIncludesGst: p.priceIsExclusive !== true, cutReturnable: p.cutReturnable === true,
     // The owner may put an item in ScaleEzy's bin: it is off sale there, so it is IN_BIN here, whatever its status was.
     sellInShop: p.sellInShop, status: p.trashedAt ? 'IN_BIN' : p.status, inBin: !!p.trashedAt, category: p.boutiqueCategory ?? null, subCategory: p.boutiqueSubCategory ?? null,
     itemType: p.itemType ?? null, productType: p.productType, designGroup: p.boutiqueDesign ?? (p.importKey?.startsWith('boutique:') ? p.importKey.slice(9) : null),

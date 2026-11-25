@@ -8,6 +8,7 @@ import { paymentAccounts } from '../payments/account.service';
 import { GatewayError } from '../payments/gateway';
 import { OnlineShopRuleError } from '../online-shop';
 import { problem, type Actor } from './index';
+import * as giftVouchers from '../gift-vouchers';
 
 /**
  * The shop's settings through the boutique API (20 Nov 2026, PLAN-boutique-backend.md part 3, #12 #18 #24 #29):
@@ -23,6 +24,8 @@ async function said<T>(run: () => Promise<T>): Promise<T> {
   try { return await run(); } catch (e: any) {
     if (e instanceof OnlineShopRuleError || e instanceof GatewayError) throw problem(e.message, 400);
     if (e && typeof e === 'object' && e.statusCode && !(e instanceof Error)) throw problem(String(e.message), e.statusCode);
+    // An HttpError (gift vouchers' rules): its own sentence and status, never a 500.
+    if (e instanceof Error && typeof (e as any).statusCode === 'number' && (e as any).statusCode < 500) throw problem(e.message, (e as any).statusCode);
     throw e;
   }
 }
@@ -38,6 +41,7 @@ export async function read(a: Actor, apiBase: string) {
     gst: { registration: s?.gstRegistration ?? 'UNREGISTERED', gstNumber: s?.gstNumber ?? null, stateCode: s?.gstStateCode ?? null },
     whatYouSell: setup,
     points, offers, returns,
+    vouchers: await vouchersView(a.clientId),
     // Whether the shop takes online payments, and how far it is set up. Never the keys; the webhook address
     // (where Razorpay reports payments) only to the owner, like Inventory's own Payments screen.
     payments: a.can.includes('settings:write') ? payments : { connected: payments.connected, readyForCustomers: payments.readyForCustomers, upiQrEnabled: payments.upiQrEnabled }
@@ -108,4 +112,59 @@ export async function checkPayments(a: Actor, apiBase: string) {
 export async function removePayments(a: Actor, apiBase: string) {
   mustOwn(a);
   return said(() => paymentAccounts.remove(a.clientId, apiBase));
+}
+
+/* ── Gift vouchers and the logo (25 Nov 2026, asked by POS: a boutique-run shop has no Inventory login, so these
+ *    were set nowhere) ─────────────────────────────────────────────────────────────────────────────────────── */
+
+const rupees = (paise: number) => Math.round(paise) / 100;
+/** Settings -> Gift vouchers, in rupees, and what the shop owes in unspent vouchers now. */
+export async function vouchersView(clientId: string) {
+  const [s, sum] = await Promise.all([giftVouchers.getSettings(clientId), giftVouchers.summary(clientId)]);
+  return {
+    enabled: s.enabled, validMonths: s.validMonths, minAmount: rupees(s.minPaise), maxAmount: rupees(s.maxPaise),
+    owed: rupees(sum.owedPaise), openVouchers: sum.openVouchers, expiringIn30Days: sum.expiringIn30Days
+  };
+}
+
+const VOUCHER_FIELDS = ['enabled', 'validMonths', 'minAmount', 'maxAmount'];
+const paise = (v: unknown, what: string) => {
+  const n = Number(v);
+  if (v === null || v === '' || typeof v === 'boolean' || !Number.isFinite(n) || Math.round(n * 100) !== n * 100) throw problem(`${what} is an amount in rupees, to 2 decimals.`);
+  return Math.round(n * 100);
+};
+/** Vouchers on or off, how long they last, the smallest and largest. The same rules as Settings -> Gift vouchers. */
+export async function saveVouchers(a: Actor, body: any) {
+  mustOwn(a);
+  const unknown = Object.keys(body ?? {}).filter(k => !VOUCHER_FIELDS.includes(k));
+  if (unknown.length) throw problem(`Not a voucher setting: ${unknown.join(', ')}. Send any of ${VOUCHER_FIELDS.join(', ')}.`);
+  if (body?.enabled !== undefined && typeof body.enabled !== 'boolean') throw problem('"enabled" is true or false.');
+  await said(() => giftVouchers.saveSettings(a.clientId, {
+    ...(body?.enabled !== undefined ? { enabled: body.enabled } : {}),
+    ...(body?.validMonths !== undefined ? { validMonths: body.validMonths } : {}),
+    ...(body?.minAmount !== undefined ? { minPaise: paise(body.minAmount, 'The smallest voucher') } : {}),
+    ...(body?.maxAmount !== undefined ? { maxPaise: paise(body.maxAmount, 'The largest voucher') } : {})
+  }, null));
+  return vouchersView(a.clientId);
+}
+
+const LOGO_TYPES = /\.(png|jpe?g|webp)$/i;
+/** Step 1 of a new logo: where to upload the picture (PNG, JPEG or WebP), the same storage as Inventory's. */
+export async function logoUploadUrl(a: Actor, body: any) {
+  mustOwn(a);
+  const fileName = String(body?.fileName ?? '').trim();
+  if (!LOGO_TYPES.test(fileName)) throw problem('Send the file name of the picture, ending .png, .jpg, .jpeg or .webp.');
+  const up = await said(() => brandingService.createLogoUploadUrl(a.clientId, fileName));
+  return { uploadUrl: up.signedUrl, storagePath: up.storagePath, publicUrl: up.publicUrl };
+}
+/** Step 2: the uploaded picture becomes the shop's logo (bills, POS, the shop); the old one is removed. */
+export async function saveLogo(a: Actor, body: any) {
+  mustOwn(a);
+  const path = String(body?.storagePath ?? '');
+  if (!path) throw problem('Send the storagePath from the upload step.');
+  return said(() => brandingService.setLogo(a.clientId, path));
+}
+export async function removeLogo(a: Actor) {
+  mustOwn(a);
+  return said(() => brandingService.removeLogo(a.clientId));
 }

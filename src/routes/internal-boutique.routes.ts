@@ -337,6 +337,12 @@ router.get('/settings', read(req => shopSettings.read(actorOf(req), apiBase(req)
 router.put('/settings/shop', viaLedger((a, req) => shopSettings.saveShop(a, req.body ?? {})));
 router.put('/settings/what-you-sell', viaLedger((a, req) => shopSettings.saveSells(a, req.body ?? {})));
 router.put('/settings/points', viaLedger((a, req) => shopSettings.savePoints(a, req.body ?? {})));
+// Gift vouchers and the logo (25 Nov 2026): a boutique-run shop has no Inventory login to set them in. settings:write.
+router.get('/settings/vouchers', read(req => shopSettings.vouchersView(actorOf(req).clientId)));
+router.put('/settings/vouchers', viaLedger((a, req) => shopSettings.saveVouchers(a, req.body ?? {})));
+router.post('/settings/logo/upload-url', viaLedger((a, req) => shopSettings.logoUploadUrl(a, req.body ?? {})));
+router.put('/settings/logo', viaLedger((a, req) => shopSettings.saveLogo(a, req.body ?? {})));
+router.delete('/settings/logo', viaLedger((a) => shopSettings.removeLogo(a)));
 // The POS switch (25 Nov 2026): POS on or off for the boutique's shop, through Inventory (settings:write).
 router.get('/settings/pos', read(req => btqPos.state(actorOf(req))));
 router.put('/settings/pos', viaLedger((a, req) => btqPos.set(a, req.body ?? {})));
