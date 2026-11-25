@@ -18,7 +18,8 @@ export const AUDIENCE = 'scaleezy-crm';
 
 let cachedKey: { from: string; key: KeyObject | null } | null = null;
 
-function signingKey(): KeyObject | null {
+/** Inventory's own signing key (also used to call POS, see services/pos-switch). */
+export function signingKey(): KeyObject | null {
   const pem = process.env.INVENTORY_PRIVATE_KEY;
   const path = process.env.INVENTORY_PRIVATE_KEY_PATH;
   const from = pem ? 'pem' : path ?? '';

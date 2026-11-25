@@ -25,6 +25,7 @@ import * as btqPay from '../services/boutique/payments';
 import * as cr from '../services/boutique/counts-returns';
 import * as bulkPhotos from '../services/boutique/bulk-photos';
 import * as reels from '../services/boutique/reels';
+import * as btqPos from '../services/boutique/pos';
 
 /**
  * The boutique (CRM-B) on ScaleEzy Inventory: its items and their stock, nothing else (PLAN-boutique-sync.md §0).
@@ -336,6 +337,10 @@ router.get('/settings', read(req => shopSettings.read(actorOf(req), apiBase(req)
 router.put('/settings/shop', viaLedger((a, req) => shopSettings.saveShop(a, req.body ?? {})));
 router.put('/settings/what-you-sell', viaLedger((a, req) => shopSettings.saveSells(a, req.body ?? {})));
 router.put('/settings/points', viaLedger((a, req) => shopSettings.savePoints(a, req.body ?? {})));
+// The POS switch (25 Nov 2026): POS on or off for the boutique's shop, through Inventory (settings:write).
+router.get('/settings/pos', read(req => btqPos.state(actorOf(req))));
+router.put('/settings/pos', viaLedger((a, req) => btqPos.set(a, req.body ?? {})));
+router.post('/settings/pos/owner-link', viaLedger((a, req) => btqPos.ownerLink(a, req.body ?? {})));
 // Reel links (20 Nov 2026, #17): one link per Instagram reel with only the pieces it shows. reels:write to change.
 router.get('/reel-links/overview', read(req => reels.overview(actorOf(req))));
 router.get('/reel-links', read(req => reels.list(actorOf(req))));

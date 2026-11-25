@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 import { posConnectionService } from '../services/pos/pos-connection.service';
+import { afterKeyReplaced } from '../services/pos-switch';
 
 /**
  * Settings → POS (billing counter): the owner's side of a till key.
@@ -70,7 +71,10 @@ router.post('/', requirePermission(PERMISSION), async (req, res, next) => {
 router.post('/:id/replace-key', requirePermission(PERMISSION), async (req, res, next) => {
   try {
     const made = await posConnectionService.replaceKey(clientOf(req), String(req.params.id));
-    res.json({ success: true, data: { ...made, keyIsShownOnce: true } });
+    // A shop POS was switched on for: POS gets the new key at once (25 Nov 2026). Never blocks the replacement.
+    const u = (req as any).user;
+    const pos = await afterKeyReplaced(clientOf(req), made.key, { userId: String(u?.id ?? 'owner'), name: u?.name ?? null });
+    res.json({ success: true, data: { ...made, keyIsShownOnce: true, posTold: pos.posTold, ...(pos.note ? { posNote: pos.note } : {}) } });
   } catch (error) { fail(res, error, next); }
 });
 

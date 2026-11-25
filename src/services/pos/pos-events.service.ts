@@ -67,7 +67,24 @@ export type PosAnswer =
   /** Retryable. The sale this return is against has been taken in but not applied yet. */
   | 'SALE_NOT_YET_APPLIED'
   /** A write-off against a bill Inventory already shows as fully paid. Done; nothing written. */
-  | 'NOTHING_DUE';
+  | 'NOTHING_DUE'
+  /**
+   * An invoice number Inventory already holds, sent again with DIFFERENT items (25 Nov 2026, the owner: "refuse it
+   * loudly"). Only a till whose numbering restarted does this; answering ALREADY_APPLIED there lost the new bill
+   * without a word. A true resend (the same items) is still ALREADY_APPLIED.
+   */
+  | 'INVOICE_REUSED';
+
+/** The till's own lines, as a comparable list: item code and quantity, in a fixed order. */
+const lineKey = (lines: unknown) => (Array.isArray(lines) ? lines : [])
+  .map((l: any) => `${String(l?.itemCode ?? '').trim()}|${Number(l?.qty ?? l?.quantity ?? 0)}`).sort().join(';');
+/** Two versions of the same till event carry the same bill (items and quantities). */
+export const sameBill = (a: any, b: any) => lineKey(a?.lines) === lineKey(b?.lines);
+export const invoiceReused = (invoiceNo: string, orderNumber?: string | null): PosEventResult => ({
+  answer: 'INVOICE_REUSED',
+  ...(orderNumber ? { orderNumber } : {}),
+  detail: `Invoice ${invoiceNo} was already used for a different bill${orderNumber ? ` (${orderNumber})` : ''}. The till's invoice numbering must have started again: give this bill a new number.`
+} as PosEventResult);
 
 export interface PosEventResult {
   answer: PosAnswer;
@@ -635,7 +652,15 @@ export async function applySale(
     findByExternal(clientId, event.invoiceNo),
     resolveItems(clientId, event.lines.map(l => l.itemCode))
   ]);
-  if (already) return { answer: 'ALREADY_APPLIED', orderNumber: already.orderNumber };
+  if (already) {
+    // The same number with other ITEMS is another bill, not a resend (quantities are not compared here: a stored
+    // length may be in another unit than the till sent, and a true resend must never be refused).
+    const had = new Set((await prisma.salesOrderItem.findMany({ where: { salesOrderId: already.id }, select: { variantId: true } })).map(i => i.variantId));
+    const sent = new Set(event.lines.map(l => byCode.get(l.itemCode) ?? `?${l.itemCode}`));
+    const same = had.size === sent.size && [...sent].every(id => had.has(id));
+    if (!same) return invoiceReused(event.invoiceNo, already.orderNumber);
+    return { answer: 'ALREADY_APPLIED', orderNumber: already.orderNumber };
+  }
 
   const missing = event.lines.map(l => l.itemCode).filter(c => !byCode.has(c));
   if (missing.length) {

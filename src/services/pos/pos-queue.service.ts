@@ -21,7 +21,7 @@
  */
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
-import { applySale, POS_SOURCE, WALK_IN_KEY, saleOnItsWay, notAppliedYet, type PosEventResult } from './pos-events.service';
+import { applySale, POS_SOURCE, WALK_IN_KEY, saleOnItsWay, notAppliedYet, sameBill, invoiceReused, type PosEventResult } from './pos-events.service';
 import { applyReturn } from './pos-returns.service';
 import { applyPaymentUpdate, faultInPaymentShape } from './pos-payments.service';
 import { applyWriteOff, faultInWriteOffShape } from './pos-writeoff.service';
@@ -238,9 +238,15 @@ async function accept(
     // first version is the one the answer will be about. A REJECTED one is different -- see below.
     update: {},
     select: {
-      id: true, status: true, answer: true, orderNumber: true, detail: true, warnings: true
+      id: true, status: true, answer: true, orderNumber: true, detail: true, warnings: true, payload: true
     }
   });
+
+  // A bill number we already hold, sent with OTHER items: a till whose numbering restarted, not a resend (25 Nov
+  // 2026). Refused loudly rather than answered from the first bill. A REJECTED one may come back changed (below).
+  if (kind === 'sale.completed' && row.status !== 'REJECTED' && !sameBill(row.payload, event)) {
+    return invoiceReused(idNo, row.orderNumber) as unknown as PosAcceptResult;
+  }
 
   /*
    * A resend of a REJECTED event RE-OPENS it, with the new payload.

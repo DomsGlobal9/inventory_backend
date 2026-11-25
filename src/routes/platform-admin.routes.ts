@@ -43,6 +43,7 @@ import * as shopAppKeys from '../services/shop-app-keys';
 import { listLeads, updateLead, convertLead } from '../controllers/lead.controller';
 import * as boutique from '../services/boutique';
 import * as join from '../services/boutique/join';
+import * as posSwitch from '../services/pos-switch';
 import { platformAuditLogger } from '../middleware/platform-audit.middleware';
 
 const authRouter = Router();
@@ -82,6 +83,33 @@ consoleRouter.put('/clients/:clientId/boutique', async (req, res) => {
     // handOver: the boutique app runs this whole shop (every product becomes the boutique's; 24 Nov, Swathy Reddy).
     res.json({ success: true, data: await boutique.enableForClient(clientId, String(req.body?.tenant ?? ''), req.body?.shopName ? String(req.body.shopName).slice(0, 120) : null, { handOver: req.body?.handOver === true }) });
   } catch (e) { boutiqueFail(res, e); }
+});
+// POS switched on for a client automatically (25 Nov 2026): Inventory makes the till key and calls POS (pos-switch).
+const posFail = (res: any, e: any) => res.status(e?.statusCode ?? 500).json({ success: false, message: e?.statusCode ? e.message : 'POS could not be changed just now. Please try again.' });
+const adminBy = (req: any) => ({ userId: String(req.platformAdmin?.id ?? 'console'), name: `${req.platformAdmin?.name ?? req.platformAdmin?.email ?? 'ScaleEzy'} (ScaleEzy Console)` });
+consoleRouter.get('/clients/:clientId/pos', async (req, res) => {
+  try {
+    if (!(await ourClient(String(req.params.clientId)))) return notOurs(res);
+    res.json({ success: true, data: await posSwitch.status(String(req.params.clientId)) });
+  } catch (e) { posFail(res, e); }
+});
+consoleRouter.post('/clients/:clientId/pos/on', async (req, res) => {
+  try {
+    if (!(await ourClient(String(req.params.clientId)))) return notOurs(res);
+    res.json({ success: true, data: await posSwitch.switchOn(String(req.params.clientId), adminBy(req), req.body?.owner ?? null) });
+  } catch (e) { posFail(res, e); }
+});
+consoleRouter.post('/clients/:clientId/pos/off', async (req, res) => {
+  try {
+    if (!(await ourClient(String(req.params.clientId)))) return notOurs(res);
+    res.json({ success: true, data: await posSwitch.switchOff(String(req.params.clientId), adminBy(req)) });
+  } catch (e) { posFail(res, e); }
+});
+consoleRouter.post('/clients/:clientId/pos/owner-link', async (req, res) => {
+  try {
+    if (!(await ourClient(String(req.params.clientId)))) return notOurs(res);
+    res.json({ success: true, data: await posSwitch.ownerLink(String(req.params.clientId), adminBy(req), req.body?.reset === true) });
+  } catch (e) { posFail(res, e); }
 });
 // A shop whose Boutique module is already on: the boutique app takes over every product (see handOverShop).
 consoleRouter.post('/clients/:clientId/boutique/hand-over', async (req, res) => {
