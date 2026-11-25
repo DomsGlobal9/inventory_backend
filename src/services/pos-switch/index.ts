@@ -61,11 +61,21 @@ async function callPos<T>(method: 'GET' | 'POST', path: string, clientId: string
   return fail(res.status === 404 ? 404 : 409, String(data?.message ?? data?.error?.message ?? 'POS refused this.'));
 }
 
-/** The store a till sells from: the main store, or the oldest store that is switched on. */
-async function tillStore(clientId: string) {
-  return await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE', active: true }, select: { id: true } })
-    ?? await prisma.stockLocation.findFirst({ where: { clientId, active: true, type: 'STORE' as any }, orderBy: { createdAt: 'asc' }, select: { id: true } })
-    ?? await prisma.stockLocation.findFirst({ where: { clientId, active: true }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+/**
+ * The store a till sells from: the switched-on store that holds the stock. The main store when it holds any (or when
+ * no store holds any yet), else the store holding the most. Found live on 25 Nov 2026: Jyoti Atelier's till was given
+ * its old EMPTY "Main Store" while every piece sat in "Boutique - 1", so its first sale would have come off nothing.
+ */
+export async function tillStore(clientId: string) {
+  const stores = await prisma.stockLocation.findMany({ where: { clientId, active: true }, select: { id: true, code: true, type: true, createdAt: true }, orderBy: { createdAt: 'asc' } });
+  if (!stores.length) return null;
+  const held = await prisma.inventoryStock.groupBy({ by: ['locationId'], where: { clientId, locationId: { in: stores.map(s => s.id) }, quantity: { gt: 0 } }, _sum: { quantity: true } });
+  const qty = new Map(held.map(h => [h.locationId, h._sum.quantity ?? 0]));
+  const main = stores.find(s => s.code === 'MAIN-STORE');
+  if (main && (qty.get(main.id) ?? 0) > 0) return { id: main.id };
+  const richest = [...stores].sort((a, b) => (qty.get(b.id) ?? 0) - (qty.get(a.id) ?? 0))[0];
+  if ((qty.get(richest.id) ?? 0) > 0) return { id: richest.id };
+  return { id: (main ?? stores.find(s => String(s.type) === 'STORE') ?? stores[0]).id };
 }
 
 /** The shop's owner as POS needs them: given, else the shop's first owner login. */

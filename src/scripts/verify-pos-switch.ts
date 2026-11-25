@@ -149,6 +149,20 @@ async function main() {
   check('POS cannot be reached: 503 in words, and nothing changed here', away.status === 503 && /could not be reached/.test(away.message ?? '') && (await tills(clientId)).filter(x => x.status === 'ACTIVE').length === tBefore, away);
   await new Promise<void>((resolve) => pos.listen(POS_PORT, '127.0.0.1', () => resolve()));
 
+  console.log('\nWHICH STORE THE TILL SELLS FROM (Jyoti Atelier, live 25 Nov: an empty Main Store beside the stocked one)');
+  const mainStore = (await prisma.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } }))!;
+  const stocked = await prisma.stockLocation.create({ data: { clientId, code: `BTQ-${S}`, name: 'Boutique - 1', type: 'STORE' as any, active: true } });
+  const prod = await prisma.product.create({ data: { clientId, productCode: `PS-${S}`, slug: `ps-${S}`, title: 'Saree', category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, basePrice: 1000, status: 'ACTIVE' as any, publishedAt: new Date(), sellInShop: true } as any });
+  const vr = await prisma.productVariant.create({ data: { clientId, productId: prod.id, variantCode: `PSV-${S}`, sku: `PSS-${S}`, sellingPrice: 1000 } as any });
+  await prisma.inventoryStock.create({ data: { clientId, variantId: vr.id, locationId: stocked.id, quantity: 7 } as any });
+  const j1 = await consoleApi('POST', `/clients/${clientId}/pos/on`, {});
+  const tj1 = (await tills(clientId)).find(x => x.status === 'ACTIVE');
+  check('the Main Store is empty, "Boutique - 1" holds the stock: the till sells from "Boutique - 1"', j1.status === 200 && tj1?.locationIds[0] === stocked.id, { j1: j1.status, at: tj1?.locationIds });
+  await prisma.inventoryStock.create({ data: { clientId, variantId: vr.id, locationId: mainStore.id, quantity: 2 } as any });
+  const j2 = await consoleApi('POST', `/clients/${clientId}/pos/on`, {});
+  const tj2 = (await tills(clientId)).find(x => x.status === 'ACTIVE');
+  check('...once the Main Store holds stock too, the till sells from the Main Store (it wins when it holds any)', j2.status === 200 && tj2?.locationIds[0] === mainStore.id, { j2: j2.status, at: tj2?.locationIds });
+
   console.log('\nTHE BOUTIQUE API SWITCH (a boutique-only shop, no logins)');
   const link2 = await btq('POST', '/link', TEN, { shopName: 'Switch Boutique' }, []);
   const btqClient = link2.data?.clientId;
