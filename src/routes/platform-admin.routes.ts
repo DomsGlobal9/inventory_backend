@@ -79,7 +79,15 @@ consoleRouter.put('/clients/:clientId/boutique', async (req, res) => {
   try {
     const clientId = String(req.params.clientId);
     if (!(await ourClient(clientId))) return notOurs(res);
-    res.json({ success: true, data: await boutique.enableForClient(clientId, String(req.body?.tenant ?? ''), req.body?.shopName ? String(req.body.shopName).slice(0, 120) : null) });
+    // handOver: the boutique app runs this whole shop (every product becomes the boutique's; 24 Nov, Swathy Reddy).
+    res.json({ success: true, data: await boutique.enableForClient(clientId, String(req.body?.tenant ?? ''), req.body?.shopName ? String(req.body.shopName).slice(0, 120) : null, { handOver: req.body?.handOver === true }) });
+  } catch (e) { boutiqueFail(res, e); }
+});
+// A shop whose Boutique module is already on: the boutique app takes over every product (see handOverShop).
+consoleRouter.post('/clients/:clientId/boutique/hand-over', async (req, res) => {
+  try {
+    if (!(await ourClient(String(req.params.clientId)))) return notOurs(res);
+    res.json({ success: true, data: await boutique.handOverShop(String(req.params.clientId)) });
   } catch (e) { boutiqueFail(res, e); }
 });
 consoleRouter.delete('/clients/:clientId/boutique', async (req, res) => {

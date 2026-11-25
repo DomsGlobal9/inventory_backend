@@ -256,22 +256,36 @@ async function absorb(tx: Prisma.TransactionClient, fromClientId: string, intoCl
  * connected to this shop at once. An account that has been running as its own boutique-only shop brings everything
  * with it. Refused when the shop already has another boutique, or the account belongs to another real shop.
  */
-export async function enableForClient(clientId: string, tenantIn: string, shopName: string | null = null) {
+export async function enableForClient(clientId: string, tenantIn: string, shopName: string | null = null, opts: { handOver?: boolean; freshStoreIds?: string[] } = {}) {
+  const r = await linkForClient(clientId, tenantIn, shopName);
+  // Only the stores the boutique brought, and the one onboarding has just made, may be tidied away when empty: a
+  // shop's own store is never touched, even an empty new branch.
+  const candidates = [...r.movedStoreIds, ...(opts.freshStoreIds ?? [])];
+  const stores = r.already || !candidates.length ? { removed: [] as string[] } : await tidyEmptyStores(clientId, candidates);
+  const handedOver = opts.handOver ? await handOverShop(clientId) : null;
+  return { ...r, storesRemoved: stores.removed, ...(handedOver ? { handedOver } : {}) };
+}
+
+async function linkForClient(clientId: string, tenantIn: string, shopName: string | null) {
   const tenant = String(tenantIn ?? '').trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9_-]{1,62}$/.test(tenant)) throw problem('The boutique account is letters, numbers and hyphens, like lakshmi-boutique.');
   return prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-enable|${tenant}`}))`;
     const mine = await tx.boutiqueLink.findUnique({ where: { clientId } });
     if (mine && !mine.unlinkedAt && mine.tenant !== tenant) throw problem(`This shop already uses the boutique "${mine.tenant}". Disable it first.`, 409);
-    if (mine && !mine.unlinkedAt && mine.tenant === tenant) return { linked: true, tenant, moved: 0, already: true };
+    if (mine && !mine.unlinkedAt && mine.tenant === tenant) return { linked: true, tenant, moved: 0, already: true, movedStoreIds: [] as string[] };
     // Another boutique than the one this shop had before: the old one's people are known by ITS ids, and the new
     // boutique's "C-1" must never be taken for the old boutique's "C-1". The matching rows go; the customers stay.
     if (mine && mine.tenant !== tenant) await tx.customerBoutiqueProfile.deleteMany({ where: { clientId } });
     const theirs = await tx.boutiqueLink.findUnique({ where: { tenant } });
     let moved = 0;
+    let movedStoreIds: string[] = [];
     if (theirs && theirs.clientId !== clientId) {
       if (!theirs.unlinkedAt && !(await isBoutiqueOnlyShop(theirs.clientId, tx))) throw problem(`The boutique account "${tenant}" is already used by another shop.`, 409);
-      if (await isBoutiqueOnlyShop(theirs.clientId, tx)) moved = await absorb(tx, theirs.clientId, clientId);
+      if (await isBoutiqueOnlyShop(theirs.clientId, tx)) {
+        movedStoreIds = (await tx.stockLocation.findMany({ where: { clientId: theirs.clientId }, select: { id: true } })).map(s => s.id);
+        moved = await absorb(tx, theirs.clientId, clientId);
+      }
       await tx.boutiqueLink.delete({ where: { clientId: theirs.clientId } });
     }
     await tx.boutiqueLink.upsert({
@@ -284,46 +298,100 @@ export async function enableForClient(clientId: string, tenantIn: string, shopNa
     await tx.clientSettings.updateMany({ where: { clientId, sells: 'READY_MADE' }, data: { sells: 'BOTH' } });
     // The boutique's items are priced by the boutique again (they were the shop's own while it was disabled).
     await tx.product.updateMany({ where: { clientId, importKey: { startsWith: 'boutique:' } }, data: { priceOwner: 'BOUTIQUE' } });
-    return { linked: true, tenant, moved, already: false };
+    return { linked: true, tenant, moved, already: false, movedStoreIds };
   }, { timeout: 120_000, maxWait: 15_000 });
 }
 
+/** Is anything at all pointing at this store? Every column that can hold a store id, read from the database itself. */
+async function storeInUse(tx: Db, storeId: string) {
+  const cols = await tx.$queryRaw<{ table_name: string; column_name: string; data_type: string }[]>`
+    SELECT table_name, column_name, data_type FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name <> 'inventory_locations' AND table_name <> 'online_shops'
+       AND column_name ~ '(^|_)location_ids?$' AND column_name NOT LIKE 'shopify_%'`;
+  for (const c of cols) {
+    const where = c.data_type === 'ARRAY' ? `$1 = ANY("${c.column_name}")` : `"${c.column_name}" = $1`;
+    const n = await tx.$queryRawUnsafe<{ n: bigint }[]>(`SELECT count(*) AS n FROM "${c.table_name}" WHERE ${where}`, storeId);
+    if (Number(n[0]?.n ?? 0) > 0) return c.table_name;
+  }
+  return null;
+}
+
 /**
- * A boutique joins ScaleEzy Inventory as a new client (the Console's onboarding with a boutique account, 23 Nov 2026).
- * Onboarding makes an empty "Main Store" (code MAIN-STORE) a moment before the boutique's own place, stock and all,
- * is moved in. The app opens on MAIN-STORE, and its Inventory page counts that one place, so every item read "out of
- * stock" (Jyoti Atelier, found live 23 Nov) while the boutique's stock sat in "Boutique - 1".
+ * After a boutique is connected to a shop, an EMPTY store is removed and the shop keeps one main store (code
+ * MAIN-STORE) that holds the stock.
  *
- * So the boutique's own place becomes the main store: it takes the code MAIN-STORE, and the shop's address and phone
- * when it has none; the empty one is removed. Only when nothing at all points to the empty one yet (no stock, no
- * movement, no order, no shelf, no price, no till sale), otherwise both stay as they are. Safe to run again.
+ *  - A boutique joining as a new client (23 Nov 2026): onboarding made an empty "Main Store" a moment before the
+ *    boutique's own place, stock and all, moved in. The app opens on MAIN-STORE and its Inventory page counts that one
+ *    place, so every item read "out of stock" (Jyoti Atelier, live). Now the boutique's place becomes the main store.
+ *  - A retail shop taking in an empty boutique test shop (Swathy Reddy, 24 Nov): the boutique's empty "Boutique" place
+ *    would have come along as a second store. Now it goes.
+ *
+ * A store is removed only when nothing at all points to it: no stock, movement, order, price, shelf, till sale, offer,
+ * person or website limited to it. The online shop's own list of places is updated. Safe to run again.
  */
-export async function adoptBoutiqueStore(clientId: string) {
+export async function tidyEmptyStores(clientId: string, candidateIds: string[]) {
   return prisma.$transaction(async tx => {
-    const main = await tx.stockLocation.findFirst({ where: { clientId, code: 'MAIN-STORE' } });
-    if (!main) return { adopted: false, why: 'no MAIN-STORE' };
-    const theirs = await tx.stockLocation.findFirst({ where: { clientId, active: true, id: { not: main.id } }, orderBy: { createdAt: 'asc' } });
-    if (!theirs) return { adopted: false, why: 'no other store' };
-    // Every table that can point at a store, read from the database itself, so a new one is never missed.
-    const refs = await tx.$queryRaw<{ table_name: string; column_name: string }[]>`
-      SELECT kcu.table_name, kcu.column_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
-        JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-       WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public' AND ccu.table_name = 'inventory_locations'`;
-    for (const r of refs) {
-      const n = await tx.$queryRawUnsafe<{ n: bigint }[]>(`SELECT count(*) AS n FROM "${r.table_name}" WHERE "${r.column_name}" = $1`, main.id);
-      if (Number(n[0]?.n ?? 0) > 0) return { adopted: false, why: `MAIN-STORE is already used (${r.table_name})` };
+    const stores = await tx.stockLocation.findMany({ where: { clientId }, orderBy: { createdAt: 'asc' } });
+    if (stores.length < 2) return { removed: [] as string[] };
+    const used: typeof stores = [], empty: typeof stores = [];
+    // Only candidates can count as empty: every other store of the shop is kept whatever it holds.
+    for (const s of stores) ((!candidateIds.includes(s.id) || (await storeInUse(tx, s.id))) ? used : empty).push(s);
+    // Nothing used anywhere yet: keep the main store (or the oldest) and remove the other empty ones.
+    const keep = used.length ? used : [stores.find(s => s.code === 'MAIN-STORE') ?? stores[0]];
+    const gone = empty.filter(s => !keep.includes(s));
+    if (!gone.length) return { removed: [] as string[] };
+    const mainGone = gone.find(s => s.code === 'MAIN-STORE');
+    for (const s of gone) {
+      await tx.$executeRaw`UPDATE online_shops SET location_ids = array_remove(location_ids, ${s.id}) WHERE client_id = ${clientId}`;
+      await tx.stockLocation.delete({ where: { id: s.id } });
     }
-    // Lists of store ids kept as plain arrays (the online shop's places).
-    await tx.$executeRaw`UPDATE online_shops SET location_ids = array_remove(location_ids, ${main.id}) WHERE client_id = ${clientId}`;
-    await tx.stockLocation.delete({ where: { id: main.id } });
-    await tx.stockLocation.update({
-      where: { id: theirs.id },
-      data: { code: 'MAIN-STORE', ...(theirs.address ? {} : { address: main.address }), ...(theirs.phone ? {} : { phone: main.phone }) }
-    });
-    return { adopted: true, storeId: theirs.id, name: theirs.name };
-  });
+    // The shop always keeps a main store: the oldest store still in use, with the main store's address and phone when
+    // it has none.
+    if (!keep.some(s => s.code === 'MAIN-STORE')) {
+      const heir = keep.filter(s => s.active)[0] ?? keep[0];
+      await tx.stockLocation.update({
+        where: { id: heir.id },
+        data: { code: 'MAIN-STORE', ...(heir.address || !mainGone?.address ? {} : { address: mainGone.address }), ...(heir.phone || !mainGone?.phone ? {} : { phone: mainGone.phone }) }
+      });
+    }
+    return { removed: gone.map(s => s.name) };
+  }, { timeout: 60_000 });
+}
+
+/** Item codes as the boutique app takes them: letters and digits first, then . _ / - , up to 50. */
+const ITEM_CODE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,49}$/;
+
+/**
+ * "The boutique app runs this whole shop" (24 Nov 2026, Swathy Reddy: the owner works only in the boutique app).
+ *
+ * The boutique app sees only items with a boutique item code, so products made in Inventory were invisible to it, and
+ * sending one of their SKUs from the app would have made a second item. Here every product of the shop is handed to
+ * the boutique: each colour/size gets its SKU as its item code (the SKU is unique in the shop; its variant code when
+ * the SKU is not a valid item code), prices become the boutique's, and a product with no boutique category gets one
+ * from how it is sold (by the piece: FINISHED, by the metre: FABRIC). Stock, orders, customers and history stay
+ * exactly where they are. Safe to run again: an item that already has its code is left alone.
+ */
+export async function handOverShop(clientId: string) {
+  const link = await prisma.boutiqueLink.findUnique({ where: { clientId } });
+  if (!link || link.unlinkedAt) throw problem('Enable the Boutique module for this shop first.', 409);
+  return prisma.$transaction(async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-handover|${clientId}`}))`;
+    const taken = new Set((await tx.productVariant.findMany({ where: { clientId, boutiqueRef: { not: null } }, select: { boutiqueRef: true } })).map(v => v.boutiqueRef!.toUpperCase()));
+    const todo = await tx.productVariant.findMany({ where: { clientId, boutiqueRef: null, boutiqueDeletedAt: null }, select: { id: true, sku: true, variantCode: true, productId: true }, orderBy: { createdAt: 'asc' } });
+    const skipped: string[] = [];
+    let coded = 0;
+    for (const v of todo) {
+      const code = [v.sku, v.variantCode].find(c => c && ITEM_CODE.test(c) && !taken.has(c.toUpperCase()));
+      if (!code) { skipped.push(v.sku ?? v.variantCode ?? v.id); continue; }
+      await tx.productVariant.update({ where: { id: v.id }, data: { boutiqueRef: code } });
+      taken.add(code.toUpperCase());
+      coded++;
+    }
+    const priced = await tx.product.updateMany({ where: { clientId, priceOwner: { not: 'BOUTIQUE' }, variants: { some: { boutiqueRef: { not: null } } } }, data: { priceOwner: 'BOUTIQUE' } });
+    await tx.product.updateMany({ where: { clientId, boutiqueCategory: null, soldBy: 'PIECE' }, data: { boutiqueCategory: 'FINISHED' } });
+    await tx.product.updateMany({ where: { clientId, boutiqueCategory: null, soldBy: 'METRE' as any }, data: { boutiqueCategory: 'FABRIC' } });
+    return { itemsCoded: coded, pricesHanded: priced.count, skipped };
+  }, { timeout: 120_000 });
 }
 
 /** ScaleEzy turns the Boutique module off: the boutique can no longer reach the shop. Products and stock stay. */
@@ -356,8 +424,8 @@ export async function clientIdInUse(clientId: string, db: Db | typeof prisma = p
 }
 
 /** Kept for onboarding's older call: the same as enabling from the Console. */
-export async function linkTrusted(tenant: string, clientId: string, shopName: string | null) {
-  const r = await enableForClient(clientId, tenant, shopName);
+export async function linkTrusted(tenant: string, clientId: string, shopName: string | null, freshStoreIds: string[] = []) {
+  const r = await enableForClient(clientId, tenant, shopName, { freshStoreIds });
   return { linked: true, tenant: r.tenant, moved: r.moved };
 }
 

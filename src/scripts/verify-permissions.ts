@@ -56,7 +56,10 @@ async function main() {
   // legitimate exception is a field-level key: cost:view is enforced on the way out, on the
   // response body, not on the way in -- and the catalogue says so itself.
   const unused = ALL_PERMISSION_KEYS.filter(k =>
-    !used.has(k) && !getPermission(k)?.fieldLevel && !getPermission(k)?.checkedInline && !getPermission(k)?.module);
+    !used.has(k) && !getPermission(k)?.fieldLevel && !getPermission(k)?.checkedInline && !getPermission(k)?.module
+    // Retired keys (campaign:view / campaign:send, 19 Nov: campaigns are CRM's) guard nothing here on purpose: they stay
+    // valid only so roles that hold them keep working in CRM.
+    && !getPermission(k)?.retired);
   check('every route-level permission guards a route', unused.length === 0, unused.join(', '));
 
   // An inline check is exempt only while it is really there. Without this the marker would be a
@@ -285,7 +288,9 @@ async function main() {
 
   console.log('\nAND THE SCREEN CAN RENDER IT');
   const groups = catalogueByGroup();
-  check('every permission falls into a group', groups.reduce((n, g) => n + g.permissions.length, 0) === PERMISSIONS.length);
+  // Retired keys are left off the roles screen on purpose; every other key is in a group.
+  check('every permission falls into a group', groups.reduce((n, g) => n + g.permissions.length, 0) === PERMISSIONS.filter(p => !p.retired).length);
+  check('...and no retired key is on the roles screen', !groups.some(g => g.permissions.some(p => p.retired)));
   check('no group is empty', groups.every(g => g.permissions.length > 0), groups.map(g => `${g.group}:${g.permissions.length}`).join(' '));
   check('the sensitive ones are marked',
     PERMISSIONS.filter(p => p.sensitive).length >= 6,

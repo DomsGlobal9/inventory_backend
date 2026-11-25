@@ -1,5 +1,5 @@
 import { seedSells, type Sells } from './shop-setup';
-import { linkTrusted, clientIdInUse, adoptBoutiqueStore } from './boutique';
+import { linkTrusted, clientIdInUse } from './boutique';
 import crypto from 'crypto';
 import { readablePassword } from '../lib/readablePassword';
 import { whatsappClient, whatsappConfigured } from './whatsapp/client';
@@ -364,7 +364,7 @@ export class PlatformAdminService {
     // MAIN-STORE location was always the intended default -- onboarding just never made it.
     // Created here so a new workspace is usable the moment the client logs in; they can
     // rename it or add more under Settings -> Stock Locations.
-    await prisma.stockLocation.create({
+    const firstStore = await prisma.stockLocation.create({
       data: {
         clientId, code: 'MAIN-STORE', name: more.storeName || 'Main Store', type: 'STORE', active: true,
         // The till prints the store's own address and phone first.
@@ -435,9 +435,9 @@ export class PlatformAdminService {
 
     // What the shop sells, when we know it (the owner confirms at first sign-in), and its boutique, linked at once.
     await seedSells(clientId, more.sells ?? null);
-    const boutique = more.boutiqueTenant ? await linkTrusted(more.boutiqueTenant, clientId, companyName.trim() || null) : null;
-    // The boutique brought its own place, with its stock: that place is the main store, not the empty one made above.
-    if (boutique?.moved) await adoptBoutiqueStore(clientId);
+    // The store made above may be tidied away: when the boutique brings its own place, with its stock, that place
+    // becomes the main store, not the empty one made a moment ago (Jyoti Atelier, 23 Nov).
+    const boutique = more.boutiqueTenant ? await linkTrusted(more.boutiqueTenant, clientId, companyName.trim() || null, [firstStore.id]) : null;
 
     const user = await prisma.user.create({
       data: { clientId, name: adminName, email: adminEmail, phone: more.ownerPhone ?? null, password: hashed, passwordEncrypted, status: 'ACTIVE' }
