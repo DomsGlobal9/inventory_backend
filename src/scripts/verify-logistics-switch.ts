@@ -11,12 +11,15 @@ if (!String(process.env.DATABASE_URL || '').includes(LOCAL) || !String(process.e
 import fs from 'node:fs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
+import { makeThrowawayShop } from './lib/throwaway-shop';
 
-const C = 'verify-suites-tenant';
+// Its own throwaway shop (26 Nov 2026): a Logistics switch is a real module change every module is told about, so not
+// on verify-suites-tenant, which the CRM and POS suites share (scripts/lib/throwaway-shop).
+let C = '';
 const API = process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1';
 // The local test keys' folder: TEST_SCRATCHPAD when given (16 Nov 2026), else the old one.
 const SP = process.env.TEST_SCRATCHPAD || 'C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/00d435a0-68b0-4933-9758-bcc19e3e6522/scratchpad';
-const tokens: Record<string, string> = JSON.parse(fs.readFileSync(process.env.ROLE_TOKENS || `${SP}/local-tokens.json`, 'utf8'));
+let tokens: Record<string, string> = {};
 const KEY = fs.readFileSync(`${SP}/test-logistics-keys/private.pem`);
 let passed = 0, failed = 0;
 const check = (n: string, ok: boolean, d?: unknown) => { ok ? passed++ : failed++; console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${n}${ok || d === undefined ? '' : ' -- ' + JSON.stringify(d).slice(0, 300)}`); };
@@ -31,6 +34,8 @@ const asLogistics = (path: string) => {
 const sub = () => prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: C, module: 'logistics' } } });
 
 (async () => {
+  const shop = await makeThrowawayShop('Logistics');
+  C = shop.clientId; tokens = shop.tokens;
   const before = await sub();
   const parcels = await prisma.logisticsParcel.findMany({ where: { clientId: C }, select: { id: true, status: true } });
   try {
@@ -94,6 +99,7 @@ const sub = () => prisma.moduleSubscription.findUnique({ where: { clientId_modul
     for (const p of parcels) await prisma.logisticsParcel.update({ where: { id: p.id }, data: { status: p.status } });
     await prisma.moduleSubscription.deleteMany({ where: { clientId: C, module: 'logistics' } });
     if (before) await prisma.moduleSubscription.create({ data: { clientId: C, module: 'logistics', enabledBy: (before as any).enabledBy, enabledAt: (before as any).enabledAt } as any });
+    await shop.remove().catch(e => console.log('left the throwaway shop', e?.message));
     console.log(`\nRESULT: ${passed} passed | ${failed} failed`);
     await prisma.$disconnect();
     process.exit(failed ? 1 : 0);

@@ -42,9 +42,11 @@ const API = process.env.VERIFY_API_URL || 'http://localhost:4016/api/v1';
 // The local test keys' folder: TEST_SCRATCHPAD when given (16 Nov 2026), else the old one.
 const SP = process.env.TEST_SCRATCHPAD || 'C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/00d435a0-68b0-4933-9758-bcc19e3e6522/scratchpad';
 const KEY = fs.readFileSync(`${SP}/test-logistics-keys/private.pem`);
-const tokens: Record<string, string> = JSON.parse(fs.readFileSync(process.env.ROLE_TOKENS!, 'utf8'));
-const ids = JSON.parse(fs.readFileSync(process.env.IDS!, 'utf8'));
-const C: string = ids.clientId;
+// Its own throwaway shop (26 Nov 2026): switching Logistics is a real module change every module is told about, so not
+// on verify-suites-tenant, which the CRM and POS suites share (scripts/lib/throwaway-shop).
+let tokens: Record<string, string> = {};
+let ids: { clientId: string; locationId: string; customerId: string } = { clientId: '', locationId: '', customerId: '' };
+let C = '';
 const STAMP = Date.now();
 
 const call = (who: string | null, method: string, path: string, body?: unknown, bearer?: string) =>
@@ -60,6 +62,9 @@ const svc = (claims: Record<string, unknown> = {}) => jwt.sign({ sub: 'logistics
 const internal = (method: string, path: string, body?: unknown, claims: Record<string, unknown> = {}) => call(null, method, `/internal/modules/logistics${path}`, body, svc(claims));
 
 (async () => {
+  const { makeThrowawayShop } = await import('./lib/throwaway-shop');
+  const shop = await makeThrowawayShop('Parcels');
+  tokens = shop.tokens; ids = { clientId: shop.clientId, locationId: shop.locationId, customerId: shop.customerId }; C = shop.clientId;
   const { prisma } = await import('../lib/prisma');
   const { salesOrderService } = await import('../services/sales-order.service');
   const { inventoryMutationService } = await import('../services/inventory-mutation.service');
@@ -247,6 +252,7 @@ const internal = (method: string, path: string, body?: unknown, claims: Record<s
     await prisma.logisticsParcel.deleteMany({ where: { id: { in: parcelIds.filter(Boolean) } } }).catch(e => console.log('left parcels', e.message));
     await prisma.moduleSubscription.deleteMany({ where: { clientId: C, module: 'logistics' } }).catch(e => console.log('left subscription', e.message));
     await prisma.shippingBox.deleteMany({ where: { clientId: C } }).catch(e => console.log('left boxes', e.message));
+    await shop.remove().catch(e => console.log('left the throwaway shop', e?.message));
     console.log(`\n${passed} passed, ${failed} failed`);
     if (failures.length) console.log('FAILED: ' + failures.join(' | '));
     await prisma.$disconnect();
