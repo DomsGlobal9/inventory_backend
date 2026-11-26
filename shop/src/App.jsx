@@ -23,6 +23,7 @@ const PaymentPage = lazy(() => import('./pages/PaymentPage'));
 const UpiPage = lazy(() => import('./pages/UpiPage'));
 import Nav from './components/Nav';
 import Footer from './components/Footer';
+import UpiWaiting from './components/UpiWaiting';
 import Banners, { placed } from './components/Banners';
 import Announcement from './components/Announcement';
 import { Problem, Say, GridSkeleton } from './components/States';
@@ -138,6 +139,9 @@ function Shop({ page }) {
       {page === 'home' ? <Banners slug={slug} banners={placed(banners, 'HOME_TOP')} /> : null}
 
       <main className="wrap grow">
+        {/* A UPI order this browser left waiting, on every other page (the phone's back button can land anywhere).
+            The bag and checkout carry the full note; the QR page is the order itself. */}
+        {page === 'upi' || page === 'bag' || page === 'checkout' ? null : <UpiWaiting slug={slug} compact />}
         {/* The shape of what is coming, not a spinner: these arrive in a few hundred
             milliseconds and a spinner for that long is worse than a quiet pause. */}
         <Suspense fallback={<div className="bone" style={{ height: 320, borderRadius: 14, margin: '20px 0' }} />}>

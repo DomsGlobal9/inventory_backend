@@ -8,9 +8,10 @@ import {
 } from '../api';
 import { openCheckout } from '../razorpay';
 import { signedIn, sameNumber, onAccountChange } from '../account';
-import { useBag, emptyBag, placementKey, clearPlacementKey, lookCodeFor } from '../bag';
+import { useBag, emptyBag, placementKey, clearPlacementKey, lookCodeFor, keepBagFor } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag } from '../components/Motion';
+import UpiWaiting from '../components/UpiWaiting';
 
 /**
  * Where a customer actually buys.
@@ -164,10 +165,13 @@ export default function CheckoutPage({ shop }) {
 
   if (lines.length === 0) {
     return (
-      <Say title="Your bag is empty" art={<EmptyBag />}
-        action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
-        Add items to your bag to check out.
-      </Say>
+      <>
+        <UpiWaiting slug={slug} />
+        <Say title="Your bag is empty" art={<EmptyBag />}
+          action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Have a look around</Link>}>
+          Add items to your bag to check out.
+        </Say>
+      </>
     );
   }
 
@@ -318,6 +322,8 @@ export default function CheckoutPage({ shop }) {
 
       const order = await placeOrder(slug, details);
 
+      // A UPI order keeps a copy of the bag, so "Pay another way" on its QR page can put the same pieces back.
+      if (order.upi) keepBagFor(slug, order.token);
       // Only once the shop has it. Emptying the bag before this would lose the order on a refusal.
       emptyBag(slug);
       clearPlacementKey(slug);
@@ -334,6 +340,7 @@ export default function CheckoutPage({ shop }) {
   return (
     <form className="checkout" onSubmit={submit} noValidate>
       <h1 className="pagetitle">Your order</h1>
+      <UpiWaiting slug={slug} />
 
       {state.error ? <Problem error={state.error} shopName={shop?.name} onRetry={() => reprice()} /> : null}
 

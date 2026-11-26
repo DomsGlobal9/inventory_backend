@@ -130,3 +130,47 @@ export function lookCodeFor(slug) {
     return v && typeof v.code === 'string' && Date.now() - Number(v.at) < LOOK_DAYS * 86_400_000 ? v.code : null;
   } catch { return null; }
 }
+
+/*
+ * A UPI order's bag, kept by its order token (26 Nov 2026). The QR page's "Pay another way" lets the order go and puts
+ * these same pieces back, so the shopper returns to checkout with nothing to choose again; the bag and checkout pages
+ * use the same record to say "a UPI order is waiting" when the shopper left the QR page by the back button.
+ */
+const KEPT_PREFIX = (slug) => `scaleezy.upibag.${slug}.`;
+const KEPT = (slug, token) => `${KEPT_PREFIX(slug)}${token}`;
+const readKept = (slug, token) => {
+  let lines = memory.get(KEPT(slug, token)) ?? null;
+  try { const raw = window.localStorage.getItem(KEPT(slug, token)); if (raw) lines = JSON.parse(raw); } catch { /* memory only */ }
+  return Array.isArray(lines) ? lines : null;
+};
+export function keepBagFor(slug, token) {
+  const lines = getBag(slug);
+  memory.set(KEPT(slug, token), lines);
+  try { window.localStorage.setItem(KEPT(slug, token), JSON.stringify(lines)); } catch { /* memory only */ }
+}
+export const hasKeptBag = (slug, token) => !!readKept(slug, token)?.length;
+/** The UPI orders this browser left unfinished, newest last (their tokens). */
+export function keptBagTokens(slug) {
+  const out = new Set([...memory.keys()].filter(k => typeof k === 'string' && k.startsWith(KEPT_PREFIX(slug))).map(k => k.slice(KEPT_PREFIX(slug).length)));
+  try {
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(KEPT_PREFIX(slug))) out.add(k.slice(KEPT_PREFIX(slug).length));
+    }
+  } catch { /* memory only */ }
+  return [...out];
+}
+export function forgetKeptBag(slug, token) {
+  memory.delete(KEPT(slug, token));
+  try { window.localStorage.removeItem(KEPT(slug, token)); } catch { /* nothing */ }
+}
+export function putKeptBagBack(slug, token) {
+  const lines = readKept(slug, token);
+  forgetKeptBag(slug, token);
+  if (!lines?.length) return false;
+  // Added to whatever is in the bag now (they may have browsed on), never doubled for the same piece.
+  const now = getBag(slug);
+  for (const l of lines) if (!now.some(n => n.variantCode === l.variantCode)) now.push(l);
+  write(slug, tidy(now));
+  return true;
+}

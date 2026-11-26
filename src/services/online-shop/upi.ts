@@ -139,11 +139,22 @@ export async function iHavePaid(clientId: string, rawToken: unknown, rawUtr: unk
   const used = await prisma.upiClaim.findFirst({ where: { clientId, utr, id: { not: claim.id } }, select: { id: true } });
   if (used) throw new OnlineShopRuleError('That UPI reference was already given for another order. Check the 12 digits in your UPI app.');
   const first = !now.utr;
+  let landed = 0;
   try {
-    await prisma.upiClaim.update({ where: { id: claim.id }, data: { utr, status: 'TO_CHECK', claimedAt: new Date(), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60_000) } });
+    // Only while the payment is still open, in the same statement: a "Pay another way", the 30 minutes running out or
+    // the shop's Payment received in the same moment must not be overwritten back to "to check" (26 Nov 2026).
+    landed = (await prisma.upiClaim.updateMany({
+      where: { id: claim.id, status: { in: ['AWAITING', 'TO_CHECK', 'NOT_RECEIVED'] } },
+      data: { utr, status: 'TO_CHECK', claimedAt: new Date(), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60_000) }
+    })).count;
   } catch (e: any) {
     if (e?.code === 'P2002') throw new OnlineShopRuleError('That UPI reference was already given for another order. Check the 12 digits in your UPI app.');
     throw e;
+  }
+  if (!landed) {
+    const then = await prisma.upiClaim.findUnique({ where: { id: claim.id }, select: { status: true } });
+    if (then?.status === 'RECEIVED') return forShopper(clientId, token);
+    throw new OnlineShopRuleError('This order was cancelled before a payment reference arrived. If money left your account, message the shop with this reference and they will sort it out.');
   }
   // The shop's ONE line to check (owner, 26 Nov 2026): the order now shows in Orders as "UPI · to check". The
   // customer's order confirmation and the shop's "new order to pack" wait for Payment received (received()).
@@ -245,6 +256,35 @@ export async function sweep(now = new Date(), onlyClients?: string[]) {
     void refreshShopAlert(c.clientId);
   }
   return cancelled;
+}
+
+/**
+ * "Pay another way" (the QR page's back button, 26 Nov 2026): the shopper changed their mind before paying. Allowed
+ * only while no UPI reference has been given -- once one has, money may have left their account and the shop decides.
+ * The order is let go (its pieces back on sale) with NO messages: the shop was never told of it (placing a UPI order
+ * is quiet) and the shopper is right here, going back to checkout with the same pieces in the bag.
+ */
+export async function payAnotherWay(clientId: string, rawToken: unknown) {
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  const claim = token ? await prisma.upiClaim.findFirst({ where: { clientId, orderToken: token } }) : null;
+  if (!claim) throw new OnlineShopRuleError('That payment could not be found.');
+  if (claim.status === 'CANCELLED' || claim.status === 'EXPIRED') return { released: true };
+  const why = (status: string) => new OnlineShopRuleError(status === 'RECEIVED'
+    ? 'The shop has already received your payment, so this order is confirmed. Message the shop if you need to change it.'
+    : 'You have already given a UPI reference, so this order stays with the shop to check. Message the shop if you need to change it.');
+  if (claim.status !== 'AWAITING' || claim.utr) throw why(claim.status);
+  // Won first, so a reference typed at the same moment on another tab cannot be lost: only one of the two goes through.
+  const won = await prisma.upiClaim.updateMany({ where: { id: claim.id, status: 'AWAITING', utr: null }, data: { status: 'CANCELLED', decidedAt: new Date(), decidedBy: 'shopper: pay another way' } });
+  if (!won.count) {
+    // Lost to the shop pressing Payment received, or a reference from another tab, in the same moment.
+    const now = await prisma.upiClaim.findUnique({ where: { id: claim.id }, select: { status: true } });
+    if (now?.status === 'CANCELLED' || now?.status === 'EXPIRED') return { released: true };
+    throw why(now?.status ?? 'TO_CHECK');
+  }
+  const order = await prisma.salesOrder.findUnique({ where: { id: claim.salesOrderId }, select: { status: true } });
+  if (order && (order.status === 'CONFIRMED' || order.status === 'DRAFT')) await salesOrderService.cancelOrder(clientId, claim.salesOrderId);
+  void refreshShopAlert(clientId);
+  return { released: true };
 }
 
 // ── Telling ───────────────────────────────────────────────────────────────────────────────────

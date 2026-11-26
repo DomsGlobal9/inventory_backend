@@ -447,6 +447,10 @@ router.get('/:slug/upi/:token', priceLimiter, buying(async (req) => {
 router.post('/:slug/upi/:token/paid', buyLimiter, buying(async (req) => {
   return (await import('../services/online-shop/upi')).iHavePaid(await upiShop(String(req.params.slug)), String(req.params.token), req.body?.utr);
 }));
+/** "Pay another way": the QR page's back button, before any reference is given. Lets the order go, quietly. */
+router.post('/:slug/upi/:token/change', buyLimiter, buying(async (req) => {
+  return (await import('../services/online-shop/upi')).payAnotherWay(await upiShop(String(req.params.slug)), String(req.params.token));
+}));
 
 /** The customer calling their own order off, while it is still sitting at the shop. */
 router.post('/:slug/orders/:token/cancel', buyLimiter, buying(async (req) => {

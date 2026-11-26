@@ -6,6 +6,7 @@ import { useBag, setQuantity, removeFromBag } from '../bag';
 import { Say, Problem } from '../components/States';
 import { EmptyBag, Toward } from '../components/Motion';
 import LottieArt from '../components/LottieArt';
+import UpiWaiting from '../components/UpiWaiting';
 
 // The owner's empty-bag animation (lottie.host, 30 Oct), kept in its own chunk with the player.
 const loadEmptyBag = () => import('../art/empty-bag.json');
@@ -93,10 +94,13 @@ export default function BagPage({ shop }) {
 
   if (lines.length === 0) {
     return (
-      <Say title="Your bag is empty" art={<LottieArt load={loadEmptyBag} fallback={<EmptyBag />} size={200} />}
-        action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Start shopping</Link>}>
-        Items you add are saved here until you check out.
-      </Say>
+      <>
+        <UpiWaiting slug={slug} />
+        <Say title="Your bag is empty" art={<LottieArt load={loadEmptyBag} fallback={<EmptyBag />} size={200} />}
+          action={<Link className="go" style={{ display: 'inline-flex', flex: '0 0 auto' }} to={`/${slug}`}>Start shopping</Link>}>
+          Items you add are saved here until you check out.
+        </Say>
+      </>
     );
   }
 
@@ -115,6 +119,7 @@ export default function BagPage({ shop }) {
   return (
     <div className="bagpage">
       <h1 className="pagetitle">Your bag</h1>
+      <UpiWaiting slug={slug} />
 
       {notes.length > 0 && (
         <div className="bagnotes" role="status">

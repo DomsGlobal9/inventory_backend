@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { upiStatus, upiPaid, money } from '../api';
+import { upiStatus, upiPaid, upiPayAnotherWay, money } from '../api';
+import { hasKeptBag, putKeptBagBack, forgetKeptBag } from '../bag';
 
 /**
  * shop.scaleezy.com/<shop>/upi/<order> -- pay by UPI straight to the shop (26 Nov 2026, PLAN-upi-mockups.html).
@@ -52,6 +53,12 @@ export default function UpiPage({ shop }) {
   const [refused, setRefused] = useState(null);
   const [now, setNow] = useState(Date.now());
   const busy = useRef(false);
+  const nav = useNavigate();
+  // "Pay another way" asks first (they may have paid in their UPI app already). Opened straight away when the bag
+  // page's "a UPI order is waiting" note sent them here with ?another=1.
+  const [params] = useSearchParams();
+  const [asking, setAsking] = useState(params.get('another') === '1');
+  const [leaving, setLeaving] = useState(false);
 
   // Asked now, and again every few seconds: the shop's "Payment received" shows here without a refresh.
   useEffect(() => {
@@ -80,6 +87,30 @@ export default function UpiPage({ shop }) {
   };
 
   const orderLink = `/${slug}/order/${token}`;
+
+  // Paid or being checked: the kept bag has done its job. Not completed: it stays, for "Put these pieces back".
+  useEffect(() => {
+    if (st?.state === 'TO_CHECK' || st?.state === 'RECEIVED' || st?.state === 'NOT_RECEIVED') forgetKeptBag(slug, token);
+  }, [st?.state, slug, token]);
+
+  const payAnotherWay = async () => {
+    setLeaving(true); setRefused(null); busy.current = true;
+    try {
+      await upiPayAnotherWay(slug, token);
+      const back = putKeptBagBack(slug, token);
+      nav(back ? `/${slug}/checkout` : `/${slug}/bag`, { replace: true, state: { upiNote: back
+        ? 'Your UPI order was let go and its pieces are back in your bag. Choose how you would like to pay.'
+        : 'Your UPI order was let go. This browser did not have its bag, so please add the pieces again.' } });
+    } catch (err) {
+      setRefused(err?.message ?? 'That did not go through. Please try again.');
+      setAsking(false);
+      try { setSt(await upiStatus(slug, token)); } catch { /* the poll catches up */ }
+    } finally { setLeaving(false); busy.current = false; }
+  };
+  const putBack = () => {
+    const back = putKeptBagBack(slug, token);
+    nav(`/${slug}/bag`, { replace: true, state: back ? { upiNote: 'The pieces are back in your bag.' } : undefined });
+  };
 
   if (error && !st) {
     return <div className="upipay"><h1 className="pagetitle">Pay by UPI</h1><p className="refused" role="alert">{error.message ?? 'This page could not be opened. Please try again.'}</p></div>;
@@ -122,6 +153,7 @@ export default function UpiPage({ shop }) {
         <h1 className="pagetitle">This order was not completed</h1>
         <p className="upimeta">{st.orderNumber} · {amount}</p>
         <p>No payment reached the shop in time, so the pieces have gone back on sale. If money did leave your account, message the shop with a screenshot and they will sort it out.</p>
+        {hasKeptBag(slug, token) ? <button type="button" className="go" onClick={putBack}>Put these pieces back in my bag</button> : null}
         <Link className="go quiet" to={`/${slug}`}>Back to the shop</Link>
         <ContactShop shop={shop} st={st} />
       </div>
@@ -131,6 +163,21 @@ export default function UpiPage({ shop }) {
   // AWAITING: pay, then say so.
   const phone = isPhone();
   return (
+    <>
+    <div className="upiback">
+      <button type="button" className="upiback-btn" onClick={() => { setAsking(true); setRefused(null); }} disabled={leaving}>
+        <span aria-hidden="true">←</span> Pay another way
+      </button>
+    </div>
+    {asking ? (
+      <div className="upiask" role="alertdialog" aria-labelledby="upiask-h">
+        <p id="upiask-h"><b>Pay another way?</b> The pieces go back to your bag. Already paid? Type the reference below instead.</p>
+        <div className="upiask-row">
+          <button type="button" className="go quiet" onClick={() => setAsking(false)} disabled={leaving}>Stay and pay</button>
+          <button type="button" className="go" onClick={payAnotherWay} disabled={leaving}>{leaving ? 'One moment…' : 'Yes, pay another way'}</button>
+        </div>
+      </div>
+    ) : null}
     <form className="upipay upicard" onSubmit={send} noValidate>
       <div className="upihead">
         <p className="upito">Pay {st.payee}</p>
@@ -164,5 +211,6 @@ export default function UpiPage({ shop }) {
         </div>
       </div>
     </form>
+    </>
   );
 }

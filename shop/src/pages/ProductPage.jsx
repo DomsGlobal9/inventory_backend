@@ -766,6 +766,12 @@ export default function ProductPage({ slug, shop }) {
                   </svg>
                   <div style={{ display: 'block' }}><b>Delivered to your door</b><span>Delivery charges, if any, are shown at checkout.</span></div>
                 </div>
+                {shop.buying.payWays?.includes('UPI') ? (
+                  <div>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3zM18 18h3v3h-3zM14 20h2M20 14v2" /></svg>
+                    <div style={{ display: 'block' }}><b>Pay by UPI available</b><span>Scan a QR or tap GPay, PhonePe or Paytm at checkout.</span></div>
+                  </div>
+                ) : null}
                 {shop.buying.payWays?.includes('ON_DELIVERY') ? (
                   <div>
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><circle cx="12" cy="12" r="2.6" /></svg>

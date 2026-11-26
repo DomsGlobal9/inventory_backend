@@ -229,6 +229,62 @@ async function main() {
     const nope = await errOf(() => upi.forShopper(clientId, 'no-such-token'));
     ok('an unknown link: "That payment could not be found."', nope?.message === 'That payment could not be found.');
 
+    // ── PAY ANOTHER WAY (the QR page's back button) ─────────────────────────────────────────────
+    console.log('');
+    console.log('PAY ANOTHER WAY');
+    await shopSvc.save(clientId, { payByUpi: true });   // the test above switched it off
+    const heldB = await available(v.variantCode);
+    const alertsBefore = (await alerts()).map(x => x.title).join('|');   // another order is still waiting to be checked
+    const b1 = await checkout.place(clientId, order()) as any;
+    ok('a UPI order holds its piece', (await available(v.variantCode)) === heldB - 1);
+    const rb1 = await upi.payAnotherWay(clientId, b1.token);
+    const cb1 = await prisma.upiClaim.findFirst({ where: { orderToken: b1.token } });
+    const sob1 = await prisma.salesOrder.findUnique({ where: { id: cb1!.salesOrderId }, select: { status: true } });
+    ok('before any reference: the order is let go (claim CANCELLED, order CANCELLED)', rb1.released === true && cb1?.status === 'CANCELLED' && sob1?.status === 'CANCELLED', { claim: cb1?.status, order: sob1?.status });
+    ok('...its piece is back on sale at once', (await available(v.variantCode)) === heldB);
+    await new Promise(r => setTimeout(r, 500));
+    const alertsAfter = (await alerts()).map(x => x.title).join('|');
+    ok('...quietly: no alert about it for the shop, the UPI alert unchanged', (await prisma.inventoryAlert.count({ where: { clientId, title: { contains: b1.orderNumber } } })) === 0 && alertsAfter === alertsBefore, { alertsBefore, alertsAfter });
+    ok('pressed again (a double tap, a second tab): the same answer, nothing more', (await upi.payAnotherWay(clientId, b1.token)).released === true);
+    const lateB = await errOf(() => upi.iHavePaid(clientId, b1.token, '818181818181'));
+    ok('a reference typed after going back is refused in words (pointing at the shop)', !!lateB && /cancelled before a payment reference arrived/.test(lateB.message), lateB?.message);
+    ok("the shopper's page for it says not completed", (await upi.forShopper(clientId, b1.token)).state === 'CANCELLED');
+
+    const b2 = await checkout.place(clientId, order()) as any;
+    await upi.iHavePaid(clientId, b2.token, '828282828282');
+    const rb2 = await errOf(() => upi.payAnotherWay(clientId, b2.token));
+    ok('after "I have paid": refused (the money may have left), in words', !!rb2 && /already given a UPI reference/.test(rb2.message) && plain(rb2.message), rb2?.message);
+    ok('...the order stays with the shop to check', (await prisma.upiClaim.findFirst({ where: { orderToken: b2.token } }))?.status === 'TO_CHECK');
+
+    const b3 = await checkout.place(clientId, order()) as any;
+    const cb3 = await prisma.upiClaim.findFirst({ where: { orderToken: b3.token } });
+    await upi.received(clientId, owner, cb3!.id);
+    const rb3 = await errOf(() => upi.payAnotherWay(clientId, b3.token));
+    ok('the shop already marked it received (no reference given): refused, saying it is paid', !!rb3 && /already received your payment/.test(rb3.message), rb3?.message);
+
+    // The same moment: "Pay another way" on one tab, the reference on another. Exactly one may win.
+    const b4 = await checkout.place(clientId, order()) as any;
+    const [ra, rp] = await Promise.all([errOf(() => upi.payAnotherWay(clientId, b4.token)), errOf(() => upi.iHavePaid(clientId, b4.token, '848484848484'))]);
+    const cb4 = await prisma.upiClaim.findFirst({ where: { orderToken: b4.token } });
+    const oneWon = (cb4?.status === 'CANCELLED' && !ra && !!rp) || (cb4?.status === 'TO_CHECK' && !!ra && !rp);
+    ok('"Pay another way" and "I have paid" at the same moment: exactly one goes through', oneWon, { claim: cb4?.status, wayRefused: ra?.message, paidRefused: rp?.message });
+    if (cb4?.status === 'TO_CHECK') await checkout.cancel(clientId, b4.token);
+
+    // The shop presses Payment received while the shopper is still typing the reference: it stays received, paid once.
+    const b7 = await checkout.place(clientId, order()) as any;
+    const cb7 = await prisma.upiClaim.findFirst({ where: { orderToken: b7.token } });
+    const [, paidB7] = await Promise.all([upi.received(clientId, owner, cb7!.id), errOf(() => upi.iHavePaid(clientId, b7.token, '878787878787'))]);
+    const cb7n = await prisma.upiClaim.findUnique({ where: { id: cb7!.id } });
+    const pays7 = await prisma.salesOrderPayment.count({ where: { salesOrderId: cb7!.salesOrderId } });
+    ok('Payment received and "I have paid" at the same moment: stays RECEIVED, ONE payment, the shopper not refused', cb7n?.status === 'RECEIVED' && pays7 === 1 && !paidB7, { status: cb7n?.status, pays7, refused: paidB7?.message });
+
+    const b5 = await checkout.place(clientId, order()) as any;
+    await upi.sweep(new Date(Date.now() + 31 * 60_000), [clientId]);
+    ok('time already up: going back just answers released (nothing to undo)', (await upi.payAnotherWay(clientId, b5.token)).released === true);
+    const noneB = await errOf(() => upi.payAnotherWay(clientId, 'no-such-token'));
+    ok('an unknown link: "That payment could not be found."', noneB?.message === 'That payment could not be found.');
+    const b6 = await checkout.place(clientId, order()) as any;
+
     // ── HTTP, through the shop's own address ─────────────────────────────────────────────────
     console.log('');
     console.log('THE SHOP ADDRESS');
@@ -249,6 +305,10 @@ async function main() {
     ok('...even with the shop closed (a shopper who already paid can still see it)', (gc?.data ?? gc)?.state === 'TO_CHECK', gc);
     const postBad = await call(`${base}/paid`, { utr: '12' });
     ok('a bad reference through the door: refused in words', /12-digit/.test(postBad?.message ?? ''), postBad);
+    const changeRefused = await call(`${base}/change`, {});
+    ok('"Pay another way" through the door after a reference: refused in words', /already given a UPI reference/.test(changeRefused?.message ?? ''), changeRefused);
+    const changed = await call(`/_api/shop/${slug}/upi/${b6.token}/change`, {});
+    ok('"Pay another way" through the door before one (shop closed too): released', (changed?.data ?? changed)?.released === true, changed);
     await prisma.onlineShop.update({ where: { clientId }, data: { isLive: true } });
 
     // ── RAZORPAY ─────────────────────────────────────────────────────────────────────────────

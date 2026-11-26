@@ -164,6 +164,8 @@ export const upiStatus = (slug, token, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/upi/${encodeURIComponent(token)}`, opts);
 export const upiPaid = (slug, token, utr, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/upi/${encodeURIComponent(token)}/paid`, { ...opts, send: { utr } });
+export const upiPayAnotherWay = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/upi/${encodeURIComponent(token)}/change`, { ...opts, send: {} });
 
 /*
  * Proving the number typed at the checkout belongs to whoever typed it.
