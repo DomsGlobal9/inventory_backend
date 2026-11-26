@@ -95,7 +95,7 @@ async function checkPieces(clientId: string, pieces: PieceIn[]): Promise<PieceIn
   if (pieces.length === 0) return pieces;
   const found = await prisma.product.findMany({
     where: { clientId, id: { in: pieces.map(p => p.productId) } },
-    select: { id: true, title: true, status: true, trashedAt: true, sellInShop: true, variants: { select: { colorName: true } } }
+    select: { id: true, title: true, status: true, trashedAt: true, sellInShop: true, sellOnline: true, variants: { select: { colorName: true } } }
   });
   const byId = new Map(found.map(p => [p.id, p]));
   return pieces.map(p => {
@@ -105,6 +105,7 @@ async function checkPieces(clientId: string, pieces: PieceIn[]): Promise<PieceIn
     if (prod.trashedAt) fail(400, `"${prod.title}" is in the bin. Restore it first, or leave it out.`);
     if (!prod.sellInShop) fail(400, `"${prod.title}" is a material, not for sale, so it cannot go in a reel link.`);
     if (prod.status !== 'ACTIVE') fail(400, `"${prod.title}" is not published yet. Publish it first, or leave it out.`);
+    if (!prod.sellOnline) fail(400, `"${prod.title}" is switched off for selling online. Switch it on first, or leave it out.`);
     if (!p.colour) return p;
     const match = prod.variants.map(v => v.colorName).find(c => c && c.toLowerCase() === p.colour!.toLowerCase());
     if (!match) fail(400, `"${prod.title}" does not come in ${p.colour}. Choose one of its colours.`);
@@ -178,7 +179,7 @@ async function describePieces(clientId: string, productIds: string[]) {
   const rows = await prisma.product.findMany({
     where: { clientId, id: { in: productIds } },
     select: {
-      id: true, title: true, productCode: true, status: true, trashedAt: true, sellInShop: true, soldBy: true, basePrice: true,
+      id: true, title: true, productCode: true, status: true, trashedAt: true, sellInShop: true, sellOnline: true, soldBy: true, basePrice: true,
       images: PHOTO_SELECT,
       variants: {
         select: {
@@ -211,7 +212,7 @@ async function describePieces(clientId: string, productIds: string[]) {
       inStock: free,
       colours, sizes,
       // Why a shopper would not see it, in words; null when they would.
-      hidden: p.trashedAt ? 'In the bin' : !p.sellInShop ? 'A material, not for sale' : p.status !== 'ACTIVE' ? 'Not published' : null
+      hidden: p.trashedAt ? 'In the bin' : !p.sellInShop ? 'A material, not for sale' : p.status !== 'ACTIVE' ? 'Not published' : !p.sellOnline ? 'Not sold online' : null
     });
   }
   return out;
@@ -509,13 +510,13 @@ export async function createPicks(clientId: string, body: any) {
   if (ids.length > PICK_VARIANTS_MAX) fail(400, `Choose at most ${PICK_VARIANTS_MAX} pieces.`);
   const variants = await prisma.productVariant.findMany({
     where: { id: { in: ids }, clientId },
-    select: { id: true, colorName: true, product: { select: { id: true, title: true, status: true, trashedAt: true, sellInShop: true } } }
+    select: { id: true, colorName: true, product: { select: { id: true, title: true, status: true, trashedAt: true, sellInShop: true, sellOnline: true } } }
   });
   if (variants.length !== ids.length) fail(400, 'One of the pieces is no longer in this shop. Choose again.');
   const pieces: PieceIn[] = [];
   for (const v of variants) {
     const prod = v.product;
-    if (prod.trashedAt || prod.status !== 'ACTIVE' || !prod.sellInShop) fail(400, `"${prod.title}" is not for sale online just now. Leave it out.`);
+    if (prod.trashedAt || prod.status !== 'ACTIVE' || !prod.sellInShop || !prod.sellOnline) fail(400, `"${prod.title}" is not for sale online just now. Leave it out.`);
     const colour = v.colorName?.trim() || null;
     if (!pieces.some(p => p.productId === prod.id && (p.colour ?? '').toLowerCase() === (colour ?? '').toLowerCase())) pieces.push({ productId: prod.id, colour });
   }

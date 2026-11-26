@@ -627,6 +627,9 @@ model Product {
   /// Sold in the shop at all? Off = a material (threads, needles, beads): counted and used, never in the online
   /// shop, the till, Shopify, other websites or offers (PLAN-boutique-sync.md).
   sellInShop Boolean @default(true) @map("sell_in_shop")
+  /// Sold online too? Off = at the till only: not in our online shop, reel links, other websites or Shopify
+  /// (PLAN-sell-online.md, 26 Nov 2026). On by default, so nothing that sold online stops.
+  sellOnline Boolean @default(true) @map("sell_online")
   /// Who sets the price: INVENTORY, or BOUTIQUE for an item the boutique created (read-only in Inventory).
   priceOwner String  @default("INVENTORY") @map("price_owner")
   /// The boutique's group for an item it created (FABRIC, BORDER, LINING, EMBELLISHMENT, STITCHING, PACKAGING, MAGGAM,

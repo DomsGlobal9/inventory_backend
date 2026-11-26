@@ -121,7 +121,7 @@ async function resolve(clientId: string, lines: BasketLine[]): Promise<Resolved[
       id: true, variantCode: true, size: true, colorName: true, hexCode: true,
       product: {
         select: {
-          title: true, productCode: true, status: true, trashedAt: true, soldBy: true, minCut: true, sellInShop: true,
+          title: true, productCode: true, status: true, trashedAt: true, soldBy: true, minCut: true, sellInShop: true, sellOnline: true,
           images: {
             where: { imageType: { in: ['COVER', 'GALLERY'] } },
             select: { url: true, isPrimary: true, variantId: true },
@@ -142,6 +142,8 @@ async function resolve(clientId: string, lines: BasketLine[]): Promise<Resolved[
     if (v.product.trashedAt || v.product.status !== 'ACTIVE' || v.product.sellInShop === false) {
       throw new OnlineShopRuleError(`${v.product.title} is no longer sold. Take it out of your bag.`);
     }
+    // Switched off online by the shop (PLAN-sell-online.md): still at the counter, not here.
+    if (v.product.sellOnline === false) throw new OnlineShopRuleError(`${v.product.title} is no longer sold online. Take it out of your bag.`);
     // How much may be on this line, per unit (PLAN-fabrics.md): a length is checked against the smallest cut and
     // 100 m; pieces stay at 10, as before (merged extras are quietly capped, exactly as they always were).
     let quantity = line.quantity;

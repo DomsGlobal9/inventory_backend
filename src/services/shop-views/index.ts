@@ -28,7 +28,7 @@ export async function seen(clientId: string, token: unknown, productCode: unknow
   if (!phone) return false;
   const code = typeof productCode === 'string' ? productCode.trim() : '';
   if (!code) return false;
-  const product = await prisma.product.findFirst({ where: { clientId, productCode: code, status: 'ACTIVE', trashedAt: null }, select: { id: true } });
+  const product = await prisma.product.findFirst({ where: { clientId, productCode: code, status: 'ACTIVE', trashedAt: null, sellInShop: true, sellOnline: true }, select: { id: true } });
   if (!product) return false;
   const vCode = typeof variantCode === 'string' ? variantCode.trim() : '';
   const variant = vCode
@@ -70,7 +70,7 @@ export async function like(clientId: string, token: unknown, productCode: unknow
   if (!phone) return false;
   const code = typeof productCode === 'string' ? productCode.trim() : '';
   if (!code) return false;
-  const product = await prisma.product.findFirst({ where: { clientId, productCode: code, status: 'ACTIVE', trashedAt: null }, select: { id: true } });
+  const product = await prisma.product.findFirst({ where: { clientId, productCode: code, status: 'ACTIVE', trashedAt: null, sellInShop: true, sellOnline: true }, select: { id: true } });
   if (!product) return false;
   const vCode = typeof variantCode === 'string' ? variantCode.trim() : '';
   const variant = vCode
@@ -105,7 +105,7 @@ export async function lookedAt(clientId: string, phone: string, now = new Date()
  */
 export async function liked(clientId: string, phone: string, max = 60) {
   const rows = await prisma.shopProductView.findMany({
-    where: { clientId, phone, likedAt: { not: null }, product: { status: 'ACTIVE', trashedAt: null } },
+    where: { clientId, phone, likedAt: { not: null }, product: { status: 'ACTIVE', trashedAt: null, sellInShop: true, sellOnline: true } },
     orderBy: { likedAt: 'desc' }, take: max,
     select: { likedAt: true, variantId: true, product: { select: { productCode: true } } }
   });

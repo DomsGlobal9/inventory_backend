@@ -43,6 +43,10 @@ export async function shopLink(clientId: string) {
  * Codes -> pages. A product code, or a colour's code / SKU (which opens its product). Archived, binned or
  * another shop's codes come back with url null, so CRM never sends a link to a page that is not there.
  */
+/** On the online shop now: published, not binned, for sale and not till only (the catalogue's ELIGIBLE_PRODUCT). */
+const onlineNow = (p: { status: any; trashedAt: Date | null; sellInShop: boolean; sellOnline: boolean }) =>
+  p.status === 'ACTIVE' && !p.trashedAt && p.sellInShop && p.sellOnline;
+
 export async function linksFor(clientId: string, rawCodes: unknown) {
   const codes = [...new Set(String(rawCodes ?? '').split(',').map(c => c.trim()).filter(Boolean))];
   if (!codes.length) throw badRequest('Say which codes: codes=<code>,<code> (up to 200).');
@@ -50,20 +54,22 @@ export async function linksFor(clientId: string, rawCodes: unknown) {
   const link = await shopLink(clientId);
   const live = { status: { notIn: ['ARCHIVED', 'TRASHED'] as any } };
   const [products, variants] = await Promise.all([
-    prisma.product.findMany({ where: { clientId, productCode: { in: codes }, ...live }, select: { productCode: true } }),
+    prisma.product.findMany({ where: { clientId, productCode: { in: codes }, ...live }, select: { productCode: true, status: true, trashedAt: true, sellInShop: true, sellOnline: true } }),
     prisma.productVariant.findMany({
       where: { clientId, boutiqueDeletedAt: null, OR: [{ variantCode: { in: codes } }, { sku: { in: codes } }], product: live },
-      select: { variantCode: true, sku: true, product: { select: { productCode: true } } }
+      select: { variantCode: true, sku: true, product: { select: { productCode: true, status: true, trashedAt: true, sellInShop: true, sellOnline: true } } }
     })
   ]);
   const page = new Map<string, string>();
+  // A page exists only for what the online shop shows: a draft, a material or a till-only product has none (26 Nov 2026).
+  const shown = new Set([...products, ...variants.map(v => v.product)].filter(onlineNow).map(p => p.productCode));
   for (const p of products) page.set(p.productCode, p.productCode);
   for (const v of variants) for (const c of [v.variantCode, v.sku]) if (c && !page.has(c)) page.set(c, v.product.productCode);
   return {
     shop: link,
     links: codes.map(code => {
       const productCode = page.get(code) ?? null;
-      return { code, productCode, url: productCode && link?.url && link.isLive ? `${link.url}/p/${encodeURIComponent(productCode)}` : null };
+      return { code, productCode, url: productCode && shown.has(productCode) && link?.url && link.isLive ? `${link.url}/p/${encodeURIComponent(productCode)}` : null };
     })
   };
 }
@@ -85,9 +91,9 @@ export async function linksForIds(clientId: string, query: any) {
   const [variants, products] = await Promise.all([
     variantIds.length ? prisma.productVariant.findMany({
       where: { clientId, id: { in: variantIds }, boutiqueDeletedAt: null, product: { clientId, ...live } },
-      select: { id: true, variantCode: true, product: { select: { id: true, productCode: true } } }
+      select: { id: true, variantCode: true, product: { select: { id: true, productCode: true, status: true, trashedAt: true, sellInShop: true, sellOnline: true } } }
     }) : [],
-    productIds.length ? prisma.product.findMany({ where: { clientId, id: { in: productIds }, ...live }, select: { id: true, productCode: true } }) : []
+    productIds.length ? prisma.product.findMany({ where: { clientId, id: { in: productIds }, ...live }, select: { id: true, productCode: true, status: true, trashedAt: true, sellInShop: true, sellOnline: true } }) : []
   ]);
   const page = (productCode: string) => `${link!.url}/p/${encodeURIComponent(productCode)}`;
   return {
@@ -95,12 +101,12 @@ export async function linksForIds(clientId: string, query: any) {
     variants: variantIds.map(id => {
       const v = variants.find(x => x.id === id);
       if (!v) return { variantId: id, productId: null, productCode: null, variantCode: null, url: null };
-      const url = open ? `${page(v.product.productCode)}${v.variantCode ? `?v=${encodeURIComponent(v.variantCode)}` : ''}` : null;
+      const url = open && onlineNow(v.product) ? `${page(v.product.productCode)}${v.variantCode ? `?v=${encodeURIComponent(v.variantCode)}` : ''}` : null;
       return { variantId: id, productId: v.product.id, productCode: v.product.productCode, variantCode: v.variantCode ?? null, url };
     }),
     products: productIds.map(id => {
       const p = products.find(x => x.id === id);
-      return p ? { productId: id, productCode: p.productCode, url: open ? page(p.productCode) : null } : { productId: id, productCode: null, url: null };
+      return p ? { productId: id, productCode: p.productCode, url: open && onlineNow(p) ? page(p.productCode) : null } : { productId: id, productCode: null, url: null };
     })
   };
 }

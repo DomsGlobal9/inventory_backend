@@ -70,7 +70,8 @@ export class ProductService {
       // How it is sold (PLAN-fabrics.md): checked and tidied in one place; PIECE when not given.
       ...(await unitFieldsFor(clientId, null, data)),
       // Off = a material: counted and used, never sold (PLAN-boutique-sync.md). Inventory never sets priceOwner.
-      sellInShop: data.sellInShop !== false
+      sellInShop: data.sellInShop !== false,
+      sellOnline: data.sellOnline !== false
     };
 
     return productRepository.create(productData);
@@ -159,6 +160,12 @@ export class ProductService {
     const before = await this.getProductById(id, clientId);
     if (data.status === 'ACTIVE' && !before.publishedAt) updateData.publishedAt = new Date();
 
+    // Back online needs a photo, the same rule as "Sell online" in bulk (PLAN-sell-online.md): a blank card sells nothing.
+    if (data.sellOnline === true && (before as any).sellOnline === false) {
+      const photos = await prisma.productImage.count({ where: { OR: [{ productId: id }, { variant: { productId: id } }] } });
+      if (!photos) throw conflict('This product has no photo. Add one first, then sell it online.');
+    }
+
     /*
      * A new base price carries the variants that were FOLLOWING it.
      *
@@ -188,8 +195,9 @@ export class ProductService {
 
     const updated = await productRepository.updateSafe(id, clientId, updateData);
 
-    const wasVisible = before.status === 'ACTIVE' && !before.trashedAt;
-    const isVisible = (data.status ?? before.status) === 'ACTIVE';
+    // Online visibility also follows "Sell online" (PLAN-sell-online.md): off tells websites it left, on that it came.
+    const wasVisible = before.status === 'ACTIVE' && !before.trashedAt && (before as any).sellOnline !== false;
+    const isVisible = (data.status ?? before.status) === 'ACTIVE' && (typeof data.sellOnline === 'boolean' ? data.sellOnline : (before as any).sellOnline !== false);
     if (!wasVisible && isVisible) notifyStorefronts(clientId, id, 'PRODUCT_PUBLISHED');
     else if (wasVisible && !isVisible) notifyStorefronts(clientId, id, 'PRODUCT_UNPUBLISHED');
     else if (isVisible) notifyStorefronts(clientId, id, 'PRODUCT_UPDATED');
@@ -264,6 +272,41 @@ export class ProductService {
     }
 
     return { changed: changed.length, unchanged: unchanged.length, failed, status };
+  }
+
+  /**
+   * "Sell online" on or off for many products (PLAN-sell-online.md). Off: they leave the online shop, reel links,
+   * other websites and Shopify, and still sell at the till. On needs what selling online needs: published, a photo,
+   * not a material. Each goes through updateProduct, so websites and Shopify are told, exactly as for one.
+   */
+  async bulkSetSellOnline(clientId: string, ids: string[], on: boolean) {
+    const unique = [...new Set(ids)];
+    const found = await prisma.product.findMany({
+      where: { id: { in: unique }, clientId },
+      select: { id: true, title: true, status: true, trashedAt: true, sellInShop: true, sellOnline: true,
+        _count: { select: { images: true } }, variants: { select: { _count: { select: { images: true } } } } }
+    });
+    const byId = new Map(found.map(p => [p.id, p]));
+    const changed: string[] = [];
+    let unchanged = 0;
+    const skipped: { id: string; title?: string; reason: string }[] = [];
+    for (const id of unique) if (!byId.has(id)) skipped.push({ id, reason: 'No longer exists.' });
+    for (const p of found) {
+      if (p.sellOnline === on) { unchanged++; continue; }
+      if (on) {
+        const photos = p._count.images + p.variants.reduce((t, v) => t + v._count.images, 0);
+        const why = p.trashedAt ? 'It is in the bin.' : !p.sellInShop ? 'It is a material, not for sale.'
+          : p.status !== 'ACTIVE' ? 'It is not published. Publish it first.' : !photos ? 'It has no photo. Add one first.' : null;
+        if (why) { skipped.push({ id: p.id, title: p.title, reason: why }); continue; }
+      }
+      try {
+        await this.updateProduct(p.id, clientId, { sellOnline: on });
+        changed.push(p.id);
+      } catch (err: any) {
+        skipped.push({ id: p.id, title: p.title, reason: err?.message || 'Could not be changed.' });
+      }
+    }
+    return { changed: changed.length, unchanged, skipped, on };
   }
 
   async archiveProduct(id: string, clientId: string) {

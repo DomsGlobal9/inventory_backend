@@ -75,7 +75,7 @@ export async function listForPos(
   opts: { units?: boolean } = {}
 ) {
   // includeLeavers: an incremental page also names what LEFT the catalogue (listed:false), so the till drops it.
-  const page = await storefrontCatalogueService.listProducts(scope, { ...paging, withLengths: !!opts.units, includeLeavers: true });
+  const page = await storefrontCatalogueService.listProducts({ ...scope, till: true }, { ...paging, withLengths: !!opts.units, includeLeavers: true });
 
   const codes = page.products.flatMap((p: any) => p.variants.map((v: any) => v.variantCode));
   const tax = await taxByVariantCode(scope.clientId, codes);

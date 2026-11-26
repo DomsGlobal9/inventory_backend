@@ -85,6 +85,22 @@ export class ProductController {
   }
 
   /** Publish or unpublish a selection at once. See productService.bulkSetStatus. */
+  /** POST /products/bulk-sell-online { ids, on }: "Sell online" on or off for many (PLAN-sell-online.md). */
+  async bulkSellOnline(req: Request, res: Response, next: NextFunction) {
+    try {
+      const clientId = (req as any).clientId as string;
+      const { ids, on } = req.body ?? {};
+      if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ success: false, message: 'Choose at least one product.' });
+      if (ids.length > 500) return res.status(400).json({ success: false, message: 'Change at most 500 products at a time.' });
+      if (!ids.every((id: unknown) => typeof id === 'string')) return res.status(400).json({ success: false, message: 'Product ids must be text.' });
+      if (typeof on !== 'boolean') return res.status(400).json({ success: false, message: '"on" is true or false.' });
+      const result = await productService.bulkSetSellOnline(clientId, ids, on);
+      res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async bulkStatus(req: Request, res: Response, next: NextFunction) {
     try {
       const clientId = (req as any).clientId as string;

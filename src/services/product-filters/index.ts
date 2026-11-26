@@ -42,6 +42,8 @@ export const productFilterQuery = z.object({
   soldby: list, kind: list,
   // For sale or a material (sellInShop off: threads, beads, lining used for stitching), PLAN-boutique-sync.md.
   use: list,
+  // Sold online: ON / OFF (PLAN-sell-online.md).
+  online: list,
   min: price, max: price,
   sort: z.enum(['new', 'old', 'plo', 'phi', 'qhi', 'qlo', 'az']).default('new')
 });
@@ -52,12 +54,12 @@ export const NOT_SET = '__none';
 
 type Row = {
   pid: string; title: string; code: string; created: Date; type: string | null; fabric: string | null; craft: string | null; brand: string | null;
-  soldby: string | null; kind: string | null; sell: boolean;
+  soldby: string | null; kind: string | null; sell: boolean; online: boolean; st: string;
   vid: string | null; sku: string | null; barcode: string | null; colour: string | null; price: number; qty: number; level: number;
 };
 type Variant = Row & { fam: string; stock: 'in' | 'low' | 'out'; photos: 'with' | 'without' };
 
-const FACETS = ['type', 'colour', 'fabric', 'craft', 'brand', 'soldby', 'kind', 'use', 'stock', 'photos'] as const;
+const FACETS = ['type', 'colour', 'fabric', 'craft', 'brand', 'soldby', 'kind', 'use', 'online', 'stock', 'photos'] as const;
 type Facet = typeof FACETS[number];
 const valueOf = (v: Variant, f: Facet): string => {
   switch (f) {
@@ -69,6 +71,8 @@ const valueOf = (v: Variant, f: Facet): string => {
     case 'soldby': return v.soldby || 'PIECE';
     case 'kind': return v.kind || NOT_SET;
     case 'use': return v.sell === false ? 'MATERIAL' : 'SALE';
+    // A draft or a material is on sale nowhere yet, so it is neither "sold online" nor "till only".
+    case 'online': return v.st !== 'ACTIVE' || v.sell === false ? 'NONE' : v.online === false ? 'OFF' : 'ON';
     case 'stock': return v.stock;
     case 'photos': return v.photos;
   }
@@ -81,7 +85,7 @@ export async function filterProducts(clientId: string, query: ProductFilterQuery
   const [rows, pictured] = await Promise.all([
     prisma.$queryRaw<Row[]>(Prisma.sql`
       SELECT p.id AS pid, p.title, p.product_code AS code, p.created_at AS created, p.dress_type AS type, p.fabric, p.craft, p.brand,
-             p.sold_by AS soldby, p.kind, p.sell_in_shop AS sell,
+             p.sold_by AS soldby, p.kind, p.sell_in_shop AS sell, p.sell_online AS online, p.status::text AS st,
              v.id AS vid, v.sku, v.barcode, v.color_name AS colour,
              (COALESCE(NULLIF(v.selling_price, 0), p.base_price, 0) * CASE p.sold_by WHEN 'METRE' THEN 100 WHEN 'KILOGRAM' THEN 1000 ELSE 1 END)::float AS price,
              COALESCE(s.qty, 0)::int AS qty, COALESCE(v.reorder_level, 0)::int AS level

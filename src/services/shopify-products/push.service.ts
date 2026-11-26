@@ -104,11 +104,12 @@ export class ShopifyProductPushService {
     const installation = await this.installation(clientId);
     const product = await prisma.product.findFirst({
       where: { id: productId, clientId },
-      select: { id: true, title: true, status: true, trashedAt: true, isService: true, soldBy: true, sellInShop: true }
+      select: { id: true, title: true, status: true, trashedAt: true, isService: true, soldBy: true, sellInShop: true, sellOnline: true }
     });
     if (!product) throw new ShopifyApiError('That product was not found in this shop.', 404);
     // Sold by the metre: Shopify sells whole quantities only, so it stays off Shopify for now (PLAN-fabrics D4).
     if (on && product.sellInShop === false) throw new ShopifyApiError('This is a material (not for sale), so it is not put on Shopify. Switch "Sell in shop" on first if you do sell it.', 409);
+    if (on && product.sellOnline === false) throw new ShopifyApiError('This product is switched off for selling online, so it is not put on Shopify. Switch "Sell online" on first.', 409);
     if (on && (product.soldBy === 'METRE' || product.soldBy === 'KILOGRAM')) throw new ShopifyApiError('Products sold by the metre are not put on Shopify yet: Shopify sells whole pieces only. Sell it in your online shop instead.', 409);
 
     const existing = await prisma.shopifyProductMirror.findUnique({
@@ -143,7 +144,7 @@ export class ShopifyProductPushService {
     const installation = await this.installation(clientId);
     await this.ensureMatchedMirrors(clientId, installation.id);
     const products = await prisma.product.findMany({
-      where: { clientId, status: 'ACTIVE', trashedAt: null, isService: false, sellInShop: true, soldBy: { notIn: ['METRE', 'KILOGRAM'] } },
+      where: { clientId, status: 'ACTIVE', trashedAt: null, isService: false, sellInShop: true, sellOnline: true, soldBy: { notIn: ['METRE', 'KILOGRAM'] } },
       select: { id: true, shopifyMirrors: { where: { installationId: installation.id }, select: { id: true, origin: true, wanted: true } } }
     });
     let added = 0, switchedOn = 0;
@@ -227,7 +228,8 @@ export class ShopifyProductPushService {
       take: 20, orderBy: { updatedAt: 'desc' }
     });
     const [activeProducts, pairedLocations] = await Promise.all([
-      prisma.product.count({ where: { clientId, status: 'ACTIVE', trashedAt: null, isService: false } }),
+      // The same rule as putAll: what "Put all products on Shopify" would actually send (no materials, lengths, till only).
+      prisma.product.count({ where: { clientId, status: 'ACTIVE', trashedAt: null, isService: false, sellInShop: true, sellOnline: true, soldBy: { notIn: ['METRE', 'KILOGRAM'] } } }),
       prisma.shopifyLocationMap.count({ where: { installationId: installation.id } })
     ]);
     return {
@@ -255,7 +257,9 @@ export class ShopifyProductPushService {
     const row = await prisma.shopifyProductMirror.findUnique({
       where: { uq_shopify_product_mirror: { installationId: installation.id, productId } }
     });
-    return { shopDomain: installation.shopDomain, ...(row ? this.describeOne(row) : { on: false, origin: null, status: null }) };
+    // Till only (PLAN-sell-online.md): ours is archived on Shopify, one the shop built shows 0 in stock there.
+    const product = await prisma.product.findFirst({ where: { id: productId, clientId }, select: { sellOnline: true } });
+    return { shopDomain: installation.shopDomain, tillOnly: product?.sellOnline === false, ...(row ? this.describeOne(row) : { on: false, origin: null, status: null }) };
   }
 
   private describeOne(row: { origin: string; wanted: boolean; status: string; problem: string | null; lastSyncedAt: Date | null; shopifyProductId: string | null }) {
@@ -329,7 +333,7 @@ export class ShopifyProductPushService {
       where: { id: mirrorId },
       include: {
         installation: { select: { id: true, shopDomain: true, uninstalledAt: true, clientId: true } },
-        product: { select: { id: true, productCode: true, status: true, trashedAt: true, isService: true } }
+        product: { select: { id: true, productCode: true, status: true, trashedAt: true, isService: true, sellOnline: true } }
       }
     });
     if (!mirror) return 'GONE';
@@ -351,7 +355,8 @@ export class ShopifyProductPushService {
       if (scope.pairs.length === 0) {
         throw new Refused('Pair a Shopify location with one of your stores first (Settings, Shopify, Locations), so Shopify knows where the stock is.');
       }
-      const eligible = mirror.product.status === 'ACTIVE' && !mirror.product.trashedAt && !mirror.product.isService;
+      // Switched off online (PLAN-sell-online.md): archived on Shopify, like switched off there.
+      const eligible = mirror.product.status === 'ACTIVE' && !mirror.product.trashedAt && !mirror.product.isService && mirror.product.sellOnline !== false;
 
       // Cleared before the work, so a sale during the push queues another round instead of being lost.
       await prisma.shopifyProductMirror.update({ where: { id: mirror.id }, data: { stockPending: false } });

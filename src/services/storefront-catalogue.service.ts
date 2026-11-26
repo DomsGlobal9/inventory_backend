@@ -33,6 +33,8 @@ export interface CatalogueScope {
   /** Empty means every location the tenant has. */
   locationIds: string[];
   hideOutOfStock?: boolean;
+  /** The POS till: it sells what is switched off online too (sellOnline, PLAN-sell-online.md). */
+  till?: boolean;
 }
 
 export interface StorefrontVariant {
@@ -101,12 +103,14 @@ export interface StorefrontProduct {
  * whether to show it is the storefront's decision, made from `sellable` rather than by us
  * hiding the product and leaving a dead link behind.
  */
-export const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = {
+export const TILL_PRODUCT: Prisma.ProductWhereInput = {
   status: 'ACTIVE',
   trashedAt: null,
   // A material (threads, beads, lining cut for stitching) is counted and used, never sold (PLAN-boutique-sync.md).
   sellInShop: true
 };
+/** Everything ONLINE (our shop, reel links, other websites, Shopify): also switched on for selling online. */
+export const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = { ...TILL_PRODUCT, sellOnline: true };
 
 /**
  * The same rule, applied to a product already in hand rather than as a query.
@@ -116,8 +120,8 @@ export const ELIGIBLE_PRODUCT: Prisma.ProductWhereInput = {
  * API while every event about it was silently discarded -- a storefront that could see it but
  * would never be told when it changed.
  */
-function isEligible(product: { status: string; trashedAt: Date | null; soldBy?: string | null; sellInShop?: boolean }): boolean {
-  return product.status === 'ACTIVE' && product.trashedAt === null && product.sellInShop !== false && !MEASURED_UNITS.includes(String(product.soldBy ?? 'PIECE'));
+function isEligible(product: { status: string; trashedAt: Date | null; soldBy?: string | null; sellInShop?: boolean; sellOnline?: boolean }): boolean {
+  return product.status === 'ACTIVE' && product.trashedAt === null && product.sellInShop !== false && product.sellOnline !== false && !MEASURED_UNITS.includes(String(product.soldBy ?? 'PIECE'));
 }
 
 /*
@@ -129,6 +133,11 @@ function isEligible(product: { status: string; trashedAt: Date | null; soldBy?: 
  */
 const MEASURED_UNITS = ['METRE', 'KILOGRAM'];
 export const FEED_PRODUCT: Prisma.ProductWhereInput = { ...ELIGIBLE_PRODUCT, soldBy: { notIn: MEASURED_UNITS } };
+/** The rule for a reader: the till ignores sellOnline; lengths only where asked for. */
+function ruleFor(scope: CatalogueScope, withLengths?: boolean): Prisma.ProductWhereInput {
+  const base = scope.till ? TILL_PRODUCT : ELIGIBLE_PRODUCT;
+  return withLengths ? base : { ...base, soldBy: { notIn: MEASURED_UNITS } };
+}
 
 /** Locations in scope, resolved once. An empty scope means all of the tenant's locations. */
 async function resolveLocationIds(scope: CatalogueScope): Promise<string[]> {
@@ -259,7 +268,7 @@ const PRODUCT_SELECT = {
   category: true, productType: true, dressType: true, fabric: true, craft: true, brand: true,
   basePrice: true, isService: true, publishedAt: true, createdAt: true, updatedAt: true, catalogueChangedAt: true,
   soldBy: true, minCut: true, widthCm: true, cutReturnable: true,
-  status: true, trashedAt: true, sellInShop: true,
+  status: true, trashedAt: true, sellInShop: true, sellOnline: true,
   images: {
     // variantId: a photograph may belong to one colour rather than to the product as a whole,
     // which is how a shop shows the green saree when green is chosen.
@@ -453,7 +462,7 @@ export class StorefrontCatalogueService {
 
     const where: Prisma.ProductWhereInput = {
       clientId: scope.clientId,
-      ...(opts.includeLeavers && (opts.cursor || opts.since) ? {} : (opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT)),
+      ...(opts.includeLeavers && (opts.cursor || opts.since) ? {} : ruleFor(scope, opts.withLengths)),
       // catalogueChangedAt, not updatedAt (25 Nov 2026): a size's price, stock, a store price, a photo or a reservation
       // never moved the product's updatedAt, so a till's quick pull missed them (migration 20261125150000).
       ...(opts.since ? { catalogueChangedAt: { gte: opts.since } } : {}),
@@ -487,6 +496,7 @@ export class StorefrontCatalogueService {
       if (!opts.includeLeavers) return shaped;
       // Still for sale to THIS reader? The same rule as the filter above (lengths only for a till that does them).
       const forSale = (p as any).status === 'ACTIVE' && (p as any).trashedAt === null && (p as any).sellInShop !== false
+        && (scope.till || (p as any).sellOnline !== false)
         && (opts.withLengths || !MEASURED_UNITS.includes(String((p as any).soldBy ?? 'PIECE')));
       return { ...shaped, listed: forSale };
     });
@@ -646,7 +656,7 @@ export class StorefrontCatalogueService {
     const scoped = new Set(locationIds);
 
     const p = await prisma.product.findFirst({
-      where: { clientId: scope.clientId, productCode, ...(opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT) },
+      where: { clientId: scope.clientId, productCode, ...ruleFor(scope, opts.withLengths) },
       select: PRODUCT_SELECT
     });
     if (!p) return null;
@@ -667,7 +677,7 @@ export class StorefrontCatalogueService {
     ]);
     const scoped = new Set(locationIds);
     const rows = await prisma.product.findMany({
-      where: { clientId: scope.clientId, productCode: { in: codes }, ...(opts.withLengths ? ELIGIBLE_PRODUCT : FEED_PRODUCT) },
+      where: { clientId: scope.clientId, productCode: { in: codes }, ...ruleFor(scope, opts.withLengths) },
       select: PRODUCT_SELECT
     });
     return rows.map(p => toStorefrontProduct(p, scoped, currency, scope.allPhotos === true));
@@ -685,7 +695,7 @@ export class StorefrontCatalogueService {
       where: { id: variantId, clientId: scope.clientId },
       select: {
         sku: true,
-        product: { select: { productCode: true, status: true, trashedAt: true, isService: true, soldBy: true, sellInShop: true } },
+        product: { select: { productCode: true, status: true, trashedAt: true, isService: true, soldBy: true, sellInShop: true, sellOnline: true } },
         stocks: { select: { locationId: true, quantity: true, reservedQty: true } },
         locationProfiles: { select: { locationId: true, isAvailable: true, priceOverride: true } }
       }

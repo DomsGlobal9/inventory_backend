@@ -510,6 +510,8 @@ export type ItemInput = {
   color?: unknown; colorHex?: unknown; size?: unknown; widthCm?: unknown;
   sellingPrice?: unknown; purchasePrice?: unknown; gstPercent?: unknown; hsnCode?: unknown;
   imageUrls?: unknown; sellInShop?: unknown;
+  /** Sold online too (default true). false: at the till only, not in the online shop, websites or Shopify (26 Nov 2026). */
+  sellOnline?: unknown;
   /** Cut cloth of this item may be returned at the till (metre items; 25 Nov 2026). Default false. */
   cutReturnable?: unknown;
   /** The selling price already includes GST (default true). false: GST is added on top -- the till keeps such an item
@@ -604,6 +606,7 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
   if (width !== null && !(width > 0 && width < 1000)) throw problem(`${itemCode}: the width is in centimetres, above 0.`);
   if (given('sellInShop') && typeof input.sellInShop !== 'boolean') throw problem(`${itemCode}: "sellInShop" is true or false.`);
   const sellInShop = typeof input.sellInShop === 'boolean' ? input.sellInShop : (P ? P.sellInShop : false);
+  if (given('sellOnline') && typeof input.sellOnline !== 'boolean') throw problem(`${itemCode}: "sellOnline" is true or false.`);
   if (given('cutReturnable') && typeof input.cutReturnable !== 'boolean') throw problem(`${itemCode}: "cutReturnable" is true or false.`);
   if (given('priceIncludesGst') && typeof input.priceIncludesGst !== 'boolean') throw problem(`${itemCode}: "priceIncludesGst" is true or false.`);
   const keptDesign = P ? (P.boutiqueDesign ?? (P.importKey?.startsWith('boutique:') ? P.importKey.slice(9) : null)) : null;
@@ -650,7 +653,7 @@ export async function upsertItem(tx: Db, actor: Actor, input: ItemInput) {
       convertPrice = (perBase: number) => Math.round(perBase * from / to * 100) / 100;
     }
     const productData = {
-      title: name.slice(0, 200), soldBy, kind, sellInShop, priceOwner: 'BOUTIQUE', productType: productType as any,
+      title: name.slice(0, 200), soldBy, kind, sellInShop, ...(given('sellOnline') ? { sellOnline: input.sellOnline as boolean } : {}), priceOwner: 'BOUTIQUE', productType: productType as any,
       boutiqueCategory: category, itemType, boutiqueDesign: design,
       ...(price !== null ? { basePrice: price } : !existing ? { basePrice: 0 } : convertPrice ? { basePrice: convertPrice(Number(P.basePrice ?? 0)) } : {}),
       ...(given('widthCm') || !existing ? { widthCm: width } : {}),
@@ -799,8 +802,9 @@ export function tellShops(clientId: string, touched: Touched) {
   afterCommit(() => {
     void (async () => {
       for (const [productId, was] of touched) {
-        const p = await prisma.product.findUnique({ where: { id: productId }, select: { status: true, sellInShop: true, trashedAt: true } });
-        const is = !!p && onSale(p as any);
+        const p = await prisma.product.findUnique({ where: { id: productId }, select: { status: true, sellInShop: true, trashedAt: true, sellOnline: true } });
+        // The online channels: switched to till only, it leaves them like a product off sale (PLAN-sell-online.md).
+        const is = !!p && onSale(p as any) && p.sellOnline !== false;
         if (!was && !is) continue; // materials, and archived on both sides: no channel ever had it
         await storefrontEventService.productChanged(clientId, productId, is ? StorefrontEventType.PRODUCT_UPDATED : StorefrontEventType.PRODUCT_UNPUBLISHED);
       }
@@ -841,7 +845,7 @@ export function itemView(p: any, v: any, extra?: ItemExtra) {
     gstPercent: p.taxRateBps != null ? p.taxRateBps / 100 : null, hsnCode: p.hsnCode ?? null,
     priceIncludesGst: p.priceIsExclusive !== true, cutReturnable: p.cutReturnable === true,
     // The owner may put an item in ScaleEzy's bin: it is off sale there, so it is IN_BIN here, whatever its status was.
-    sellInShop: p.sellInShop, status: p.trashedAt ? 'IN_BIN' : p.status, inBin: !!p.trashedAt, category: p.boutiqueCategory ?? null, subCategory: p.boutiqueSubCategory ?? null,
+    sellInShop: p.sellInShop, sellOnline: p.sellOnline !== false, status: p.trashedAt ? 'IN_BIN' : p.status, inBin: !!p.trashedAt, category: p.boutiqueCategory ?? null, subCategory: p.boutiqueSubCategory ?? null,
     itemType: p.itemType ?? null, productType: p.productType, designGroup: p.boutiqueDesign ?? (p.importKey?.startsWith('boutique:') ? p.importKey.slice(9) : null),
     description: p.description ?? null, brand: p.brand ?? null, materialType: p.fabric ?? null,
     reorderLevel: (v.reorderLevel ?? 0) / f, minStock: v.minStock != null ? v.minStock / f : null, rackLocation: v.rackNote ?? null,
