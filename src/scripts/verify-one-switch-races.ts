@@ -60,6 +60,32 @@ async function main() {
     const lateOff = await call('DELETE', pic(13, false));
     ok('a late older off (13): answered without error', lateOff.ok, lateOff);
     ok('...ignored: still on', (await crmOn()) === 'ok', await call('GET'));
+    // 5. `off` in the picture: every module switched off, read from the records, so a resend with no hint still says it.
+    await prisma.clientModule.upsert({ where: { clientId_module: { clientId, module: 'pos' } }, create: { clientId, module: 'pos', on: false, source: 'console' } as any, update: { on: false } });
+    const p5: any = await pictureOf(clientId); // no hint at all, as after a restart or "Tell it now"
+    ok('picture without a hint: off lists POS (switched off)', Array.isArray(p5.off) && p5.off.includes('pos'), p5.off);
+    ok('...and not Inventory (on), nor a module never recorded', !p5.off.includes('inventory') && !p5.off.includes('logistics'), p5.off);
+    ok('...changed stays empty (only what this version changed)', p5.changed.on.length === 0 && p5.changed.off.length === 0, p5.changed);
+    const sent = await call('PUT', { ...p5, version: 20, modules: ['inventory', 'crm'] });
+    ok('CRM accepts the picture with off', sent.ok, sent);
+    // 6. CRM switching its own feed on (PUT /internal/modules/crm/shops/:id), signed as CRM's test key: the Console's
+    //    switch decides. Found 26 Nov: CRM's delayed job turned the feed back on just after CRM was switched off.
+    if (process.env.CRM_KEY_DIR) {
+      const fs = await import('node:fs');
+      const jwt = (await import('jsonwebtoken')).default;
+      const pk = fs.readFileSync(`${process.env.CRM_KEY_DIR}/private.pem`, 'utf8');
+      const asCrm = (id: string) => fetch(`${process.env.VERIFY_API_URL ?? 'http://localhost:4036/api/v1'}/internal/modules/crm/shops/${encodeURIComponent(id)}`, {
+        method: 'PUT', headers: { Authorization: `Bearer ${jwt.sign({ sub: 'scaleezy-crm-test', scope: ['modules:crm'] }, pk, { algorithm: 'RS256', audience: 'inventory', issuer: 'scaleezy-crm-test', keyid: 'test-1', expiresIn: '5m' })}` }
+      }).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) as any }));
+      await prisma.clientModule.upsert({ where: { clientId_module: { clientId, module: 'crm' } }, create: { clientId, module: 'crm', on: true, source: 'console' } as any, update: { on: true } });
+      const onOk = await asCrm(clientId);
+      ok('CRM may switch its feed on while CRM is on', onOk.status === 200, onOk);
+      await prisma.moduleSubscription.deleteMany({ where: { clientId, module: 'crm' } });
+      await prisma.clientModule.update({ where: { clientId_module: { clientId, module: 'crm' } }, data: { on: false } });
+      const offNo = await asCrm(clientId);
+      ok('CRM switched OFF: its own "feed on" is refused, 409 module_off, in words', offNo.status === 409 && offNo.body.reason === 'module_off' && /switched off/.test(offNo.body.message), offNo);
+      ok('...and no feed was made', !(await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId, module: 'crm' } } })));
+    } else console.log('(CRM_KEY_DIR not set: the feed-door checks were skipped)');
   } finally {
     await call('DELETE', pic(99, false));
     await t.remove();

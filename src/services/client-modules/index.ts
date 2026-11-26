@@ -195,6 +195,10 @@ export async function pictureOf(clientId: string, extra: { by?: By; source?: Sou
     owner: login ? { name: login.name ?? 'Owner', email: login.email ?? null, phone: login.phone ?? null } : ((client?.owner as any) ?? null),
     stores, modules: s.modules,
     changed: extra.changed ?? { on: [], off: [] },
+    // Every module switched OFF and still off, read from the records each time (26 Nov 2026, the joint round with
+    // CRM): `changed` says only what this version changed and is lost on a resend after a restart, a "Tell it now",
+    // or a second change made before the first was sent; `off` is always whole. CRM stops telling a module on it.
+    off: MODULES.filter(m => !s.on[m] && (s as any).since?.[m]?.on === false),
     by: extra.by ?? null, source: extra.source ?? 'console'
   };
 }

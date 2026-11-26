@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { moduleInventoryGate } from '../services/client-modules/gate';
+import { prisma } from '../lib/prisma';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { MODULES, ModuleName, moduleSubscriptions, eventsAfter } from '../services/module-outbox';
@@ -71,7 +72,15 @@ router.post('/session', needs('session:read'), async (req, res) => {
 router.use('/modules', moduleInventoryGate);
 router.put('/modules/:module/shops/:clientId', ownModule, async (req, res) => {
   const module = moduleParam(req, res); if (!module) return;
-  const sub = await moduleSubscriptions.enable(String(req.params.clientId), module, service(req).id);
+  const clientId = String(req.params.clientId);
+  /*
+   * Found in the joint round with CRM (26 Nov 2026): a module's own delayed job switched its feed back on seconds after
+   * the Console switched that module OFF. The Console's switch decides: a module recorded off may not turn its feed
+   * on again. (A shop not recorded at all, made before the Console, keeps working as before.)
+   */
+  const rec = await prisma.clientModule.findUnique({ where: { clientId_module: { clientId, module } }, select: { on: true } });
+  if (rec && !rec.on) return res.status(409).json({ success: false, reason: 'module_off', message: `${module} is switched off for this shop in the Platform Console, so its feed stays off.` });
+  const sub = await moduleSubscriptions.enable(clientId, module, service(req).id);
   res.json({ success: true, data: { clientId: sub.clientId, module: sub.module, enabledAt: sub.enabledAt } });
 });
 
