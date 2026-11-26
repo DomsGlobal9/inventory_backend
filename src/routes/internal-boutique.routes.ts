@@ -119,13 +119,13 @@ router.post('/link', async (req, res) => {
 const joinFail = (res: Response, e: any) => (e instanceof join.JoinError
   ? fail(res, e.statusCode, e.message)
   : respondWithError(res, e, { status: 500 }));
-router.post('/join-request', async (req, res) => {
-  try {
-    const p = pass(req);
-    const r = await join.ask(p.tenant, p.onBehalfOf?.name ?? null, req.body ?? {});
-    res.status(r.already ? 200 : 201).json({ success: true, data: r });
-  } catch (e) { joinFail(res, e); }
+// No longer asked (26 Nov 2026, the owner): a boutique's clients are the Boutique app's own, never ScaleEzy's
+// Inventory clients; they use ScaleEzy underneath. POS and CRM are switched by the Boutique app itself (PUT /modules).
+// Reading (GET) and withdrawing (DELETE) an old request still work.
+router.post('/join-request', (_req, res) => {
+  res.status(410).json({ success: false, code: 'USE_MODULES', message: 'Boutique clients do not join ScaleEzy Inventory: they stay yours and run on ScaleEzy already. Switch ScaleEzy POS or CRM for this boutique with PUT /modules.' });
 });
+void join.ask; // kept for the history it reads; nothing calls it now
 router.get('/join-request', async (req, res) => {
   try { res.json({ success: true, data: await join.statusFor(pass(req).tenant) }); } catch (e) { joinFail(res, e); }
 });
