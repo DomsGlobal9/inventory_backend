@@ -28,7 +28,9 @@ import { EmptyBag } from '../components/Motion';
 const PAY = {
   ON_DELIVERY: { title: 'Cash on Delivery (COD)', note: 'Pay by cash or UPI when your order is delivered.' },
   // UPI first: on a saree it costs the shop a fraction of what a card does (see the payments plan).
-  ONLINE: { title: 'Pay now', note: 'UPI, card or net banking — securely through Razorpay.' }
+  ONLINE: { title: 'Pay now', note: 'UPI, card or net banking — securely through Razorpay.' },
+  // Pay by UPI (26 Nov 2026): a QR or the shopper's own UPI app. When it is offered, "Pay now" is card or net banking.
+  UPI: { title: 'Pay by UPI', note: 'Scan a QR or tap GPay, PhonePe or Paytm.' }
 };
 
 export default function CheckoutPage({ shop }) {
@@ -308,7 +310,8 @@ export default function CheckoutPage({ shop }) {
         fromLook: lookCodeFor(slug) ?? undefined
       };
 
-      if (form.payWay === 'ONLINE') {
+      // Razorpay's window: "Pay now", or "Pay by UPI" when the shop takes UPI through Razorpay (UPI only there).
+      if (form.payWay === 'ONLINE' || (form.payWay === 'UPI' && bag?.upiWay === 'RAZORPAY')) {
         await payOnline(details);
         return;
       }
@@ -318,7 +321,8 @@ export default function CheckoutPage({ shop }) {
       // Only once the shop has it. Emptying the bag before this would lose the order on a refusal.
       emptyBag(slug);
       clearPlacementKey(slug);
-      nav(`/${slug}/order/${order.token}`, { replace: true });
+      // Straight to the shop's UPI ID: the order is held, and its QR page is where the shopper pays.
+      nav(order.upi ? `/${slug}/upi/${order.token}` : `/${slug}/order/${order.token}`, { replace: true });
     } catch (err) {
       setRefused(err?.message ?? 'We could not send the OTP. Please try again.');
       setPlacing(false);
@@ -463,7 +467,7 @@ export default function CheckoutPage({ shop }) {
                     checked={form.payWay === way} onChange={() => set('payWay', way)} />
                   <span>
                     <b>{PAY[way]?.title ?? way}</b>
-                    <small>{PAY[way]?.note ?? ''}</small>
+                    <small>{way === 'ONLINE' && (bag?.payWays ?? []).includes('UPI') ? 'Card or net banking — securely through Razorpay.' : (PAY[way]?.note ?? '')}</small>
                   </span>
                 </label>
               ))}
@@ -535,8 +539,9 @@ export default function CheckoutPage({ shop }) {
               {refused ? <p className="refused" role="alert">{refused}</p> : null}
 
               <button type="submit" className="go" disabled={placing || state.loading}>
-                {placing ? (form.payWay === 'ONLINE' ? 'Opening the payment page…' : 'Placing your order…')
+                {placing ? (form.payWay === 'ONLINE' || form.payWay === 'UPI' ? 'Opening the payment page…' : 'Placing your order…')
                   : form.payWay === 'ONLINE' ? `Pay ${money(bag.total, currency)}`
+                  : form.payWay === 'UPI' ? `Pay ${money(bag.total, currency)} by UPI`
                   : `Place order · ${money(bag.total, currency)}`}
               </button>
               <p className="tiny">

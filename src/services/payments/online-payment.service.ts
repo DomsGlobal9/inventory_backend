@@ -149,7 +149,8 @@ export type StartResult =
   | { state: 'PLACED'; orderToken: string };
 
 /** What Razorpay's checkout is opened with. UPI first: on a saree it is five times cheaper for the shop. */
-function checkoutOptions(order: { key: unknown; order_id: unknown; amount: unknown; currency: unknown }, shopName: string, p: OrderInput, accent: string | null) {
+type Offer = 'ALL' | 'UPI' | 'NOT_UPI';
+function checkoutOptions(order: { key: unknown; order_id: unknown; amount: unknown; currency: unknown }, shopName: string, p: OrderInput, accent: string | null, offer: Offer = 'ALL') {
   return {
     key: order.key,
     order_id: order.order_id,
@@ -162,11 +163,11 @@ function checkoutOptions(order: { key: unknown; order_id: unknown; amount: unkno
     retry: { enabled: true },
     ...(accent && /^#[0-9a-f]{6}$/i.test(accent) ? { theme: { color: accent } } : {}),
     config: {
-      display: {
-        blocks: { upi: { name: 'Pay with UPI', instruments: [{ method: 'upi' }] } },
-        sequence: ['block.upi'],
-        preferences: { show_default_blocks: true }
-      }
+      display: offer === 'UPI'
+        ? { blocks: { upi: { name: 'Pay by UPI', instruments: [{ method: 'upi' }] } }, sequence: ['block.upi'], preferences: { show_default_blocks: false } }
+        : offer === 'NOT_UPI'
+          ? { hide: [{ method: 'upi' }], preferences: { show_default_blocks: true } }
+          : { blocks: { upi: { name: 'Pay with UPI', instruments: [{ method: 'upi' }] } }, sequence: ['block.upi'], preferences: { show_default_blocks: true } }
     }
   };
 }
@@ -187,7 +188,9 @@ export async function start(clientId: string, shopName: string, accent: string |
   });
   if (placed) return { state: 'PLACED', orderToken: placed.token };
 
-  if (!shop.payWays.includes('ONLINE')) {
+  // "Pay by UPI" through the shop's Razorpay (26 Nov 2026): this same page, its window showing UPI only.
+  const upiOnly = String(input.payWay ?? '').toUpperCase() === 'UPI';
+  if (upiOnly ? !(shop.payWays.includes('UPI') && shop.upiWay === 'RAZORPAY') : !shop.payWays.includes('ONLINE')) {
     throw new OnlineShopRuleError('This shop cannot take payment online just now. Choose to pay when it arrives, or try again later.');
   }
   /*
@@ -206,7 +209,10 @@ export async function start(clientId: string, shopName: string, accent: string |
     throw new OnlineShopRuleError('This shop cannot take payment online just now. Choose to pay when it arrives, or try again later.');
   }
 
-  const p = await prepareCheckout(clientId, shop, placementKey, { ...input, payWay: 'ONLINE' });
+  const p = await prepareCheckout(clientId, shop, placementKey, { ...input, payWay: upiOnly ? 'UPI' : 'ONLINE' });
+  (p as any).payWay = 'ONLINE';
+  // What the window offers: UPI only for "Pay by UPI"; card and net banking for "Pay now" when the shop also offers UPI.
+  const offer: Offer = upiOnly ? 'UPI' : shop.payWays.includes('UPI') ? 'NOT_UPI' : 'ALL';
   const orderInput = orderInputOf(p);
   const amountPaise = toMinor(p.bag.total);
   if (!Number.isInteger(amountPaise) || amountPaise < 100) {
@@ -229,7 +235,7 @@ export async function start(clientId: string, shopName: string, accent: string |
     if (reusable) {
       return {
         state: 'PAY', token: old.token, expiresAt: old.holdExpiresAt!.toISOString(),
-        checkout: checkoutOptions({ key: account.keyId, order_id: old.gatewayOrderId, amount: old.amountPaise, currency: 'INR' }, shopName, (old.checkout as any) ?? orderInput, accent)
+        checkout: checkoutOptions({ key: account.keyId, order_id: old.gatewayOrderId, amount: old.amountPaise, currency: 'INR' }, shopName, (old.checkout as any) ?? orderInput, accent, offer)
       };
     }
     const outcome = await reconcile(old.id);
@@ -301,7 +307,7 @@ export async function start(clientId: string, shopName: string, accent: string |
   }
   return {
     state: 'PAY', token: row.token, expiresAt: (row.holdExpiresAt ?? new Date(Date.now() + HOLD_MS)).toISOString(),
-    checkout: checkoutOptions({ key: account.keyId, order_id: row.gatewayOrderId, amount: row.amountPaise, currency: 'INR' }, shopName, orderInput, accent)
+    checkout: checkoutOptions({ key: account.keyId, order_id: row.gatewayOrderId, amount: row.amountPaise, currency: 'INR' }, shopName, orderInput, accent, offer)
   };
 }
 

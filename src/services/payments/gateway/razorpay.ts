@@ -85,6 +85,19 @@ export class RazorpayGateway implements PaymentGateway {
     );
   }
 
+  /** Whose is this UPI ID (Razorpay's VPA check): the holder's name, or valid:false when UPI does not know it. */
+  async validateVpa(vpa: string): Promise<{ valid: boolean; name: string | null }> {
+    try {
+      const { data } = await this.http.post('/payments/validate/vpa', { vpa });
+      return { valid: data?.success === true, name: str(data?.customer_name) };
+    } catch (e) {
+      const err = e as AxiosError<any>;
+      // "Invalid VPA" comes back as a 400: an answer, not a failure.
+      if (err.response?.status === 400) return { valid: false, name: null };
+      this.fail(e);
+    }
+  }
+
   async createOrder(amountPaise: number, receipt: string, notes: Record<string, string> = {}): Promise<CreatedOrder> {
     if (!Number.isInteger(amountPaise) || amountPaise < MIN_PAISE) {
       throw new GatewayError(`An online payment has to be a whole number of paise and at least ₹1 (got ${amountPaise}).`, 'BAD_REQUEST');

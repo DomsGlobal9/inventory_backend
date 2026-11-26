@@ -9,6 +9,7 @@ import { normalisePhone } from '../../lib/phone';
 import { afterCommit } from '../../lib/afterCommit';
 import { OnlineShopRuleError } from './rules';
 import { sendOrderPlacedNotice, emailOrderPlaced, tellTheShop, orderCancelled } from './notices';
+import { claimInTx } from './upi';
 import { rememberFromOrder as rememberAddress } from './addresses';
 import { whoIs } from './otp';
 import { paymentAccounts } from '../payments/account.service';
@@ -53,15 +54,19 @@ export async function orderingFor(clientId: string) {
       isLive: true, locationIds: true,
       acceptsOrders: true, payOnDelivery: true, payOnline: true,
       deliveryFee: true, freeDeliveryAbove: true, minOrderValue: true,
-      deliverPincodes: true
+      deliverPincodes: true,
+      payByUpi: true, upiWay: true, upiId: true, upiName: true
     }
   });
   if (!shop) return null;
-  const ways: ('ON_DELIVERY' | 'ONLINE')[] = [];
-  if (shop.payOnDelivery) ways.push('ON_DELIVERY');
+  const ways: ('UPI' | 'ON_DELIVERY' | 'ONLINE')[] = [];
   // The switch AND working live keys. A shop whose keys have since gone bad keeps its switch on but
   // stops offering the option, so no customer is walked to a Pay button that will refuse them.
-  if (shop.payOnline && (await paymentAccounts.readiness(clientId)).ready) ways.push('ONLINE');
+  const razorpayReady = (shop.payOnline || (shop.payByUpi && shop.upiWay === 'RAZORPAY')) && (await paymentAccounts.readiness(clientId)).ready;
+  // UPI first (26 Nov 2026): no fee for the shop. Offered only when its way can take money: a UPI ID, or working keys.
+  if (shop.payByUpi && (shop.upiWay === 'RAZORPAY' ? razorpayReady : !!shop.upiId)) ways.push('UPI');
+  if (shop.payOnDelivery) ways.push('ON_DELIVERY');
+  if (shop.payOnline && razorpayReady) ways.push('ONLINE');
   return {
     ...shop,
     payWays: ways,
@@ -388,7 +393,9 @@ function view(
     freeDeliveryAbove: shop.freeDeliveryAbove === null ? null : Number(shop.freeDeliveryAbove),
     /** Empty means everywhere. A shop that lists some is refusing the rest, and says so early. */
     deliversEverywhere: shop.deliverPincodes.length === 0,
-    payWays: shop.payWays
+    payWays: shop.payWays,
+    /** How "Pay by UPI" works here: the shop's own QR page (DIRECT) or the payment window limited to UPI (RAZORPAY). */
+    upiWay: shop.payWays.includes('UPI') ? (shop.upiWay === 'RAZORPAY' ? 'RAZORPAY' : 'DIRECT') : null
   };
 }
 
@@ -434,7 +441,7 @@ const digitsOnly = (v: unknown) => String(v ?? '').replace(/\D/g, '');
  */
 export type OrderInput = {
   placementKey: string;
-  payWay: 'ON_DELIVERY' | 'ONLINE';
+  payWay: 'ON_DELIVERY' | 'ONLINE' | 'UPI';
   name: string;
   /** Normalised, as the shop dials it. */
   phone: string;
@@ -759,18 +766,18 @@ async function tellTheApp(clientId: string, salesOrderId: string, token: string,
 }
 
 /** Tell everybody once the order is really there -- never from inside a transaction that could still fail. */
-export function announcePlaced(clientId: string, token: string, salesOrderId: string, customerId: string | null, p: OrderInput) {
+export function announcePlaced(clientId: string, token: string, salesOrderId: string, customerId: string | null, p: OrderInput, opts: { quiet?: boolean } = {}) {
   afterCommit(() => {
     // Three separate promises on purpose: WhatsApp being refused to somebody who said STOP must
     // not stop their email, and neither must stop the shop being told.
     // Placed in a partner app (Shop API v1): the app tells its shopper in its own name, so we send them nothing,
     // and the app is told the order is there (the boutique module's signed feed).
     if (p.fromApp) void tellTheApp(clientId, salesOrderId, token, p.fromApp);
-    else {
+    else if (!opts.quiet) {
       void sendOrderPlacedNotice(clientId, token);
       void emailOrderPlaced(clientId, token);
     }
-    void tellTheShop(clientId, salesOrderId);
+    if (!opts.quiet) void tellTheShop(clientId, salesOrderId);
     /*
      * The address book fills itself, for a proved customer only.
      *
@@ -808,22 +815,30 @@ export async function place(clientId: string, input: PlaceInput) {
   });
   if (already) return summary(clientId, already.token);
 
-  if (String(input.payWay ?? '').toUpperCase() === 'ONLINE') {
+  const askedWay = String(input.payWay ?? '').toUpperCase();
+  if (askedWay === 'ONLINE' || (askedWay === 'UPI' && shop.upiWay === 'RAZORPAY')) {
     throw new OnlineShopRuleError('Paying online opens the payment page first. Refresh the page and press Pay again.');
   }
 
   const p = await prepareCheckout(clientId, shop, placementKey, input);
+  // Paid by UPI straight to the shop: an order paid now (not on delivery), confirmed by the owner (upi.ts).
+  const upi = p.payWay === 'UPI' && shop.upiId ? { upiId: shop.upiId, upiName: shop.upiName } : null;
+  if (p.payWay === 'UPI') (p as any).payWay = 'ONLINE';
   const token = crypto.randomBytes(24).toString('base64url');
 
   let written: { salesOrderId: string; customerId: string };
   try {
     written = await prisma.$transaction(
-      (tx) => writeOrderInTx(tx, clientId, p, {
-        token,
-        paid: false,
-        // An unproved order lets go of the shop's stock after a day; a proved one never does.
-        holdExpiresAt: p.proved ? null : new Date(Date.now() + UNPROVED_HOLD_MS)
-      }),
+      async (tx) => {
+        const w = await writeOrderInTx(tx, clientId, p, {
+          token,
+          paid: false,
+          // An unproved order lets go of the shop's stock after a day; a proved one never does.
+          holdExpiresAt: p.proved ? null : new Date(Date.now() + UNPROVED_HOLD_MS)
+        });
+        if (upi) await claimInTx(tx, clientId, w.salesOrderId, token, toMinor(p.bag.total), upi);
+        return w;
+      },
       { timeout: 30000, maxWait: 15000 }
     );
   } catch (e: any) {
@@ -851,8 +866,9 @@ export async function place(clientId: string, input: PlaceInput) {
     throw e;
   }
 
-  announcePlaced(clientId, token, written.salesOrderId, written.customerId, p);
-  return summary(clientId, token);
+  // A UPI order is announced when the shopper gives the payment reference (upi.iHavePaid), not before.
+  announcePlaced(clientId, token, written.salesOrderId, written.customerId, p, { quiet: !!upi });
+  return { ...(await summary(clientId, token)), ...(upi ? { upi: true } : {}) };
 }
 
 /**
@@ -878,6 +894,8 @@ export async function cancel(clientId: string, token: unknown) {
   }
 
   await salesOrderService.cancelOrder(clientId, row.salesOrderId);
+  await prisma.upiClaim.updateMany({ where: { salesOrderId: row.salesOrderId, status: { in: ['AWAITING', 'TO_CHECK', 'NOT_RECEIVED'] } }, data: { status: 'CANCELLED' } });
+  void (await import('./upi')).refreshShopAlert(clientId);
   // The shop may be half way through wrapping it, and its Alert Centre is still asking somebody
   // to. Not awaited: the customer's own page must not wait on a message to somebody else.
   void orderCancelled(clientId, row.salesOrderId, 'CUSTOMER');
@@ -990,6 +1008,7 @@ export async function summary(clientId: string, token: unknown) {
   // Cash on delivery: paid once the courier collected it (recorded from Logistics), or once delivered.
   const due = paymentSummary(toMinor(o.total) + toMinor((o as any).roundOff ?? 0), (o as any).payments ?? [], toMinor((o as any).writtenOff ?? 0)).due;
   const paidOnDelivery = row.payWay === 'ON_DELIVERY' && !row.paid && (due <= 0 || state === 'DELIVERED');
+  const upiClaim = await prisma.upiClaim.findUnique({ where: { salesOrderId: row.salesOrderId }, select: { status: true, utr: true } }).catch(() => null);
   return {
     token: row.token,
     orderNumber: o.orderNumber,
@@ -999,6 +1018,8 @@ export async function summary(clientId: string, token: unknown) {
     progress: progressOf(state, parcels),
     payWay: row.payWay,
     paid: row.paid,
+    // Paid by UPI straight to the shop: where that payment stands, so the order page says "being checked", not "paid".
+    upi: upiClaim ? { state: upiClaim.status, utr: upiClaim.utr } : null,
     paidOnDelivery,
     parcels,
     delivered: state === 'DELIVERED',

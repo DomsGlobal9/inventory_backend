@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import * as upiPay from '../services/online-shop/upi';
 import { onlineShop, shopBanners, shopAnnouncement, shopIcon, shopInterest, OnlineShopRuleError } from '../services/online-shop';
 import { requirePermission } from '../middleware/permission.middleware';
 import { holdsEverything } from '../config/permissions';
@@ -107,6 +108,12 @@ router.delete('/payments', ownerOnly, handle(req => paymentAccounts.remove(clien
 router.put('/payments/upi-qr', ownerOnly, handle(req => paymentAccounts.setUpiQr(clientId(req), req.body?.enabled, apiBase(req))));
 
 /** What has been paid online lately, and what has gone back. */
+// Pay by UPI (26 Nov 2026): how the shop takes it, and the payments sent straight to its UPI ID waiting to be checked.
+router.get('/payments/upi', handle(req => upiPay.upiSettings(clientId(req))));
+router.put('/payments/upi', ownerOnly, handle(req => upiPay.saveUpiSettings(clientId(req), req.body ?? {})));
+router.get('/upi-claims', handle(req => upiPay.toCheck(clientId(req), typeof req.query.salesOrderId === 'string' ? req.query.salesOrderId : undefined)));
+router.post('/upi-claims/:id/received', handle(req => upiPay.received(clientId(req), { id: (req as any).user?.id ?? null, name: (req as any).user?.name ?? null }, String(req.params.id))));
+router.post('/upi-claims/:id/not-received', handle(req => upiPay.notReceived(clientId(req), { id: (req as any).user?.id ?? null, name: (req as any).user?.name ?? null }, String(req.params.id))));
 router.get('/payments/activity', handle(req => onlinePayments.activity(clientId(req), Number(req.query.limit) || 30)));
 
 /**

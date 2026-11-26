@@ -5007,3 +5007,47 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .bagnotes { margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--soft); }
 .bagnotes p { margin: 0; font-size: 13.5px; line-height: 1.45; }
 .bagnotes p + p { margin-top: 6px; }
+
+/* Pay by UPI straight to the shop (26 Nov 2026). The result screens: one calm centred column. */
+.upipay { max-width: 440px; margin: 20px auto 44px; display: grid; gap: 12px; text-align: center; }
+.upipay .go { display: flex; justify-content: center; align-items: center; text-decoration: none; }
+.upito, .upimeta { color: var(--muted); font-size: 13.5px; margin: 0; }
+.upipay.done { gap: 12px; }
+.upitick { width: 56px; height: 56px; border-radius: 50%; background: color-mix(in srgb, var(--save) 14%, transparent); color: var(--save); display: grid; place-items: center; margin: 0 auto; font-size: 28px; font-weight: 700; }
+
+/* The pay screen is one card: the amount on top, then the QR (with its UPI ID right under it) and the
+   steps. Every piece of the action column -- steps, reference box, button, note -- shares ONE left edge. */
+.upicard { gap: 0; padding: 0; text-align: left; border: 1px solid var(--line); border-radius: var(--r); background: var(--card); overflow: hidden; }
+.upihead { display: grid; gap: 2px; justify-items: center; text-align: center; padding: 18px 16px 16px; background: var(--soft); border-bottom: 1px solid var(--line); }
+.upiamount { font-size: 32px; font-weight: 700; line-height: 1.15; margin: 2px 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+.upibody { display: grid; gap: 20px; padding: 20px 16px; }
+.upiscan { display: grid; gap: 8px; justify-items: center; }
+.upiscan > .go { width: 100%; }
+.upiqr { padding: 12px; background: #fff; border: 1px solid var(--line); border-radius: var(--r); line-height: 0; }
+.upiid { font-size: 13px; color: var(--muted); margin: 0; text-align: center; word-break: break-all; }
+.upiact { display: grid; gap: 12px; align-content: start; }
+.upisteps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.upisteps li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; align-items: start; }
+.upisteps li > span { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--soft); border: 1px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.upisteps li > p { margin: 2px 0 0; font-size: 14px; line-height: 1.5; color: var(--ink); }
+.upiutr { display: block; width: 100%; box-sizing: border-box; min-height: 48px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 17px; letter-spacing: 1.5px; font-variant-numeric: tabular-nums; background: var(--bg); color: var(--ink); }
+.upiutr:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+.upiutr::placeholder { color: var(--faint); }
+/* Until 12 digits are in, the button is plainly "not yet": neutral, not a washed-out brand colour. */
+.upiact .go:disabled { opacity: 1; background: var(--soft); color: var(--faint); border: 1px solid var(--line); }
+.upiact .refused { margin: 0; }
+.upinote { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.upinote b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* How to reach the shop about a UPI order: a calm row, wrapping on a narrow phone, never wider than the screen. */
+.upicontact { margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line); }
+.upicontact p { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); }
+.upicontact-ways { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.upicontact-ways .go { flex: 1 1 100px; max-width: 160px; min-height: 44px; }
+
+/* Tablet and laptop: QR on the left, the steps on the right, both starting at the same top line. */
+@media (min-width: 700px) {
+  .upicard { max-width: 720px; }
+  .upibody { grid-template-columns: 232px 1fr; column-gap: 32px; padding: 28px 32px 28px; }
+  .upiscan { align-content: start; }
+}

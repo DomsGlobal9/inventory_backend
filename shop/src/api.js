@@ -159,6 +159,12 @@ export const confirmPayment = (slug, token, handback, opts) =>
 export const paymentStatus = (slug, token, opts) =>
   get(`/shop/${encodeURIComponent(slug)}/pay/${encodeURIComponent(token)}`, opts);
 
+/* Pay by UPI straight to the shop (26 Nov 2026): the page's QR and state; "I have paid" with the 12-digit reference. */
+export const upiStatus = (slug, token, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/upi/${encodeURIComponent(token)}`, opts);
+export const upiPaid = (slug, token, utr, opts) =>
+  get(`/shop/${encodeURIComponent(slug)}/upi/${encodeURIComponent(token)}/paid`, { ...opts, send: { utr } });
+
 /*
  * Proving the number typed at the checkout belongs to whoever typed it.
  *

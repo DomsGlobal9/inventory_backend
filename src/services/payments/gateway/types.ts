@@ -146,4 +146,6 @@ export interface PaymentGateway {
   upiQrPayments(qrId: string): Promise<UpiQrPayment[]>;
   /** Stops a QR taking money. Closing one already closed is not an error. */
   closeUpiQr(qrId: string): Promise<void>;
+  /** Whose is this UPI ID? The account holder's name, or null when UPI says it is not a real ID (optional: not every gateway). */
+  validateVpa?(vpa: string): Promise<{ valid: boolean; name: string | null }>;
 }

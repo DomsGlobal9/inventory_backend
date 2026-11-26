@@ -47,6 +47,9 @@ export class PaymentsScheduler {
       this.running = true;
       try {
         const done = await onlinePayments.sweep(50, only);
+        // Pay by UPI straight to the shop: no reference in 30 minutes, or "not received" a day ago -> cancelled.
+        const upiCancelled = await (await import('../services/online-shop/upi')).sweep(new Date(), only).catch((e: any) => { console.error('[payments] upi sweep failed:', e?.message); return 0; });
+        if (upiCancelled) console.log(`[payments] upi: ${upiCancelled} order(s) cancelled (no payment)`);
         const moved = Object.entries(done).filter(([, n]) => n > 0);
         if (moved.length) console.log(`[payments] sweep: ${moved.map(([k, n]) => `${k} ${n}`).join(', ')}`);
         if (this.lastProblem) { console.log('[payments] sweeper working again'); this.lastProblem = ''; }

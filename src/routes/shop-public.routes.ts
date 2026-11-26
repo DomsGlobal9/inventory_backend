@@ -434,6 +434,20 @@ router.get('/:slug/orders/:token', priceLimiter, buying(async (req) => {
   return shopCheckout.summary(shop.clientId, req.params.token);
 }));
 
+/** Pay by UPI straight to the shop (26 Nov 2026): the page's QR, amount and state, and "I have paid" with the reference. */
+// By the shop's address whether or not it is open now: a shopper who already ordered and paid must still be able to say so.
+const upiShop = async (slug: string) => {
+  const row = await prisma.onlineShop.findUnique({ where: { slug: String(slug || '').toLowerCase() }, select: { clientId: true } });
+  if (!row) throw new OnlineShopRuleError('That shop could not be found.');
+  return row.clientId;
+};
+router.get('/:slug/upi/:token', priceLimiter, buying(async (req) => {
+  return (await import('../services/online-shop/upi')).forShopper(await upiShop(String(req.params.slug)), String(req.params.token));
+}));
+router.post('/:slug/upi/:token/paid', buyLimiter, buying(async (req) => {
+  return (await import('../services/online-shop/upi')).iHavePaid(await upiShop(String(req.params.slug)), String(req.params.token), req.body?.utr);
+}));
+
 /** The customer calling their own order off, while it is still sitting at the shop. */
 router.post('/:slug/orders/:token/cancel', buyLimiter, buying(async (req) => {
   const shop = await onlineShop.publicShop(req.params.slug);

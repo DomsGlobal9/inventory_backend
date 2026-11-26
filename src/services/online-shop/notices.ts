@@ -35,6 +35,8 @@ export async function sendOrderPlacedNotice(clientId: string, token: string): Pr
     ]);
     const name = shop?.displayName?.trim() || settings?.businessName?.trim() || 'the shop';
     const link = shop?.slug ? shopUrl(shopBaseUrl(), shop.slug) : null;
+    // Paid by UPI straight to the shop and not yet confirmed: never called "paid" before the shop has seen it.
+    const upiChecking = !!(await prisma.upiClaim.findUnique({ where: { salesOrderId: row.salesOrderId }, select: { status: true } }).then(c => c && c.status !== 'RECEIVED').catch(() => false));
 
     /*
      * Written as a shopkeeper would write it: what they bought, what it comes to, what happens
@@ -46,7 +48,7 @@ export async function sendOrderPlacedNotice(clientId: string, token: string): Pr
       `Thank you${row.salesOrder.customerName ? `, ${row.salesOrder.customerName.split(' ')[0]}` : ''}! ${name} has your order.`,
       '',
       `Order ${row.salesOrder.orderNumber}`,
-      `Total ${money}${row.payWay === 'ON_DELIVERY' ? ', to pay when it arrives' : ', paid'}`,
+      `Total ${money}${row.payWay === 'ON_DELIVERY' ? ', to pay when it arrives' : upiChecking ? ', paid by UPI (the shop is confirming it)' : ', paid'}`,
       ...(link ? ['', `See your order: ${link}/order/${token}`] : []),
       '',
       'We will message you again when it is sent.'
@@ -203,7 +205,7 @@ export async function emailOrderPlaced(clientId: string, token: string): Promise
  *   SHOP          somebody at the shop cancelled it from the Orders screen
  *   HOLD_EXPIRED  nobody proved the number, so the day-long hold on the stock ran out
  */
-export type WhyCancelled = 'CUSTOMER' | 'SHOP' | 'HOLD_EXPIRED';
+export type WhyCancelled = 'CUSTOMER' | 'SHOP' | 'HOLD_EXPIRED' | 'UPI_TIMED_OUT' | 'UPI_NOT_PAID';
 
 /**
  * An online order that has stopped, told to whoever did not already know.
@@ -286,7 +288,22 @@ export async function orderCancelled(
      * their money first -- "nothing is owed" is the question anybody asks -- and then the way
      * forward, because a cancelled order should not be the end of the conversation.
      */
-    const words = why === 'HOLD_EXPIRED'
+    const words = why === 'UPI_TIMED_OUT'
+      ? [
+          `${first ? `${first}, your` : 'Your'} order ${order.orderNumber} with ${name} was not completed.`,
+          '',
+          'No UPI payment reference arrived within 30 minutes, so the pieces have gone back on sale.',
+          'If money did leave your account, reply here with a screenshot and the shop will sort it out.',
+          ...(link ? ['', `You can order again here: ${link}`] : [])
+        ]
+      : why === 'UPI_NOT_PAID'
+      ? [
+          `${first ? `${first}, your` : 'Your'} order ${order.orderNumber} with ${name} has been cancelled.`,
+          '',
+          'The shop could not find your UPI payment for it. If money did leave your account, reply here with a screenshot and the shop will sort it out.',
+          ...(link ? ['', `You can order again here: ${link}`] : [])
+        ]
+      : why === 'HOLD_EXPIRED'
       ? [
           `${first ? `${first}, your` : 'Your'} order ${order.orderNumber} with ${name} has been released.`,
           '',

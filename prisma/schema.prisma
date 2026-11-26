@@ -4451,6 +4451,13 @@ model OnlineShop {
   /// Paying online needs the shop's own gateway keys; paying on delivery needs nothing.
   payOnDelivery Boolean @default(true) @map("pay_on_delivery")
   payOnline     Boolean @default(false) @map("pay_online")
+  /// Pay by UPI at the checkout (26 Nov 2026). The switch is here, beside the other ways to pay; HOW is set in
+  /// Settings -> Payments: upiWay DIRECT (straight to upiId, the owner confirms each payment) or RAZORPAY (the shop's
+  /// Razorpay, limited to UPI; confirms itself).
+  payByUpi Boolean @default(false) @map("pay_by_upi")
+  upiWay   String  @default("DIRECT") @map("upi_way")
+  upiId    String? @map("upi_id")
+  upiName  String? @map("upi_name")
 
   /// Delivery, the shop's own terms. Free above a figure, if the shop wants that.
   deliveryFee       Decimal  @default(0) @map("delivery_fee") @db.Decimal(10, 2)
@@ -5854,4 +5861,31 @@ model ModuleConnect {
   @@id([clientId, module])
   @@index([status, nextAttemptAt])
   @@map("module_connects")
+}
+
+/// A shopper's "I paid by UPI" for an online order sent straight to the shop's UPI ID (26 Nov 2026). No gateway sees
+/// that money, so the owner confirms it: AWAITING (order held, no reference yet) -> TO_CHECK (reference typed) ->
+/// RECEIVED (payment recorded) | NOT_RECEIVED (customer asked; cancelled after a day) | EXPIRED (no reference in 30
+/// minutes; cancelled) | CANCELLED (the order was cancelled some other way). Text, not an enum (see PhotoJob.kind).
+model UpiClaim {
+  id           String    @id @default(uuid())
+  clientId     String    @map("client_id")
+  salesOrderId String    @unique @map("sales_order_id")
+  orderToken   String    @map("order_token")
+  amountPaise  Int       @map("amount_paise")
+  upiId        String    @map("upi_id")
+  upiName      String?   @map("upi_name")
+  utr          String?
+  status       String    @default("AWAITING")
+  expiresAt    DateTime  @map("expires_at")
+  claimedAt    DateTime? @map("claimed_at")
+  decidedAt    DateTime? @map("decided_at")
+  decidedBy    String?   @map("decided_by")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@unique([clientId, utr])
+  @@index([clientId, status])
+  @@index([status, expiresAt])
+  @@map("upi_claims")
 }

@@ -109,6 +109,10 @@ export async function settingsFor(clientId: string) {
     acceptsOrders: shop?.acceptsOrders ?? false,
     payOnDelivery: shop?.payOnDelivery ?? true,
     payOnline: shop?.payOnline ?? false,
+    // Pay by UPI: the tick here; how (DIRECT / RAZORPAY) and whether it can take money, from Settings -> Payments.
+    payByUpi: shop?.payByUpi ?? false,
+    upiWay: shop?.upiWay ?? 'DIRECT',
+    upiReady: shop ? (shop.upiWay === 'RAZORPAY' ? (await paymentAccounts.readiness(clientId).catch(() => ({ ready: false }))).ready : !!shop.upiId) : false,
     deliveryFee: Number(shop?.deliveryFee ?? 0),
     freeDeliveryAbove: shop?.freeDeliveryAbove == null ? null : Number(shop.freeDeliveryAbove),
     minOrderValue: shop?.minOrderValue == null ? null : Number(shop.minOrderValue),
@@ -169,7 +173,7 @@ export async function chooseSlug(clientId: string, raw: unknown) {
 export async function save(clientId: string, input: {
   displayName?: unknown; accent?: unknown; locationIds?: unknown; hideOutOfStock?: unknown; showFewLeft?: unknown;
   returnPolicy?: unknown; grievanceName?: unknown; grievancePhone?: unknown; grievanceEmail?: unknown;
-  acceptsOrders?: unknown; payOnDelivery?: unknown; payOnline?: unknown;
+  acceptsOrders?: unknown; payOnDelivery?: unknown; payOnline?: unknown; payByUpi?: unknown;
   deliveryFee?: unknown; freeDeliveryAbove?: unknown; minOrderValue?: unknown;
   deliverPincodes?: unknown; tryOn?: unknown; showAllPhotos?: unknown;
   accounts?: unknown; wishlist?: unknown; reviews?: unknown; showBalances?: unknown;
@@ -220,11 +224,22 @@ export async function save(clientId: string, input: {
     }
   }
 
+  // Pay by UPI is switched on only once its way can take money (a UPI ID, or working Razorpay keys). Off is always allowed.
+  if (input.payByUpi === true && !shop.payByUpi) {
+    const ok = shop.upiWay === 'RAZORPAY' ? (await paymentAccounts.readiness(clientId)).ready : !!shop.upiId;
+    if (!ok) {
+      throw new OnlineShopRuleError(shop.upiWay === 'RAZORPAY'
+        ? 'Pay by UPI cannot be switched on yet: your Razorpay keys are not working. Check them in Settings → Payments.'
+        : 'Pay by UPI cannot be switched on yet. Add your UPI ID in Settings → Payments first.');
+    }
+  }
+
   const wantsOrders = input.acceptsOrders === true;
   if (wantsOrders) {
     const onDelivery = input.payOnDelivery === undefined ? shop.payOnDelivery : input.payOnDelivery === true;
     const online = input.payOnline === undefined ? shop.payOnline : input.payOnline === true;
-    if (!onDelivery && !online) {
+    const upi = input.payByUpi === undefined ? shop.payByUpi : input.payByUpi === true;
+    if (!onDelivery && !online && !upi) {
       throw new OnlineShopRuleError('Choose at least one way customers can pay before you take orders.');
     }
     if (!shop.locationIds.length && input.locationIds === undefined) {
@@ -280,6 +295,7 @@ export async function save(clientId: string, input: {
       ...(input.acceptsOrders !== undefined ? { acceptsOrders: input.acceptsOrders === true } : {}),
       ...(input.payOnDelivery !== undefined ? { payOnDelivery: input.payOnDelivery === true } : {}),
       ...(input.payOnline !== undefined ? { payOnline: input.payOnline === true } : {}),
+      ...(input.payByUpi !== undefined ? { payByUpi: input.payByUpi === true } : {}),
       ...(fee !== undefined && fee !== null ? { deliveryFee: fee } : {}),
       ...(freeAbove !== undefined ? { freeDeliveryAbove: freeAbove } : {}),
       ...(minOrder !== undefined ? { minOrderValue: minOrder } : {}),
@@ -395,7 +411,8 @@ export async function publicShop(slugRaw: unknown): Promise<
       /** Whether a customer can actually buy here, and on what terms. */
       buying: {
         open: boolean;
-        payWays: ('ON_DELIVERY' | 'ONLINE')[];
+        payWays: ('UPI' | 'ON_DELIVERY' | 'ONLINE')[];
+        upiWay: 'DIRECT' | 'RAZORPAY' | null;
         deliveryFee: number;
         freeDeliveryAbove: number | null;
         minOrderValue: number | null;
@@ -423,11 +440,13 @@ export async function publicShop(slugRaw: unknown): Promise<
     // is not a call to another service on every page load.
     canVerify(shop.clientId).catch(() => false),
     // Only asked when the switch is on: most shops never look at the payments table at all.
-    shop.payOnline ? paymentAccounts.readiness(shop.clientId).then(r => r.ready).catch(() => false) : Promise.resolve(false)
+    (shop.payOnline || (shop.payByUpi && shop.upiWay === 'RAZORPAY')) ? paymentAccounts.readiness(shop.clientId).then(r => r.ready).catch(() => false) : Promise.resolve(false)
   ]);
   const name = shop.displayName?.trim() || settings?.businessName?.trim() || 'This shop';
   // The switch alone is not enough: keys revoked, or swapped for test keys, since it was turned on.
   const payOnlineNow = shop.payOnline && payReady;
+  // The same rule as the checkout (checkout.orderingFor): UPI only when its way can take money.
+  const upiNow = shop.payByUpi && (shop.upiWay === 'RAZORPAY' ? payReady : !!shop.upiId);
   if (!shop.isLive) return { state: 'CLOSED', name };
   // Cloth by the metre (PLAN-fabrics.md): the page's length picker needs the shop's smallest cut and quick lengths.
   const fabrics = await fabricSettings(shop.clientId).catch(() => null);
@@ -468,11 +487,14 @@ export async function publicShop(slugRaw: unknown): Promise<
     /** Null while the shop does not sell by the metre. Centimetres: the smallest cut and the quick lengths. */
     lengths: fabrics?.fabricsOn ? { minCut: fabrics.fabricMinCut, quickLengths: fabrics.fabricQuickLengths } : null,
     buying: {
-      open: shop.acceptsOrders && (shop.payOnDelivery || payOnlineNow),
+      open: shop.acceptsOrders && (shop.payOnDelivery || payOnlineNow || upiNow),
       payWays: [
+        ...(upiNow ? ['UPI' as const] : []),
         ...(shop.payOnDelivery ? ['ON_DELIVERY' as const] : []),
         ...(payOnlineNow ? ['ONLINE' as const] : [])
       ],
+      /** How "Pay by UPI" works here: DIRECT (the shop's own QR page) or RAZORPAY (the payment window, UPI only). */
+      upiWay: upiNow ? (shop.upiWay === 'RAZORPAY' ? 'RAZORPAY' : 'DIRECT') : null,
       deliveryFee: Number(shop.deliveryFee),
       freeDeliveryAbove: shop.freeDeliveryAbove == null ? null : Number(shop.freeDeliveryAbove),
       minOrderValue: shop.minOrderValue == null ? null : Number(shop.minOrderValue),

@@ -48,6 +48,8 @@ export class DispatchService {
    * MAY leave.
    */
   async dispatchInTransaction(tx: any, clientId: string, salesOrderId: string, items: { salesOrderItemId: string; quantity: number; fromSpots?: unknown }[], opts: { allowNegative?: boolean; shipping?: ParcelShipping | null } = {}) {
+    // Paid by UPI straight to the shop: not sent until the owner has seen the money (online-shop/upi.ts).
+    await (await import('./online-shop/upi')).assertPaidBeforeSending(tx, clientId, salesOrderId);
     if (!Array.isArray(items) || items.length === 0) {
       throw badRequest('Choose at least one item to send out.');
     }
