@@ -136,6 +136,31 @@ async function main() {
   check('switched off and on again in the Console', offC.data?.active === false && onC.data?.active === true, [offC.data, onC.data]);
   check('a key that does not exist: 404', (await con('POST', '/shop-app-keys/00000000-0000-0000-0000-000000000000/off')).status === 404);
 
+  console.log('\nONE KEY FOR EVERY BOUTIQUE (the Boutique app itself, 26 Nov 2026)');
+  const all = await con('POST', '/shop-app-keys', { name: `Boutique app ${S}`, allBoutiques: true });
+  check('made in the Console for every boutique: 201, shown once, allBoutiques true', all.status === 201 && all.data?.allBoutiques === true && /^sak_/.test(all.data?.key ?? ''), [all.status, all.message]);
+  check('every boutique AND an account: refused in words', (await con('POST', '/shop-app-keys', { name: 'x', allBoutiques: true, tenant: TEN })).status === 400);
+  check('"allBoutiques" not true/false: 400', (await con('POST', '/shop-app-keys', { name: 'x', allBoutiques: 'yes' })).status === 400);
+  const ALLKEY = all.data?.key as string;
+  const withTenant = async (p: string, t: string | null) => {
+    const r = await axios.get(`${ROOT}${p}`, { validateStatus: () => true, timeout: 60_000, headers: { 'X-Shop-App-Key': ALLKEY, ...(t ? { 'X-Boutique-Tenant': t } : {}) } });
+    return { status: r.status, data: r.data?.data ?? r.data, message: r.data?.message as string | undefined };
+  };
+  const noT = await withTenant(`/shop/v1/${SLUG}`, null);
+  check('without naming the boutique (X-Boutique-Tenant): 400 saying so', noT.status === 400 && /X-Boutique-Tenant/.test(noT.message ?? ''), noT);
+  check('naming boutique A, A\'s shop: 200', (await withTenant(`/shop/v1/${SLUG}`, TEN)).status === 200);
+  check('naming boutique B, B\'s shop: 200 (the same key serves both)', (await withTenant(`/shop/v1/${SLUG2}`, TEN2)).status === 200);
+  const mixed = await withTenant(`/shop/v1/${SLUG2}`, TEN);
+  check('naming boutique A, B\'s shop: 404 (a mix-up never reaches another boutique\'s shop)', mixed.status === 404, mixed);
+  const placedAll = await axios.post(`${ROOT}/shop/v1/${SLUG2}/orders`, {}, { validateStatus: () => true, timeout: 60_000, headers: { 'X-Shop-App-Key': ALLKEY, 'X-Boutique-Tenant': TEN } });
+  check('...nor place an order there (404)', placedAll.status === 404, placedAll.status);
+  const RETAIL = `v1retail-${S}`;
+  await prisma.onlineShop.create({ data: { clientId: RETAIL, slug: RETAIL, isLive: true, acceptsOrders: true, payOnDelivery: true, locationIds: [], deliverPincodes: [] } as any });
+  check('a shop no boutique is linked to (ScaleEzy retail): 404, whatever is named', (await withTenant(`/shop/v1/${RETAIL}`, TEN)).status === 404 && (await withTenant(`/shop/v1/${RETAIL}`, RETAIL)).status === 404);
+  check('the list shows it as every boutique', (await con('GET', '/shop-app-keys')).data?.some((k: any) => k.id === all.data?.id && k.allBoutiques === true && k.tenant === '*'));
+  await prisma.onlineShop.delete({ where: { slug: RETAIL } }).catch(() => undefined);
+  await prisma.shopAppKey.delete({ where: { id: all.data?.id } }).catch(() => undefined);
+
   console.log('\nSWITCHED OFF');
   await appKeys.setActive(made.id, false);
   await new Promise(r => setTimeout(r, 31_000)); // the server keeps a key for at most 30 seconds
