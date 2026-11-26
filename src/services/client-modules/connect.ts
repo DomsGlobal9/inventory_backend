@@ -48,9 +48,12 @@ async function send(clientId: string, module: string, action: string, hint: Hint
 }
 
 let running = false;
+/** A pass was asked for while one ran: one more pass right after, so no change waits for the timer (or forever, where
+ * background jobs are off). Found by verify-one-switch, 26 Nov 2026. */
+let again = false;
 /** One pass: every row that is due (optionally only one client's). */
 export async function runOnce(opts: { onlyClient?: string } = {}) {
-  if (running) return { sent: 0 };
+  if (running) { again = true; return { sent: 0 }; }
   running = true;
   let sent = 0;
   try {
@@ -79,7 +82,10 @@ export async function runOnce(opts: { onlyClient?: string } = {}) {
         else await finish({ status: 'RETRYING', lastError: String(e?.message ?? e).slice(0, 500), nextAttemptAt: new Date(Date.now() + waitAfter(attempts)) });
       }
     }
-  } finally { running = false; }
+  } finally {
+    running = false;
+    if (again) { again = false; setTimeout(() => { void runOnce().catch(e => console.error('[modules] pass failed:', e?.message ?? e)); }, 20); }
+  }
   return { sent };
 }
 
