@@ -45,6 +45,9 @@ const HEARTBEAT_MS = 10 * 1000;
  */
 export const MAX_ATTEMPTS = 2;
 
+/** The job kinds this code can run. A worker never claims a kind it does not know (see claimNext). */
+export const KNOWN_KINDS = ['VIEWS', 'COLOUR', 'SHOTS'];
+
 /** How many jobs this process runs at once, across all shops. One shop still only ever gets one. */
 const MAX_CONCURRENT = 2;
 
@@ -332,6 +335,10 @@ export class PhotoJobRunner {
       SELECT j."id" FROM "photo_jobs" j
       WHERE j."status" = 'QUEUED'
         AND (j."not_before" IS NULL OR j."not_before" <= now())
+        -- Only the kinds this code knows. Found live 26 Nov 2026: during Render's switch-over the OLD instance's worker
+        -- claimed a new SHOTS job, did not know the kind, and made a paid three-view set instead. A kind added later
+        -- waits for the code that knows it.
+        AND j."kind" IN (${Prisma.join(KNOWN_KINDS)})
         ${scope}
         AND NOT EXISTS (
           SELECT 1 FROM "photo_jobs" r

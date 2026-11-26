@@ -135,6 +135,14 @@ async function main() {
     const busyMins = jobs[0].notBefore ? Math.round((jobs[0].notBefore.getTime() - Date.now()) / 60000) : null;
     ok('503 busy: waits about 2 minutes, "busy just now"', jobs[0].status === 'QUEUED' && busyMins !== null && busyMins >= 1 && busyMins <= 3 && /busy just now/.test(jobs[0].message ?? ''), { status: jobs[0].status, busyMins, m: jobs[0].message });
 
+    // A kind this code does not know is never claimed (the switch-over lesson, 26 Nov 2026).
+    await clear();
+    const unknownKind = await prisma.photoJob.create({ data: { clientId, productId: product.id, kind: 'FUTURE_KIND', status: 'QUEUED', colourName: 'Red', colourKey: 'red', variantIds: [], sourceImageUrl: 'https://example.invalid/x.jpg', jobKey: 'future-red', category: 'SAREE', modelId: 'saree1' } as any });
+    const grabbed = await PhotoJobRunner.claimNext();
+    ok('a job kind this code does not know is never claimed', !grabbed || grabbed.id !== unknownKind.id, grabbed?.kind);
+    if (grabbed && grabbed.id !== unknownKind.id) await prisma.photoJob.update({ where: { id: grabbed.id }, data: { status: 'QUEUED' } });
+    await clear();
+
     // ── Many at once ──────────────────────────────────────────────────────────────────────────
     console.log('');
     console.log('MANY AT ONCE');
