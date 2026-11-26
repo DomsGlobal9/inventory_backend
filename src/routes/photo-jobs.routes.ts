@@ -18,6 +18,8 @@ router.use(tenantMiddleware);
  * to know whether its photographs are coming.
  */
 router.post('/', requirePermission('tryon:generate'), photoJobsController.create.bind(photoJobsController));
+// The 3 product photos for many sarees at once (old sarees; 26 Nov 2026).
+router.post('/product-shots', requirePermission('tryon:generate'), photoJobsController.productShots.bind(photoJobsController));
 router.post('/:id/cancel', requirePermission('tryon:generate'), photoJobsController.cancel.bind(photoJobsController));
 
 router.get('/', requirePermission('product:view'), photoJobsController.list.bind(photoJobsController));

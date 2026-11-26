@@ -29,8 +29,12 @@ export interface EnqueueRequest {
   clientId: string;
   productId: string;
   requestedBy?: string | null;
-  /** 'VIEWS' -- four views from a photograph. 'COLOUR' -- this colour from another's front view. */
-  kind: 'VIEWS' | 'COLOUR';
+  /**
+   * 'VIEWS' -- the three views from a photograph (a saree also gets its 3 product photos).
+   * 'COLOUR' -- this colour from another's front view.
+   * 'SHOTS' -- a saree's 3 product photos only, keeping the views it has (old sarees; not charged by the studio).
+   */
+  kind: 'VIEWS' | 'COLOUR' | 'SHOTS';
   /** Colour names, as the shop wrote them. */
   colours: string[];
   /**
@@ -38,6 +42,30 @@ export interface EnqueueRequest {
    * job; left out otherwise, and the source is worked out here from what the product already has.
    */
   sourceImageId?: string | null;
+  /**
+   * More photos of the same saree (pallu, border, a close-up) the shop ticked, up to 3. Left out: the colour's other
+   * own photos are sent by themselves. An empty list: none.
+   */
+  extraSourceImageIds?: string[] | null;
+}
+
+/** The studio takes up to 3 extra photos of one saree (sareeExtras). */
+const MAX_EXTRAS = 3;
+/** Product photos only are not charged by the studio, so a shop may queue a whole catalogue of them (Swathy: 59). */
+const MAX_QUEUED_SHOTS_PER_CLIENT = 100;
+
+/**
+ * The extra photos of one saree to send with its main photo: the ones the shop ticked (checked to be its own photos of
+ * this colour, of the garment, not the main one), or by default the colour's other own photos. Up to 3.
+ */
+function extrasFor(colour: ColourGroup, sourceId: string, ticked: string[] | null | undefined): { ok: true; images: { id: string; url: string }[] } | { ok: false; why: string } {
+  const own = colour.images.filter(i => !i.generated && !(i.slot && PIECE_SLOTS.includes(i.slot)) && i.id !== sourceId);
+  if (ticked == null) return { ok: true, images: own.slice(0, MAX_EXTRAS).map(i => ({ id: i.id, url: i.url })) };
+  const ids = [...new Set(ticked)].filter(id => id !== sourceId);
+  if (ids.length > MAX_EXTRAS) return { ok: false, why: `Tick at most ${MAX_EXTRAS} extra photos besides the main one.` };
+  const picked = ids.map(id => own.find(i => i.id === id));
+  if (picked.some(i => !i)) return { ok: false, why: 'One of the extra photos is not a photo of this colour. Tick only photos of this saree.' };
+  return { ok: true, images: picked.map(i => ({ id: i!.id, url: i!.url })) };
 }
 
 type ColourGroup = {
@@ -203,10 +231,15 @@ export class PhotoJobQueue {
     const wanted = [...new Set((req.colours || []).map(c => String(c || '').trim()).filter(Boolean))];
     if (wanted.length === 0) throw { statusCode: 400, message: 'Choose at least one colour to photograph.' };
 
+    if (req.kind === 'SHOTS' && !makesProductShots(category)) {
+      throw { statusCode: 400, message: 'Product photos are made for sarees only, for now.' };
+    }
+
+    // Product photos only are counted on their own: the studio does not charge for them, so a shop may queue many.
     const waiting = await prisma.photoJob.count({
-      where: { clientId: req.clientId, status: { in: ['QUEUED', 'RUNNING'] } }
+      where: { clientId: req.clientId, status: { in: ['QUEUED', 'RUNNING'] }, ...(req.kind === 'SHOTS' ? { kind: 'SHOTS' } : { kind: { not: 'SHOTS' } }) }
     });
-    if (waiting + wanted.length > MAX_QUEUED_PER_CLIENT) {
+    if (waiting + wanted.length > (req.kind === 'SHOTS' ? MAX_QUEUED_SHOTS_PER_CLIENT : MAX_QUEUED_PER_CLIENT)) {
       throw {
         statusCode: 400,
         message: `You already have ${waiting} set${waiting === 1 ? '' : 's'} of photographs being made. `
@@ -218,11 +251,11 @@ export class PhotoJobQueue {
 
     // A flat-lay just uploaded for this run, or the photograph the shop chose on the Images tab. Checked
     // against this product rather than trusted: an id from a browser must never reach another shop's picture.
-    let given: { id: string; url: string; variantId: string | null; slot: string | null } | null = null;
+    let given: { id: string; url: string; variantId: string | null; slot: string | null; generated: boolean } | null = null;
     if (req.sourceImageId) {
       given = await prisma.productImage.findFirst({
         where: { id: req.sourceImageId, productId: req.productId, product: { clientId: req.clientId } },
-        select: { id: true, url: true, variantId: true, slot: true }
+        select: { id: true, url: true, variantId: true, slot: true, generated: true }
       });
       if (!given) throw { statusCode: 400, message: 'That photograph does not belong to this product.' };
     }
@@ -241,7 +274,7 @@ export class PhotoJobQueue {
 
       // Views of this colour are made from a photograph of this colour, and of the garment itself. The
       // model would otherwise wear the wrong saree, or a blouse piece as a drape, with nothing failing.
-      if (req.kind === 'VIEWS' && given) {
+      if ((req.kind === 'VIEWS' || req.kind === 'SHOTS') && given) {
         if (given.variantId && !colour.variantIds.includes(given.variantId)) {
           refused.push({ colour: name, why: 'That photograph is of another colour. Choose one of this colour.' });
           continue;
@@ -253,6 +286,18 @@ export class PhotoJobQueue {
       }
 
       const source = req.kind === 'COLOUR' ? copyFrom : (given ?? sourceForViews(colour));
+      // Product photos are copied from the cloth itself: the shop's own photo, never a picture of a model wearing it.
+      if (req.kind === 'SHOTS' && source && (source as any).generated) {
+        refused.push({ colour: name, why: 'Product photos need your own photo of the saree. Add one on the Images tab.' });
+        continue;
+      }
+      // More photos of the same saree, for sarees only (the studio copies the pallu and border from them).
+      let extras: { id: string; url: string }[] = [];
+      if (category === 'SAREE' && req.kind !== 'COLOUR' && source?.id) {
+        const e = extrasFor(colour, source.id, req.extraSourceImageIds);
+        if (!e.ok) { refused.push({ colour: name, why: e.why }); continue; }
+        extras = e.images;
+      }
       if (!source?.url) {
         refused.push({
           colour: name,
@@ -283,17 +328,23 @@ export class PhotoJobQueue {
              */
             referenceUrls: req.kind === 'COLOUR' ? undefined : (() => {
               const refs = referencesFor(colour);
+              // Product photos only: just the blouse (laid beside the saree); the rest dress a model.
+              if (req.kind === 'SHOTS') for (const k of Object.keys(refs)) if (k !== 'blouse') delete refs[k];
               return Object.keys(refs).length ? refs : undefined;
             })(),
+            extraSourceImageIds: extras.map(e => e.id),
+            extraSourceUrls: extras.map(e => e.url),
+            // The colour's own front view, made earlier: the shots copy the worn pallu and border from it.
+            frontViewUrl: req.kind === 'SHOTS' ? (colour.images.find(i => i.generated && i.view === 'front')?.url ?? null) : null,
             // The suffix only. The tenant is put in front by jobKeyFor when the far end is told.
-            jobKey: `${req.kind === 'COLOUR' ? 'colour' : 'views'}-${colour.name}`,
+            jobKey: `${req.kind === 'COLOUR' ? 'colour' : req.kind === 'SHOTS' ? 'shots' : 'views'}-${colour.name}`,
             category,
             modelId: pickRandomModelId(category),
             // Said, not left to the column's default of 4 from when a set had a back view.
-            viewsTotal: VIEW_ORDER.length,
+            viewsTotal: req.kind === 'SHOTS' ? 0 : VIEW_ORDER.length,
             // A saree's three views also make the 3 product photos with no model, every time (owner, 26 Nov
             // 2026: "while the three views are made, this should also be done"). A colour copy never does.
-            productShots: req.kind === 'VIEWS' && makesProductShots(category),
+            productShots: (req.kind === 'VIEWS' || req.kind === 'SHOTS') && makesProductShots(category),
             requestedBy: req.requestedBy ?? null
           }
         });

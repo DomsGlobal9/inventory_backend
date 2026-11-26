@@ -5,6 +5,7 @@ import { tryOnUsageService } from '../services/tryon';
 // has no request to reach a controller from, so the function moved to where both can see it.
 import { jobKeyFor, recordTryOnFailure } from '../services/tryon';
 import { respondWithError } from '../utils/respondWithError';
+import { studioRefusal } from '../services/photo-jobs/runner';
 
 /**
  * Whether a direct request asks for a colour variant. The catalog service takes `color` as
@@ -87,7 +88,8 @@ export class CatalogTryOnController {
         });
         res.status(upstream.status || 502).json({
           success: false,
-          message: 'The photo studio could not be reached just now. Your photos are safe -- please try again in a minute.'
+          // The limit, busy or not-set-up cases each say so (runner.studioRefusal); the gateway's words stay in the log.
+          message: studioRefusal(upstream.status, text)
         });
         return;
       }

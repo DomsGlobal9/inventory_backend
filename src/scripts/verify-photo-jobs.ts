@@ -311,6 +311,74 @@ async function main() {
   check("a lehenga's three-view job does not ask for product shots", lehengaJob.made.length === 1 && lehengaJob.made[0]?.productShots === false,
     JSON.stringify({ made: lehengaJob.made.length, refused: lehengaJob.refused, productShots: lehengaJob.made[0]?.productShots }));
 
+  // ── Several photos of one saree, and product photos only (26 Nov 2026) ─────────────────────
+  console.log('');
+  console.log('SEVERAL PHOTOS OF ONE SAREE, AND PRODUCT PHOTOS ONLY');
+  await clearLive();
+  const multi = await makeProduct('Verify photo jobs, many photos (delete me)', 'Saree');
+  const leaf = await makeColour(multi.id, 'Leaf', { views: ['front', 'left', 'right'] });
+  const pic = (extra: any) => prisma.productImage.create({ data: { productId: multi.id, variantId: leaf.variant.id, url: `https://example.invalid/${Math.random()}.jpg`, imageType: 'GALLERY', orderIndex: 0, generated: false, ...extra } });
+  const main = await pic({ slot: 'saree', isPrimary: true });
+  const pallu = await pic({});
+  const border = await pic({});
+  const blouse = await pic({ slot: 'blouse' });
+  const other = await makeColour(multi.id, 'Sky', { own: true });
+
+  const auto = remember(await photoJobQueue.enqueue({ clientId: SHOP, productId: multi.id, kind: 'VIEWS', colours: ['Leaf'] }));
+  const autoIds = [...(auto.made[0]?.extraSourceImageIds ?? [])].sort();
+  check('left to itself, a saree sends its other own photos as extras (not the main, not the blouse)',
+    JSON.stringify(autoIds) === JSON.stringify([pallu.id, border.id].sort()), JSON.stringify(autoIds));
+  check('  ...with their addresses, and the blouse still goes as the blouse',
+    (auto.made[0]?.extraSourceUrls ?? []).length === 2 && (auto.made[0]?.referenceUrls as any)?.blouse === blouse.url);
+  await clearLive();
+
+  const ticked = remember(await photoJobQueue.enqueue({ clientId: SHOP, productId: multi.id, kind: 'VIEWS', colours: ['Leaf'], sourceImageId: pallu.id, extraSourceImageIds: [main.id] }));
+  check('the shop picks the main photo and ticks extras: exactly those are sent',
+    ticked.made[0]?.sourceImageId === pallu.id && JSON.stringify(ticked.made[0]?.extraSourceImageIds) === JSON.stringify([main.id]), JSON.stringify(ticked.refused));
+  await clearLive();
+  const none = remember(await photoJobQueue.enqueue({ clientId: SHOP, productId: multi.id, kind: 'VIEWS', colours: ['Leaf'], extraSourceImageIds: [] }));
+  check('ticking no extras sends none', none.made[0]?.extraSourceImageIds?.length === 0);
+  await clearLive();
+  const withBlouse = await photoJobQueue.enqueue({ clientId: SHOP, productId: multi.id, kind: 'VIEWS', colours: ['Leaf'], extraSourceImageIds: [blouse.id] });
+  check('the blouse ticked as an extra is refused, in words', withBlouse.made.length === 0 && /not a photo of this colour|this saree/.test(withBlouse.refused[0]?.why ?? ''), JSON.stringify(withBlouse.refused));
+  const withOther = await photoJobQueue.enqueue({ clientId: SHOP, productId: multi.id, kind: 'VIEWS', colours: ['Leaf'], extraSourceImageIds: [other.own!.id] });
+  check("another colour's photo ticked as an extra is refused", withOther.made.length === 0, JSON.stringify(withOther.refused));
+  const four = await photoJobQueue.enqueue({ clientId: SHOP, productId: multi.id, kind: 'VIEWS', colours: ['Leaf'], sourceImageId: main.id, extraSourceImageIds: [pallu.id, border.id, leaf.views.front.id, other.own!.id] });
+  check('more than 3 extras is refused, in words', four.made.length === 0 && /at most 3/.test(four.refused[0]?.why ?? ''), JSON.stringify(four.refused));
+
+  const shots = remember(await photoJobQueue.enqueue({ clientId: SHOP, productId: multi.id, kind: 'SHOTS', colours: ['Leaf'] }));
+  const sj: any = shots.made[0];
+  check('product photos only: queued as SHOTS, no views to make, product shots on', sj?.kind === 'SHOTS' && sj?.viewsTotal === 0 && sj?.productShots === true, JSON.stringify(shots.refused));
+  check("  ...from the shop's own photo, with the colour's front view and only the blouse as references",
+    sj?.sourceImageId === main.id && sj?.frontViewUrl === leaf.views.front.url && JSON.stringify(Object.keys(sj?.referenceUrls ?? {})) === JSON.stringify(['blouse']), JSON.stringify({ src: sj?.sourceImageId, front: sj?.frontViewUrl, refs: sj?.referenceUrls }));
+  check('  ...and the extras too', (sj?.extraSourceImageIds ?? []).length === 2);
+  await clearLive();
+  const onlyViews = await makeProduct('Verify photo jobs, views only (delete me)', 'Saree');
+  await makeColour(onlyViews.id, 'Rose', { views: ['front', 'left', 'right'] });
+  const noOwn = await photoJobQueue.enqueue({ clientId: SHOP, productId: onlyViews.id, kind: 'SHOTS', colours: ['Rose'] });
+  check("product photos need the shop's own photo: a colour with only generated views is refused", noOwn.made.length === 0 && /own photo/.test(noOwn.refused[0]?.why ?? ''), JSON.stringify(noOwn.refused));
+  const lehenga2 = await makeProduct('Verify photo jobs, lehenga shots (delete me)', 'Lehenga');
+  await makeColour(lehenga2.id, 'Gold', { own: true });
+  let lehengaShots = '';
+  try { await photoJobQueue.enqueue({ clientId: SHOP, productId: lehenga2.id, kind: 'SHOTS', colours: ['Gold'] }); } catch (e: any) { lehengaShots = String(e?.message); }
+  check('product photos for a lehenga: refused, sarees only', /sarees only/.test(lehengaShots), lehengaShots);
+
+  // Many sarees at once, through the controller the Products list calls.
+  const { photoJobsController } = await import('../controllers/photo-jobs.controller');
+  const call = (body: any) => new Promise<any>((resolve) => {
+    const res: any = { status(c: number) { this.code = c; return this; }, json(b: any) { resolve({ status: this.code ?? 200, body: b }); } };
+    void photoJobsController.productShots({ clientId: SHOP, user: { id: null }, body } as any, res, (e: any) => resolve({ status: 500, body: String(e?.message ?? e) }));
+  });
+  const bulk = await call({ productIds: [multi.id, onlyViews.id, lehenga2.id, 'no-such-product'] });
+  for (const j of await prisma.photoJob.findMany({ where: { productId: multi.id, kind: 'SHOTS', status: 'QUEUED' }, select: { id: true } })) madeJobs.add(j.id);
+  const byId = (id: string) => bulk.body?.data?.results?.find((r: any) => r.productId === id);
+  check('bulk: the saree with its own photos gets its product photos queued', byId(multi.id)?.made === 2, JSON.stringify(byId(multi.id)));
+  check('  ...a saree with no photo of its own says why', byId(onlyViews.id)?.made === 0 && /own photo/.test(JSON.stringify(byId(onlyViews.id)?.refused)), JSON.stringify(byId(onlyViews.id)));
+  check('  ...a lehenga says sarees only', /sarees only/.test(JSON.stringify(byId(lehenga2.id)?.refused)));
+  check('  ...a product that is not here says so', /not in your shop/.test(JSON.stringify(byId('no-such-product')?.refused)));
+  check('bulk: nothing at all refused with 400', (await call({ productIds: [] })).status === 400);
+  await clearLive();
+
   // ── Its own history must not block it ───────────────────────────────────────────────────────
   console.log('\nRUNNING THE SAME COLOUR AGAIN LATER');
 

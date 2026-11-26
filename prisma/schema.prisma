@@ -5098,6 +5098,7 @@ model PhotoJob {
 
   /// VIEWS  -- the four catalog views, made from a photograph of this colour.
   /// COLOUR -- this colour, copied from another colour's generated front view.
+  /// SHOTS  -- a saree's 3 product photos only (no model views), for one that already has its views.
   ///
   /// Plain text rather than an enum, like ProductImage.view and DailyReportJob.status. Adding a
   /// value to a Postgres enum breaks the code already deployed against this database -- an older
@@ -5152,6 +5153,12 @@ model PhotoJob {
   /// (catalog-product-shots-dev-update, 26 Nov 2026). shotsDone counts the ones saved.
   productShots Boolean @default(false) @map("product_shots")
   shotsDone    Int     @default(0) @map("shots_done")
+  /// More photos of the SAME saree (pallu, border, a close-up), sent as sareeExtras so the pallu and border are
+  /// copied, not guessed (catalog c1650d0, 26 Nov 2026). The rows and their addresses as they stood, like the source.
+  extraSourceImageIds String[] @default([]) @map("extra_source_image_ids")
+  extraSourceUrls     String[] @default([]) @map("extra_source_urls")
+  /// SHOTS jobs: the colour's own front view, made earlier, sent as frontView (optional).
+  frontViewUrl        String?  @map("front_view_url")
 
   /// Why it failed or stopped, in words a shop owner can act on. Shown exactly as written.
   message String? @db.Text

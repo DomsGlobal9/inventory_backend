@@ -208,11 +208,63 @@ async function removeSuperseded(job: Job, superseded: Set<string>) {
  * The shop pressed Stop knowing they had photographs coming; what they need told is how many
  * they kept.
  */
-function stoppedMessage(viewsSaved: number): string {
-  if (viewsSaved === 0) return 'Stopped before anything was made.';
-  return viewsSaved === 1
-    ? 'Stopped. The one view already made is kept.'
-    : `Stopped. The ${viewsSaved} views already made are kept.`;
+function stoppedMessage(viewsSaved: number, shotsSaved = 0): string {
+  const kept = viewsSaved + shotsSaved;
+  if (kept === 0) return 'Stopped before anything was made.';
+  const what = shotsSaved === 0 ? (viewsSaved === 1 ? 'view' : 'views') : viewsSaved === 0 ? (shotsSaved === 1 ? 'product photo' : 'product photos') : 'photos';
+  return kept === 1 ? `Stopped. The one ${what} already made is kept.` : `Stopped. The ${kept} ${what} already made are kept.`;
+}
+
+/**
+ * The studio's refusal BEFORE anything is made (its gateway answers with JSON instead of a stream), in the shop's
+ * words (26 Nov 2026, owner: "their billing errors should show too, if the limit is done"). Nothing was made or
+ * charged in any of these, and the message says what to do. The gateway's own words are kept for the console only.
+ */
+export function studioRefusal(status: number, body: string): string {
+  let j: any = null;
+  try { j = JSON.parse(body); } catch { /* a proxy's page, or nothing */ }
+  const code = String(j?.error?.code ?? j?.code ?? '');
+  const text = String(j?.error?.message ?? j?.message ?? j?.error ?? '');
+  const wait = Number(j?.retryAfterSec ?? j?.error?.retryAfterSec);
+  const inMinutes = Number.isFinite(wait) && wait > 0 ? (wait < 90 ? 'in a minute' : `in about ${Math.ceil(wait / 60)} minutes`) : 'in a few minutes';
+  if (status === 402 || code === 'MONTHLY_LIMIT_REACHED' || /month'?s limit|monthly limit/i.test(text)) {
+    return "This month's photo limit is used up, so nothing was made or charged. Ask ScaleEzy to raise the limit, then try again.";
+  }
+  if (status === 429 && /per hour|hourly|generation limit/i.test(text)) {
+    return `The hourly limit for making photos is used up. Nothing was made or charged. Please try again ${inMinutes}.`;
+  }
+  if (status === 429) return `The photo studio is busy just now. Nothing was made or charged. Please try again ${inMinutes}.`;
+  if (status === 401 || status === 403) return 'Making photos is not set up for this shop yet. Ask ScaleEzy to switch it on. Nothing was made or charged.';
+  if (code === 'ALREADY_DELIVERED' || status === 409) return 'These photos were already made. Open the Images tab to see them.';
+  if (status === 400 || status === 413 || status === 424) return 'The photo studio could not use these photos. Choose another photo of this saree and try again. Nothing was made or charged.';
+  return 'The photo studio could not be reached just now. Your photos are safe -- please try again in a minute.';
+}
+
+/**
+ * The photo studio's error, in the shop's words (26 Nov 2026, owner: "a backend error should not show here").
+ * The studio writes for developers -- field names in brackets, "HTTP 404", codes in capitals -- so its text is shown
+ * only when it reads as a plain sentence, and the cases a shop can act on get our own sentence naming the photo.
+ */
+export function studioWords(data: { code?: unknown; error?: unknown; details?: any[] }): string {
+  const code = String(data.code ?? '');
+  const text = typeof data.error === 'string' ? data.error : '';
+  const extraNo = Number(data.details?.[0]?.extra) || Number((/Extra photo (\d)/.exec(text) ?? [])[1]) || null;
+  const which = extraNo ? `Extra photo ${extraNo}` : null;
+  if (code === 'SAREE_EXTRA_MISMATCH') {
+    return `${which ?? 'One of the extra photos'} shows a different saree from the main photo. Untick it, or tick only photos of this saree, and try again. Nothing was made or charged.`;
+  }
+  if (/(?:could not|cannot|can't|couldn't) be (?:downloaded|read|opened|fetched)/i.test(text)) {
+    if (which) return `${which} could not be opened by the photo studio. Untick it, or add that photo again, and try again.`;
+    if (/blouse/i.test(text)) return 'The blouse photo could not be opened by the photo studio. Add it again and try again.';
+    if (/front ?view/i.test(text)) return 'The front view could not be opened by the photo studio. Please try again.';
+    return 'The main photo could not be opened by the photo studio. Choose another photo of this saree, or add it again, and try again.';
+  }
+  if (code === 'MONTHLY_LIMIT_REACHED' || /month'?s limit|monthly limit/i.test(text)) return "This month's photo limit is used up. Ask ScaleEzy to raise the limit, then try again.";
+  if (code === 'AI_LIMIT_REACHED' || /limit|quota|too many|rate/i.test(text)) return 'The photo studio is busy just now. Please try again in a few minutes.';
+  if (code === 'CANCELLED') return 'Stopped.';
+  const technical = /\([a-z][A-Za-z]*\)|HTTP \d|\b[A-Z]{2,}_[A-Z_]+\b|\b(?:api|endpoint|stream|pipeline|json|token|payload|undefined|null)\b/i;
+  if (!text || technical.test(text)) return 'The photo studio could not finish this one. Please try again.';
+  return safeMessage(text, 'The photo studio could not finish this one. Please try again.');
 }
 
 /** Writes down how it ended. Tolerates the row having been deleted with its product. */
@@ -285,7 +337,7 @@ export class PhotoJobRunner {
   static async runJob(job: Job): Promise<void> {
     // A job queued before the back view was dropped (29 Oct) still carries the old total of 4. Put
     // right before it runs, so the screen counts to 3 and a whole set is not called "3 of 4".
-    if (job.viewsTotal !== VIEW_ORDER.length) {
+    if (job.kind !== 'SHOTS' && job.viewsTotal !== VIEW_ORDER.length) {
       job = await prisma.photoJob.update({ where: { id: job.id }, data: { viewsTotal: VIEW_ORDER.length } });
     }
 
@@ -298,9 +350,14 @@ export class PhotoJobRunner {
       await finish(job.id, 'FAILED', shown);
     };
 
+    // Product photos only are not charged by the studio (catalog c1650d0, 26 Nov 2026): they take nothing from the
+    // shop's allowance and are not counted as generations. Everything else is, as before.
+    const shotsOnly = job.kind === 'SHOTS';
+    const usage = shotsOnly ? { record: (_c: string, _o: unknown) => Promise.resolve() } as unknown as typeof tryOnUsageService : tryOnUsageService;
+
     // Checked before anything is started, so a shop out of allowance is told rather than charged.
     try {
-      await tryOnUsageService.assertWithinLimit(job.clientId);
+      if (!shotsOnly) await tryOnUsageService.assertWithinLimit(job.clientId);
     } catch (err: any) {
       await fail(safeMessage(err?.message, 'This shop has used its picture generations for the month.'), err?.message ?? err,
         { code: 'LIMIT', httpStatus: err?.statusCode });
@@ -319,6 +376,7 @@ export class PhotoJobRunner {
     let shotsSaved = 0;
     const shotsFailed: string[] = [];
     const shotsToCheck: string[] = [];
+    let shotsUnsaved = 0;   // made by the studio, but every size of the colour had gone
     let lastFrameAt = Date.now();
     // Pictures this run has replaced. Held until the very end -- see saveView.
     const superseded = new Set<string>();
@@ -344,8 +402,20 @@ export class PhotoJobRunner {
     heartbeat.unref?.();
 
     try {
-      const upstream = await catalogTryOnService.streamGenerateCatalog(
-        {
+      // More photos of the same saree: the pallu and border are copied from them, not guessed.
+      const extras = job.extraSourceUrls?.length ? { sareeExtras: job.extraSourceUrls } : {};
+      const upstream = await catalogTryOnService.streamGenerateCatalog(shotsOnly
+        ? {
+          // A saree's 3 product photos only: no model, so no modelId; its own front view where it has one.
+          category: 'SAREE',
+          saree: job.sourceImageUrl,
+          ...extras,
+          ...(job.referenceUrls && typeof job.referenceUrls === 'object' ? job.referenceUrls : {}),
+          ...(job.frontViewUrl ? { frontView: job.frontViewUrl } : {}),
+          productShotsOnly: true,
+          clientId: jobKeyFor(job.clientId, job.jobKey)
+        }
+        : {
           modelId: job.modelId,
           category: job.category,
           // A URL, not bytes: the far end fetches it itself.
@@ -370,6 +440,7 @@ export class PhotoJobRunner {
             : {}),
           // A saree's three views also make the 3 product photos (no model): the studio's own flag.
           ...(job.productShots ? { productShots: true } : {}),
+          ...extras,
           // The job's name at the far end, which is also what cancelling it has to say. The
           // tenant is put in front here and never by whoever asked for the job.
           clientId: jobKeyFor(job.clientId, job.jobKey)
@@ -380,16 +451,16 @@ export class PhotoJobRunner {
 
       if (!upstream.ok || !upstream.body) {
         const text = await upstream.text().catch(() => '');
-        void tryOnUsageService.record(job.clientId, { started: true, failed: true, colour: isColour });
+        void usage.record(job.clientId, { started: true, failed: true, colour: isColour });
         // Kept where we can read it; the shop is told the one thing they can act on. The far
         // end's own words go in the log, never on a shop owner's screen.
         console.error(`[photo-jobs] ${job.id}: upstream refused (${upstream.status}):`, text.slice(0, 500));
-        await fail('The photo studio could not be reached just now. Your photos are safe -- please try again in a minute.',
-          text || `HTTP ${upstream.status} with no body`, { httpStatus: upstream.status, code: 'STUDIO_REFUSED' });
+        await fail(studioRefusal(upstream.status, text),
+          text || `HTTP ${upstream.status} with no body`, { httpStatus: upstream.status, code: upstream.status === 402 ? 'STUDIO_LIMIT' : 'STUDIO_REFUSED' });
         return;
       }
 
-      void tryOnUsageService.record(job.clientId, { started: true, colour: isColour });
+      void usage.record(job.clientId, { started: true, colour: isColour });
 
       const reader = upstream.body.getReader();
       const decoder = new TextDecoder('utf-8');
@@ -446,6 +517,7 @@ export class PhotoJobRunner {
                 continue;
               }
               const saved = await saveView(job, shot, data.image, superseded, true);
+              if (saved === 0) shotsUnsaved++;
               if (saved > 0) {
                 shotsSaved++;
                 // The studio sends its best try even when a difference remained after two redos: kept, and said.
@@ -455,7 +527,7 @@ export class PhotoJobRunner {
             } else if (data.type === 'ERROR') {
               // The far end's wording is written for whoever built it. Through the same gate as
               // every other message before it can reach a shop owner's screen.
-              upstreamError = safeMessage(data.error, 'The photo studio could not finish this one. Please try again.');
+              upstreamError = studioWords(data);
               upstreamRaw = typeof data.error === 'string' ? data.error : JSON.stringify(data);
               break reading;
             } else if (data.type === 'COMPLETE') {
@@ -466,20 +538,20 @@ export class PhotoJobRunner {
       }
 
       if (stopped) {
-        void tryOnUsageService.record(job.clientId, { cancelled: true, colour: isColour });
-        await finish(job.id, 'CANCELLED', stoppedMessage(viewsSaved));
+        void usage.record(job.clientId, { cancelled: true, colour: isColour });
+        await finish(job.id, 'CANCELLED', stoppedMessage(viewsSaved, shotsSaved));
         return;
       }
 
       if (stalled) {
-        void tryOnUsageService.record(job.clientId, { failed: true, colour: isColour });
+        void usage.record(job.clientId, { failed: true, colour: isColour });
         await fail('The photo studio stopped responding. Please try this one again.',
           `No frame for ${STALL_AFTER_MS / 60000} minutes; the stream was given up (${viewsSaved} view(s) saved).`, { code: 'STALLED' });
         return;
       }
 
       if (upstreamError) {
-        void tryOnUsageService.record(job.clientId, { failed: true, viewsGenerated: viewsSaved, colour: isColour });
+        void usage.record(job.clientId, { failed: true, viewsGenerated: viewsSaved, colour: isColour });
         // Partial work is kept and SAID. Three of four is a real outcome, and a shop that is
         // told "it failed" when three photographs are sitting there will not go and look.
         await fail(viewsSaved > 0
@@ -488,14 +560,23 @@ export class PhotoJobRunner {
         return;
       }
 
-      if (viewsSaved === 0) {
-        void tryOnUsageService.record(job.clientId, { failed: true, colour: isColour });
+      if (shotsOnly && shotsSaved === 0) {
+        await fail(shotsUnsaved
+          ? 'The product photos were made, but there was nowhere to save them: that colour seems to have been removed.'
+          : shotsFailed.length
+            ? 'The photo studio could not make the product photos this time. Please try again.'
+            : 'The photo studio finished without sending any product photos. Please try again.',
+          `Product shots only: none saved (failed: ${shotsFailed.join(', ') || 'none sent'}).`, { code: 'NO_IMAGE' });
+        return;
+      }
+      if (!shotsOnly && viewsSaved === 0) {
+        void usage.record(job.clientId, { failed: true, colour: isColour });
         await fail('The photo studio finished without sending any photographs. Please try again.',
           'The stream ended without a single VIEW_READY.', { code: 'NO_IMAGE' });
         return;
       }
 
-      void tryOnUsageService.record(job.clientId, { completed: true, viewsGenerated: viewsSaved, colour: isColour });
+      void usage.record(job.clientId, { completed: true, viewsGenerated: viewsSaved, colour: isColour });
       // The views first; then the product shots, only where something about them is worth saying.
       const notes: string[] = [];
       if (viewsSaved < job.viewsTotal) notes.push(`${viewsSaved} of ${job.viewsTotal} views were made. Run it again if you want the rest.`);
@@ -509,12 +590,12 @@ export class PhotoJobRunner {
 
     } catch (err: any) {
       if (stopped) {
-        void tryOnUsageService.record(job.clientId, { cancelled: true, colour: isColour });
-        await finish(job.id, 'CANCELLED', stoppedMessage(viewsSaved));
+        void usage.record(job.clientId, { cancelled: true, colour: isColour });
+        await finish(job.id, 'CANCELLED', stoppedMessage(viewsSaved, shotsSaved));
         return;
       }
       console.error(`[photo-jobs] ${job.id} failed:`, err?.message);
-      void tryOnUsageService.record(job.clientId, { failed: true, viewsGenerated: viewsSaved, colour: isColour });
+      void usage.record(job.clientId, { failed: true, viewsGenerated: viewsSaved, colour: isColour });
       await fail(safeMessage(
         err?.message,
         'Something went wrong while making these photographs. Please try again.'
