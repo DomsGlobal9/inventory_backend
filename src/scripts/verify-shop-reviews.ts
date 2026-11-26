@@ -24,6 +24,8 @@ if (!String(process.env.SUPABASE_URL || '').includes('127.0.0.1:18200')) {
   process.exit(2);
 }
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import http from 'node:http';
 import sharp from 'sharp';
 import { prisma } from '../lib/prisma';
@@ -37,9 +39,12 @@ const check = (name: string, ok: boolean, detail?: unknown) => {
   else { failed++; failures.push(name); console.log(`  FAIL ${name}${detail !== undefined ? ` -- ${JSON.stringify(detail).slice(0, 400)}` : ''}`); }
 };
 const C = 'verify-suites-tenant', SLUG = 'localshop';
-const LOCATION = '0e3adb72-1143-4b80-b92b-bbbb2612fe19';
+// The test shop's online-shop store, looked up (a fixed id went stale when the shared test shop was remade).
+let LOCATION = '';
+const WA_STANDIN = 'http://127.0.0.1:18199';
 const STAMP = String(Date.now()).slice(-6);
-const CODES = 'C:/Users/HP/AppData/Local/Temp/claude/D--villy-inventory/9bd5afd2-c77c-4f44-bec2-3d5913e47e09/scratchpad/codes.jsonl';
+// What the suite server's WhatsApp stand-in received (src/scripts/support/suite-server.mjs), one JSON line each.
+const CODES = process.env.WHATSAPP_STANDIN_LOG || path.join(os.tmpdir(), 'scaleezy-suite-standins', 'whatsapp.jsonl');
 const P1 = `90010${STAMP.slice(-5)}`, P2 = `90020${STAMP.slice(-5)}`, P3 = `90030${STAMP.slice(-5)}`;
 const plus = (p: string) => `+91${p}`;
 
@@ -76,6 +81,10 @@ const prove = async (phone: string) => {
 };
 
 async function main() {
+  // The suite server's WhatsApp stand-in treats shops as not linked unless told: this suite's shop sends codes.
+  await fetch(`${WA_STANDIN}/standin/link/${encodeURIComponent(C)}`, { method: 'POST' }).catch(() => undefined);
+  const shopRow = await prisma.onlineShop.findUnique({ where: { clientId: C }, select: { locationIds: true } });
+  LOCATION = shopRow?.locationIds?.[0] ?? (await prisma.stockLocation.findFirstOrThrow({ where: { clientId: C, type: 'STORE' as any, active: true }, select: { id: true } })).id;
   const was = await prisma.onlineShop.findFirstOrThrow({ where: { clientId: C }, select: { id: true, acceptsOrders: true, payOnDelivery: true, reviews: true, accounts: true } });
   await prisma.onlineShop.update({ where: { id: was.id }, data: { acceptsOrders: true, payOnDelivery: true, reviews: true, accounts: true } });
   const made: string[] = [];
@@ -279,6 +288,7 @@ async function main() {
     check('...and it tells its pages so', r.body?.data?.reviews === false, r.body?.data?.reviews);
     await prisma.onlineShop.update({ where: { id: was.id }, data: { reviews: true } });
   } finally {
+    await fetch(`${WA_STANDIN}/standin/unlink/${encodeURIComponent(C)}`, { method: 'POST' }).catch(() => undefined);
     await prisma.onlineShop.update({ where: { id: was.id }, data: { acceptsOrders: was.acceptsOrders, payOnDelivery: was.payOnDelivery, reviews: was.reviews, accounts: was.accounts } });
     await prisma.shopReview.deleteMany({ where: { productId: { in: made } } });
     await prisma.product.updateMany({ where: { id: { in: made } }, data: { status: 'ARCHIVED' as any } });

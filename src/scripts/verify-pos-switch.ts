@@ -28,7 +28,8 @@ for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
 if (!/localhost|127\.0\.0\.1/.test(BASE)) { console.error('Refusing: VERIFY_API_URL is not a local server.'); process.exit(2); }
 const PUBLIC = fs.readFileSync('dev-keys/inventory-public.pem', 'utf8');
 const KID = 'inv-local-dev';
-const POS_PORT = 4007;
+// Where the server under test sends POS calls (the suite server: 4197; the old setup: 4007 with POS's own server stopped).
+const POS_PORT = Number(new URL(process.env.POS_API_URL || 'http://localhost:4007/api/v1').port);
 const CONSOLE = execSync('npx tsx src/scripts/print-local-console-token.ts', { env: process.env, encoding: 'utf8' }).match(/eyJ[A-Za-z0-9._-]+/)![0];
 const btqKey = fs.readFileSync(`${process.env.BOUTIQUE_KEY_DIR}/private.pem`, 'utf8');
 
@@ -44,6 +45,8 @@ type Call = { path: string; body: any; claims: any; header: any; keyWorks?: bool
 const calls: Call[] = [];
 let refuseNext: string | null = null;
 const onShops = new Set<string>();
+const owners = new Map<string, { shopName: string | null; email: string | null }>();
+const heldKeys = new Map<string, string>();   // the till key POS keeps per shop, like POS's own store of it
 const pos = http.createServer((req, res) => {
   let raw = '';
   req.on('data', c => { raw += c; });
@@ -60,17 +63,28 @@ const pos = http.createServer((req, res) => {
       call.problem = 'claims'; return send(401, { message: 'Bad pass.' });
     }
     const path = String(req.url).replace(/^\/api\/v1\/from-inventory\/pos/, '');
-    if (path === '/status') return send(200, { posOn: onShops.has(c.clientId), shop: c.clientId });
+    // Like POS's status since 25 Nov: when on, the shop, where it bills and how its owner signs in.
+    if (path === '/status') return send(200, onShops.has(c.clientId)
+      ? { posOn: true, shop: { id: c.clientId, name: owners.get(c.clientId)?.shopName ?? c.clientId }, posAddress: 'http://pos.local', owner: { signInWith: owners.get(c.clientId)?.email ?? null } }
+      : { posOn: false, shop: c.clientId });
     if (path === '/disable') { onShops.delete(c.clientId); return send(200, { posOn: false }); }
     if (path === '/owner-link') return send(200, { ownerLink: `http://pos.local/welcome/${S}${call.body?.reset ? '?reset' : ''}` });
     if (path === '/enable') {
       if (refuseNext) { const m = refuseNext; refuseNext = null; return send(409, { message: m }); }
+      // Like POS since the one switch (26 Nov 2026): Inventory sends a key only when it made a fresh one; with none, POS
+      // uses the key it already holds for the shop, and with none held it answers NO_TILL_KEY (Inventory then makes one).
+      // A client whose picture has no Inventory (a POS-only shop) is run by POS with no Inventory link, so no key.
+      const posOnly = Array.isArray(call.body?.modules) && !call.body.modules.includes('inventory');
+      const key = call.body?.tillKey ?? heldKeys.get(c.clientId) ?? null;
+      if (!key && !posOnly) return send(409, { message: 'POS needs a till key for this shop.', details: { code: 'NO_TILL_KEY' } });
       // Like POS: the key must really open THIS shop's catalogue at Inventory.
-      const r = await axios.get(`${BASE}/pos/v1/catalogue?limit=1`, { headers: { 'x-storefront-key': call.body?.tillKey ?? '' }, validateStatus: () => true });
+      const r = key ? await axios.get(`${BASE}/pos/v1/catalogue?limit=1`, { headers: { 'x-storefront-key': key }, validateStatus: () => true }) : { status: 200, data: null };
+      if (key && r.status === 200) heldKeys.set(c.clientId, key);
       call.keyWorks = r.status === 200;
-      if (!call.keyWorks) return send(409, { message: 'That till key does not open the shop.' });
+      if (!call.keyWorks) return send(409, { message: `That till key does not open the shop (Inventory said ${r.status}: ${r.data?.message ?? ''}).` });
       if (!onShops.has(c.clientId) && !call.body?.owner?.name) return send(409, { message: 'Say who the owner is: a new POS shop needs its owner.' });
       onShops.add(c.clientId);
+      owners.set(c.clientId, { shopName: call.body?.shopName ?? call.body?.shop?.name ?? null, email: call.body?.owner?.email ?? null });
       return send(200, { posOn: true, shop: c.clientId, posAddress: 'http://pos.local', owner: call.body?.owner ?? null, ownerLink: `http://pos.local/welcome/${S}`, made: true });
     }
     send(404, { message: 'No such door.' });

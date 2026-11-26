@@ -21,7 +21,9 @@ import { paymentAccounts } from '../services/payments/account.service';
 import { applyWebhook } from '../services/payments/online-payment.service';
 
 const API = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
-const SHOP = 'sphl';
+// sphl when this copy has it with a store; else the shared test shop (26 Nov 2026: a local copy's sphl had no store).
+let SHOP = 'sphl';
+const STANDIN_KEY = 'rzp_test_SuiteStandIn001';
 const NO_ACCOUNT = 'pos-e2e-1791196721613';
 const STAMP = Date.now();
 let passed = 0, failed = 0;
@@ -29,10 +31,25 @@ const check = (name: string, ok: boolean, detail = '') => { if (ok) { passed++; 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function main() {
-  const account = await prisma.shopPaymentAccount.findUniqueOrThrow({ where: { clientId: SHOP } });
+  if (!(await prisma.stockLocation.findFirst({ where: { clientId: SHOP, type: 'STORE' as any, active: true }, select: { id: true } }))) SHOP = 'verify-suites-tenant';
+  console.log(`shop: ${SHOP}`);
+  // No Razorpay account for sphl on this copy (26 Nov 2026): against the suite server (RAZORPAY_API_URL = its Razorpay
+  // stand-in) a TEST one is made for the run and removed after. Never with real keys, never against real Razorpay.
+  const STANDIN = String(process.env.RAZORPAY_API_URL || '');
+  let madeAccount = false;
+  // A run that crashed may have left its stand-in account behind (on any shop): cleared first, it is only ever ours.
+  await prisma.shopPaymentAccount.deleteMany({ where: { keyId: STANDIN_KEY } });
+  let found = await prisma.shopPaymentAccount.findUnique({ where: { clientId: SHOP } });
+  if (!found && STANDIN.includes('127.0.0.1:18300')) {
+    await paymentAccounts.save(SHOP, null, { keyId: STANDIN_KEY, keySecret: 'suiteStandInSecret0123456789' }, API);
+    found = await prisma.shopPaymentAccount.findUnique({ where: { clientId: SHOP } });
+    madeAccount = true;
+  }
+  if (!found) throw new Error('sphl has no Razorpay TEST account here, and RAZORPAY_API_URL is not the suite server\'s stand-in (run against backend-suites-4046).');
+  const account = found;
   if (account.mode !== 'TEST') throw new Error('sphl is not on TEST keys -- this suite never runs against live keys.');
   const wasOn = account.upiQrEnabled;
-  const rzp = axios.create({ baseURL: 'https://api.razorpay.com/v1', auth: { username: account.keyId, password: decryptCredential(account.keySecretEncrypted) }, validateStatus: () => true });
+  const rzp = axios.create({ baseURL: STANDIN.includes('127.0.0.1:18300') ? STANDIN : 'https://api.razorpay.com/v1', auth: { username: account.keyId, password: decryptCredential(account.keySecretEncrypted) }, validateStatus: () => true });
 
   const store = await prisma.stockLocation.findFirstOrThrow({ where: { clientId: SHOP, type: 'STORE' as any, active: true } });
   const till = await posConnectionService.create(SHOP, { locationId: store.id, name: `UPI QR test ${STAMP}` });
@@ -115,10 +132,11 @@ async function main() {
     await posConnectionService.disconnect(SHOP, till.id).catch(() => undefined);
     if (otherTill) await posConnectionService.disconnect(NO_ACCOUNT, otherTill.id).catch(() => undefined);
     await prisma.posUpiQr.deleteMany({ where: { clientId: SHOP, idempotencyKey: { endsWith: `-${STAMP}` } } }).catch(() => undefined);
-    console.log(`\nswitch left off (it was ${wasOn ? 'on' : 'off'}); test till keys removed`);
+    if (madeAccount) await prisma.shopPaymentAccount.deleteMany({ where: { keyId: STANDIN_KEY } }).catch(() => undefined);
+    console.log(`\nswitch left off (it was ${wasOn ? 'on' : 'off'}); test till keys removed${madeAccount ? '; the stand-in TEST account removed' : ''}`);
   }
   console.log(`\nRESULT: ${passed} passed | ${failed} failed`);
   await prisma.$disconnect();
   process.exit(failed ? 1 : 0);
 }
-main().catch(async e => { console.log('CRASHED:', e?.stack ?? e); await prisma.$disconnect(); process.exit(1); });
+main().catch(async e => { console.log('CRASHED:', e?.stack ?? e); await prisma.shopPaymentAccount.deleteMany({ where: { keyId: STANDIN_KEY } }).catch(() => undefined); await prisma.$disconnect(); process.exit(1); });

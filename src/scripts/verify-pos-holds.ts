@@ -310,7 +310,16 @@ async function main() {
     const j0 = await shopOf();
     check('  ...0 days and ₹0 stay 0 (every return needs a manager), never read as "no limit"', j0?.returns?.windowDays === 0 && j0?.returns?.staffMaxPaise === 0, JSON.stringify(j0?.returns));
     // A real stored logo (uploads are kept as WebP): the till's PDF gets a PNG copy through the till door.
-    const realLogo = (await prisma.clientSettings.findUnique({ where: { clientId: 'sphl' }, select: { logoUrl: true } }))?.logoUrl;
+    let realLogo = (await prisma.clientSettings.findUnique({ where: { clientId: 'sphl' }, select: { logoUrl: true } }))?.logoUrl;
+    // No stored logo on this copy (26 Nov 2026): against the suite server, put a real WebP into its storage stand-in.
+    const STANDIN = String(process.env.SUPABASE_URL || '');
+    if (!realLogo && STANDIN.includes('127.0.0.1:18200')) {
+      const sharp = (await import('sharp')).default;
+      const webp = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#1b5e20' } }).webp().toBuffer();
+      const key = `inventory-images/${CLIENT}/logo-test-${Date.now()}.webp`;
+      const up = await fetch(`${STANDIN}/storage/v1/object/${key}`, { method: 'POST', headers: { 'content-type': 'image/webp' }, body: webp });
+      if (up.ok) realLogo = `${STANDIN}/storage/v1/object/public/${key}`;
+    }
     if (realLogo) {
       await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { logoUrl: realLogo } });
       const jl = await shopOf();
@@ -321,7 +330,7 @@ async function main() {
       const noKey = jl?.shop?.logoPrintUrl ? await axios.get(jl.shop.logoPrintUrl, { validateStatus: () => true }) : null;
       check('  ...and only with a till key', noKey?.status === 401 || noKey?.status === 403, String(noKey?.status));
     } else {
-      check('a real stored logo to convert exists (sphl)', false, 'sphl has no logo');
+      check('a real stored logo to convert exists (sphl, or the suite server\'s storage stand-in)', false, 'sphl has no logo and SUPABASE_URL is not the stand-in (run against backend-suites-4046)');
     }
     await prisma.clientSettings.update({ where: { clientId: CLIENT }, data: { gstNumber: '29ABCDE1234F1Z5' } });
     const j2 = await shopOf();

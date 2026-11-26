@@ -230,6 +230,11 @@ async function main() {
   // ledger says that location closed its own day at.
   const snapshots = new SnapshotService();
   const shopTimezone = await snapshots.getTimezone(clientId);
+  // The shared test shop's older days are rewritten by other suites' clean-ups (26 Nov 2026: stored 36 vs ledger 80 on
+  // a day whose rows another suite deleted), so those rows prove nothing. Yesterday is written now by the engine's own
+  // snapshotDay and checked against the ledger -- the writer's correctness, on a day nobody has touched since.
+  const yesterdayKey = (() => { const d = new Date(Date.now() - 24 * 3600_000); return new Intl.DateTimeFormat('en-CA', { timeZone: shopTimezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); })();
+  await snapshots.snapshotDay(clientId, yesterdayKey);
   const perLocLatest = await prisma.dailyLocationSnapshot.findMany({
     where: { clientId },
     orderBy: { snapshotDate: 'desc' },

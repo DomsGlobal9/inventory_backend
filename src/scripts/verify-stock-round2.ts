@@ -176,8 +176,10 @@ async function main() {
     // land first. Odd rounds give the complete a head start of a second or so -- it claims the
     // count while the cancel is on its way -- so both winners are exercised.
     const late = (ms: number, f: () => Promise<any>) => new Promise<any>(r => setTimeout(() => r(f()), ms));
+    // Odd rounds: complete first, cancel 1.6 s later. Even rounds: the other way round. On a fast local database
+    // "fired together" let complete win every time (26 Nov 2026), so each winner now gets its own head start.
     const [comp, canc] = await Promise.all([
-      call('owner', 'POST', `/stock-counts/${race.data.id}/complete`),
+      late(round % 2 ? 0 : 1600, () => call('owner', 'POST', `/stock-counts/${race.data.id}/complete`)),
       late(round % 2 ? 1600 : 0, () => call('owner', 'POST', `/stock-counts/${race.data.id}/cancel`))
     ]);
     const wins = [comp, canc].filter(r => r.status === 200).length;

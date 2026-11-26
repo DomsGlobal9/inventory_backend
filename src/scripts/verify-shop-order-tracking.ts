@@ -74,6 +74,10 @@ const page = (token: string) => shopCall('GET', `/_api/shop/${SLUG}/orders/${tok
   const parcelIds: string[] = [];
   const store = await prisma.stockLocation.findUniqueOrThrow({ where: { id: ids.locationId }, select: { address: true, phone: true } });
   const hadLogistics = !!(await prisma.moduleSubscription.findUnique({ where: { clientId_module: { clientId: C, module: 'logistics' } } }));
+  // The shared test shop may carry the Platform Console's "logistics OFF" (another suite's one-switch round). That
+  // switch rightly refuses a module turning its own feed on (module_off), so it is set ON for this run and put back.
+  const consoleLogistics = await prisma.clientModule.findUnique({ where: { clientId_module: { clientId: C, module: 'logistics' } } });
+  if (consoleLogistics && !consoleLogistics.on) await prisma.clientModule.update({ where: { clientId_module: { clientId: C, module: 'logistics' } }, data: { on: true } });
 
   const variant = await prisma.productVariant.findFirstOrThrow({ where: { clientId: C, product: { status: 'ACTIVE', trashedAt: null } }, orderBy: { sku: 'asc' }, select: { id: true } });
   const have = (await prisma.inventoryStock.findFirst({ where: { clientId: C, variantId: variant.id, locationId: ids.locationId } }))?.quantity ?? 0;
@@ -209,6 +213,7 @@ const page = (token: string) => shopCall('GET', `/_api/shop/${SLUG}/orders/${tok
   } finally {
     await prisma.stockLocation.update({ where: { id: ids.locationId }, data: { address: store.address, phone: store.phone } }).catch(x => console.log('left the store address', x.message));
     if (!hadLogistics) await prisma.moduleSubscription.deleteMany({ where: { clientId: C, module: 'logistics' } }).catch(() => null);
+    if (consoleLogistics && !consoleLogistics.on) await prisma.clientModule.update({ where: { clientId_module: { clientId: C, module: 'logistics' } }, data: { on: false } }).catch(x => console.log('left the Console switch on', x.message));
     await prisma.moduleEvent.deleteMany({ where: { clientId: C, module: 'logistics', createdAt: { gte: started } } }).catch(() => null);
     await prisma.logisticsParcel.deleteMany({ where: { id: { in: parcelIds } } }).catch(x => console.log('left parcels', x.message));
     await prisma.onlineShopOrder.deleteMany({ where: { salesOrderId: { in: orders } } }).catch(x => console.log('left shop orders', x.message));

@@ -22,9 +22,10 @@ import { prisma } from '../lib/prisma';
 import { grants, holdsEverything } from '../config/permissions';
 
 const API = process.env.TEST_API_URL || 'http://localhost:4006/api/v1';
-const CLIENT = 'sphl';
 const STAMP = Date.now();
 const tokens: Record<string, string> = JSON.parse(fs.readFileSync(process.env.ROLE_TOKENS!, 'utf8'));
+// The shop the role tokens sign in to (their own clientId), so the calls and the rows are always the same shop.
+const CLIENT: string = JSON.parse(Buffer.from(tokens.SUPER_ADMIN.split('.')[1], 'base64url').toString()).clientId;
 let passed = 0, failed = 0;
 const check = (name: string, ok: boolean, detail = '') => {
   if (ok) { passed++; console.log(`  ok   ${name}`); } else { failed++; console.log(`  FAIL ${name} -- ${detail}`); }
@@ -32,12 +33,18 @@ const check = (name: string, ok: boolean, detail = '') => {
 const as = (role: string) => axios.create({ baseURL: API, headers: { Cookie: `token=${tokens[role]}` }, validateStatus: () => true });
 const brief = (r: any) => `${r.status} ${JSON.stringify(r.data).slice(0, 200)}`;
 const made: string[] = [];
+let madeCustomer: string | null = null;
 
 async function main() {
   console.log(`\nMoney collected later, and kept orders past their date, on sphl (temporary orders, stamp ${STAMP})\n`);
   const owner = as('SUPER_ADMIN');
   const store = await prisma.stockLocation.findFirstOrThrow({ where: { clientId: CLIENT, active: true }, orderBy: { createdAt: 'asc' }, select: { id: true } });
-  const customer = await prisma.customer.findFirstOrThrow({ where: { clientId: CLIENT, deletedAt: null }, select: { id: true } });
+  // sphl's customers live in CRM now (19 Nov 2026), so a local copy may hold none: then a temporary one, removed after.
+  let customer = await prisma.customer.findFirst({ where: { clientId: CLIENT, deletedAt: null }, select: { id: true } });
+  if (!customer) {
+    customer = await prisma.customer.create({ data: { clientId: CLIENT, customerCode: `TEST-${STAMP}`, name: 'Test customer (verify-order-payments)' } as any, select: { id: true } });
+    madeCustomer = customer.id;
+  }
   const order = async (n: string, data: Record<string, unknown>) => {
     const o = await prisma.salesOrder.create({
       data: { clientId: CLIENT, locationId: store.id, customerId: customer.id, orderNumber: `TEST-${STAMP}-${n}`, channel: 'ONLINE', sourceSystem: 'SCALEEZY_SHOP', status: 'CONFIRMED', subtotal: 1500, total: 1500, ...data } as any
@@ -185,10 +192,11 @@ async function main() {
     await prisma.salesOrderPayment.deleteMany({ where: w });
     const gone = await prisma.salesOrder.deleteMany({ where: { id: { in: made }, clientId: CLIENT } });
     console.log(`\ntemporary orders removed: ${gone.count} of ${made.length}`);
+    if (madeCustomer) await prisma.customer.delete({ where: { id: madeCustomer } }).catch(() => undefined);
   }
   console.log(`\n${passed} passed, ${failed} failed`);
   await prisma.$disconnect();
   process.exit(failed ? 1 : 0);
 }
 
-main().catch(async e => { console.error(e); await prisma.salesOrderPayment.deleteMany({ where: { salesOrderId: { in: made } } }); await prisma.salesOrder.deleteMany({ where: { id: { in: made }, clientId: CLIENT } }); process.exit(1); });
+main().catch(async e => { console.error(e); await prisma.salesOrderPayment.deleteMany({ where: { salesOrderId: { in: made } } }); await prisma.salesOrder.deleteMany({ where: { id: { in: made }, clientId: CLIENT } }); if (madeCustomer) await prisma.customer.delete({ where: { id: madeCustomer } }).catch(() => undefined); process.exit(1); });
