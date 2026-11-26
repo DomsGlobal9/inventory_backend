@@ -86,14 +86,21 @@ export class RazorpayGateway implements PaymentGateway {
   }
 
   /** Whose is this UPI ID (Razorpay's VPA check): the holder's name, or valid:false when UPI does not know it. */
-  async validateVpa(vpa: string): Promise<{ valid: boolean; name: string | null }> {
+  async validateVpa(vpa: string): Promise<{ valid: boolean | null; name: string | null }> {
     try {
       const { data } = await this.http.post('/payments/validate/vpa', { vpa });
       return { valid: data?.success === true, name: str(data?.customer_name) };
     } catch (e) {
       const err = e as AxiosError<any>;
-      // "Invalid VPA" comes back as a 400: an answer, not a failure.
-      if (err.response?.status === 400) return { valid: false, name: null };
+      if (err.response?.status === 400) {
+        // Only "Invalid VPA" is an answer about the ID. Razorpay sends other refusals as a 400 too (the check not
+        // switched on for the account, test mode, ...): those say nothing about the ID, so it is "not checked"
+        // (null) -- never a reason to turn away an owner's real UPI ID (seen live on SPHL, 26 Nov 2026).
+        const said = String(err.response?.data?.error?.description || '');
+        if (/invalid\s*(vpa|upi)|not\s+a\s+valid\s+(vpa|upi)/i.test(said)) return { valid: false, name: null };
+        console.warn(`[razorpay] UPI ID check not answered: ${said.slice(0, 160) || 'no reason given'}`);
+        return { valid: null, name: null };
+      }
       this.fail(e);
     }
   }

@@ -35,7 +35,8 @@ const server = http.createServer((req, res) => {
     if (req.method === 'POST' && path === '/orders') return send(200, { id: `order_${crypto.randomBytes(5).toString('hex')}`, amount: body.amount, currency: body.currency, status: 'created' });
     if (req.method === 'POST' && path === '/payments/validate/vpa') {
       fake.vpaCalls++;
-      return body.vpa === 'nobody@okhdfc' ? send(400, { error: { description: 'Invalid VPA' } }) : send(200, { vpa: body.vpa, success: true, customer_name: 'TEST HOLDER' });
+      if (body.vpa === 'unchecked@okhdfc') return send(400, { error: { code: 'BAD_REQUEST_ERROR', description: 'This feature is not enabled for this merchant.' } });
+      return body.vpa === 'nobody@okhdfc' ? send(400, { error: { description: 'Invalid VPA. Please enter a valid Virtual Payment Address' } }) : send(200, { vpa: body.vpa, success: true, customer_name: 'TEST HOLDER' });
     }
     if (req.method === 'GET' && /^\/orders\/[^/]+\/payments/.test(path)) return send(200, { items: [] });
     return send(404, { error: { description: 'Not found' } });
@@ -258,6 +259,12 @@ async function main() {
     ok('with Razorpay connected, a UPI ID UPI does not know is refused', nobody?.statusCode === 400 && /UPI does not know nobody@okhdfc/.test(nobody.message), nobody?.message);
     const named = await upi.saveUpiSettings(clientId, { way: 'DIRECT', upiId: 'testshop@okhdfc', upiName: 'Test Shop' });
     ok("...and a real one comes back with its holder's name", named.holder === 'TEST HOLDER', named.holder);
+    // Razorpay refusing the CHECK (not the ID) -- as it did live for SPHL on 26 Nov -- must not turn away a real ID.
+    const unchecked = await errOf(() => upi.saveUpiSettings(clientId, { way: 'DIRECT', upiId: 'unchecked@okhdfc', upiName: 'Test Shop' }));
+    ok('Razorpay not answering the check ("not enabled"): the ID is saved anyway, no holder name', !unchecked, unchecked?.message);
+    const afterUnchecked = await upi.upiSettings(clientId);
+    ok('...and it is the one stored', afterUnchecked.upiId === 'unchecked@okhdfc', afterUnchecked.upiId);
+    await upi.saveUpiSettings(clientId, { way: 'DIRECT', upiId: 'testshop@okhdfc', upiName: 'Test Shop' });
     await upi.saveUpiSettings(clientId, { way: 'RAZORPAY' });
     await shopSvc.save(clientId, { payByUpi: true, payOnline: true });
     const w2 = (await checkout.orderingFor(clientId))!;

@@ -74,7 +74,7 @@ export async function saveUpiSettings(clientId: string, body: any) {
     const gateway = await paymentAccounts.gatewayFor(clientId).catch(() => null);
     if (gateway?.validateVpa) {
       const checked = await gateway.validateVpa(upiId).catch(() => null);
-      if (checked && !checked.valid) throw fail(400, `UPI does not know ${upiId}. Check it in your UPI app (Profile → UPI ID) and type it again.`);
+      if (checked && checked.valid === false) throw fail(400, `UPI does not know ${upiId}. Check it in your UPI app (Profile → UPI ID) and type it again.`);
       holder = checked?.name ?? null;
     }
   } else {
