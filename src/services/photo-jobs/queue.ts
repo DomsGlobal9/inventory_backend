@@ -1,4 +1,6 @@
 import { prisma } from '../../lib/prisma';
+import { tryOnUsageService, catalogMonthlyLimit } from '../tryon';
+import { safeMessage } from '../../lib/safeMessage';
 import { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER, isWanted, makesProductShots } from './catalog';
 
 /**
@@ -230,6 +232,22 @@ export class PhotoJobQueue {
 
     const wanted = [...new Set((req.colours || []).map(c => String(c || '').trim()).filter(Boolean))];
     if (wanted.length === 0) throw { statusCode: 400, message: 'Choose at least one colour to photograph.' };
+
+    /*
+     * The limits, at the press (26 Nov 2026): the shop is told now, and nothing is queued, rather than each job failing
+     * later. Two: this shop's allowance in Inventory's own console (not for product photos only, which are not
+     * counted), and the monthly limit ScaleEzy set for this shop's key in the Platform Console (the gateway refuses
+     * every generation past it, product photos only included, as they go to the same address).
+     */
+    if (req.kind !== 'SHOTS') {
+      await tryOnUsageService.assertWithinLimit(req.clientId).catch((e: any) => {
+        throw { statusCode: 429, message: safeMessage(e?.message, 'This shop has used its photo allowance for the month. Ask ScaleEzy to raise it.') };
+      });
+    }
+    const limit = await catalogMonthlyLimit(req.clientId);
+    if (limit?.reached) {
+      throw { statusCode: 402, code: 'MONTHLY_LIMIT_REACHED', message: "This month's photo limit is used up, so nothing was started. Ask ScaleEzy to raise the limit, then try again." };
+    }
 
     if (req.kind === 'SHOTS' && !makesProductShots(category)) {
       throw { statusCode: 400, message: 'Product photos are made for sarees only, for now.' };

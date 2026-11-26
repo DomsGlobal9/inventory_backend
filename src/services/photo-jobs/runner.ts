@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { env } from '../../config/env';
 import { safeMessage } from '../../lib/safeMessage';
-import { catalogTryOnService, tryOnUsageService, jobKeyFor, recordTryOnFailure } from '../tryon';
+import { catalogTryOnService, tryOnUsageService, jobKeyFor, recordTryOnFailure, forgetCatalogLimit } from '../tryon';
 import { imageService } from '../image.service';
 import { VIEW_ORDER, API_VIEW_TO_LOCAL, isWanted, PRODUCT_SHOTS, PRODUCT_SHOT_LABEL } from './catalog';
 
@@ -230,14 +230,41 @@ export function studioRefusal(status: number, body: string): string {
   if (status === 402 || code === 'MONTHLY_LIMIT_REACHED' || /month'?s limit|monthly limit/i.test(text)) {
     return "This month's photo limit is used up, so nothing was made or charged. Ask ScaleEzy to raise the limit, then try again.";
   }
+  if (status === 429 && /daily/i.test(text)) return "Today's limit for making photos is reached. Nothing was made or charged. Please try again tomorrow.";
   if (status === 429 && /per hour|hourly|generation limit/i.test(text)) {
     return `The hourly limit for making photos is used up. Nothing was made or charged. Please try again ${inMinutes}.`;
   }
   if (status === 429) return `The photo studio is busy just now. Nothing was made or charged. Please try again ${inMinutes}.`;
+  if (status === 403 && /suspended|disabled|inactive|not active/i.test(text)) return 'Making photos is paused for this shop. Ask ScaleEzy to switch it back on. Nothing was made or charged.';
+  if (status === 401 && /expired|revoked|inactive/i.test(text)) return "This shop's photo key has expired or was turned off. Ask ScaleEzy for a new one. Nothing was made or charged.";
   if (status === 401 || status === 403) return 'Making photos is not set up for this shop yet. Ask ScaleEzy to switch it on. Nothing was made or charged.';
+  if (status === 503) return `The photo studio is busy just now. Nothing was made or charged. Please try again ${inMinutes}.`;
+  if (status === 504) return 'The photo studio took too long to answer. Nothing was charged. Please try again.';
+  if (status === 413) return 'That photo is too large for the photo studio. Choose a smaller photo of this saree and try again.';
   if (code === 'ALREADY_DELIVERED' || status === 409) return 'These photos were already made. Open the Images tab to see them.';
   if (status === 400 || status === 413 || status === 424) return 'The photo studio could not use these photos. Choose another photo of this saree and try again. Nothing was made or charged.';
   return 'The photo studio could not be reached just now. Your photos are safe -- please try again in a minute.';
+}
+
+/**
+ * What a refusal before the stream means for the job: WAIT and try again (busy, a daily or short-burst limit), REFUSED
+ * for every job of this shop until someone changes something (the monthly limit, a key or shop switched off), or
+ * OTHER (this one job: a bad photo, a gateway page).
+ */
+export function refusalKind(status: number, body: string): { kind: 'WAIT'; waitMs: number; why: string } | { kind: 'REFUSED' } | { kind: 'OTHER' } {
+  let j: any = null;
+  try { j = JSON.parse(body); } catch { /* not JSON */ }
+  const code = String(j?.error?.code ?? j?.code ?? '');
+  const text = String(j?.error?.message ?? j?.message ?? j?.error ?? '');
+  const after = Number(j?.retryAfterSec ?? j?.error?.retryAfterSec);
+  const sec = (fallback: number) => (Number.isFinite(after) && after > 0 ? Math.min(after, 6 * 3600) : fallback) * 1000;
+  if (status === 402 || code === 'MONTHLY_LIMIT_REACHED') return { kind: 'REFUSED' };
+  if (status === 401 || status === 403 || code === 'UNAUTHORIZED_API_KEY' || code === 'ACCESS_DENIED') return { kind: 'REFUSED' };
+  if (status === 429 && /daily/i.test(text)) return { kind: 'WAIT', waitMs: sec(60 * 60), why: "Today's limit for making photos is reached." };
+  if (status === 429 && /per hour|hourly/i.test(text)) return { kind: 'WAIT', waitMs: sec(20 * 60), why: 'The hourly limit for making photos is reached.' };
+  if (status === 429) return { kind: 'WAIT', waitMs: sec(5 * 60), why: 'The photo studio asked us to slow down.' };
+  if (status === 503 || code === 'SERVICE_BUSY' || code === 'SERVICE_UNAVAILABLE') return { kind: 'WAIT', waitMs: sec(2 * 60), why: 'The photo studio is busy just now.' };
+  return { kind: 'OTHER' };
 }
 
 /**
@@ -304,6 +331,7 @@ export class PhotoJobRunner {
     const rows = await prisma.$queryRaw<{ id: string }[]>`
       SELECT j."id" FROM "photo_jobs" j
       WHERE j."status" = 'QUEUED'
+        AND (j."not_before" IS NULL OR j."not_before" <= now())
         ${scope}
         AND NOT EXISTS (
           SELECT 1 FROM "photo_jobs" r
@@ -318,6 +346,8 @@ export class PhotoJobRunner {
       where: { id: rows[0].id, status: 'QUEUED' },
       data: {
         status: 'RUNNING',
+        notBefore: null,
+        message: null,
         startedAt: new Date(),
         heartbeatAt: new Date(),
         attempts: { increment: 1 }
@@ -451,12 +481,39 @@ export class PhotoJobRunner {
 
       if (!upstream.ok || !upstream.body) {
         const text = await upstream.text().catch(() => '');
-        void usage.record(job.clientId, { started: true, failed: true, colour: isColour });
+        const verdict = refusalKind(upstream.status, text);
+        // Busy, or a daily / short-burst limit: not a failure. The job waits and tries again by itself.
+        if (verdict.kind === 'WAIT') {
+          const waited = Date.now() - new Date(job.createdAt).getTime();
+          if (waited < 24 * 60 * 60_000) {
+            const at = new Date(Date.now() + verdict.waitMs);
+            await prisma.photoJob.update({
+              where: { id: job.id },
+              // The wait is not an attempt: a job that waits twice must not be given up as if it had broken twice.
+              data: { status: 'QUEUED', notBefore: at, startedAt: null, heartbeatAt: null, attempts: Math.max(0, job.attempts - 1),
+                message: `${verdict.why} It tries again by itself at ${at.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' })}.` }
+            }).catch(() => undefined);
+            console.warn(`[photo-jobs] ${job.id}: studio said wait (${upstream.status}); again at ${at.toISOString()}`);
+            return;
+          }
+        }
+        // Nothing was made: a refusal is never counted against the shop's allowance.
+        if (verdict.kind !== 'REFUSED') void usage.record(job.clientId, { started: true, failed: true, colour: isColour });
         // Kept where we can read it; the shop is told the one thing they can act on. The far
         // end's own words go in the log, never on a shop owner's screen.
         console.error(`[photo-jobs] ${job.id}: upstream refused (${upstream.status}):`, text.slice(0, 500));
-        await fail(studioRefusal(upstream.status, text),
-          text || `HTTP ${upstream.status} with no body`, { httpStatus: upstream.status, code: upstream.status === 402 ? 'STUDIO_LIMIT' : 'STUDIO_REFUSED' });
+        const shown = studioRefusal(upstream.status, text);
+        await fail(shown, text || `HTTP ${upstream.status} with no body`, { httpStatus: upstream.status, code: upstream.status === 402 ? 'STUDIO_LIMIT' : 'STUDIO_REFUSED' });
+        // A limit, or a shop the gateway will not serve: every other job of this shop waiting in line would be refused
+        // the same way. Stopped now, in one go, with the same sentence -- one notice, not one per saree.
+        if (verdict.kind === 'REFUSED') {
+          if (upstream.status === 402) forgetCatalogLimit();
+          const stoppedRest = await prisma.photoJob.updateMany({
+            where: { clientId: job.clientId, status: 'QUEUED', id: { not: job.id } },
+            data: { status: 'FAILED', message: `Not started. ${shown}`, finishedAt: new Date() }
+          });
+          if (stoppedRest.count) console.warn(`[photo-jobs] ${job.id}: ${stoppedRest.count} waiting job(s) of ${job.clientId} stopped: ${upstream.status}`);
+        }
         return;
       }
 

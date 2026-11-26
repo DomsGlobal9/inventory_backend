@@ -13,7 +13,7 @@
  * Importers take this folder, not the files inside it, so the split above can change without
  * every caller in the codebase changing with it.
  */
-export { catalogTryOnService } from './gateway.service';
+export { catalogTryOnService, catalogMonthlyLimit, forgetCatalogLimit } from './gateway.service';
 export { serviceCredentialService } from './credential.service';
 export type { CredentialSummary } from './credential.service';
 export { tryOnUsageService } from './usage.service';

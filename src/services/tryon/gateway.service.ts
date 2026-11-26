@@ -75,4 +75,38 @@ export class CatalogTryOnService {
   }
 }
 
+/**
+ * The monthly limit set for this shop's key in ScaleEzy's Platform Console (api-super-admin, catalog billing), asked of
+ * the gateway's own GET /api/v1/usage before anything is queued (26 Nov 2026). The gateway refuses a generation once
+ * the limit is reached (402 MONTHLY_LIMIT_REACHED); asking first means the shop is told at the press, not 59 failures
+ * later. Read with the key the shop's runs would use, so it is the same account the gateway meters.
+ * Answers null when there is no limit, or the gateway cannot say (old gateway, network): never a reason to refuse.
+ * Remembered for 30 seconds per key, so a list of 59 sarees asks once.
+ */
+export type CatalogLimit = { reached: boolean; limitRupees: string | null; usedRupees: string | null; remainingRupees: string | null };
+const limitCache = new Map<string, { at: number; value: CatalogLimit | null }>();
+export async function catalogMonthlyLimit(clientId: string): Promise<CatalogLimit | null> {
+  if (!env.CATALOG_TRYON_GATEWAY_URL) return null;
+  let key: string;
+  try { ({ key } = await serviceCredentialService.keyFor(clientId, 'CATALOG_TRYON')); } catch { return null; }
+  const cacheKey = key.slice(-12);
+  const hit = limitCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < 30_000) return hit.value;
+  let value: CatalogLimit | null = null;
+  try {
+    const res = await fetch(`${new URL(env.CATALOG_TRYON_GATEWAY_URL).origin}/api/v1/usage`, {
+      headers: { 'x-api-key': key }, signal: AbortSignal.timeout(5_000)
+    });
+    if (res.ok) {
+      const j: any = await res.json().catch(() => null);
+      const m = j?.monthlyLimit;
+      value = m ? { reached: !!m.reached, limitRupees: m.limit?.rupees ?? null, usedRupees: m.used?.rupees ?? null, remainingRupees: m.remaining?.rupees ?? null } : null;
+    }
+  } catch { value = null; }
+  limitCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+/** Forget what was remembered (a refusal just said the limit is reached; tests). */
+export function forgetCatalogLimit() { limitCache.clear(); }
+
 export const catalogTryOnService = new CatalogTryOnService();

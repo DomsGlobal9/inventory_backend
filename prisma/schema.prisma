@@ -5159,6 +5159,9 @@ model PhotoJob {
   extraSourceUrls     String[] @default([]) @map("extra_source_urls")
   /// SHOTS jobs: the colour's own front view, made earlier, sent as frontView (optional).
   frontViewUrl        String?  @map("front_view_url")
+  /// Not to be started before this moment: the photo studio was busy, or a daily or short-burst limit was reached,
+  /// and it said when to come back. Null: whenever its turn comes.
+  notBefore           DateTime? @map("not_before")
 
   /// Why it failed or stopped, in words a shop owner can act on. Shown exactly as written.
   message String? @db.Text

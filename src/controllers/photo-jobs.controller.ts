@@ -76,6 +76,10 @@ export class PhotoJobsController {
           const r = await photoJobQueue.enqueue({ clientId, productId: id, kind: 'SHOTS', colours, requestedBy: userId ?? null });
           results.push({ productId: id, title: p.title, made: r.made.length, refused: r.refused });
         } catch (e: any) {
+          // A limit stops the whole press, said once: every further saree would get the same answer.
+          if (e?.statusCode === 402 || e?.statusCode === 429) {
+            return res.status(200).json({ success: true, data: { made: results.reduce((t, r) => t + r.made, 0), stopped: safeMessage(e?.message, "This month's photo limit is used up."), results } });
+          }
           // Our own refusals are written for the shop; anything else (a database hiccup) is not repeated.
           results.push({ productId: id, title: p.title, made: 0, refused: [{ colour: '', why: e?.statusCode && e.statusCode < 500 ? safeMessage(e?.message, 'It could not be started.') : 'It could not be started just now. Please try again.' }] });
         }
