@@ -51,9 +51,12 @@ export const bagCount = (slug) => getBag(slug).reduce((n, l) => n + itemsIn(l), 
 export function addToBag(slug, variantCode, quantity = 1, extra = {}) {
   const lines = getBag(slug);
   const found = lines.find(l => l.variantCode === variantCode);
-  const max = lineMax(extra.soldBy ?? found?.soldBy);
+  // Never more than the shop can sell (extra.max: one store's stock, from the product page), nor the line's own limit.
+  const { max: left, ...rest } = extra;
+  const max = Math.min(lineMax(rest.soldBy ?? found?.soldBy), Number.isFinite(left) ? left : Infinity);
+  if (max <= 0) return lines;
   if (found) found.quantity = Math.min(found.quantity + quantity, max);
-  else lines.push({ variantCode, quantity: Math.min(quantity, max), ...extra });
+  else lines.push({ variantCode, quantity: Math.min(quantity, max), ...rest });
   write(slug, tidy(lines));
   return lines;
 }

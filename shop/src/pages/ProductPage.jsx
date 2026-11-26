@@ -513,11 +513,17 @@ export default function ProductPage({ slug, shop }) {
   const cm = metre ? (length ?? toCut((shop.lengths.quickLengths ?? [])[0] ?? cut, cut)) : 1;
   const inBag = chosen ? bag.find(l => l.variantCode === chosen.variantCode)?.quantity ?? 0 : 0;
   const canAdd = buying && chosen && chosen.sellable;
+  // Everything the shop has of this piece is already in the bag (26 Nov 2026): adding stops here, said plainly,
+  // rather than letting a second one in and refusing at the checkout.
+  const left = typeof chosen?.maxQty === 'number' ? chosen.maxQty : null;
+  const full = canAdd && left !== null && inBag + (metre ? cm : 1) > left;
 
   const add = (thenGo) => {
     if (!canAdd) return;
+    if (full) { if (thenGo) nav(`/${slug}/bag`); return; }
     addToBag(slug, chosen.variantCode, metre ? cm : 1, {
       title: p.title, size: chosen.size, colour: chosen.colour, colourHex: chosen.colourHex,
+      ...(left !== null ? { max: left } : {}),
       ...(metre ? { soldBy: 'METRE', minCut: cut } : {})
     });
     if (thenGo) nav(`/${slug}/bag`);
@@ -672,7 +678,11 @@ export default function ProductPage({ slug, shop }) {
             nothing at all -- so this only ever prints a handful, and null means "say nothing"
             rather than "none": sold out is its own state above.
           */}
-          {chosen?.fewLeft ? (
+          {full ? (
+            <p className="few">
+              {left === 1 ? 'Only 1 left, and it is in your bag.' : `All ${metre ? lengthText(left) : left} left are in your bag.`}
+            </p>
+          ) : chosen?.fewLeft ? (
             <p className="few">
               {metre ? `Only ${lengthText(chosen.fewLeft)} left` : chosen.fewLeft === 1 ? 'Last one left' : `Only ${chosen.fewLeft} left`}
             </p>
@@ -684,10 +694,10 @@ export default function ProductPage({ slug, shop }) {
           <div ref={watch} className={`buyrow${canAdd ? ' sells' : ' one'}`}>
             {canAdd ? (
               <>
-                <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)}>
-                  {added ? <><Ticked /> Added</> : inBag > 0 ? `In bag · ${inBag}` : 'Add to bag'}
+                <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)} disabled={full && !added}>
+                  {added ? <><Ticked /> Added</> : full ? `In bag · ${metre ? lengthText(inBag) : inBag}` : inBag > 0 ? `In bag · ${metre ? lengthText(inBag) : inBag}` : 'Add to bag'}
                 </button>
-                <button type="button" className="go" onClick={() => add(true)}>Buy now</button>
+                <button type="button" className="go" onClick={() => add(true)}>{full ? 'Go to bag' : 'Buy now'}</button>
               </>
             ) : buying && chosen && !chosen.sellable ? (
               <>
@@ -834,11 +844,11 @@ export default function ProductPage({ slug, shop }) {
               */}
               {canAdd ? (
                 <>
-                  <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)}>
-                    {added ? <><Ticked /> Added</> : inBag > 0 ? `In bag · ${inBag}` : 'Add to bag'}
+                  <button type="button" className={`go quiet${added ? ' done' : ''}`} onClick={() => add(false)} disabled={full && !added}>
+                    {added ? <><Ticked /> Added</> : inBag > 0 ? `In bag · ${metre ? lengthText(inBag) : inBag}` : 'Add to bag'}
                   </button>
                   <button type="button" className="go" onClick={() => add(true)}>
-                    Buy now{chosen ? <span className="amt"> · {money(metre ? Math.round(cm * Number(chosen.price) * 100) / 100 : chosen.price, currency)}</span> : null}
+                    {full ? 'Go to bag' : 'Buy now'}{!full && chosen ? <span className="amt"> · {money(metre ? Math.round(cm * Number(chosen.price) * 100) / 100 : chosen.price, currency)}</span> : null}
                   </button>
                 </>
               ) : buying && chosen && !chosen.sellable ? (

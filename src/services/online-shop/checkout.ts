@@ -272,7 +272,22 @@ export async function priceBag(clientId: string, rawLines: unknown, rawCodes?: u
   }
 
   const lines = tidy(rawLines);
-  const items = await resolve(clientId, lines);
+  const resolved = await resolve(clientId, lines);
+  /*
+   * The bag corrects itself (26 Nov 2026): a line asking for more than one store can sell is brought down to what
+   * there is, and a piece with none left is taken out, each said once, so the shopper is never refused at the end
+   * for something the bag could have told them. Placing the order stays strict (prepareCheckout).
+   */
+  const adjusted: { variantCode: string; title: string; from: number; to: number }[] = [];
+  const items: Resolved[] = [];
+  for (const i of resolved) {
+    const max = maxAtOneStore(i, shop.locationIds);
+    // Named with its colour and size: two sizes of one saree must not read as the same line.
+    const which = [i.colour, i.soldBy === 'METRE' ? null : i.size].filter(Boolean).join(' · ');
+    if (i.quantity > max) adjusted.push({ variantCode: i.variantCode, title: which ? `${i.title} (${which})` : i.title, from: i.quantity, to: max });
+    if (max > 0) items.push({ ...i, quantity: Math.min(i.quantity, max) });
+  }
+  if (items.length === 0) return { ...emptyView(shop), adjusted };
   const locationId = chooseStore(shop.locationIds, items);
 
   const couponCodes = codes(rawCodes);
@@ -283,7 +298,26 @@ export async function priceBag(clientId: string, rawLines: unknown, rawCodes?: u
     couponCodes
   }, { persist: false });
 
-  return view(shop, items, quote, locationId);
+  const shown = view(shop, items, quote, locationId);
+  // Each line says the most it can have, so "+" stops there.
+  return { ...shown, lines: shown.lines.map((l: any) => ({ ...l, max: maxAtOneStore(items.find(i => i.variantCode === l.variantCode)!, shop.locationIds) })), adjusted };
+}
+
+/** The most of one piece a single one of the shop's stores can sell (the order goes from one store). */
+function maxAtOneStore(item: Resolved, locationIds: string[]): number {
+  let best = 0;
+  for (const id of locationIds) {
+    const profile = item.profiles.find(p => p.locationId === id);
+    if (profile && !profile.isAvailable) continue;
+    const st = item.stocks.find(s => s.locationId === id);
+    best = Math.max(best, st ? st.quantity - st.reservedQty : 0);
+  }
+  return Math.max(0, best);
+}
+
+/** A bag with nothing left in it to buy (every piece sold out meanwhile). */
+function emptyView(shop: NonNullable<Awaited<ReturnType<typeof orderingFor>>>) {
+  return { locationId: null, lines: [], goods: 0, saved: 0, delivery: 0, total: 0, currency: 'INR', offers: [], nearly: [], ...(shop as any).freeDeliveryAbove !== undefined ? { freeDeliveryAbove: Number((shop as any).freeDeliveryAbove ?? 0) || null } : {} };
 }
 
 /** One shape for the bag, whether it was priced for looking at or for ordering. */

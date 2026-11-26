@@ -62,6 +62,28 @@ export default function BagPage({ shop }) {
    * adjusting their own bag could be refused by it. A third of a second is below noticing and turns
    * a run of taps into one request.
    */
+  /*
+   * The shop brought a line down to what it has, or took out a piece that sold out (26 Nov 2026): the bag in this
+   * browser is set to match at once, and each is said once, in a line above the bag, never as a refusal at the end.
+   */
+  const [notes, setNotes] = useState([]);
+  useEffect(() => {
+    const changed = state.bag?.adjusted ?? [];
+    if (!changed.length) return;
+    for (const c of changed) {
+      if (c.to > 0) setQuantity(slug, c.variantCode, c.to); else removeFromBag(slug, c.variantCode);
+    }
+    setNotes(old => {
+      const next = old.filter(n => !changed.some(c => c.variantCode === n.variantCode));
+      for (const c of changed) {
+        next.push({ variantCode: c.variantCode, text: c.to > 0
+          ? `Only ${c.to} of ${c.title} ${c.to === 1 ? 'is' : 'are'} left, so your bag now has ${c.to}.`
+          : `${c.title} has just sold out, so it was taken out of your bag.` });
+      }
+      return next;
+    });
+  }, [state.bag, slug]);
+
   const priced = useRef(false);
   useEffect(() => {
     const ac = new AbortController();
@@ -93,6 +115,12 @@ export default function BagPage({ shop }) {
   return (
     <div className="bagpage">
       <h1 className="pagetitle">Your bag</h1>
+
+      {notes.length > 0 && (
+        <div className="bagnotes" role="status">
+          {notes.map(n => <p key={n.variantCode}>{n.text}</p>)}
+        </div>
+      )}
 
       {state.error ? (
         <Problem error={state.error} shopName={shop?.name} onRetry={() => reprice()} />
@@ -128,7 +156,9 @@ export default function BagPage({ shop }) {
                         <button type="button" aria-label={metre ? `${lengthText(step)} less` : 'One fewer'} disabled={line.quantity <= step}
                           onClick={() => setQuantity(slug, line.variantCode, line.quantity - step)}>−</button>
                         <span aria-live="polite">{metre ? lengthText(line.quantity) : line.quantity}</span>
-                        <button type="button" aria-label={metre ? `${lengthText(step)} more` : 'One more'} disabled={line.quantity + step > lineMax(line.soldBy)}
+                        <button type="button" aria-label={metre ? `${lengthText(step)} more` : 'One more'}
+                          disabled={line.quantity + step > Math.min(lineMax(line.soldBy), typeof priced?.max === 'number' ? priced.max : Infinity)}
+                          title={typeof priced?.max === 'number' && line.quantity + step > priced.max ? (priced.max === 1 ? 'Only 1 left' : `Only ${metre ? lengthText(priced.max) : priced.max} left`) : undefined}
                           onClick={() => setQuantity(slug, line.variantCode, line.quantity + step)}>+</button>
                       </div>
                     );

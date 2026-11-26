@@ -594,7 +594,8 @@ export async function publicProducts(
   const page = await storefrontCatalogueService.browseProducts(scope, { ...opts, sort });
 
   const offers = await windowOffers(shop);
-  const products = page.products.map(p => forShopper(p, shop.showFewLeft !== false))
+  const oneStore = await oneStoreMax(shop.clientId, shop.locationIds, page.products.flatMap(p => p.variants.map(v => v.variantCode)));
+  const products = page.products.map(p => forShopper(p, shop.showFewLeft !== false, oneStore))
     .filter(p => (shop.hideOutOfStock ? p.variants.some(v => v.sellable) : true))
     .map(p => withOffers(p, offers));
 
@@ -624,10 +625,44 @@ const FEW_LEFT_LENGTH = 200;
  * `fewLeft` is null unless all three hold: the shop asked, the piece can be bought at all, and
  * there are FEW_LEFT or fewer. Null means "say nothing", not "none left" -- sold out is `sellable`.
  */
+/**
+ * How many of each piece ONE of the shop's stores can sell right now (26 Nov 2026, owner: "it let me add one that was
+ * out of stock, or 2 when 1 was left, and only stopped at the end"). Checkout sends a whole order from one store and
+ * skips a store where the piece is switched off; the catalogue's figure adds every store together and counts stock in
+ * a switched-off store. This is checkout's own reading, so the page, the bag and the order can never disagree.
+ * One read for any number of pieces.
+ */
+export async function oneStoreMax(clientId: string, locationIds: string[], variantCodes: string[]): Promise<Map<string, number>> {
+  const codes = [...new Set(variantCodes.filter(Boolean))];
+  const out = new Map<string, number>();
+  if (!codes.length) return out;
+  const stores = locationIds.length
+    ? locationIds
+    : (await prisma.stockLocation.findMany({ where: { clientId, active: true }, select: { id: true } })).map(l => l.id);
+  const variants = await prisma.productVariant.findMany({
+    where: { clientId, variantCode: { in: codes } },
+    select: {
+      variantCode: true,
+      stocks: { where: { locationId: { in: stores } }, select: { locationId: true, quantity: true, reservedQty: true } },
+      locationProfiles: { where: { locationId: { in: stores }, isAvailable: false }, select: { locationId: true } }
+    }
+  });
+  for (const v of variants) {
+    const off = new Set(v.locationProfiles.map(p => p.locationId));
+    let best = 0;
+    for (const st of v.stocks) if (!off.has(st.locationId)) best = Math.max(best, st.quantity - st.reservedQty);
+    out.set(v.variantCode, Math.max(0, best));
+  }
+  return out;
+}
+
 function forShopper(
   p: Awaited<ReturnType<typeof storefrontCatalogueService.getProduct>> & object,
-  showFewLeft: boolean
+  showFewLeft: boolean,
+  /** oneStoreMax for these pieces: when given, what a shopper may put in the bag. */
+  oneStore?: Map<string, number>
 ) {
+  const can = (v: any) => (oneStore ? (oneStore.get(v.variantCode) ?? 0) : (v.stock.available ?? 0));
   return {
     ...p,
     variants: p.variants.map(v => ({
@@ -637,9 +672,11 @@ function forShopper(
       colourHex: v.colourHex,
       price: v.price, compareAtPrice: v.compareAtPrice, currency: v.currency,
       // shortcut: a service (no stock count) is not sold in the online shop -- checkout reserves stock; sell it at the till.
-      sellable: v.stock.sellable && v.stock.available !== null,
-      fewLeft: showFewLeft && v.stock.sellable && v.stock.available !== null && v.stock.available > 0 && v.stock.available <= (p.soldBy === 'METRE' ? FEW_LEFT_LENGTH : FEW_LEFT)
-        ? v.stock.available
+      sellable: v.stock.sellable && v.stock.available !== null && can(v) > 0,
+      // The most that can go in the bag (one store's stock), so "add" stops there rather than at the checkout.
+      maxQty: v.stock.available === null ? 0 : can(v),
+      fewLeft: showFewLeft && v.stock.sellable && v.stock.available !== null && can(v) > 0 && can(v) <= (p.soldBy === 'METRE' ? FEW_LEFT_LENGTH : FEW_LEFT)
+        ? can(v)
         : null
     }))
   };
@@ -660,7 +697,8 @@ export async function publicProduct(
   if (!p) return null;
   // The same badge the tile wore, and per size as well: the page is where a shopper picks one,
   // and an offer that covers only the large is a fact they need at that moment.
-  return withOffers(forShopper(p, shop.showFewLeft !== false), await windowOffers(shop));
+  const oneStore = await oneStoreMax(shop.clientId, shop.locationIds, p.variants.map(v => v.variantCode));
+  return withOffers(forShopper(p, shop.showFewLeft !== false, oneStore), await windowOffers(shop));
 }
 
 /**
@@ -683,7 +721,8 @@ export async function publicPieces(
     storefrontCatalogueService.getProducts(scope, wanted, { withLengths: true })
   ]);
   const byCode = new Map(rows.map(r => [r.productCode, r]));
-  return wanted.map(c => byCode.get(c)).filter(Boolean).map(p => withOffers(forShopper(p!, shop.showFewLeft !== false), offers));
+  const oneStore = await oneStoreMax(shop.clientId, shop.locationIds, rows.flatMap(r => r.variants.map(v => v.variantCode)));
+  return wanted.map(c => byCode.get(c)).filter(Boolean).map(p => withOffers(forShopper(p!, shop.showFewLeft !== false, oneStore), offers));
 }
 
 /** How many tiles "Customers who bought this also bought" shows at most. */

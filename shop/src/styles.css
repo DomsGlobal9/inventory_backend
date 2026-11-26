@@ -5002,3 +5002,8 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .plink-row .k { color: var(--muted); }
 .plink-row.total { border-top: 1px solid var(--line); padding-top: 10px; font-size: 16px; font-weight: 600; }
 .plink-note { text-align: center; color: var(--faint); font-size: 12.5px; margin-top: 10px; }
+
+/* The bag set itself to what the shop has (26 Nov 2026): one calm line per piece, above the bag. */
+.bagnotes { margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--soft); }
+.bagnotes p { margin: 0; font-size: 13.5px; line-height: 1.45; }
+.bagnotes p + p { margin-top: 6px; }
