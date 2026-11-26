@@ -383,7 +383,8 @@ export class ProductService {
     });
     // Only worth announcing if it came back to life. Restoring something to DRAFT or ARCHIVED
     // leaves it invisible to a storefront, which already believes it is gone.
-    if (restoredStatus === 'ACTIVE') {
+    // A till-only product (PLAN-sell-online.md) comes back to the till only: nothing online is told.
+    if (restoredStatus === 'ACTIVE' && (existing as any).sellOnline !== false) {
       notifyStorefronts(clientId, id, 'PRODUCT_PUBLISHED');
     }
     return restored;

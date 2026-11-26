@@ -207,6 +207,44 @@ async function main() {
     const noPicBody: any = await noPic.json().catch(() => ({}));
     ok('product page: a photo-less product is refused online, with the reason', noPic.status === 409 && /no photo/i.test(noPicBody.message ?? ''), [noPic.status, noPicBody.message]);
     ok('...and stays till only', (await prisma.product.findUniqueOrThrow({ where: { id: NOPIC.id } })).sellOnline === false);
+    // 7. Worst cases.
+    // 7a. Archive and restore, trash and restore: still till only, and nothing online is told it came back.
+    const evCount = (type: string) => prisma.storefrontEvent.count({ where: { clientId, productCode: A.productCode, eventType: type as any } });
+    const pubBefore = await evCount('PRODUCT_PUBLISHED');
+    await productService.archiveProduct(A.id, clientId);
+    await productService.restoreProduct(A.id, clientId);
+    await productService.trashProduct(A.id, clientId);
+    await productService.restoreProduct(A.id, clientId);
+    await wait(1500);
+    const aNow = await prisma.product.findUniqueOrThrow({ where: { id: A.id } });
+    ok('archive/trash + restore: back ACTIVE and still till only', aNow.status === 'ACTIVE' && aNow.sellOnline === false, [aNow.status, aNow.sellOnline]);
+    ok('...websites never told it came back', (await evCount('PRODUCT_PUBLISHED')) === pubBefore);
+    ok('...not on any website, still at the till', !(await storefrontCatalogueService.getProduct(scope, A.productCode)) && (await listForPos(scope, { limit: 200 })).products.some((x: any) => x.productCode === A.productCode));
+    // 7b. Stock moves on a till-only piece: websites hear nothing; on an online piece they do (the control).
+    const { storefrontEventService } = await import('../services/storefront-event.service');
+    await storefrontEventService.stockUpdated(clientId, v.id, 5);
+    ok('a till-only stock change is not sent to websites', (await prisma.storefrontEvent.count({ where: { clientId, variantId: v.id, eventType: 'STOCK_UPDATED' as any } })) === 0);
+    await productService.updateProduct(OFFB.id, clientId, { sellOnline: true });
+    const offbV = await prisma.productVariant.findFirstOrThrow({ where: { productId: OFFB.id } });
+    await storefrontEventService.stockUpdated(clientId, offbV.id, 0);
+    ok('...while an online one is (control)', (await prisma.storefrontEvent.count({ where: { clientId, variantId: offbV.id, eventType: 'STOCK_UPDATED' as any } })) === 1);
+    // 7c. Cloth by the metre, till only: our shop (which sells lengths) hides it; a till that does units keeps it.
+    const METRE = await make('MTR', { soldBy: 'METRE', sellOnline: false });
+    ok('metre cloth, till only: not on the online shop page', !(await shop.publicProduct(shopScope as any, METRE.productCode)));
+    ok('...and still at a till that sells lengths', (await listForPos(scope, { limit: 200 }, { units: true })).products.some((x: any) => x.productCode === METRE.productCode));
+    // 7d. The Boutique app: sets it, keeps it when left out, refuses a wrong value.
+    const bq = await import('../services/boutique');
+    const actor = { clientId, name: 'Boutique app', can: ['products:write'] };
+    const save = (input: any) => prisma.$transaction(tx => bq.upsertItem(tx as any, actor, input), { timeout: 30000 });
+    await save({ itemCode: `BQ-${S}`, name: 'Boutique gown', sellingPrice: 900, sellInShop: true, sellOnline: false });
+    const bqv = await prisma.productVariant.findFirstOrThrow({ where: { clientId, boutiqueRef: `BQ-${S}` }, include: { product: true } });
+    ok('Boutique API: sellOnline:false makes it till only', bqv.product.sellOnline === false);
+    await save({ itemCode: `BQ-${S}`, name: 'Boutique gown, renamed' });
+    ok('Boutique API: a save without sellOnline keeps it', (await prisma.product.findUniqueOrThrow({ where: { id: bqv.productId } })).sellOnline === false);
+    const bad = await errOf(() => save({ itemCode: `BQ-${S}`, sellOnline: 'no' }));
+    ok('Boutique API: a wrong sellOnline value is refused, in words', !!bad && /sellOnline/.test(bad), bad);
+    // 7e. Over the limit, and a SALES person.
+    ok('bulk: more than 500 at once refused', (await bulk(t.tokens.SUPER_ADMIN, { ids: Array.from({ length: 501 }, (_, i) => `x-${i}`), on: false })).status === 400);
     void conn;
   } finally {
     await t.remove();
