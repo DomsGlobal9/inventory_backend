@@ -340,6 +340,8 @@ export class PlatformAdminService {
     ownerPhone?: string | null; shopPhone?: string | null; address?: string | null; city?: string | null;
     stateCode?: string | null; pin?: string | null; storeName?: string | null; gstin?: string | null;
     sells?: Sells | null; boutiqueTenant?: string | null;
+    /** One-switch onboarding (26 Nov 2026): the modules the client starts with, for the welcome email. */
+    modules?: string[];
   } = {}) {
     // One line, as a bill prints it: "12-4-56, Main Bazaar, Vijayawada, Andhra Pradesh 520001".
     const stateName = more.stateCode ? GST_STATE_NAMES[more.stateCode] ?? null : null;
@@ -459,7 +461,8 @@ export class PlatformAdminService {
     // login on purpose -- it says "your login came in a separate email", so that one goes first.
     // Never fails the onboarding; it reports, like the login does.
     const welcome = await mailService.sendWelcome({
-      recipientName: adminName, email: adminEmail, shopName: companyName.trim() || 'Your shop'
+      recipientName: adminName, email: adminEmail, shopName: companyName.trim() || 'Your shop',
+      modules: (more.modules ?? ['inventory']) as any, boutiqueTenant: more.boutiqueTenant ?? null
     });
 
     return {

@@ -23,10 +23,28 @@ export const state = (a: Actor) => said(() => posSwitch.status(a.clientId));
 export async function set(a: Actor, body: any) {
   mustWrite(a);
   if (typeof body?.on !== 'boolean') throw problem('Send "on": true to switch POS on, or false to switch it off.');
-  if (!body.on) return said(() => posSwitch.switchOff(a.clientId, by(a)));
   const owner = body.owner && typeof body.owner === 'object' ? body.owner : null;
-  if (owner && typeof owner.name !== 'string') throw problem('owner needs a name.');
-  return said(() => posSwitch.switchOn(a.clientId, by(a), owner));
+  if (body.on && owner && typeof owner.name !== 'string') throw problem('owner needs a name.');
+  // One record of the client's modules (26 Nov 2026): POS is switched through it like every door, so CRM and the
+  // Console know too. The Boutique app still gets POS's answer at once: told now, and waited for.
+  const cm = await import('../client-modules');
+  const { tellAndWait } = await import('../client-modules/connect');
+  try {
+    if (owner) await cm.setOwner(a.clientId, owner);
+    await cm.setModules(a.clientId, { modules: { pos: body.on }, by: by(a), source: 'boutique-api', quiet: true });
+  } catch (e) {
+    if (e instanceof cm.ModulesError) throw problem(e.message, e.statusCode);
+    throw e;
+  }
+  const r = await tellAndWait(a.clientId, 'pos', { by: by(a), source: 'boutique-api' });
+  if (r.status === 'DONE') return r.answer;
+  if (r.status === 'REFUSED') {
+    // As before: refused, nothing changed. The switch goes back, quietly.
+    await cm.setModules(a.clientId, { modules: { pos: !body.on }, by: by(a), source: 'boutique-api', quiet: true }).catch(() => undefined);
+    throw problem(r.why, 409);
+  }
+  if (r.status === 'NONE') return said(() => posSwitch.status(a.clientId));
+  throw problem('POS could not be reached just now. ScaleEzy keeps trying by itself; check again in a minute.', 503);
 }
 
 /** A new one-time welcome link for the owner; reset: true when they cannot sign in any more. */

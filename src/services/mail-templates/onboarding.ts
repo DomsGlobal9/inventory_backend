@@ -12,6 +12,7 @@
  * ScaleEzy team answers.
  */
 import { BRAND, esc, button, label, shell } from './brand';
+import { appUrls, moduleSteps, whatsappStep, type ModuleName } from './modules';
 
 export interface Rendered { subject: string; html: string; text: string }
 
@@ -89,16 +90,29 @@ export function welcomeEmail(input: {
   recipientName: string;
   email: string;
   shopName: string;
+  /** The client's modules (one-switch onboarding, 26 Nov 2026). Left out, or Inventory alone: Inventory's first week. */
+  modules?: ModuleName[];
+  boutiqueTenant?: string | null;
 }): Rendered {
   const b = input.base;
   const shop = input.shopName?.trim() || 'Your shop';
-  const steps: { title: string; line: string; href: string }[] = [
+  const mods = input.modules ?? ['inventory'];
+  const onlyInventory = mods.length === 1 && mods[0] === 'inventory';
+  let steps: { title: string; line: string; href: string }[] = [
     { title: 'Add your products', line: 'One by one, with photos and sizes, or import your whole list from Excel.', href: `${b}/products` },
     { title: 'Bring in your stock', line: 'Enter what you have today, or receive it from a purchase order.', href: `${b}/inventory` },
     { title: 'Bill at the counter', line: 'Connect the POS till. Every bill updates your stock by itself.', href: `${b}/settings?section=POS` },
     { title: 'Sell online', line: 'Open your own online shop, or connect your Shopify store. Stock stays in step.', href: `${b}/settings?section=ONLINE_SHOP` },
     { title: 'Invite your team', line: 'Add each person with only what they need: billing, stock or everything.', href: `${b}/settings?section=USERS` }
   ];
+  if (!onlyInventory) {
+    // Each app the client has, how to open it, and the WhatsApp number once: the same words as the "now on" email.
+    const wa = whatsappStep(b, mods);
+    steps = [
+      ...moduleSteps(b, mods, { boutiqueTenant: input.boutiqueTenant }).map(m => ({ title: m.title, line: m.line, href: m.href ?? `${b}/login` })),
+      ...(wa ? [{ title: "Link your shop's WhatsApp", line: wa, href: mods.includes('pos') ? appUrls(b).pos : `${b}/settings?section=WHATSAPP` }] : [])
+    ];
+  }
   const highlights = [
     { title: 'Try-on', line: 'customers see it on themselves' },
     { title: 'WhatsApp', line: 'day book and offers' },
@@ -125,13 +139,13 @@ export function welcomeEmail(input: {
     </td>`).join('');
 
   const body = `
-<p style="margin:0 0 18px">Thank you for choosing ScaleEzy, ${esc(firstName(input.recipientName))}. ${esc(shop)} is set up and ready: your stock, your counter and your online sales, in one place.</p>
+<p style="margin:0 0 18px">Thank you for choosing ScaleEzy, ${esc(firstName(input.recipientName))}. ${esc(shop)} is set up and ready${onlyInventory ? ': your stock, your counter and your online sales, in one place' : `, with ${esc(moduleSteps(b, mods).map(m => m.title.replace(/ \(.*\)$/, '')).join(', '))}, all connected for you`}.</p>
 ${label('Your first week')}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${stepRows}
 </table>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px"><tr>${highlightCells}
 </tr></table>
-${button(`${b}/dashboard`, 'Open ScaleEzy')}
+${button(onlyInventory || mods.includes('inventory') ? `${b}/dashboard` : (steps[0]?.href ?? `${b}/login`), onlyInventory ? 'Open ScaleEzy' : `Open ${steps[0]?.title.replace(/ \(.*\)$/, '') ?? 'ScaleEzy'}`)}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:14px 0 8px">
   <tr><td bgcolor="${BRAND.deep}" style="background:${BRAND.deep};border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.6;color:#e6f2dc">
     <span style="color:${BRAND.lime};font-weight:600">Need a hand?</span>
@@ -158,7 +172,7 @@ ${button(`${b}/dashboard`, 'Open ScaleEzy')}
     'YOUR FIRST WEEK',
     ...steps.map((s, i) => `${i + 1}. ${s.title}: ${s.line}\n   ${s.href}`),
     '',
-    `Open ScaleEzy: ${b}/dashboard`,
+    `Open ScaleEzy: ${onlyInventory || mods.includes('inventory') ? `${b}/dashboard` : (steps[0]?.href ?? `${b}/login`)}`,
     '',
     `Need a hand? Help Center: ${b}/help`,
     `Contact ScaleEzy support from inside the app: Settings, Help and support (${b}/settings?section=SUPPORT).`

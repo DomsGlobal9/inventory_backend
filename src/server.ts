@@ -2,6 +2,7 @@ import { CampaignsScheduler } from './jobs/campaigns.scheduler';
 import { startLive } from './services/live';
 import { startPosPush } from './services/pos-push';
 import { startPosKeyDoctor } from './services/pos-switch/doctor';
+import { startModuleConnects } from './services/client-modules/connect';
 import { PhotoJobsScheduler } from './jobs/photo-jobs.scheduler';
 import { PosQueueScheduler } from './jobs/pos-queue.scheduler';
 import { PaymentsScheduler } from './jobs/payments.scheduler';
@@ -299,6 +300,8 @@ app.listen(PORT, () => {
     ModuleOutboxDispatcher.start();
     // POS till keys ScaleEzy switched on mend themselves: lost, retired, on a closed or empty store (services/pos-switch/doctor).
     if (startPosKeyDoctor()) console.log('[pos-key-doctor] watching POS till keys.');
+    // One-switch onboarding: tell POS and CRM about a client's modules until they answer (services/client-modules/connect).
+    startModuleConnects();
     // Every customer of a shop with CRM on gets CRM's id (waits quietly until both sides are set up).
     CrmLinkWorker.start();
     HousekeepingScheduler.start();

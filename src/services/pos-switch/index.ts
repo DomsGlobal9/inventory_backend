@@ -20,9 +20,11 @@ import { POS_ONLY } from '../../utils/posConnection';
 export const SWITCH_TILL_NAME = 'POS';
 
 export class PosSwitchError extends Error {
-  constructor(public statusCode: number, message: string) { super(message); }
+  /** POS's own code for a refusal (details.code), e.g. NO_TILL_KEY. */
+  public code?: string;
+  constructor(public statusCode: number, message: string, code?: string) { super(message); this.code = code; }
 }
-const fail = (status: number, message: string): never => { throw new PosSwitchError(status, message); };
+const fail = (status: number, message: string, code?: string): never => { throw new PosSwitchError(status, message, code); };
 
 type By = { userId: string; name?: string | null };
 export type Owner = { name: string; email?: string | null; phone?: string | null };
@@ -35,7 +37,7 @@ function config() {
 }
 export const posSwitchConfigured = () => config() !== null;
 
-async function callPos<T>(method: 'GET' | 'POST', path: string, clientId: string, by: By | null, body?: unknown): Promise<T> {
+async function callPos<T>(method: 'GET' | 'POST', path: string, clientId: string, by: By | null, body?: unknown, timeoutMs = 60_000): Promise<T> {
   const cfg = config();
   if (!cfg) fail(503, 'POS is not set up here yet (POS_API_URL and Inventory\'s service key).');
   const token = jwt.sign(
@@ -49,7 +51,7 @@ async function callPos<T>(method: 'GET' | 'POST', path: string, clientId: string
       method,
       headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(60_000)
+      signal: AbortSignal.timeout(timeoutMs)
     });
   } catch (e: any) {
     return fail(503, 'POS could not be reached just now. Nothing was changed there; try again in a minute.');
@@ -62,7 +64,7 @@ async function callPos<T>(method: 'GET' | 'POST', path: string, clientId: string
   if (res.status === 503 && typeof posCode === 'string' && typeof data?.message === 'string' && data.message.trim()) fail(503, data.message.trim().slice(0, 300));
   if (res.status >= 500) fail(503, 'POS could not finish just now. Try again in a minute.');
   // POS's own refusal, in its own words (it writes them for people).
-  return fail(res.status === 404 ? 404 : 409, String(data?.message ?? data?.error?.message ?? 'POS refused this.'));
+  return fail(res.status === 404 ? 404 : 409, String(data?.message ?? data?.error?.message ?? 'POS refused this.'), typeof posCode === 'string' ? posCode : undefined);
 }
 
 /**
@@ -129,6 +131,69 @@ export async function switchOn(clientId: string, by: By, givenOwner?: Partial<Ow
   }
   for (const old of earlier) await posConnectionService.disconnect(clientId, old.id).catch(() => undefined);
   return { ...answer, tillKeyPrefix: till.keyPrefix };
+}
+
+/**
+ * One-switch onboarding (26 Nov 2026, PLAN-onboarding-modules.md): tell POS the client's modules, the whole picture
+ * (services/client-modules builds `body`: clientId, version, modules, owner, stores...). POS ignores an older version.
+ *   - Inventory on: POS needs a till key. One is made only when the shop has no working "POS" key (the key doctor
+ *     keeps the one it has); otherwise none is sent and POS keeps its key.
+ *   - Inventory off (a POS-only client): no key; POS runs the shop with no Inventory link, and Inventory's "POS" keys
+ *     are retired (nothing at Inventory for a till to reach).
+ */
+export async function connect(clientId: string, body: Record<string, any>, by: By | null) {
+  if (!posSwitchConfigured()) fail(503, 'POS is not set up here yet (POS_API_URL and Inventory\'s service key).');
+  const withInventory = Array.isArray(body.modules) && body.modules.includes('inventory');
+  const working = await prisma.storefrontConnection.findMany({ where: { clientId, ...POS_ONLY, name: SWITCH_TILL_NAME, status: { in: ['ACTIVE', 'PENDING_SYNC'] } } as any, select: { id: true } });
+  let fresh: { id: string; key: string; keyPrefix: string } | null = null;
+  if (withInventory && !working.length) {
+    const store = await tillStore(clientId);
+    if (!store) fail(409, 'This shop has no store switched on. Add or switch on a store first.');
+    fresh = await posConnectionService.create(clientId, { locationId: store!.id, name: SWITCH_TILL_NAME });
+  }
+  const owner = body.owner?.name ? body.owner : await ownerOf(clientId);
+  const shopName = body.shopName ?? await shopNameOf(clientId);
+  const enable = (key: { key: string } | null) => callPos<Record<string, unknown>>('POST', '/enable', clientId, by, { ...body, shopName, ...(owner ? { owner } : {}), ...(key ? { tillKey: key.key } : {}) });
+  let answer: Record<string, unknown>;
+  try {
+    try {
+      answer = await enable(fresh);
+    } catch (e) {
+      // POS wants a key with every enable while Inventory is on: give it a fresh one (the old one is retired below).
+      if (!(e instanceof PosSwitchError && e.code === 'NO_TILL_KEY' && withInventory && !fresh)) throw e;
+      const store = await tillStore(clientId);
+      if (!store) fail(409, 'This shop has no store switched on. Add or switch on a store first.');
+      fresh = await posConnectionService.create(clientId, { locationId: store!.id, name: SWITCH_TILL_NAME });
+      answer = await enable(fresh);
+    }
+  } catch (e) {
+    if (fresh) await posConnectionService.disconnect(clientId, fresh.id).catch(() => undefined);
+    throw e;
+  }
+  // A fresh key handed over: POS now holds it, so the older ones are retired.
+  if (fresh) for (const k of working) await posConnectionService.disconnect(clientId, k.id).catch(() => undefined);
+  if (!withInventory) for (const k of working) await posConnectionService.disconnect(clientId, k.id).catch(() => undefined);
+  return { ...answer, ...(fresh ? { tillKeyPrefix: fresh.keyPrefix } : {}) };
+}
+
+/** POS switched off for the client (the whole picture, changed.off has "pos"). A shop POS never had counts as done. */
+export async function disconnect(clientId: string, body: Record<string, any>, by: By | null) {
+  try {
+    return await callPos<Record<string, unknown>>('POST', '/disable', clientId, by, body);
+  } catch (e) {
+    if (e instanceof PosSwitchError && e.statusCode === 404) return { posOn: false, neverSetUp: true };
+    throw e;
+  }
+}
+
+/** POS's own lines for the Console's checklist; null when this POS has no such door yet. */
+export async function connection(clientId: string): Promise<{ lines: any[] } | null> {
+  try {
+    return await callPos<{ lines: any[] }>('GET', '/connection', clientId, null, undefined, 6_000);
+  } catch (e) {
+    if (e instanceof PosSwitchError && e.statusCode === 404) return null;
+    throw e;
+  }
 }
 
 export async function switchOff(clientId: string, by: By) {

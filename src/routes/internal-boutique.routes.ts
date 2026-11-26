@@ -1,4 +1,5 @@
 import { platformAdminService } from '../services/platform-admin.service';
+import * as btqModules from '../services/boutique/modules';
 import * as join from '../services/boutique/join';
 import { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -101,8 +102,12 @@ router.get('/status', async (_req, res) => {
 router.post('/link', async (req, res) => {
   try {
     const p = pass(req);
+    // Who may ask for which modules is checked before anything is made.
+    (await import('../services/boutique/modules')).checkLinkAsk(p as any, req.body ?? {});
     const r = await boutique.link({ tenant: p.tenant, shopName: req.body?.shopName, linkCode: req.body?.linkCode });
-    res.status(r.linked === 'new' ? 201 : 200).json({ success: true, data: r });
+    // One-switch onboarding (26 Nov 2026): the client is recorded with its modules; POS and CRM asked for are told.
+    const mods = await (await import('../services/boutique/modules')).afterLink(p as any, r, req.body ?? {});
+    res.status(r.linked === 'new' ? 201 : 200).json({ success: true, data: { ...r, ...mods } });
   } catch (e: any) { if (e?.statusCode) return fail(res, e.statusCode, e.message); return respondWithError(res, e, { status: 500 }); }
 });
 
@@ -344,6 +349,9 @@ router.post('/settings/logo/upload-url', viaLedger((a, req) => shopSettings.logo
 router.put('/settings/logo', viaLedger((a, req) => shopSettings.saveLogo(a, req.body ?? {})));
 router.delete('/settings/logo', viaLedger((a) => shopSettings.removeLogo(a)));
 // The POS switch (25 Nov 2026): POS on or off for the boutique's shop, through Inventory (settings:write).
+// One-switch onboarding (26 Nov 2026): the shop's modules and how each is connected; switch POS or CRM (settings:write).
+router.get('/modules', read(req => btqModules.view(actorOf(req))));
+router.put('/modules', viaLedger((a, req) => btqModules.change(a, req.body ?? {})));
 router.get('/settings/pos', read(req => btqPos.state(actorOf(req))));
 router.put('/settings/pos', viaLedger((a, req) => btqPos.set(a, req.body ?? {})));
 router.post('/settings/pos/owner-link', viaLedger((a, req) => btqPos.ownerLink(a, req.body ?? {})));

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import * as appKeys from '../services/shop-app-keys';
+import { verifyServiceToken } from '../middleware/service.middleware';
 
 /**
  * The door to Shop API v1 (/shop/v1/<shop>/..., 20 Nov 2026, PLAN-shop-api.md).
@@ -14,10 +15,40 @@ import * as appKeys from '../services/shop-app-keys';
  *     (the Boutique app sends its own).
  * Addresses that are not one shop's (`/_look/...`, a look code that may belong to any shop) are not part of v1.
  */
+/**
+ * The Boutique app's own signed pass (26 Nov 2026, the owner: "make it automatic"): the same pass it already sends to
+ * the boutique API (RS256, its own key, scope modules:boutique, its boutique account inside). Nothing to make or hand
+ * over; the boutique is signed into the pass, so it can never name another. A partner app key still works (any other
+ * app, or the Boutique app until it switches).
+ */
+function boutiquePass(req: Request, res: Response): Promise<{ id: string; name: string; tenant: string } | 'refused' | null> {
+  const auth = req.get('authorization') ?? '';
+  if (req.get('x-shop-app-key') || !/^Bearer\s+\S+/.test(auth)) return Promise.resolve(null);
+  return new Promise(resolve => {
+    // verifyServiceToken answers a bad pass itself (401/403) and never calls next then.
+    const watch = Object.create(res);
+    watch.status = (code: number) => { resolve('refused'); return res.status(code); };
+    verifyServiceToken(req, watch, () => {
+      const s: any = (req as any).service;
+      if (!s?.scopes?.includes('modules:boutique') || typeof s.tenant !== 'string') {
+        res.status(403).json({ success: false, message: 'This pass is not the Boutique app\'s (needs modules:boutique and its boutique account).' });
+        return resolve('refused');
+      }
+      resolve({ id: `pass:${s.issuer ?? s.id}`, name: 'Boutique app', tenant: String(s.tenant).toLowerCase() });
+    });
+  });
+}
+
 export async function shopV1Gate(req: Request, res: Response, next: NextFunction) {
   try {
-    const checked = await appKeys.check(req.get('x-shop-app-key'));
-    if (!checked.ok) return res.status(401).json({ success: false, message: checked.why });
+    const pass = await boutiquePass(req, res);
+    if (pass === 'refused') return;
+    let checked: { ok: true; app: { id: string; name: string; tenant: string } } | { ok: false; why: string };
+    if (pass) checked = { ok: true, app: pass };
+    else {
+      checked = await appKeys.check(req.get('x-shop-app-key'));
+      if (!checked.ok) return res.status(401).json({ success: false, message: `${checked.why} The Boutique app sends its own signed pass instead (Authorization: Bearer).` });
+    }
     const slug = decodeURIComponent(req.path.split('/')[1] ?? '').trim().toLowerCase();
     if (!slug || slug.startsWith('_') || slug.length > 40) return res.status(404).json({ success: false, message: 'Name the shop: /shop/v1/<shop>/...' });
     // The Boutique app's one key for every boutique (26 Nov 2026) names, on each call, the boutique it is calling for;

@@ -267,9 +267,17 @@ export const session = async (req: Request, res: Response) => {
  * modules ask (CRM, /api/v1/internal/session) give exactly the same shape from the same checks.
  */
 async function modulesOf(clientId: string): Promise<string[]> {
-  const subs = await prisma.moduleSubscription.findMany({ where: { clientId }, select: { module: true }, orderBy: { module: 'asc' } })
-    .catch(() => []);   // a database without the outbox tables yet: Inventory only, as before
-  return ['inventory', ...subs.map(s => s.module).filter(m => m !== 'inventory')];
+  // The one record of the client's modules (client_modules, 26 Nov 2026); a client with none recorded is Inventory plus
+  // its feed subscriptions, as before. Inventory is listed only when on: a CRM-only client signs in here too.
+  const [rows, subs] = await Promise.all([
+    prisma.clientModule.findMany({ where: { clientId }, select: { module: true, on: true } }).catch(() => []),
+    prisma.moduleSubscription.findMany({ where: { clientId }, select: { module: true }, orderBy: { module: 'asc' } }).catch(() => [])
+  ]);
+  if (!rows.length) return ['inventory', ...subs.map(s => s.module).filter(m => m !== 'inventory')];
+  const on = new Set(rows.filter(r => r.on).map(r => r.module));
+  if (!rows.some(r => r.module === 'inventory')) on.add('inventory');
+  for (const s of subs) on.add(s.module);
+  return ['inventory', 'pos', 'crm', 'boutique', 'logistics'].filter(m => on.has(m)).concat([...on].filter(m => !['inventory', 'pos', 'crm', 'boutique', 'logistics'].includes(m)));
 }
 
 async function sessionBody(user: UserWithRoles) {

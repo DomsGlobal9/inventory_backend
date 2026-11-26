@@ -64,6 +64,20 @@ export async function openParcels(clientId: string) {
  */
 export async function setOn(clientId: string, on: unknown, by: { id: string | null }) {
   if (typeof on !== 'boolean') throw badRequest('Say on: true or on: false.');
+  // The shop's own switch writes the one record of the client's modules, like the Console's (26 Nov 2026): the other
+  // modules are told, and switchLogistics below runs from there.
+  const { setModules, ModulesError } = await import('../client-modules');
+  try {
+    await setModules(clientId, { modules: { logistics: on }, by: by.id ? { userId: by.id } : null, source: 'shop' });
+  } catch (e: any) {
+    if (e instanceof ModulesError) throw (e.statusCode === 409 ? conflict(e.message) : badRequest(e.message));
+    throw e;
+  }
+  return { on: await isOn(clientId), openParcels: await openParcels(clientId) };
+}
+
+/** Logistics' own switch: the feed on, or off once no parcel is still out. Called by client-modules only. */
+export async function switchLogistics(clientId: string, on: boolean, by: { id: string | null }) {
   if (on) {
     await moduleSubscriptions.enable(clientId, 'logistics', by.id ? `user:${by.id}` : 'shop');
   } else {

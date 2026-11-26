@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { moduleInventoryGate } from '../services/client-modules/gate';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { MODULES, ModuleName, moduleSubscriptions, eventsAfter } from '../services/module-outbox';
@@ -66,6 +67,8 @@ router.post('/session', needs('session:read'), async (req, res) => {
   res.json(session);
 });
 
+// A client without Inventory (26 Nov 2026): a module's calls about that shop answer 409 no_inventory (client-modules/gate).
+router.use('/modules', moduleInventoryGate);
 router.put('/modules/:module/shops/:clientId', ownModule, async (req, res) => {
   const module = moduleParam(req, res); if (!module) return;
   const sub = await moduleSubscriptions.enable(String(req.params.clientId), module, service(req).id);

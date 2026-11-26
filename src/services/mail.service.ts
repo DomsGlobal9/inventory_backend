@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import { modulesChangedEmail, type ModuleName } from './mail-templates/modules';
 import { sendMail, emailConfigured, verifyMailConfiguration, SendResult } from '../lib/mailer';
 import { loginEmail, welcomeEmail } from './mail-templates/onboarding';
 
@@ -67,9 +68,18 @@ export class MailService {
    * is. No password -- that went in its own message just before, because this is the long,
    * friendly mail people forward. OWNER ONLY: staff get their login and nothing else.
    */
-  async sendWelcome(input: { recipientName: string; email: string; shopName: string }): Promise<SendResult> {
+  async sendWelcome(input: { recipientName: string; email: string; shopName: string; modules?: ModuleName[]; boutiqueTenant?: string | null }): Promise<SendResult> {
     const message = welcomeEmail({ base: env.FRONTEND_URL.replace(/\/$/, ''), ...input });
     return sendMail({ to: input.email, subject: message.subject, text: message.text, html: message.html, kind: 'welcome' });
+  }
+
+  /**
+   * The owner, after a module was switched on or off for the shop (26 Nov 2026, one-switch onboarding): what is new
+   * and how to open it, what is off (kept), and every app the shop has now. Owner only.
+   */
+  async sendModulesChanged(input: { recipientName: string; email: string; shopName: string; on: ModuleName[]; off: ModuleName[]; now: ModuleName[]; boutiqueTenant?: string | null }): Promise<SendResult> {
+    const message = modulesChangedEmail({ base: env.FRONTEND_URL.replace(/\/$/, ''), ...input });
+    return sendMail({ to: input.email, subject: message.subject, text: message.text, html: message.html, kind: 'modules' as any });
   }
 
   /**

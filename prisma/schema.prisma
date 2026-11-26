@@ -5783,3 +5783,58 @@ model OrderPayLink {
   @@index([gatewayOrderId])
   @@map("order_pay_links")
 }
+
+/// One-switch onboarding (26 Nov 2026, PLAN-onboarding-modules.md): which ScaleEzy modules each client has, the ONE
+/// record every door writes (the Console's Modules box, the boutique API, the shop's own Logistics switch).
+/// module is plain text (inventory | pos | crm | boutique | logistics), never an enum (shared-DB enum hazard).
+model ClientModule {
+  clientId  String   @map("client_id")
+  module    String
+  on        Boolean
+  changedAt DateTime @default(now()) @map("changed_at")
+  changedBy String?  @map("changed_by")
+  /// console | boutique-api | pos-setup | shop | backfill
+  source    String
+  /// What the module's feed row held when it was switched off (CRM: module_subscriptions.moved), put back on again.
+  kept      Json?
+
+  @@id([clientId, module])
+  @@index([module, on])
+  @@map("client_modules")
+}
+
+/// A client as the platform knows it, whatever modules it has (a POS-only or CRM-only client included).
+/// version goes up on every change of the client's modules; every module ignores an older version than it applied.
+model PlatformClient {
+  clientId  String   @id @map("client_id")
+  name      String
+  version   Int      @default(0)
+  /// The owner for a client with no owner login here (a boutique made by the Boutique app): { name, email?, phone? }.
+  owner     Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  createdBy String?  @map("created_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_clients")
+}
+
+/// "Tell this module the client's modules": one row per client and module, the latest version only, sent until the
+/// module answers (retried with backoff). status: PENDING | RETRYING | DONE | REFUSED. action: connect | disconnect.
+model ModuleConnect {
+  clientId      String    @map("client_id")
+  module        String
+  action        String
+  version       Int
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at")
+  lockedAt      DateTime? @map("locked_at")
+  lastError     String?   @map("last_error")
+  answer        Json?
+  createdAt     DateTime  @default(now()) @map("created_at")
+  doneAt        DateTime? @map("done_at")
+
+  @@id([clientId, module])
+  @@index([status, nextAttemptAt])
+  @@map("module_connects")
+}

@@ -25,7 +25,7 @@ type Opts = { scope: string[]; timeoutMs?: number; onBehalfOf?: { userId: string
 
 export function crmConfigured() { return callerConfig() !== null; }
 
-export async function callCrm<T>(method: 'GET' | 'POST' | 'PATCH', path: string, clientId: string, body: unknown, opts: Opts): Promise<T> {
+export async function callCrm<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, clientId: string, body: unknown, opts: Opts): Promise<T> {
   const cfg = callerConfig();
   if (!cfg) throw new CrmUnavailable('not set up');
   const token = jwt.sign(

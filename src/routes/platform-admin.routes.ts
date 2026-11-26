@@ -84,6 +84,58 @@ consoleRouter.put('/clients/:clientId/boutique', async (req, res) => {
     res.json({ success: true, data: await boutique.enableForClient(clientId, String(req.body?.tenant ?? ''), req.body?.shopName ? String(req.body.shopName).slice(0, 120) : null, { handOver: req.body?.handOver === true }) });
   } catch (e) { boutiqueFail(res, e); }
 });
+// One-switch onboarding (26 Nov 2026, PLAN-onboarding-modules.md): the client's modules in one place, and how each
+// module says it is connected. The boutique and POS routes above and below stay for their own details.
+const modulesFail = (res: any, e: any) => res.status(e?.statusCode ?? 500).json({ success: false, message: e?.statusCode ? e.message : 'The modules could not be changed just now. Please try again.' });
+consoleRouter.get('/clients/:clientId/modules', async (req, res) => {
+  try {
+    const clientId = String(req.params.clientId);
+    if (!(await ourClient(clientId))) return notOurs(res);
+    const cm = await import('../services/client-modules');
+    const s = await cm.state(clientId);
+    if (!(await (await import('../lib/prisma')).prisma.clientModule.findFirst({ where: { clientId, module: 'inventory' } }))) s.on.inventory = await cm.inventoryOn(clientId);
+    const linked = await (await import('../lib/prisma')).prisma.boutiqueLink.findUnique({ where: { clientId }, select: { tenant: true, unlinkedAt: true } });
+    res.json({ success: true, data: { ...s, modules: cm.MODULES.filter(m => s.on[m]), all: cm.MODULES.map(m => ({ module: m, label: cm.LABEL[m], on: s.on[m] })), boutiqueTenant: linked && !linked.unlinkedAt ? linked.tenant : null } });
+  } catch (e) { modulesFail(res, e); }
+});
+consoleRouter.put('/clients/:clientId/modules', async (req, res) => {
+  try {
+    const clientId = String(req.params.clientId);
+    if (!(await ourClient(clientId))) return notOurs(res);
+    const cm = await import('../services/client-modules');
+    const b = req.body ?? {};
+    const out = await cm.setModules(clientId, { modules: b.modules ?? {}, by: adminBy(req), source: 'console', boutique: b.boutique ?? null });
+    res.json({ success: true, data: out });
+  } catch (e) { modulesFail(res, e); }
+});
+consoleRouter.get('/clients/:clientId/connections', async (req, res) => {
+  try {
+    const clientId = String(req.params.clientId);
+    if (!(await ourClient(clientId))) return notOurs(res);
+    const { checklist } = await import('../services/client-modules/status');
+    res.set('Cache-Control', 'no-store').json({ success: true, data: await checklist(clientId) });
+  } catch (e) { modulesFail(res, e); }
+});
+consoleRouter.post('/clients/:clientId/modules/:module/retry', async (req, res) => {
+  try {
+    const clientId = String(req.params.clientId);
+    if (!(await ourClient(clientId))) return notOurs(res);
+    const { retry } = await import('../services/client-modules/connect');
+    const { DOORS } = await import('../services/client-modules');
+    const module = String(req.params.module);
+    if (!(DOORS as readonly string[]).includes(module)) return res.status(400).json({ success: false, message: 'Only POS and CRM are told about a client.' });
+    // Not told yet (or answered): told again now with the newest picture.
+    if (!(await retry(clientId, module))) {
+      const prisma = (await import('../lib/prisma')).prisma;
+      const c = await prisma.platformClient.findUnique({ where: { clientId }, select: { version: true } });
+      const on = (await prisma.clientModule.findUnique({ where: { clientId_module: { clientId, module } } }))?.on;
+      if (!on) return res.status(409).json({ success: false, message: 'That module is switched off for this client.' });
+      await prisma.moduleConnect.upsert({ where: { clientId_module: { clientId, module } }, create: { clientId, module, action: 'connect', version: c?.version ?? 1 }, update: { action: 'connect', status: 'PENDING', nextAttemptAt: new Date(), lockedAt: null } });
+      (await import('../services/client-modules/connect')).kick(clientId, { by: adminBy(req), source: 'console' });
+    }
+    res.json({ success: true, data: { asked: true } });
+  } catch (e) { modulesFail(res, e); }
+});
 // POS switched on for a client automatically (25 Nov 2026): Inventory makes the till key and calls POS (pos-switch).
 const posFail = (res: any, e: any) => res.status(e?.statusCode ?? 500).json({ success: false, message: e?.statusCode ? e.message : 'POS could not be changed just now. Please try again.' });
 const adminBy = (req: any) => ({ userId: String(req.platformAdmin?.id ?? 'console'), name: `${req.platformAdmin?.name ?? req.platformAdmin?.email ?? 'ScaleEzy'} (ScaleEzy Console)` });

@@ -126,10 +126,21 @@ export function readOnboardingForm(b: any) {
   let stateCode = text(b.stateCode, 2);
   if (stateCode && !STATE_CODE.test(stateCode)) return { problem: 'Choose the state from the list.' };
   if (b.sells != null && b.sells !== '' && !isSells(b.sells)) return { problem: 'Choose what the shop sells: ready-made, fabrics, both, or let the owner choose.' };
+  // One-switch onboarding (26 Nov 2026): the modules the client starts with. Left out: Inventory, as before.
+  const MODS = ['inventory', 'pos', 'crm', 'boutique', 'logistics'];
+  let modules: string[] = ['inventory'];
+  if (b.modules !== undefined) {
+    if (!Array.isArray(b.modules) || b.modules.some((m: unknown) => typeof m !== 'string' || !MODS.includes(m))) return { problem: `Choose the client's modules from: ${MODS.join(', ')}.` };
+    modules = [...new Set(b.modules as string[])];
+    if (!modules.length) return { problem: 'Choose at least one module for the client.' };
+    if (modules.includes('logistics') && !modules.includes('inventory')) return { problem: 'Logistics ships orders made in Inventory: choose Inventory too.' };
+  }
   const tenantRaw = typeof b.boutiqueTenant === 'string' ? b.boutiqueTenant.trim() : '';
   if (tenantRaw.length > 63) return { problem: 'The boutique account is at most 63 characters.' };
   const tenantIn = tenantRaw.toLowerCase();
   if (tenantIn && !/^[a-z0-9][a-z0-9_-]{1,62}$/.test(tenantIn)) return { problem: 'The boutique account is letters, numbers and dashes, like lakshmi-boutique.' };
+  if (modules.includes('boutique') && !tenantIn) return { problem: 'Boutique: type the Boutique app account that runs this shop.' };
+  if (tenantIn && !modules.includes('boutique')) modules.push('boutique');
   const gstin = text(b.gstin, 15).toUpperCase().replace(/\s/g, '');
   if (gstin) {
     if (!GSTIN.test(gstin)) return { problem: 'A GSTIN is 15 characters, like 37ABCDE1234F1Z5. Leave it blank if the shop is not registered.' };
@@ -137,7 +148,7 @@ export function readOnboardingForm(b: any) {
     stateCode = gstin.slice(0, 2);
   }
   return {
-    companyName, adminName, adminEmail,
+    companyName, adminName, adminEmail, modules,
     ownerPhone: mobile.value,
     shopPhone: shopPhone || null,
     address: text(b.address, 200) || null,
@@ -156,13 +167,24 @@ export const onboardClient = async (req: Request, res: Response) => {
   try {
     const form = readOnboardingForm(req.body ?? {});
     if ('problem' in form) return res.status(400).json({ success: false, message: form.problem });
-    const { companyName, adminName, adminEmail, ...more } = form;
+    const { companyName, adminName, adminEmail, modules, ...more } = form;
     // A boutique account already linked to another shop is refused before anything is made.
     if (more.boutiqueTenant && await boutiqueTaken(more.boutiqueTenant)) {
       return res.status(409).json({ success: false, message: `The boutique account "${more.boutiqueTenant}" is already used by another shop. Check the name, or disable it there first.` });
     }
 
-    const result = await platformAdminService.onboardClient(companyName, adminName, adminEmail, null, more);
+    const result = await platformAdminService.onboardClient(companyName, adminName, adminEmail, null, { ...more, modules });
+
+    // One-switch onboarding: the client and its modules are recorded, and every module it has is told (it connects by
+    // itself; the client page's Connections checklist shows how far each has got).
+    const cm = await import('../services/client-modules');
+    const by = { userId: String((req as any).platformAdmin?.id ?? 'console'), name: `${(req as any).platformAdmin?.name ?? 'ScaleEzy'} (ScaleEzy Console)` };
+    await cm.ensureClient(result.clientId, companyName, by);
+    const wanted = Object.fromEntries(cm.MODULES.map(m => [m, modules.includes(m)]));
+    // quiet: the welcome email above already names every app the client starts with.
+    const set = await cm.setModules(result.clientId, { modules: wanted, by, source: 'console', name: companyName, boutique: more.boutiqueTenant ? { tenant: more.boutiqueTenant } : null, quiet: true })
+      .catch((e: any) => ({ problem: e?.message ?? 'The modules could not all be switched on.' }));
+    (result as any).modules = 'problem' in set ? { problem: set.problem } : { on: set.modules, told: set.told };
 
     // The workspace did not exist when the request arrived, so the audit middleware has no id
     // to take from the URL. Hand it the one we just created, or the trail records that a

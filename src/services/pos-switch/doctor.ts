@@ -79,6 +79,9 @@ export const forgetRecentRepairs = () => lastTry.clear();
 export async function checkShop(clientId: string, opts: { oldKeyUsed?: boolean; now?: number } = {}): Promise<Outcome> {
   const now = opts.now ?? Date.now();
   if (!posSwitchConfigured()) return { clientId, action: 'skipped', why: 'POS is not set up on this server' };
+  // One-switch onboarding (26 Nov 2026): a client whose record says POS or Inventory is off has no till key to mend.
+  const recorded = await prisma.clientModule.findMany({ where: { clientId, module: { in: ['pos', 'inventory'] } }, select: { module: true, on: true } });
+  if (recorded.some(r => !r.on)) return { clientId, action: 'skipped', why: 'POS or Inventory is switched off for this client' };
   const finding = await diagnose(clientId, now, opts.oldKeyUsed);
   if (!finding) return { clientId, action: 'healthy' };
 

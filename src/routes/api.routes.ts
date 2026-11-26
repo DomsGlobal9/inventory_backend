@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { staffInventoryGate } from '../services/client-modules/gate';
 import liveRoutes from './live.routes';
 import { authenticate } from '../middleware/auth.middleware';
 import { trackActivity } from '../middleware/activity-tracker.middleware';
@@ -147,6 +148,9 @@ router.use(trackActivity);
 // Console's unified activity feed. GETs are deliberately not logged -- read traffic would
 // flood the table for no signal a platform admin actually wants.
 router.use(auditLogger);
+// A client without the Inventory module (26 Nov 2026): Inventory's own screens answer 409 no_inventory; signing in,
+// Team members and roles, branding, WhatsApp and support stay open (services/client-modules/gate).
+router.use(staffInventoryGate);
 
 // What the business paid, removed from responses for anyone without cost:view. Mounted per
 // router below rather than once here: purchase orders, suppliers and the day book show cost by

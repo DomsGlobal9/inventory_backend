@@ -161,6 +161,21 @@ async function main() {
   await prisma.onlineShop.delete({ where: { slug: RETAIL } }).catch(() => undefined);
   await prisma.shopAppKey.delete({ where: { id: all.data?.id } }).catch(() => undefined);
 
+  console.log('\nTHE BOUTIQUE APP\'S OWN SIGNED PASS, NO KEY AT ALL (26 Nov 2026, "make it automatic")');
+  const bearer = async (p: string, token: string) => {
+    const r = await axios.get(`${ROOT}${p}`, { validateStatus: () => true, timeout: 60_000, headers: { Authorization: `Bearer ${token}` } });
+    return { status: r.status, data: r.data?.data ?? r.data, message: r.data?.message as string | undefined };
+  };
+  const passA = pass(TEN, []);
+  check('its pass for boutique A opens A\'s shop (200), the same answer as with a key', (await bearer(`/shop/v1/${SLUG}`, passA)).status === 200);
+  check('...not B\'s shop: 404 (the boutique is signed in the pass)', (await bearer(`/shop/v1/${SLUG2}`, passA)).status === 404);
+  check('...its products too', (await bearer(`/shop/v1/${SLUG}/products`, passA)).status === 200);
+  check('a made-up pass: 401', (await bearer(`/shop/v1/${SLUG}`, 'not-a-real-pass')).status === 401);
+  const otherScope = jwt.sign({ sub: 'crm-b', scope: ['modules:crm'], tenant: TEN, onBehalfOf: { userId: 'u1', name: 'X', can: [] } }, privateKey, { algorithm: 'RS256', audience: 'inventory', issuer: 'scaleezy-boutique-test', keyid: 'btq-1', expiresIn: '5m' });
+  check('a pass that is not the Boutique app\'s (another scope): refused', [401, 403].includes((await bearer(`/shop/v1/${SLUG}`, otherScope)).status));
+  const noKeyNoPass = await shop('GET', `/shop/v1/${SLUG}`);
+  check('neither key nor pass: 401, saying the app may send its pass', noKeyNoPass.status === 401 && /Bearer/.test(noKeyNoPass.message ?? ''), noKeyNoPass);
+
   console.log('\nSWITCHED OFF');
   await appKeys.setActive(made.id, false);
   await new Promise(r => setTimeout(r, 31_000)); // the server keeps a key for at most 30 seconds
