@@ -28,9 +28,10 @@ export class ImageRepository {
       where: { productId, product: { clientId, status: { notIn: ['TRASHED' as any] } } },
       orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }]
     });
-    const VIEW_ORDER: Record<string, number> = { front: 0, left: 1, right: 2, back: 3 };
+    // The 3 views, then a saree's product photos (close-up, folded, table) in that order.
+    const VIEW_ORDER: Record<string, number> = { front: 0, left: 1, right: 2, back: 3, closeup: 4, folded: 5, table: 6 };
     const rank = (i: ProductImage) =>
-      i.isPrimary ? -1 : i.generated ? (VIEW_ORDER[i.view ?? ''] ?? 4) : 10;
+      i.isPrimary ? -1 : i.generated ? (VIEW_ORDER[i.view ?? ''] ?? 7) : 10;
     return rows
       .map((img, i) => ({ img, i }))
       .sort((a, b) => rank(a.img) - rank(b.img) || a.i - b.i)

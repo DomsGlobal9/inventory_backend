@@ -1,5 +1,5 @@
 import { prisma } from '../../lib/prisma';
-import { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER, isWanted } from './catalog';
+import { resolveTryOnCategory, pickRandomModelId, VIEW_ORDER, isWanted, makesProductShots } from './catalog';
 
 /**
  * Making, listing, stopping and clearing photo jobs.
@@ -291,6 +291,9 @@ export class PhotoJobQueue {
             modelId: pickRandomModelId(category),
             // Said, not left to the column's default of 4 from when a set had a back view.
             viewsTotal: VIEW_ORDER.length,
+            // A saree's three views also make the 3 product photos with no model, every time (owner, 26 Nov
+            // 2026: "while the three views are made, this should also be done"). A colour copy never does.
+            productShots: req.kind === 'VIEWS' && makesProductShots(category),
             requestedBy: req.requestedBy ?? null
           }
         });

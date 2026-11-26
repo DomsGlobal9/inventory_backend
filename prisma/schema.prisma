@@ -5148,6 +5148,10 @@ model PhotoJob {
 
   viewsDone  Int @default(0) @map("views_done")
   viewsTotal Int @default(4) @map("views_total")
+  /// Also the 3 product photos with no model (fabric close-up, folded, table scene): sarees, VIEWS jobs only
+  /// (catalog-product-shots-dev-update, 26 Nov 2026). shotsDone counts the ones saved.
+  productShots Boolean @default(false) @map("product_shots")
+  shotsDone    Int     @default(0) @map("shots_done")
 
   /// Why it failed or stopped, in words a shop owner can act on. Shown exactly as written.
   message String? @db.Text

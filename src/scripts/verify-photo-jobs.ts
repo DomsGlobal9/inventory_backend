@@ -130,6 +130,9 @@ async function main() {
     /^saree[1-4]$/.test(first.made[0]?.modelId ?? ''), first.made[0]?.modelId);
   check('it targets every size of the colour, not just one',
     (first.made[0]?.variantIds ?? []).length === 1);
+  // Product shots (26 Nov 2026): a saree's three views always bring the 3 photos with no model.
+  check("a saree's three-view job also asks for the 3 product photos", first.made[0]?.productShots === true && first.made[0]?.shotsDone === 0,
+    JSON.stringify({ productShots: first.made[0]?.productShots, shotsDone: first.made[0]?.shotsDone }));
 
   // ── Two people, one colour ──────────────────────────────────────────────────────────────────
   console.log('\nTWO PEOPLE, ONE COLOUR');
@@ -299,6 +302,14 @@ async function main() {
   check('an empty colour is copied from a FINISHED set, not a half-made one',
     plumJob.made[0]?.sourceImageId === olive.views.front.id,
     'it took a half-made colour as the reference the others are matched to');
+  check('a colour copy never asks for product shots (the studio refuses them with a colour)', plumJob.made[0]?.productShots === false);
+
+  // Not a saree: the studio makes product shots for sarees only, so a lehenga's job never asks.
+  const lehenga = await makeProduct('Verify photo jobs lehenga (delete me)', 'Lehenga');
+  await makeColour(lehenga.id, 'Gold', { own: true, ownIsPrimary: true });
+  const lehengaJob = remember(await photoJobQueue.enqueue({ clientId: SHOP, productId: lehenga.id, kind: 'VIEWS', colours: ['Gold'] }));
+  check("a lehenga's three-view job does not ask for product shots", lehengaJob.made.length === 1 && lehengaJob.made[0]?.productShots === false,
+    JSON.stringify({ made: lehengaJob.made.length, refused: lehengaJob.refused, productShots: lehengaJob.made[0]?.productShots }));
 
   // ── Its own history must not block it ───────────────────────────────────────────────────────
   console.log('\nRUNNING THE SAME COLOUR AGAIN LATER');

@@ -22,6 +22,16 @@ export const VIEW_ORDER = ['front', 'left', 'right'];
 /** Whether a view the studio sent belongs in a set. */
 export const isWanted = (view: string) => VIEW_ORDER.includes(view);
 
+/**
+ * The 3 product photos with no model a SAREE's three-view job also makes (catalog-product-shots-dev-update,
+ * 26 Nov 2026), saved after the views, in this order. Their own names in the `view` column, so nothing that counts
+ * the three views (front, left, right) ever counts one of these.
+ */
+export const PRODUCT_SHOTS = ['closeup', 'folded', 'table'];
+export const PRODUCT_SHOT_LABEL: Record<string, string> = { closeup: 'Fabric close-up', folded: 'Folded', table: 'Table scene' };
+/** Only sarees, for now: the studio refuses product shots for any other category. */
+export const makesProductShots = (category: string | null | undefined) => category === 'SAREE';
+
 /** The far end's view names are not ours 1:1. Must match API_VIEW_TO_LOCAL in the browser. */
 export const API_VIEW_TO_LOCAL: Record<string, string> = {
   front: 'front',

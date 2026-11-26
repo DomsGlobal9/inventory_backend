@@ -5,7 +5,7 @@ import { env } from '../../config/env';
 import { safeMessage } from '../../lib/safeMessage';
 import { catalogTryOnService, tryOnUsageService, jobKeyFor, recordTryOnFailure } from '../tryon';
 import { imageService } from '../image.service';
-import { VIEW_ORDER, API_VIEW_TO_LOCAL, isWanted } from './catalog';
+import { VIEW_ORDER, API_VIEW_TO_LOCAL, isWanted, PRODUCT_SHOTS, PRODUCT_SHOT_LABEL } from './catalog';
 
 /**
  * Doing the work the browser used to do.
@@ -113,8 +113,9 @@ type Job = Awaited<ReturnType<typeof prisma.photoJob.findFirstOrThrow>>;
  * imageService.deleteImage already knows this -- it removes the file only when the last row
  * using it goes.
  */
-async function saveView(job: Job, view: string, image: string, superseded: Set<string>): Promise<number> {
-  const cropped = await keepFirstPoseOnly(await bytesFor(image));
+async function saveView(job: Job, view: string, image: string, superseded: Set<string>, shot = false): Promise<number> {
+  // A product shot is one picture by design (no model, no contact sheet): kept as sent.
+  const cropped = shot ? await bytesFor(image) : await keepFirstPoseOnly(await bytesFor(image));
   const stored = await imageService.storeBytes(
     job.productId, job.clientId, `${view}.jpg`, cropped, 'image/jpeg'
   );
@@ -129,7 +130,8 @@ async function saveView(job: Job, view: string, image: string, superseded: Set<s
     ? (await prisma.productImage.count({ where: { id: job.sourceImageId, productId: job.productId } })) > 0
     : false;
 
-  const order = VIEW_ORDER.indexOf(view);
+  // Product shots come after the three views.
+  const order = shot ? VIEW_ORDER.length + PRODUCT_SHOTS.indexOf(view) : VIEW_ORDER.indexOf(view);
   let saved = 0;
 
   for (const variantId of job.variantIds) {
@@ -157,10 +159,11 @@ async function saveView(job: Job, view: string, image: string, superseded: Set<s
         storagePath: stored.storagePath,
         fileName: stored.fileName,
         fileSize: stored.fileSize,
-        altText: `${job.colourName}, ${view} view`,
+        altText: shot ? `${job.colourName}, ${(PRODUCT_SHOT_LABEL[view] ?? view).toLowerCase()}` : `${job.colourName}, ${view} view`,
         // The front leads. If the front never arrives, whatever came first leads instead, so a
         // half-finished colour still has a main photograph rather than none.
-        isPrimary: view === 'front' || job.viewsDone === 0,
+        // A product shot never leads: the model's front view is the colour's main photograph.
+        isPrimary: !shot && (view === 'front' || job.viewsDone === 0),
         imageType: 'GALLERY',
         generated: true,
         view,
@@ -312,6 +315,10 @@ export class PhotoJobRunner {
     let stopped = false;            // the shop pressed stop
     let stalled = false;            // the stream went quiet and we gave up on it
     let viewsSaved = 0;
+    // Product shots (sarees): saved, failed, and those our own check flagged as differing from the saree.
+    let shotsSaved = 0;
+    const shotsFailed: string[] = [];
+    const shotsToCheck: string[] = [];
     let lastFrameAt = Date.now();
     // Pictures this run has replaced. Held until the very end -- see saveView.
     const superseded = new Set<string>();
@@ -361,6 +368,8 @@ export class PhotoJobRunner {
           ...(job.kind === 'COLOUR'
             ? { color: { name: job.colourName, hex: (job.colourHex || '').toLowerCase() || undefined } }
             : {}),
+          // A saree's three views also make the 3 product photos (no model): the studio's own flag.
+          ...(job.productShots ? { productShots: true } : {}),
           // The job's name at the far end, which is also what cancelling it has to say. The
           // tenant is put in front here and never by whoever asked for the job.
           clientId: jobKeyFor(job.clientId, job.jobKey)
@@ -427,6 +436,22 @@ export class PhotoJobRunner {
                 where: { id: job.id },
                 data: { viewsDone: viewsSaved, heartbeatAt: new Date() }
               });
+            } else if (data.type === 'PRODUCT_SHOT') {
+              // Any order, mixed with the views; matched by "shot". A failed shot never touches the views.
+              const shot = String(data.shot ?? '').toLowerCase();
+              if (!job.productShots || !PRODUCT_SHOTS.includes(shot)) continue;
+              if (typeof data.image !== 'string' || !data.image) {
+                shotsFailed.push(shot);
+                console.warn(`[photo-jobs] ${job.id}: product shot ${shot} not made:`, JSON.stringify(data.error ?? {}).slice(0, 300));
+                continue;
+              }
+              const saved = await saveView(job, shot, data.image, superseded, true);
+              if (saved > 0) {
+                shotsSaved++;
+                // The studio sends its best try even when a difference remained after two redos: kept, and said.
+                if (data.checkPassed === false) shotsToCheck.push(PRODUCT_SHOT_LABEL[shot] ?? shot);
+                job = await prisma.photoJob.update({ where: { id: job.id }, data: { shotsDone: shotsSaved, heartbeatAt: new Date() } });
+              }
             } else if (data.type === 'ERROR') {
               // The far end's wording is written for whoever built it. Through the same gate as
               // every other message before it can reach a shop owner's screen.
@@ -471,9 +496,16 @@ export class PhotoJobRunner {
       }
 
       void tryOnUsageService.record(job.clientId, { completed: true, viewsGenerated: viewsSaved, colour: isColour });
-      await finish(job.id, 'DONE', viewsSaved < job.viewsTotal
-        ? `${viewsSaved} of ${job.viewsTotal} views were made. Run it again if you want the rest.`
-        : null);
+      // The views first; then the product shots, only where something about them is worth saying.
+      const notes: string[] = [];
+      if (viewsSaved < job.viewsTotal) notes.push(`${viewsSaved} of ${job.viewsTotal} views were made. Run it again if you want the rest.`);
+      if (job.productShots && shotsSaved < PRODUCT_SHOTS.length) {
+        notes.push(`${shotsSaved} of ${PRODUCT_SHOTS.length} product photos were made. Run it again for new ones.`);
+      }
+      if (shotsToCheck.length) {
+        notes.push(`Check the ${shotsToCheck.join(' and ').toLowerCase()} photo${shotsToCheck.length === 1 ? '' : 's'}: ${shotsToCheck.length === 1 ? 'it' : 'they'} may differ a little from the saree.`);
+      }
+      await finish(job.id, 'DONE', notes.length ? notes.join(' ') : null);
 
     } catch (err: any) {
       if (stopped) {
