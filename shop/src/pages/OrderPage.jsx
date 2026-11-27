@@ -283,15 +283,15 @@ export default function OrderPage({ shop }) {
         <div className="due">
           <span>
             {refunding ? 'Being refunded' : o.paid ? 'Paid in full' : o.paidOnDelivery ? 'Paid on delivery'
-              : o.upi?.state === 'TO_CHECK' ? 'Paid by UPI · being checked'
-              : o.upi?.state === 'NOT_RECEIVED' ? 'UPI payment not found'
+              : o.upi?.state === 'TO_CHECK' ? 'Paid by UPI · shop is confirming'
+              : o.upi?.state === 'NOT_RECEIVED' ? 'Shop could not find your UPI payment'
               : o.upi?.state === 'AWAITING' ? 'Waiting for your UPI payment'
               : o.payWay === 'ON_DELIVERY' ? 'Have this ready' : 'Still to pay'}
             <span>{refunding ? 'Refund to your original payment method' : (o.paid || o.paidOnDelivery) ? 'Nothing more to pay'
-              : o.upi?.state === 'TO_CHECK' ? `Reference ${o.upi.utr}. Once the shop confirms it, your order confirmation comes on WhatsApp.`
-              : o.upi?.state === 'NOT_RECEIVED' ? 'The shop could not find it. Check your UPI app, or message the shop.'
+              : o.upi?.state === 'TO_CHECK' ? `UPI Ref. No. ${o.upi.utr}. Your order confirmation comes on WhatsApp once the shop sees the money.`
+              : o.upi?.state === 'NOT_RECEIVED' ? 'Check your UPI app. If money left your account, message the shop with a screenshot. The order is cancelled after 24 hours.'
               : o.upi?.state === 'AWAITING' ? <Link to={`/${slug}/upi/${token}`}>Pay now by UPI</Link>
-              : o.payWay === 'ON_DELIVERY' ? 'Cash on Delivery (COD): cash or UPI' : ''}</span>
+              : o.payWay === 'ON_DELIVERY' ? 'Pay by cash or UPI when it is delivered' : ''}</span>
           </span>
           <b>{money(o.total)}</b>
         </div>

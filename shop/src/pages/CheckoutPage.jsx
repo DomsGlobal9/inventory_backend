@@ -29,9 +29,9 @@ import UpiWaiting from '../components/UpiWaiting';
 const PAY = {
   ON_DELIVERY: { title: 'Cash on Delivery (COD)', note: 'Pay by cash or UPI when your order is delivered.' },
   // UPI first: on a saree it costs the shop a fraction of what a card does (see the payments plan).
-  ONLINE: { title: 'Pay now', note: 'UPI, card or net banking — securely through Razorpay.' },
+  ONLINE: { title: 'Pay now', note: 'UPI, card or net banking.' },
   // Pay by UPI (26 Nov 2026): a QR or the shopper's own UPI app. When it is offered, "Pay now" is card or net banking.
-  UPI: { title: 'Pay by UPI', note: 'Scan a QR or tap GPay, PhonePe or Paytm.' }
+  UPI: { title: 'Pay by UPI', note: 'GPay, PhonePe, Paytm or any UPI app. Your order is confirmed once the shop sees the money.' }
 };
 
 export default function CheckoutPage({ shop }) {
@@ -474,7 +474,7 @@ export default function CheckoutPage({ shop }) {
                     checked={form.payWay === way} onChange={() => set('payWay', way)} />
                   <span>
                     <b>{PAY[way]?.title ?? way}</b>
-                    <small>{way === 'ONLINE' && (bag?.payWays ?? []).includes('UPI') ? 'Card or net banking — securely through Razorpay.' : (PAY[way]?.note ?? '')}</small>
+                    <small>{way === 'ONLINE' && (bag?.payWays ?? []).includes('UPI') ? 'Card or net banking.' : (PAY[way]?.note ?? '')}</small>
                   </span>
                 </label>
               ))}

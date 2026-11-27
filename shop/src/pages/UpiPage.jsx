@@ -99,8 +99,8 @@ export default function UpiPage({ shop }) {
       await upiPayAnotherWay(slug, token);
       const back = putKeptBagBack(slug, token);
       nav(back ? `/${slug}/checkout` : `/${slug}/bag`, { replace: true, state: { upiNote: back
-        ? 'Your UPI order was let go and its pieces are back in your bag. Choose how you would like to pay.'
-        : 'Your UPI order was let go. This browser did not have its bag, so please add the pieces again.' } });
+        ? 'Your UPI order was cancelled and the pieces are back in your bag. Choose how you would like to pay.'
+        : 'Your UPI order was cancelled. Please add the pieces to your bag again.' } });
     } catch (err) {
       setRefused(err?.message ?? 'That did not go through. Please try again.');
       setAsking(false);
@@ -141,7 +141,7 @@ export default function UpiPage({ shop }) {
       <div className="upipay done">
         <h1 className="pagetitle">The shop could not find your payment</h1>
         <p className="upimeta">{st.orderNumber} · {amount}{st.utr ? ` · reference ${st.utr}` : ''}</p>
-        <p>Please check your UPI app. If the money left your account, message the shop with a screenshot and they will sort it out. Your order is held for a day.</p>
+        <p>Please check your UPI app. If the money left your account, message the shop with a screenshot and they will sort it out. Your order is kept for 24 hours; after that it is cancelled.</p>
         <Link className="go quiet" to={orderLink}>See my order</Link>
         <ContactShop shop={shop} st={st} />
       </div>
@@ -152,7 +152,10 @@ export default function UpiPage({ shop }) {
       <div className="upipay done">
         <h1 className="pagetitle">This order was not completed</h1>
         <p className="upimeta">{st.orderNumber} · {amount}</p>
-        <p>No payment reached the shop in time, so the pieces have gone back on sale. If money did leave your account, message the shop with a screenshot and they will sort it out.</p>
+        <p>{st.state === 'CANCELLED'
+          ? 'This order was cancelled, so the pieces are no longer kept for you.'
+          : 'No UPI Ref. No. was given within 30 minutes, so this order was cancelled and the pieces are no longer kept for you.'}{' '}
+          If money did leave your account, message the shop with a screenshot and they will sort it out.</p>
         {hasKeptBag(slug, token) ? <button type="button" className="go" onClick={putBack}>Put these pieces back in my bag</button> : null}
         <Link className="go quiet" to={`/${slug}`}>Back to the shop</Link>
         <ContactShop shop={shop} st={st} />
@@ -171,7 +174,7 @@ export default function UpiPage({ shop }) {
     </div>
     {asking ? (
       <div className="upiask" role="alertdialog" aria-labelledby="upiask-h">
-        <p id="upiask-h"><b>Pay another way?</b> The pieces go back to your bag. Already paid? Type the reference below instead.</p>
+        <p id="upiask-h"><b>Pay another way?</b> This UPI order is cancelled and the pieces go back to your bag. Already paid? Don&rsquo;t cancel: type the UPI Ref. No. below.</p>
         <div className="upiask-row">
           <button type="button" className="go quiet" onClick={() => setAsking(false)} disabled={leaving}>Stay and pay</button>
           <button type="button" className="go" onClick={payAnotherWay} disabled={leaving}>{leaving ? 'One moment…' : 'Yes, pay another way'}</button>
@@ -198,15 +201,15 @@ export default function UpiPage({ shop }) {
         <div className="upiact">
           <ol className="upisteps">
             <li><span>1</span><p><b>Pay {amount}</b> by scanning the QR with GPay, PhonePe, Paytm or any UPI app{phone ? ', or tap the button above' : ''}.</p></li>
-            <li><span>2</span><p>Type the 12-digit <b>UPI reference</b> (UTR) your app shows after paying.</p></li>
+            <li><span>2</span><p>Type the 12-digit <b>UPI Ref. No.</b> your app shows after paying. Some apps call it <b>UTR</b> or <b>UPI transaction ID</b>.</p></li>
           </ol>
-          <input className="upiutr" inputMode="numeric" autoComplete="off" aria-label="UPI reference, 12 digits"
+          <input className="upiutr" inputMode="numeric" autoComplete="off" aria-label="UPI Ref. No., 12 digits"
             placeholder="1234 5678 9012" value={shown} onChange={(e) => setUtr(e.target.value)} />
           {refused ? <p className="refused" role="alert">{refused}</p> : null}
           <button type="submit" className="go" disabled={sending || digits.length !== 12}>{sending ? 'Sending…' : 'I have paid'}</button>
           <p className="upinote">
-            {left > 0 ? <>Your pieces are kept for you for <b>{mm}:{ss}</b>.</> : 'Your time is up: the shop is releasing the pieces.'}{' '}
-            Once the shop confirms your payment, your order confirmation comes to your WhatsApp.
+            {left > 0 ? <>Pay within <b>{mm}:{ss}</b>. Until then, these pieces are kept for you.</> : 'Time is up: this order is being cancelled and the pieces are no longer kept.'}{' '}
+            Your order confirmation comes on WhatsApp once the shop sees your payment.
           </p>
         </div>
       </div>

@@ -122,7 +122,7 @@ export async function forShopper(clientId: string, rawToken: unknown) {
 export async function iHavePaid(clientId: string, rawToken: unknown, rawUtr: unknown) {
   const token = typeof rawToken === 'string' ? rawToken.trim() : '';
   const utr = String(rawUtr ?? '').replace(/[\s-]/g, '');
-  if (!UTR.test(utr)) throw new OnlineShopRuleError('The UPI reference is the 12-digit number your UPI app shows after paying (also called UTR). Type all 12 digits.');
+  if (!UTR.test(utr)) throw new OnlineShopRuleError('Type the 12-digit UPI Ref. No. your UPI app shows after paying (some apps call it UTR or UPI transaction ID).');
   const claim = token ? await prisma.upiClaim.findFirst({ where: { clientId, orderToken: token } }) : null;
   if (!claim) throw new OnlineShopRuleError('That payment could not be found.');
   await settleIfOrderGone(claim);
@@ -130,14 +130,14 @@ export async function iHavePaid(clientId: string, rawToken: unknown, rawUtr: unk
   const now = (await prisma.upiClaim.findUnique({ where: { id: claim.id } }))!;
   if (now.status === 'RECEIVED') return forShopper(clientId, token);
   if (now.status === 'EXPIRED' || now.status === 'CANCELLED') {
-    throw new OnlineShopRuleError('This order was cancelled before a payment reference arrived. If money left your account, message the shop with this reference and they will sort it out.');
+    throw new OnlineShopRuleError('This order was cancelled before a UPI Ref. No. arrived. If money left your account, message the shop with this number and they will sort it out.');
   }
   if (now.utr === utr) return forShopper(clientId, token);   // the same press twice
   if (now.utr && now.claimedAt && Date.now() - now.claimedAt.getTime() > 60 * 60_000) {
     throw new OnlineShopRuleError('The shop is already checking the reference you gave. Message them if it needs changing.');
   }
   const used = await prisma.upiClaim.findFirst({ where: { clientId, utr, id: { not: claim.id } }, select: { id: true } });
-  if (used) throw new OnlineShopRuleError('That UPI reference was already given for another order. Check the 12 digits in your UPI app.');
+  if (used) throw new OnlineShopRuleError('That UPI Ref. No. was already given for another order. Check the 12 digits in your UPI app.');
   const first = !now.utr;
   let landed = 0;
   try {
@@ -148,13 +148,13 @@ export async function iHavePaid(clientId: string, rawToken: unknown, rawUtr: unk
       data: { utr, status: 'TO_CHECK', claimedAt: new Date(), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60_000) }
     })).count;
   } catch (e: any) {
-    if (e?.code === 'P2002') throw new OnlineShopRuleError('That UPI reference was already given for another order. Check the 12 digits in your UPI app.');
+    if (e?.code === 'P2002') throw new OnlineShopRuleError('That UPI Ref. No. was already given for another order. Check the 12 digits in your UPI app.');
     throw e;
   }
   if (!landed) {
     const then = await prisma.upiClaim.findUnique({ where: { id: claim.id }, select: { status: true } });
     if (then?.status === 'RECEIVED') return forShopper(clientId, token);
-    throw new OnlineShopRuleError('This order was cancelled before a payment reference arrived. If money left your account, message the shop with this reference and they will sort it out.');
+    throw new OnlineShopRuleError('This order was cancelled before a UPI Ref. No. arrived. If money left your account, message the shop with this number and they will sort it out.');
   }
   // The shop's ONE line to check (owner, 26 Nov 2026): the order now shows in Orders as "UPI · to check". The
   // customer's order confirmation and the shop's "new order to pack" wait for Payment received (received()).
@@ -271,7 +271,7 @@ export async function payAnotherWay(clientId: string, rawToken: unknown) {
   if (claim.status === 'CANCELLED' || claim.status === 'EXPIRED') return { released: true };
   const why = (status: string) => new OnlineShopRuleError(status === 'RECEIVED'
     ? 'The shop has already received your payment, so this order is confirmed. Message the shop if you need to change it.'
-    : 'You have already given a UPI reference, so this order stays with the shop to check. Message the shop if you need to change it.');
+    : 'You have already given a UPI Ref. No., so this order stays with the shop to check. Message the shop if you need to change it.');
   if (claim.status !== 'AWAITING' || claim.utr) throw why(claim.status);
   // Won first, so a reference typed at the same moment on another tab cannot be lost: only one of the two goes through.
   const won = await prisma.upiClaim.updateMany({ where: { id: claim.id, status: 'AWAITING', utr: null }, data: { status: 'CANCELLED', decidedAt: new Date(), decidedBy: 'shopper: pay another way' } });
@@ -326,7 +326,7 @@ async function tellCustomer(clientId: string, orderToken: string, what: 'RECEIVE
     const first = row.salesOrder.customerName ? row.salesOrder.customerName.split(' ')[0] : null;
     const text = what === 'RECEIVED'
       ? [`${first ? `${first}, your` : 'Your'} UPI payment of ${rupees(claim.amountPaise)} for order ${row.salesOrder.orderNumber} has reached ${name}. Thank you!`, '', 'We will message you again when it is sent.'].join('\n')
-      : [`${first ? `${first}, we` : 'We'} could not find your UPI payment of ${rupees(claim.amountPaise)} for order ${row.salesOrder.orderNumber}${claim.utr ? ` (reference ${claim.utr})` : ''}.`, '', `Please check your UPI app. If the money left your account, reply here with a screenshot and ${name} will sort it out. The order is held for a day.`].join('\n');
+      : [`${first ? `${first}, we` : 'We'} could not find your UPI payment of ${rupees(claim.amountPaise)} for order ${row.salesOrder.orderNumber}${claim.utr ? ` (reference ${claim.utr})` : ''}.`, '', `Please check your UPI app. If the money left your account, reply here with a screenshot and ${name} will sort it out. The order is kept for 24 hours; after that it is cancelled.`].join('\n');
     const { sendShopText } = await import('../whatsapp/service');
     await sendShopText({ clientId, to: row.customerPhone.replace(/^\+/, ''), text, kind: 'ORDER_UPDATE' } as any);
   } catch (e: any) {

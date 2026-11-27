@@ -70,7 +70,7 @@ export default function UpiWaiting({ slug, compact = false }) {
         return (
           <div key={token} className="upiwait" role="status">
             <p><b>A UPI order is waiting for payment</b></p>
-            <p>Order {st.orderNumber} · {money(st.amount, 'INR')}. Its pieces are kept for you for <b>{mm}:{ss}</b>.</p>
+            <p>Order {st.orderNumber} · {money(st.amount, 'INR')}. Pay within <b>{mm}:{ss}</b>; until then the pieces are kept for you.</p>
             <div className="upiwait-row">
               <Link className="go" to={`/${slug}/upi/${token}`}>Finish paying</Link>
               <Link className="go quiet" to={`/${slug}/upi/${token}?another=1`}>Pay another way</Link>
@@ -81,7 +81,7 @@ export default function UpiWaiting({ slug, compact = false }) {
       {lapsed.map(({ token, st }) => (
         <div key={token} className="upiwait" role="status">
           <p><b>Your UPI order {st.orderNumber} was not completed</b></p>
-          <p>{st.state === 'CANCELLED' ? 'It was cancelled, so its pieces went back on sale.' : 'No payment reached the shop in time, so its pieces went back on sale.'}</p>
+          <p>{st.state === 'CANCELLED' ? 'It was cancelled, so the pieces are no longer kept for you.' : 'No payment details came within 30 minutes, so it was cancelled and the pieces are no longer kept for you.'}</p>
           <div className="upiwait-row">
             <button type="button" className="go" onClick={() => putBack(token)}>Put the pieces back in my bag</button>
             <button type="button" className="go quiet" onClick={() => { forgetKeptBag(slug, token); setOrders(o => o.filter(x => x.token !== token)); }}>Dismiss</button>

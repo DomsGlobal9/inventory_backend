@@ -629,8 +629,10 @@ a.announce:hover { text-decoration: none; }
 /* Inside checkout's form box the field rules (.ask label = block, .ask input = a padded text box, .ask label > span =
    a small grey caption) are more specific than .way and used to win: the radio sat above its words and, with a text
    box's padding on a drawn circle, stretched into an oval (26 Nov 2026). The pay rows take their own shape back. */
-.ask label.way { display: flex; align-items: center; }
+.ask label.way { display: flex; align-items: flex-start; }
 .ask .way input[type="radio"] { width: 20px; height: 20px; min-width: 20px; padding: 0; margin: 0; flex: 0 0 20px; border-radius: 50%; }
+/* Level with the title line, however many lines the note under it wraps to. */
+.ask .way > span b { line-height: 20px; }
 .ask .way > span { margin: 0; font-size: inherit; color: var(--ink); }
 
 /* ── The order, once it is placed ────────────────────────────────────────────────────── */

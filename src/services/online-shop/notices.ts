@@ -292,7 +292,7 @@ export async function orderCancelled(
       ? [
           `${first ? `${first}, your` : 'Your'} order ${order.orderNumber} with ${name} was not completed.`,
           '',
-          'No UPI payment reference arrived within 30 minutes, so the pieces have gone back on sale.',
+          'No UPI payment details (UPI Ref. No.) came within 30 minutes, so the order was cancelled. Nothing is owed.',
           'If money did leave your account, reply here with a screenshot and the shop will sort it out.',
           ...(link ? ['', `You can order again here: ${link}`] : [])
         ]
@@ -300,7 +300,8 @@ export async function orderCancelled(
       ? [
           `${first ? `${first}, your` : 'Your'} order ${order.orderNumber} with ${name} has been cancelled.`,
           '',
-          'The shop could not find your UPI payment for it. If money did leave your account, reply here with a screenshot and the shop will sort it out.',
+          'The shop could not find your UPI payment for it. Nothing is owed.',
+          'If money did leave your account, reply here with a screenshot and the shop will sort it out.',
           ...(link ? ['', `You can order again here: ${link}`] : [])
         ]
       : why === 'HOLD_EXPIRED'
