@@ -46,13 +46,16 @@ async function main() {
   let r = await api('GET', '/fabrics');
   check('off by default, smallest cut 0.25 m, quick lengths 1 / 2.5 / 5.5 m', r.status === 200 && r.data.fabricsOn === false && r.data.fabricMinCut === 25 && JSON.stringify(r.data.fabricQuickLengths) === '[100,250,550]', JSON.stringify(r.data ?? r));
   r = await api('POST', '/products', fabricBody());
-  check('switch off: a product sold by the metre is refused, in words', r.status === 409 && /Settings/.test(r.message), `${r.status} ${r.message}`);
+  check('switch off: a product sold by the metre is refused, in words (ScaleEzy sets what a shop sells)', r.status === 409 && /contact ScaleEzy/.test(r.message), `${r.status} ${r.message}`);
   r = await api('PUT', '/fabrics', { fabricMinCut: 0 });
   check('a smallest cut of 0 is refused', r.status === 400, `${r.status} ${r.message}`);
   r = await api('PUT', '/fabrics', { fabricQuickLengths: [250, 100, 100, 550] });
   check('quick lengths are tidied (no repeats, in order)', r.status === 200 && JSON.stringify(r.data.fabricQuickLengths) === '[100,250,550]', JSON.stringify(r.data ?? r.message));
   r = await api('PUT', '/fabrics', { fabricsOn: true });
-  check('the owner switches it on', r.status === 200 && r.data.fabricsOn === true, JSON.stringify(r.data ?? r.message));
+  check('the owner cannot switch it on (27 Nov 2026: ScaleEzy sets what a shop sells): 403 in words', r.status === 403 && /set by ScaleEzy/.test(r.message), `${r.status} ${r.message}`);
+  await (await import('../services/shop-setup')).setSellsByScaleEzy(SHOP, 'BOTH');
+  r = await api('GET', '/fabrics');
+  check('ScaleEzy sets "both" in the Platform Console: switched on', r.status === 200 && r.data.fabricsOn === true, JSON.stringify(r.data ?? r.message));
 
   console.log('\nB. PRODUCTS');
   r = await api('POST', '/products', fabricBody({ soldBy: 'KILOGRAM' }));
@@ -93,7 +96,9 @@ async function main() {
   if (r.status === 404) r = await api('PUT', `/products/${fabric.id}`, { soldBy: 'PIECE' });
   check('the unit cannot change once there is stock (old bills keep their meaning)', r.status === 409 && /cannot change/.test(r.message), `${r.status} ${r.message}`);
   r = await api('PUT', '/fabrics', { fabricsOn: false });
-  check('the switch cannot go off while products are sold by the metre/packet', r.status === 409, `${r.status} ${r.message}`);
+  check('the owner cannot switch it off either (403)', r.status === 403, `${r.status} ${r.message}`);
+  const offWhile = await said((await import('../services/shop-setup')).setSellsByScaleEzy(SHOP, 'READY_MADE'));
+  check('...and ScaleEzy cannot set ready-made only while products are sold by the metre/packet (refused in words)', !!offWhile && /sold by the metre or packet/.test(offWhile), String(offWhile));
 
   console.log('\nD. WHO SEES CLOTH');
   const scope = { clientId: SHOP, locationIds: [] as string[] };

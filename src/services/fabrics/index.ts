@@ -80,7 +80,7 @@ export async function unitFieldsFor(clientId: string, productId: string | null, 
     if (soldBy !== 'PIECE') {
       if (!SELLING_NOW.includes(soldBy)) throw problem(`Selling by the ${unitOf(soldBy).one} is not offered yet. Choose piece, metre or packet.`);
       const s = await fabricSettings(clientId);
-      if (!s.fabricsOn) throw problem('Selling by the metre or packet is off for this shop. Switch it on in Settings → Products → Fabrics.', 409);
+      if (!s.fabricsOn) throw problem('This shop does not sell by the metre or packet. ScaleEzy sets what a shop sells: contact ScaleEzy to add fabrics.', 409);
     }
     if (productId) {
       const [stock, moves, sold] = await Promise.all([

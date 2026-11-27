@@ -109,13 +109,15 @@ consoleRouter.put('/clients/:clientId/modules', async (req, res) => {
   } catch (e) { modulesFail(res, e); }
 });
 // What the shop sells (27 Nov 2026): ScaleEzy's to set, here; the owner sees it in Settings and cannot change it.
+// Read fresh, not from the 15-second cache the app's own requests use: the console has just switched modules.
+const inventoryOnNow = async (clientId: string) => ((await (await import('../lib/prisma')).prisma.clientModule.findUnique({ where: { clientId_module: { clientId, module: 'inventory' } }, select: { on: true } }))?.on ?? true);
 consoleRouter.get('/clients/:clientId/sells', async (req, res) => {
   try {
     const clientId = String(req.params.clientId);
     if (!(await ourClient(clientId))) return notOurs(res);
     const { getSetup } = await import('../services/shop-setup');
     const s = await getSetup(clientId);
-    res.json({ success: true, data: { sells: s.sells, suggested: s.suggested, fabricsOn: s.fabricsOn, boutiqueLinked: !!(s.boutique as any)?.linked, inventoryOn: await (await import('../services/client-modules')).inventoryOn(clientId) } });
+    res.json({ success: true, data: { sells: s.sells, suggested: s.suggested, fabricsOn: s.fabricsOn, boutiqueLinked: !!(s.boutique as any)?.linked, inventoryOn: await inventoryOnNow(clientId) } });
   } catch (e) { modulesFail(res, e); }
 });
 consoleRouter.put('/clients/:clientId/sells', async (req, res) => {
@@ -123,8 +125,10 @@ consoleRouter.put('/clients/:clientId/sells', async (req, res) => {
     const clientId = String(req.params.clientId);
     if (!(await ourClient(clientId))) return notOurs(res);
     const { setSellsByScaleEzy } = await import('../services/shop-setup');
+    res.locals.auditTargetId = clientId;
+    res.locals.auditTargetLabel = `what they sell: ${String(req.body?.sells ?? '').slice(0, 20)}`;
     const s = await setSellsByScaleEzy(clientId, req.body?.sells);
-    res.json({ success: true, data: { sells: s.sells, suggested: s.suggested, fabricsOn: s.fabricsOn, boutiqueLinked: !!(s.boutique as any)?.linked, inventoryOn: await (await import('../services/client-modules')).inventoryOn(clientId) } });
+    res.json({ success: true, data: { sells: s.sells, suggested: s.suggested, fabricsOn: s.fabricsOn, boutiqueLinked: !!(s.boutique as any)?.linked, inventoryOn: await inventoryOnNow(clientId) } });
   } catch (e) { res.status((e as any)?.statusCode ?? 500).json({ success: false, message: (e as any)?.statusCode ? (e as any).message : 'That could not be changed just now. Please try again.' }); }
 });
 consoleRouter.get('/clients/:clientId/connections', async (req, res) => {

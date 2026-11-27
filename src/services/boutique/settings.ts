@@ -62,17 +62,14 @@ export async function saveShop(a: Actor, body: any) {
   return brandingService.get(a.clientId);
 }
 
-/** Ready-made, fabrics or both, and the smallest cut of cloth. */
+/**
+ * The smallest cut of cloth. What the shop sells (ready-made, fabrics or both) is set by ScaleEzy (27 Nov 2026): sending
+ * the same value again is harmless, a different one is refused (403) in words, as on Inventory's own screens.
+ */
 export async function saveSells(a: Actor, body: any) {
   mustOwn(a);
-  let sells = body?.sells;
-  // The smallest cut alone: saved with what the shop already sells (setup applies the cut only with it).
-  if (sells === undefined && body?.fabricMinCut !== undefined) {
-    sells = (await prisma.clientSettings.findUnique({ where: { clientId: a.clientId }, select: { sells: true } }))?.sells ?? undefined;
-    if (!sells) throw problem('Say what the shop sells (sells: FABRICS or BOTH) with the smallest cut.');
-  }
-  if (sells === undefined) throw problem('Send sells (READY_MADE, FABRICS or BOTH), fabricMinCut, or both.');
-  await said(() => saveSetup(a.clientId, { sells, fabricMinCut: body?.fabricMinCut }));
+  if (body?.sells === undefined && body?.fabricMinCut === undefined) throw problem('Send fabricMinCut (cm). What the shop sells is set by ScaleEzy.');
+  await said(() => saveSetup(a.clientId, { ...(body?.sells !== undefined ? { sells: body.sells } : {}), ...(body?.fabricMinCut !== undefined ? { fabricMinCut: body.fabricMinCut } : {}) }));
   return getSetup(a.clientId);
 }
 

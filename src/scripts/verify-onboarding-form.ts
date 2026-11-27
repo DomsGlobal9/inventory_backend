@@ -22,7 +22,8 @@ const made: string[] = [];
 
 async function main() {
   console.log('\nA. WHAT THE FORM REFUSES, IN WORDS');
-  const base = { companyName: 'Lakshmi Silks', adminName: 'Lakshmi Narayanan', adminEmail: 'owner@example.com', ownerPhone: '98480 22338' };
+  // What the shop sells is required for an Inventory client (27 Nov 2026): the form under test always says it.
+  const base = { companyName: 'Lakshmi Silks', adminName: 'Lakshmi Narayanan', adminEmail: 'owner@example.com', ownerPhone: '98480 22338', sells: 'BOTH' };
   const p = (over: any) => (readOnboardingForm({ ...base, ...over }) as any).problem as string | undefined;
   check('no owner mobile: refused, asking for the owner\'s number', /owner/i.test(p({ ownerPhone: '' }) ?? ''), p({ ownerPhone: '' }));
   check('a mobile that is not a mobile (starts with 4): refused', /6, 7, 8 or 9/.test(p({ ownerPhone: '4848022338' }) ?? ''), p({ ownerPhone: '4848022338' }));

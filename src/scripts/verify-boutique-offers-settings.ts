@@ -132,10 +132,11 @@ async function main() {
   check('a malformed GSTIN: 400 with a sentence, nothing changed', badGst.status === 400 && (badGst.message ?? '').length > 10 && (await prisma.clientSettings.findUnique({ where: { clientId } }))?.gstNumber === '36AABCU9603R1ZX', badGst);
 
   console.log('\nSETTINGS: WHAT THE SHOP SELLS');
+  // What the shop sells is ScaleEzy's to set (27 Nov 2026); a boutique shop is "both" from the moment it is linked.
   const rm = await call('PUT', '/settings/what-you-sell', { sells: 'READY_MADE' });
-  check('ready-made only, for a boutique shop: 409 in words', rm.status === 409 && /boutique/i.test(rm.message ?? ''), rm);
+  check('changing what the shop sells from the boutique app: 403, set by ScaleEzy, in words', rm.status === 403 && /set by ScaleEzy/.test(rm.message ?? ''), rm);
   const both = await call('PUT', '/settings/what-you-sell', { sells: 'BOTH', fabricMinCut: 50 });
-  check('both, smallest cut 50 cm: saved', both.status === 200 && both.data?.sells === 'BOTH' && both.data?.fabricMinCut === 50, both);
+  check('the same "both" again with the smallest cut 50 cm: saved (harmless)', both.status === 200 && both.data?.sells === 'BOTH' && both.data?.fabricMinCut === 50, both);
   const cut = await call('PUT', '/settings/what-you-sell', { fabricMinCut: 25 });
   check('only the smallest cut (25 cm): saved too, not silently ignored', cut.status === 200 && cut.data?.fabricMinCut === 25, cut);
   check('an empty body: 400', (await call('PUT', '/settings/what-you-sell', {})).status === 400);

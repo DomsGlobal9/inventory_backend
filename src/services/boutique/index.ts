@@ -100,7 +100,8 @@ export async function link(input: { tenant: unknown; shopName?: unknown; linkCod
     await prisma.$transaction(async tx => {
       await tx.boutiqueLink.create({ data: { clientId, tenant, shopName: input.shopName ? String(input.shopName).slice(0, 120) : null } });
       // Cloth by the metre is how a boutique counts most of its stock.
-      await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true } as any, update: { fabricsOn: true } });
+      // ...and it sells both (27 Nov 2026: said, not left unset for the screens to guess).
+      await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true, sells: 'BOTH' } as any, update: { fabricsOn: true, sells: 'BOTH' } as any });
       const store = await tx.stockLocation.findFirst({ where: { clientId, active: true } });
       if (!store) await tx.stockLocation.create({ data: { clientId, name: 'Boutique', code: `BTQ-${slug(tenant)}`.slice(0, 40), type: 'STORE' as any, active: true } });
     });
@@ -295,7 +296,7 @@ async function linkForClient(clientId: string, tenantIn: string, shopName: strin
     });
     await tx.clientSettings.upsert({ where: { clientId }, create: { clientId, fabricsOn: true } as any, update: { fabricsOn: true } });
     // The boutique adds fabrics and materials, so a ready-made-only shop now sells both (Add product then asks garment or fabric).
-    await tx.clientSettings.updateMany({ where: { clientId, sells: 'READY_MADE' }, data: { sells: 'BOTH' } });
+    await tx.clientSettings.updateMany({ where: { clientId, OR: [{ sells: 'READY_MADE' }, { sells: null }] }, data: { sells: 'BOTH' } });
     // The boutique's items are priced by the boutique again (they were the shop's own while it was disabled).
     await tx.product.updateMany({ where: { clientId, importKey: { startsWith: 'boutique:' } }, data: { priceOwner: 'BOUTIQUE' } });
     return { linked: true, tenant, moved, already: false, movedStoreIds };

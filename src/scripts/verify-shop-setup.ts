@@ -46,8 +46,9 @@ async function main() {
 
   console.log('ONBOARDING: WHAT IT SELLS, ITS BOUTIQUE');
   check('the Console refuses anyone without its session', (await http('POST', '/admin/clients', form('N'))).status === 401);
-  const blank = await onboard('Blank', { sells: '' });
-  check('"" (owner decides) is stored as not chosen', blank.status === 201 && blank.data?.sells === null, blank);
+  // 27 Nov 2026: what the shop sells is ScaleEzy's choice, required here for a client with Inventory.
+  const blank = await asConsole('POST', '/admin/clients', form('Blank', { sells: '' }));
+  check('"" (no choice) for an Inventory client is refused in words, nothing created', blank.status === 400 && /Choose what the shop sells/.test(blank.message ?? '') && !(await prisma.user.findFirst({ where: { email: form('Blank').adminEmail } })), blank);
   for (const v of ['ready_made', 'SHOES', 7, { x: 1 }]) {
     const r = await asConsole('POST', '/admin/clients', form('Bad', { sells: v }));
     check(`a "what it sells" of ${JSON.stringify(v)} is refused in words`, r.status === 400 && /select|Choose/.test(r.message ?? ''), r);
@@ -60,9 +61,9 @@ async function main() {
   const cased = await onboard('Case', { sells: 'BOTH', boutiqueTenant: caseT });
   const link = await prisma.boutiqueLink.findFirst({ where: { clientId: cased.data?.clientId } });
   check('a boutique account in capitals is kept lower-case and linked', cased.status === 201 && link?.tenant === caseT.toLowerCase(), { s: cased.status, t: link?.tenant });
-  const dupe = await asConsole('POST', '/admin/clients', form('Dupe', { boutiqueTenant: caseT.toUpperCase() }));
+  const dupe = await asConsole('POST', '/admin/clients', form('Dupe', { sells: 'BOTH', boutiqueTenant: caseT.toUpperCase() }));
   check('the same boutique account again (any case) is refused, nothing created', dupe.status === 409 && !(await prisma.user.findFirst({ where: { email: form('Dupe').adminEmail } })), dupe);
-  const race = await Promise.all([1, 2].map(i => asConsole('POST', '/admin/clients', form(`Race${i}`, { boutiqueTenant: `wc-race-${S}` }))));
+  const race = await Promise.all([1, 2].map(i => asConsole('POST', '/admin/clients', form(`Race${i}`, { sells: 'BOTH', boutiqueTenant: `wc-race-${S}` }))));
   race.forEach(r => r.data?.clientId && made.push(r.data.clientId));
   const raceLinks = await prisma.boutiqueLink.count({ where: { tenant: `wc-race-${S}`, unlinkedAt: null } });
   check('two clients onboarded at the same moment with the same boutique: it ends up linked to one shop only', raceLinks === 1, { statuses: race.map(r => r.status), raceLinks });
@@ -74,9 +75,10 @@ async function main() {
   const g = await ownerA('GET', '/setup');
   check('a new owner: not done, sells BOTH from onboarding, pending lists what is missing', g.status === 200 && g.data?.setupDone === false && g.data?.sells === 'BOTH' && g.data?.missing?.includes('address'), g.data);
   check('finishing before anything is chosen works when the Console chose (BOTH)', (await ownerA('PUT', '/setup', { finish: true })).data?.setupDone === true);
-  for (const v of ['both', '', null, 123, ['BOTH']]) {
+  // The owner cannot change what the shop sells (set by ScaleEzy): any other value is refused, 403, in words.
+  for (const v of ['both', '', null, 123, ['BOTH'], 'READY_MADE']) {
     const r = await ownerA('PUT', '/setup', { sells: v });
-    check(`sells ${JSON.stringify(v)} is refused in words`, r.status === 400, r);
+    check(`the owner sending sells ${JSON.stringify(v)} is refused (set by ScaleEzy)`, r.status === 403 && /set by ScaleEzy/.test(r.message ?? ''), r);
   }
   for (const c of [7, -25, 0, 'abc', 100000]) {
     const r = await ownerA('PUT', '/setup', { sells: 'BOTH', fabricMinCut: c });
@@ -86,16 +88,17 @@ async function main() {
   const st = await prisma.clientSettings.findUnique({ where: { clientId: A.data.clientId }, select: { setupDoneAt: true } });
   check('fields it does not take are ignored (cannot set another shop or a date)', unknownField.status === 200 && st?.setupDoneAt?.getFullYear() !== 2001, { st });
 
-  console.log('\nTHE SWITCHING RULE');
+  console.log('\nTHE SWITCHING RULE (the Platform Console sets it)');
+  const setSells = (v: unknown) => asConsole('PUT', `/admin/clients/${A.data.clientId}/sells`, { sells: v });
   const p = await ownerA('POST', '/products', { title: `WC silk ${S}`, category: 'WOMEN', productType: 'UNSTITCHED', basePrice: 4.5, status: 'ACTIVE', soldBy: 'METRE', kind: 'FABRIC' });
-  const toRM = await ownerA('PUT', '/setup', { sells: 'READY_MADE' });
+  const toRM = await setSells('READY_MADE');
   const after = await prisma.clientSettings.findUnique({ where: { clientId: A.data.clientId }, select: { sells: true, fabricsOn: true } });
   check('ready-made is refused while a fabric exists; nothing changes', toRM.status === 409 && after?.sells === 'BOTH' && after?.fabricsOn === true, { toRM, after });
   check('...the message says how many and what to do', /1 product is still sold by the metre/.test(toRM.message ?? '') && /Trash/.test(toRM.message ?? ''), toRM.message);
   await prisma.product.update({ where: { id: p.data.id }, data: { trashedAt: new Date(), status: 'TRASHED' as any } });
-  const nowRM = await ownerA('PUT', '/setup', { sells: 'READY_MADE' });
+  const nowRM = await setSells('READY_MADE');
   check('once the fabric is in Trash, ready-made is allowed and fabric switches off', nowRM.status === 200 && nowRM.data?.fabricsOn === false && nowRM.data?.sells === 'READY_MADE', nowRM);
-  const flips = await Promise.all(['BOTH', 'READY_MADE', 'FABRICS', 'BOTH', 'READY_MADE'].map(v => ownerA('PUT', '/setup', { sells: v })));
+  const flips = await Promise.all(['BOTH', 'READY_MADE', 'FABRICS', 'BOTH', 'READY_MADE'].map(v => setSells(v)));
   const fin = await prisma.clientSettings.findUnique({ where: { clientId: A.data.clientId }, select: { sells: true, fabricsOn: true } });
   check('five changes at the same moment: what it sells and fabric on/off still agree', flips.every(r => r.status === 200) && ((fin?.sells === 'READY_MADE') === (fin?.fabricsOn === false)), { fin, statuses: flips.map(r => r.status) });
 
