@@ -125,7 +125,6 @@ export function readOnboardingForm(b: any) {
   if (pin && !/^[1-9][0-9]{5}$/.test(pin)) return { problem: 'A PIN code is 6 digits.' };
   let stateCode = text(b.stateCode, 2);
   if (stateCode && !STATE_CODE.test(stateCode)) return { problem: 'Choose the state from the list.' };
-  if (b.sells != null && b.sells !== '' && !isSells(b.sells)) return { problem: 'Choose what the shop sells: ready-made, fabrics, both, or let the owner choose.' };
   // One-switch onboarding (26 Nov 2026): the modules the client starts with. Left out: Inventory, as before.
   const MODS = ['inventory', 'pos', 'crm', 'boutique', 'logistics'];
   let modules: string[] = ['inventory'];
@@ -135,6 +134,8 @@ export function readOnboardingForm(b: any) {
     if (!modules.length) return { problem: 'Choose at least one module for the client.' };
     if (modules.includes('logistics') && !modules.includes('inventory')) return { problem: 'Logistics ships orders made in Inventory: choose Inventory too.' };
   }
+  // What the shop sells is ScaleEzy's choice, made here (27 Nov 2026): required for a client with Inventory.
+  if (modules.includes('inventory') && !isSells(b.sells)) return { problem: 'Choose what the shop sells: ready-made garments, fabrics, or both.' };
   const tenantRaw = typeof b.boutiqueTenant === 'string' ? b.boutiqueTenant.trim() : '';
   if (tenantRaw.length > 63) return { problem: 'The boutique account is at most 63 characters.' };
   const tenantIn = tenantRaw.toLowerCase();
@@ -157,7 +158,7 @@ export function readOnboardingForm(b: any) {
     pin: pin || null,
     storeName: text(b.storeName, 60) || null,
     gstin: gstin || null,
-    // PLAN-onboarding-setup.md: what the shop sells (null = the owner chooses at first sign-in), and its boutique.
+    // What the shop sells (set by ScaleEzy; null only for a client without Inventory), and its boutique.
     sells: isSells(b.sells) ? b.sells : null,
     boutiqueTenant: text(b.boutiqueTenant, 63).toLowerCase() || null
   };

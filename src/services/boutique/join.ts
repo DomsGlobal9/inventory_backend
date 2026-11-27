@@ -164,7 +164,7 @@ export async function accept(id: string, adminId: string, overrides: any, onboar
     adminEmail: overrides?.ownerEmail ?? r!.ownerEmail,
     ownerPhone: overrides?.ownerPhone ?? r!.ownerPhone,
     city: overrides?.city ?? r!.city ?? undefined,
-    // A boutique sells its fabric; most also sell ready pieces. The owner can change this in Settings.
+    // A boutique sells its fabric; most also sell ready pieces. ScaleEzy can change it in the Platform Console.
     sells: overrides?.sells ?? 'BOTH',
     boutiqueTenant: r!.tenant
   });

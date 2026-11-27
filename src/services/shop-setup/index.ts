@@ -41,8 +41,8 @@ export async function getSetup(clientId: string) {
     !s?.businessPhone && 'phone',
     !s?.businessAddress && 'address',
     // Only a GST-registered shop needs its state (the form asks for it only then).
-    s?.gstRegistration && s.gstRegistration !== 'UNREGISTERED' && !s.gstStateCode && 'state',
-    !sells && 'what you sell'
+    s?.gstRegistration && s.gstRegistration !== 'UNREGISTERED' && !s.gstStateCode && 'state'
+    // "What you sell" is not the owner's to fill in any more: ScaleEzy sets it in the Platform Console (27 Nov 2026).
   ].filter(Boolean) as string[];
   return {
     sells, suggested: sells ?? await guessSells(clientId),
@@ -56,10 +56,12 @@ export async function getSetup(clientId: string) {
  * Change what the shop sells. READY_MADE switches fabrics off -- refused, in words, while anything is still sold by the
  * metre or packet; FABRICS and BOTH switch them on (with the smallest cut, when given).
  */
-async function applySells(clientId: string, sells: Sells, fabricMinCut?: unknown) {
+async function applySells(clientId: string, sells: Sells, fabricMinCut?: unknown, console = false) {
   if (sells === 'READY_MADE') {
     if (await prisma.boutiqueLink.count({ where: { clientId, unlinkedAt: null } })) {
-      throw problem('Your boutique adds fabrics and materials to this shop, so it sells both. To sell ready-made garments only, ask ScaleEzy to turn off the Boutique module first.', 409);
+      throw problem(console
+        ? 'This shop has the Boutique module on, which adds fabrics and materials, so it sells both. Turn the Boutique module off first to set ready-made only.'
+        : 'Your boutique adds fabrics and materials to this shop, so it sells both. To sell ready-made garments only, ask ScaleEzy to turn off the Boutique module first.', 409);
     }
     const now = await fabricSettings(clientId);
     if (now.fabricsOn) {
@@ -80,23 +82,38 @@ async function applySells(clientId: string, sells: Sells, fabricMinCut?: unknown
 /** The owner's answers: what the shop sells (and its smallest cut), and "finished". Only what is sent changes. */
 export async function saveSetup(clientId: string, input: { sells?: unknown; fabricMinCut?: unknown; finish?: unknown }) {
   const data: Record<string, unknown> = {};
-  let sells: Sells | undefined;
+  /*
+   * What the shop sells is ScaleEzy's to set (27 Nov 2026: Platform Console, at onboarding or when the client asks).
+   * Sending the same answer again is harmless (an older screen still sends it on "finish"); changing it is refused.
+   */
   if (input.sells !== undefined) {
-    if (!isSells(input.sells)) throw problem('Please select the products your business sells: ready-made garments, fabrics, or both.');
-    sells = input.sells;
-    await applySells(clientId, sells, input.fabricMinCut);
-    data.sells = sells;
+    const now = (await prisma.clientSettings.findUnique({ where: { clientId }, select: { sells: true } }))?.sells ?? null;
+    if (input.sells !== now) throw problem(SET_BY_SCALEEZY, 403);
   }
-  if (input.finish === true) {
-    const known = sells ?? (await prisma.clientSettings.findUnique({ where: { clientId }, select: { sells: true } }))?.sells;
-    if (!isSells(known)) throw problem('Please select the products your business sells before completing the setup.');
-    data.setupDoneAt = new Date();
+  // The smallest cut is still the shop's own, for a shop that sells fabric.
+  if (input.fabricMinCut !== undefined && input.fabricMinCut !== null && (await fabricSettings(clientId)).fabricsOn) {
+    await setFabricSettings(clientId, { fabricMinCut: input.fabricMinCut });
   }
+  if (input.finish === true) data.setupDoneAt = new Date();
   if (Object.keys(data).length) await prisma.clientSettings.upsert({ where: { clientId }, create: { clientId, ...data } as any, update: data as any });
   return getSetup(clientId);
 }
 
-/** At onboarding (the Console): what the shop sells, when we already know. The owner still confirms it. */
+export const SET_BY_SCALEEZY = 'What your shop sells (ready-made garments, fabrics or both) is set by ScaleEzy. To change it, contact ScaleEzy.';
+
+/**
+ * The Platform Console: ScaleEzy sets what the shop sells (27 Nov 2026), at onboarding or later when the client asks.
+ * BOTH and FABRICS switch everything by the metre on; READY_MADE switches it off -- refused in words while a boutique is
+ * linked or anything is still sold by the metre or packet.
+ */
+export async function setSellsByScaleEzy(clientId: string, sells: unknown) {
+  if (!isSells(sells)) throw problem('Choose what the shop sells: ready-made garments, fabrics, or both.');
+  await applySells(clientId, sells, undefined, true);
+  await prisma.clientSettings.upsert({ where: { clientId }, create: { clientId, sells } as any, update: { sells } });
+  return getSetup(clientId);
+}
+
+/** At onboarding (the Console): what the shop sells. Set by ScaleEzy; the owner sees it and cannot change it. */
 export async function seedSells(clientId: string, sells: Sells | null) {
   if (!sells) return;
   await applySells(clientId, sells);

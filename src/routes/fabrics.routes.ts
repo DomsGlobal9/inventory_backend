@@ -3,6 +3,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { tenantMiddleware } from '../middleware/tenant.middleware';
 import { requirePermission } from '../middleware/permission.middleware';
 import { fabricSettings, setFabricSettings } from '../services/fabrics';
+import { SET_BY_SCALEEZY } from '../services/shop-setup';
 import { KINDS, SELLING_NOW, UNITS } from '../lib/units';
 
 /**
@@ -31,6 +32,15 @@ router.get('/', requirePermission('product:view'), handle(async req => ({
   kinds: KINDS
 })));
 
-router.put('/', requirePermission('admin:catalog'), handle(req => setFabricSettings(clientOf(req), req.body ?? {})));
+router.put('/', requirePermission('admin:catalog'), handle(async req => {
+  const body = { ...(req.body ?? {}) };
+  // On/off follows what the shop sells, which ScaleEzy sets (27 Nov 2026). The same value again is harmless.
+  if (body.fabricsOn !== undefined) {
+    const now = (await prisma.clientSettings.findUnique({ where: { clientId: clientOf(req) }, select: { fabricsOn: true } }))?.fabricsOn ?? false;
+    if (body.fabricsOn !== now) throw Object.assign(new Error(SET_BY_SCALEEZY), { statusCode: 403 });
+    delete body.fabricsOn;
+  }
+  return setFabricSettings(clientOf(req), body);
+}));
 
 export default router;
