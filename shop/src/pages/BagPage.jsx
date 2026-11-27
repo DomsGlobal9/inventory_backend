@@ -36,6 +36,8 @@ export default function BagPage({ shop }) {
    * enough that nobody is waiting on it.
    */
   const [leaving, setLeaving] = useState(null);
+  // The line whose Remove was pressed: asked once, in place (27 Nov 2026), so one stray tap never empties a line.
+  const [asking, setAsking] = useState(null);
   const take = (variantCode) => {
     setLeaving(variantCode);
     window.setTimeout(() => { removeFromBag(slug, variantCode); setLeaving(null); }, 240);
@@ -172,8 +174,22 @@ export default function BagPage({ shop }) {
                 <div className="cash">
                   <b>{priced ? money(priced.lineTotal, currency) : ''}</b>
                   {priced && priced.saved > 0 ? <span className="off">{money(priced.saved, currency)} off</span> : null}
-                  <button type="button" className="drop" onClick={() => take(line.variantCode)}>Remove</button>
+                  {asking === line.variantCode ? null : (
+                    <button type="button" className="bagrm" onClick={() => setAsking(line.variantCode)} aria-label={`Remove ${priced?.title ?? 'this piece'}`}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
+                      </svg>
+                      Remove
+                    </button>
+                  )}
                 </div>
+                {asking === line.variantCode ? (
+                  <div className="bagrm-ask" role="group" aria-label={`Remove ${priced?.title ?? 'this piece'} from the bag?`}>
+                    <span>Remove this from your bag?</span>
+                    <button type="button" className="bagrm-keep" onClick={() => setAsking(null)}>Keep</button>
+                    <button type="button" className="bagrm-yes" onClick={() => { setAsking(null); take(line.variantCode); }}>Remove</button>
+                  </div>
+                ) : null}
               </li>
             );
           })}

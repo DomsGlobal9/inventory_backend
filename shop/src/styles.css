@@ -5034,10 +5034,13 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .upiqr { padding: 12px; background: #fff; border: 1px solid var(--line); border-radius: var(--r); line-height: 0; }
 .upiid { font-size: 13px; color: var(--muted); margin: 0; text-align: center; word-break: break-all; }
 .upiact { display: grid; gap: 12px; align-content: start; }
-.upisteps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.upisteps { list-style: none; margin: 0; padding: 14px; display: grid; gap: 12px; border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); }
 .upisteps li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; align-items: start; }
-.upisteps li > span { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--soft); border: 1px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--ink); }
-.upisteps li > p { margin: 2px 0 0; font-size: 14px; line-height: 1.5; color: var(--ink); }
+.upisteps li > span { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink, #fff); font-size: 12.5px; font-weight: 700; }
+.upisteps li > p { margin: 2px 0 0; font-size: 14.5px; line-height: 1.5; color: var(--ink); }
+/* The words that matter in each step -- the amount, the UPI Ref. No., UTR -- in the shop's own colour (27 Nov 2026). */
+.upisteps li > p b { color: var(--accent); }
 .upiutr { display: block; width: 100%; box-sizing: border-box; min-height: 48px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 17px; letter-spacing: 1.5px; font-variant-numeric: tabular-nums; background: var(--bg); color: var(--ink); }
 .upiutr:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
 .upiutr::placeholder { color: var(--faint); }
@@ -5089,3 +5092,21 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .upiwait-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 14px; margin: 12px 0 0; padding: 10px 14px; border: 1.5px solid var(--ink); border-radius: 10px; background: var(--card); font-size: 13.5px; line-height: 1.4; }
 .upiwait-bar b { font-variant-numeric: tabular-nums; }
 .upiwait-bar a { color: var(--accent); font-weight: 600; text-decoration: none; min-height: 32px; display: inline-flex; align-items: center; }
+
+/* The bag's Remove (27 Nov 2026): a real button with a bin, and a one-line "Remove from bag? Keep / Remove" in its
+   place when pressed. Prefixed (bagrm-) so no other page's class can reach it. */
+.bagrm { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; margin-top: 6px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--muted); font: inherit; font-size: 13px; cursor: pointer;
+  transition: color .15s ease-out, border-color .15s ease-out, background .15s ease-out; }
+.bagrm:hover { color: #b42318; border-color: rgba(180, 35, 24, .35); background: rgba(180, 35, 24, .05); }
+.bagrm:focus-visible, .bagrm-keep:focus-visible, .bagrm-yes:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.bagrm-ask { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--soft); font-size: 13.5px; }
+.bagrm-ask > span { color: var(--ink); font-weight: 600; margin-right: 2px; }
+.bagrm-keep, .bagrm-yes { min-height: 36px; padding: 0 14px; border-radius: 999px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.bagrm-keep { border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.bagrm-yes { border: 1px solid #b42318; background: #b42318; color: #fff; }
+.bagrm-yes:hover { background: #912018; border-color: #912018; }
+
+/* The time left to pay: a calm highlighted line, not grey small print. */
+.upinote { padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, #b7791f 10%, var(--bg)); border: 1px solid color-mix(in srgb, #b7791f 30%, var(--line)); color: var(--ink); }
+.upinote b { color: #8a5a12; }

@@ -5,11 +5,24 @@ import { prisma } from '../lib/prisma';
 import { isLowStock, lowStockThreshold } from '../lib/lowStock';
 import { unitCostOf, isEstimatedBasis } from '../lib/inventoryValuation';
 
+/**
+ * A service (fall & pico, stitching) keeps no stock, and the ledger quietly moves nothing for one -- right for a sale,
+ * wrong for a person adding stock by hand, who was told nothing (27 Nov 2026: a saree ticked as a service by mistake,
+ * its stock "added" and never recorded). These three are the by-hand doors, so they say so instead.
+ */
+async function refuseService(clientId: string, variantId: string) {
+  const v = await prisma.productVariant.findFirst({ where: { id: variantId, clientId }, select: { product: { select: { isService: true, productCode: true } } } });
+  if (v?.product?.isService) {
+    throw Object.assign(new Error(`${v.product.productCode} is marked as a service (no stock), so stock is not kept for it. If you keep it on a shelf, open the product, untick "This is a service" on Overview, and add the stock again.`), { statusCode: 409 });
+  }
+}
+
 export class InventoryService {
   
   // performedBy: who did it, from the session. It was the clientId -- "demo-client" on every movement
   // a person made by hand -- so the ledger could never say which member of staff moved stock.
   async stockIn(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, unitCost?: number, notes?: string, performedBy?: string) {
+    await refuseService(clientId, variantId);
     return inventoryMutationService.applyMovement({
       clientId, 
       locationId,
@@ -26,6 +39,7 @@ export class InventoryService {
   }
 
   async stockOut(clientId: string, locationId: string, variantId: string, quantity: number, reason?: string, referenceType?: string, reference?: string, notes?: string, performedBy?: string, spots?: { spotId: string; quantity: number }[]) {
+    await refuseService(clientId, variantId);
     return inventoryMutationService.applyMovement({
       spots,
       clientId, 
@@ -42,6 +56,7 @@ export class InventoryService {
   }
 
   async adjustment(clientId: string, locationId: string, variantId: string, quantityChange: number, reason?: string, referenceType?: string, reference?: string, notes?: string, performedBy?: string) {
+    await refuseService(clientId, variantId);
     // Adjustment can be positive or negative
     return inventoryMutationService.applyMovement({
       clientId, 
