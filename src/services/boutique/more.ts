@@ -176,6 +176,49 @@ export async function changes(actor: Actor, q: { after?: unknown; limit?: unknow
   };
 }
 
+/**
+ * What the shop changed in ScaleEzy on the boutique's items (27 Nov 2026: both sides may change them): a name, a
+ * price, GST, a colour or size, a new colour, a deleted colour, archived or put in the bin. Oldest first, after a
+ * cursor, like /changes. Each row has the item as it is NOW (null when it was deleted), so the boutique app simply
+ * stores it. The boutique app's own saves are never listed. Runs SETTLE seconds behind, so a slow save is never skipped.
+ */
+export async function itemsChanged(actor: Actor, q: { after?: unknown; limit?: unknown }) {
+  const limit = Math.min(200, wholeAtLeast1(q.limit) ?? 100);
+  let afterAt: Date | null = null, afterId = '';
+  if (q.after) {
+    const [at, id] = String(q.after).split('_');
+    afterAt = new Date(at);
+    afterId = id ?? '';
+    if (Number.isNaN(afterAt.getTime())) throw problem('after is the "next" value from the last answer.');
+  }
+  const settled = new Date(Date.now() - SETTLE_SECONDS * 1000);
+  const rows = await prisma.boutiqueShopEdit.findMany({
+    where: {
+      clientId: actor.clientId,
+      createdAt: { lte: settled, ...(afterAt ? { gte: afterAt } : {}) },
+      ...(afterAt ? { NOT: { createdAt: afterAt, id: { lte: afterId } } } : {})
+    },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: limit + 1
+  });
+  const page = rows.slice(0, limit);
+  const codes = [...new Set(page.filter(r => r.kind !== 'DELETED').map(r => r.itemCode))];
+  const now = new Map<string, any>();
+  for (let i = 0; i < codes.length; i += 100) {
+    const found = await listItems(actor, { itemCodes: codes.slice(i, i + 100), limit: 100, page: 1 });
+    for (const it of found.items) now.set(it.itemCode, it);
+  }
+  const last = page[page.length - 1];
+  return {
+    changes: page.map(r => ({
+      at: r.createdAt.toISOString(), kind: r.kind, itemCode: r.itemCode, fields: (r.fields as string[] | null) ?? [],
+      // Deleted, or gone since (deleted later): null. The boutique app removes or archives its copy.
+      item: r.kind === 'DELETED' ? null : now.get(r.itemCode) ?? null
+    })),
+    next: last ? `${last.createdAt.toISOString()}_${last.id}` : (q.after ? String(q.after) : null),
+    hasMore: rows.length > limit, settleSeconds: SETTLE_SECONDS
+  };
+}
+
 /* ── places ─────────────────────────────────────────────────────────────────────────────────────── */
 
 const KIND_BY_PREFIX: Record<string, string> = {

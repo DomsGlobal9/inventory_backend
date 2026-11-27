@@ -8,6 +8,7 @@ import { inventoryMutationService } from './inventory-mutation.service';
 import { InventoryAlertService } from './inventory-alert.service';
 import { isWholePaise } from '../validations/money';
 import { generateSequentialCode } from '../utils/codeGenerator';
+import { guardVariantPrice } from './boutique/price-lock';
 
 /**
  * Creating and updating a whole catalogue from one file.
@@ -396,15 +397,7 @@ class ProductImportService {
            * on screen contradicts it until somebody counts the shelf. Changing the stock of
            * variants that already exist is what Import Updates is for, and it says so.
            */
-          // A boutique-made colour keeps the boutique's price (PLAN-boutique-sync.md §0).
-          if (existing.product?.priceOwner === 'BOUTIQUE' && this.num(row.sellingPrice) !== undefined && Number(existing.sellingPrice ?? NaN) !== this.num(row.sellingPrice)) {
-            errors.push({ rowNumber: row.rowNumber, message: `${sku}: its price comes from your boutique. Change it there, or leave SellingPrice empty.` });
-            continue;
-          }
-          if (existing.product?.priceOwner === 'BOUTIQUE' && this.num(row.costPrice) !== undefined && Number(existing.costPrice ?? NaN) !== this.num(row.costPrice)) {
-            errors.push({ rowNumber: row.rowNumber, message: `${sku}: its purchase price comes from your boutique. Change it there, or leave CostPrice empty.` });
-            continue;
-          }
+          // A boutique item's price may be changed by file too (27 Nov 2026); the boutique app is told when it is applied.
           const changes =
             (this.num(row.sellingPrice) !== undefined && Number(existing.sellingPrice ?? NaN) !== this.num(row.sellingPrice)) ||
             (this.num(row.costPrice) !== undefined && Number(existing.costPrice ?? NaN) !== this.num(row.costPrice)) ||
@@ -676,6 +669,7 @@ class ProductImportService {
               newLevels.push(existing.id);
             }
             if (Object.keys(data).length) {
+              await guardVariantPrice(clientId, { id: existing.id }, data as any, tx as any);
               await tx.productVariant.update({ where: { id: existing.id }, data });
               updatedVariants++;
             }
@@ -734,6 +728,11 @@ class ProductImportService {
     if (newLevels.length) {
       await InventoryAlertService.recheckVariants(prisma, clientId, newLevels)
         .catch(err => console.error('[productImport] stock alerts could not be re-checked', err));
+    }
+    // New colours of boutique items, and every new product of a shop handed to the boutique app, reach it (27 Nov 2026).
+    if (createdVariants) {
+      const { shareNewWithBoutique } = await import('./boutique/index');
+      for (const pid of productIds) await shareNewWithBoutique(clientId, pid);
     }
 
     return {

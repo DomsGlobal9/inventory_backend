@@ -5570,8 +5570,25 @@ model BoutiqueLink {
   shopName   String?   @map("shop_name")
   linkedAt   DateTime  @default(now()) @map("linked_at")
   unlinkedAt DateTime? @map("unlinked_at")
+  /// "The boutique app runs the whole shop": products the shop adds later in ScaleEzy reach the boutique app too.
+  handedOverAt DateTime? @map("handed_over_at")
 
   @@map("boutique_links")
+}
+
+/// A change the shop made in ScaleEzy to an item the boutique app knows (27 Nov 2026): CHANGED, ADDED or DELETED.
+/// The boutique app reads these (GET /items/changed) to keep its copy the same. `fields` names what changed.
+model BoutiqueShopEdit {
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  variantId String?  @map("variant_id")
+  itemCode  String   @map("item_code")
+  kind      String
+  fields    Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, createdAt, id])
+  @@map("boutique_shop_edits")
 }
 
 /// The first answer to each boutique write, given again for a repeat of the same request id.

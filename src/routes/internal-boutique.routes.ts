@@ -164,6 +164,8 @@ router.get('/items', read(req => boutique.listItems(actorOf(req), req.query as a
 // Fixed paths before /items/:itemCode, so they are not read as item codes.
 router.get('/items/next-code', read(req => extra.nextCode(actorOf(req), req.query.prefix)));
 router.get('/items/groups', read(req => extra.itemGroups(actorOf(req))));
+// What the shop changed in ScaleEzy on the boutique's items (27 Nov 2026): both sides may change them.
+router.get('/items/changed', read(req => extra.itemsChanged(actorOf(req), req.query as any)));
 router.post('/items/lookup', read(req => extra.lookupItems(actorOf(req), req.body?.itemCodes)));
 router.get('/alerts', read(req => extra.alerts(actorOf(req))));
 router.get('/movements', read(req => extra.listMovements(actorOf(req), req.query as any)));

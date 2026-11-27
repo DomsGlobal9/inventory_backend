@@ -17,6 +17,7 @@ import { storefrontEventService } from '../storefront-event.service';
 import { inventoryMutationService } from '../inventory-mutation.service';
 import { factorOf, isMeasured, KIND_KEYS, storedPrice, pricePerUnit, formatQty, type SoldBy } from '../../lib/units';
 import { barcodeOf, mustBeFree, newBarcode } from './barcodes';
+import { noteAdded } from './price-lock';
 
 export type Actor = { clientId: string; name: string; can: string[] };
 export const problem = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode, message });
@@ -377,22 +378,64 @@ export async function handOverShop(clientId: string) {
   if (!link || link.unlinkedAt) throw problem('Enable the Boutique module for this shop first.', 409);
   return prisma.$transaction(async tx => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-handover|${clientId}`}))`;
-    const taken = new Set((await tx.productVariant.findMany({ where: { clientId, boutiqueRef: { not: null } }, select: { boutiqueRef: true } })).map(v => v.boutiqueRef!.toUpperCase()));
-    const todo = await tx.productVariant.findMany({ where: { clientId, boutiqueRef: null, boutiqueDeletedAt: null }, select: { id: true, sku: true, variantCode: true, productId: true }, orderBy: { createdAt: 'asc' } });
-    const skipped: string[] = [];
-    let coded = 0;
-    for (const v of todo) {
-      const code = [v.sku, v.variantCode].find(c => c && ITEM_CODE.test(c) && !taken.has(c.toUpperCase()));
-      if (!code) { skipped.push(v.sku ?? v.variantCode ?? v.id); continue; }
-      await tx.productVariant.update({ where: { id: v.id }, data: { boutiqueRef: code } });
-      taken.add(code.toUpperCase());
-      coded++;
-    }
+    // Remembered (27 Nov 2026): products the shop adds later in ScaleEzy reach the boutique app too (shareNewWithBoutique).
+    if (!link.handedOverAt) await tx.boutiqueLink.update({ where: { clientId }, data: { handedOverAt: new Date() } });
+    const { coded, skipped } = await giveItemCodes(tx, clientId, {});
     const priced = await tx.product.updateMany({ where: { clientId, priceOwner: { not: 'BOUTIQUE' }, variants: { some: { boutiqueRef: { not: null } } } }, data: { priceOwner: 'BOUTIQUE' } });
     await tx.product.updateMany({ where: { clientId, boutiqueCategory: null, soldBy: 'PIECE' }, data: { boutiqueCategory: 'FINISHED' } });
     await tx.product.updateMany({ where: { clientId, boutiqueCategory: null, soldBy: 'METRE' as any }, data: { boutiqueCategory: 'FABRIC' } });
     return { itemsCoded: coded, pricesHanded: priced.count, skipped };
   }, { timeout: 120_000 });
+}
+
+/**
+ * Each colour without a boutique item code (narrowed by `where`) gets its SKU as its code -- or its variant code when
+ * the SKU is not a valid item code or is taken -- and the boutique app is told it was added (boutique_shop_edits).
+ */
+async function giveItemCodes(tx: Db, clientId: string, where: Prisma.ProductVariantWhereInput) {
+  const todo = await tx.productVariant.findMany({ where: { clientId, ...where, boutiqueRef: null, boutiqueDeletedAt: null }, select: { id: true, sku: true, variantCode: true }, orderBy: { createdAt: 'asc' } });
+  if (!todo.length) return { coded: 0, skipped: [] as string[] };
+  const taken = new Set((await tx.productVariant.findMany({ where: { clientId, boutiqueRef: { not: null } }, select: { boutiqueRef: true } })).map(v => v.boutiqueRef!.toUpperCase()));
+  const skipped: string[] = [];
+  const added: { variantId: string; itemCode: string }[] = [];
+  for (const v of todo) {
+    const code = [v.sku, v.variantCode].find(c => c && ITEM_CODE.test(c) && !taken.has(c.toUpperCase()));
+    if (!code) { skipped.push(v.sku ?? v.variantCode ?? v.id); continue; }
+    await tx.productVariant.update({ where: { id: v.id }, data: { boutiqueRef: code } });
+    taken.add(code.toUpperCase());
+    added.push({ variantId: v.id, itemCode: code });
+  }
+  await noteAdded(tx as any, clientId, added);
+  return { coded: added.length, skipped };
+}
+
+/**
+ * What the shop adds in ScaleEzy reaches the boutique app (27 Nov 2026), so both sides keep one list:
+ *  - a new colour of an item the boutique app knows gets its item code (any shop with the Boutique module on);
+ *  - in a shop handed to the boutique app ("the boutique app runs the whole shop"), every new product does too, and
+ *    becomes the boutique's like the rest.
+ * Cheap when there is nothing to do. Called after the shop adds colours or products, and before the boutique app
+ * reads its items, so nothing is ever missed. Never throws: the shop's own save has already gone through.
+ */
+export async function shareNewWithBoutique(clientId: string, productId?: string) {
+  try {
+    const link = await prisma.boutiqueLink.findUnique({ where: { clientId }, select: { unlinkedAt: true, handedOverAt: true } });
+    if (!link || link.unlinkedAt) return;
+    if (link.handedOverAt) {
+      const waiting = await prisma.productVariant.findFirst({ where: { clientId, boutiqueRef: null, boutiqueDeletedAt: null }, select: { id: true } });
+      if (waiting) await handOverShop(clientId);
+      return;
+    }
+    if (!productId) return;
+    const known = await prisma.productVariant.findFirst({ where: { clientId, productId, boutiqueRef: { not: null } }, select: { id: true } });
+    if (!known) return;
+    await prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`boutique-handover|${clientId}`}))`;
+      await giveItemCodes(tx, clientId, { productId });
+    });
+  } catch (e) {
+    console.error('[boutique] sharing new colours with the boutique app failed', e);
+  }
 }
 
 /** ScaleEzy turns the Boutique module off: the boutique can no longer reach the shop. Products and stock stay. */
@@ -955,6 +998,7 @@ export async function itemWhere(actor: Actor, q: ItemQuery): Promise<Prisma.Prod
  * status ACTIVE or ARCHIVED; reorderDue=1; locationId (only what has stock there).
  */
 export async function listItems(actor: Actor, q: ItemQuery) {
+  await shareNewWithBoutique(actor.clientId);
   const limit = Math.min(MAX_PER_PAGE, wholeAtLeast1(q.limit) ?? ITEMS_PER_PAGE);
   const page = wholeAtLeast1(q.page) ?? 1;
   const where = await itemWhere(actor, q);

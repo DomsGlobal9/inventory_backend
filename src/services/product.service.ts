@@ -1,4 +1,4 @@
-import { guardProductPrice } from './boutique/price-lock';
+import { guardProductPrice, noteProductStatus, beforeProductDelete } from './boutique/price-lock';
 import { productRepository } from '../repositories/product.repository';
 import { afterCommit } from '../lib/afterCommit';
 import { Prisma } from '@prisma/client';
@@ -122,7 +122,7 @@ export class ProductService {
   }
 
   async updateProduct(id: string, clientId: string, data: any) {
-    // A boutique-made product keeps the boutique's price (PLAN-boutique-sync.md §0).
+    // A change to an item the boutique app knows is noted for it (27 Nov 2026: both sides may change it).
     await guardProductPrice(clientId, id, data ?? {});
     // Re-generate slug if title changes, suffixed with the product's own (already
     // unique) productCode for the same reason as createProduct above.
@@ -331,6 +331,7 @@ export class ProductService {
     // Withdrawn from sale. A storefront that is never told simply carries on selling it, which
     // is the one product event that must be sent even though the product is no longer eligible.
     notifyStorefronts(clientId, id, 'PRODUCT_UNPUBLISHED');
+    await noteProductStatus(clientId, id);
     return archived;
   }
 
@@ -345,6 +346,7 @@ export class ProductService {
       trashedAt: new Date()
     });
     notifyStorefronts(clientId, id, 'PRODUCT_UNPUBLISHED');
+    await noteProductStatus(clientId, id);
     return trashed;
   }
 
@@ -387,6 +389,7 @@ export class ProductService {
     if (restoredStatus === 'ACTIVE' && (existing as any).sellOnline !== false) {
       notifyStorefronts(clientId, id, 'PRODUCT_PUBLISHED');
     }
+    await noteProductStatus(clientId, id);
     return restored;
   }
 
@@ -398,7 +401,9 @@ export class ProductService {
       select: { storagePath: true }
     });
 
+    const tellBoutique = await beforeProductDelete(clientId, id);
     const deleted = await productRepository.hardDelete(id, clientId);
+    await tellBoutique();
 
     const paths = images.map(i => i.storagePath).filter((p): p is string => !!p);
     if (paths.length > 0) {

@@ -13,7 +13,7 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import { ELIGIBLE_PRODUCT, FEED_PRODUCT } from '../services/storefront-catalogue.service';
 import { accountState, enableForClient, disableForClient } from '../services/boutique';
-import { saveSetup } from '../services/shop-setup';
+import { saveSetup, setSellsByScaleEzy } from '../services/shop-setup';
 import { filterProducts, productFilterQuery } from '../services/product-filters';
 import { productService } from '../services/product.service';
 import { variantService } from '../services/variant.service';
@@ -236,10 +236,15 @@ async function main() {
   check('the silk (sell in shop) is in the online shop', await inShop(db1.v!.productId, ELIGIBLE_PRODUCT));
   check('the thread (a material) is not in the online shop', !(await inShop(thrV.productId, ELIGIBLE_PRODUCT)));
   check('...nor in the feed for other websites and the till', !(await inShop(thrV.productId, FEED_PRODUCT)));
+  // 27 Nov 2026: both sides may change a boutique item (verify-boutique-both-edit.ts); the boutique app is told.
+  const before1 = await prisma.boutiqueShopEdit.count({ where: { clientId: C1 } });
   const priceTry = await productService.updateProduct(db1.v!.productId, C1, { basePrice: 5 }).then(() => 'changed', (e: any) => e.message);
-  check('Inventory cannot change a boutique price (product)', /comes from your boutique/.test(priceTry), priceTry);
+  check('Inventory may change a boutique price too (product), and it is noted for the boutique app', priceTry === 'changed' && (await prisma.boutiqueShopEdit.count({ where: { clientId: C1 } })) > before1, priceTry);
+  const oldPrice = (await prisma.productVariant.findUnique({ where: { id: db1.v!.id } }))!.sellingPrice;
   const vTry = await variantService.updateVariant(db1.v!.id, C1, { sellingPrice: 5 }).then(() => 'changed', (e: any) => e.message);
-  check('...nor a colour\'s price', /comes from your boutique/.test(vTry), vTry);
+  check('...and a colour\'s price', vTry === 'changed', vTry);
+  // Put back what the boutique set, so the checks below see the boutique's figures.
+  await variantService.updateVariant(db1.v!.id, C1, { sellingPrice: oldPrice });
   const costOk = await variantService.updateVariant(db1.v!.id, C1, { reorderLevel: 300 }).then(() => 'ok', (e: any) => e.message);
   check('...but other details stay editable', costOk === 'ok', costOk);
   const switchOk = await productService.updateProduct(thrV.productId, C1, { sellInShop: true }).then(() => 'ok', (e: any) => e.message);
@@ -312,7 +317,8 @@ async function main() {
   const reEnabled = await enableForClient(RETAIL, T2);
   check('ScaleEzy can enable it again; everything is still there', reEnabled.linked && (await call('GET', '/items/T2-SILK', undefined, { tenant: T2 })).data?.stock === 9);
   const relocked = await productService.updateProduct(t2p!.id, RETAIL, { basePrice: 6 }).then(() => 'changed', (e: any) => e.message);
-  check('...and its prices come from the boutique again', /comes from your boutique/.test(relocked), relocked);
+  const t2again = await prisma.product.findUnique({ where: { id: t2p!.id } });
+  check('...its items are the boutique\'s again, and the shop can still change them (27 Nov 2026)', t2again?.priceOwner === 'BOUTIQUE' && relocked === 'changed', { owner: t2again?.priceOwner, relocked });
   const listed = await platformAdminService.listClients();
   const soloRow = listed.find((c: any) => c.clientId === C1);
   const retailRow = listed.find((c: any) => c.clientId === RETAIL);
@@ -384,8 +390,10 @@ async function main() {
   await enableForClient(R2, T5);
   const r2s = await prisma.clientSettings.findUnique({ where: { clientId: R2 } });
   check('enabling the boutique for a ready-made-only shop makes it sell both, with fabrics on', (r2s as any)?.sells === 'BOTH' && (r2s as any)?.fabricsOn === true, r2s);
-  const backToRm = await saveSetup(R2, { sells: 'READY_MADE' }).then(() => 'saved', (e: any) => `${e.statusCode} ${e.message}`);
-  check('...and "ready-made only" is refused in words while the boutique is connected', /^409 Your boutique adds fabrics/.test(backToRm), backToRm);
+  const backToRm = await setSellsByScaleEzy(R2, 'READY_MADE').then(() => 'saved', (e: any) => `${e.statusCode} ${e.message}`);
+  check('...and "ready-made only" is refused in words while the boutique is connected (the Console sets it)', /^409 This shop has the Boutique module on/.test(backToRm), backToRm);
+  const ownerTry = await saveSetup(R2, { sells: 'READY_MADE' }).then(() => 'saved', (e: any) => `${e.statusCode} ${e.message}`);
+  check('...and the owner cannot change it at all (set by ScaleEzy)', /^403 /.test(ownerTry), ownerTry);
 
   // 4. Turning the boutique off frees the cloth it held.
   await call('PUT', '/items/R2-SILK', { name: 'R2 silk', kind: 'FABRIC', unit: 'METER', sellingPrice: 300 }, { tenant: T5 });

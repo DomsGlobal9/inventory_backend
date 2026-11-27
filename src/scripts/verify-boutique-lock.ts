@@ -4,9 +4,8 @@
  *  - each boutique its own 1,500 calls a minute: one boutique past it gets 429 in words, another is unaffected
  *  - GET /status: up, database connected, the limit, how fast
  *  - an item the owner puts in the bin reads IN_BIN, leaves ACTIVE lists, alerts and reorder; restored, it is back
- *  - the owner's own screens (the same service calls the routes make) cannot change a boutique item's name, price,
- *    unit, GST, colour, size or purchase price, nor add or delete its colours -- but can change its description,
- *    reorder level and publish state; a RETAIL item of the same shop can still change everything (retail unchanged)
+ *  - (the owner changing a boutique item on ScaleEzy's screens: no longer locked since 27 Nov 2026, see
+ *    verify-boutique-both-edit.ts)
  * Throwaway boutiques only (locktest-*); everything is removed. Local only.
  *   DATABASE_URL=<local> DIRECT_URL=<local> VERIFY_API_URL=http://localhost:4036/api/v1 \
  *   BOUTIQUE_KEY_DIR=<dir with private.pem> npx tsx src/scripts/verify-boutique-lock.ts
@@ -16,7 +15,6 @@ import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import { productService } from '../services/product.service';
-import { variantService } from '../services/variant.service';
 
 const BASE = process.env.VERIFY_API_URL || 'http://localhost:4036/api/v1';
 for (const k of ['DATABASE_URL', 'DIRECT_URL']) {
@@ -68,57 +66,7 @@ async function main() {
   await productService.restoreProduct(v.productId, cA);
   check('the owner restores it: ACTIVE again, back in the list and alerts', (await A('GET', `/items/${SILK}`)).data?.status === 'ACTIVE' && (await A('GET', '/items?status=ACTIVE')).data?.total === 1 && ((await A('GET', '/alerts')).data ?? []).length === 1);
 
-  console.log('\nTHE OWNER\'S SCREENS AND A BOUTIQUE ITEM');
-  const p = (await prisma.product.findUnique({ where: { id: v.productId } }))!;
-  const whole = { title: p.title, description: p.description, basePrice: p.basePrice, soldBy: p.soldBy, kind: p.kind, widthCm: p.widthCm, hsnCode: p.hsnCode, taxRateBps: p.taxRateBps, sellInShop: p.sellInShop, productType: p.productType };
-  check('saving the whole form unchanged is fine (blank and null are the same)', (await owner(() => productService.updateProduct(p.id, cA, { ...whole, description: '', hsnCode: '' }))) === 'saved');
-  const refusals: [string, Record<string, unknown>, RegExp][] = [
-    ['the name', { title: 'Cheap silk' }, /The name comes from your boutique app/],
-    ['the price', { basePrice: 1 }, /price comes from your boutique/],
-    ['how it is sold', { soldBy: 'PIECE' }, /How it is sold comes from your boutique app/],
-    ['the GST rate', { taxRateBps: 1200 }, /GST rate comes from your boutique app/],
-    ['the HSN code', { hsnCode: '6204' }, /HSN code comes from your boutique app/]
-  ];
-  // The shop decides what it sells (rule from 13 Nov, kept): "sell in shop" stays the owner's to switch too.
-  check('the owner switching "sell in shop" off: saved (the shop decides what it sells)', (await owner(() => productService.updateProduct(p.id, cA, { sellInShop: false }))) === 'saved');
-  await productService.updateProduct(p.id, cA, { sellInShop: true });
-  for (const [what, data, msg] of refusals) {
-    const r = await owner(() => productService.updateProduct(p.id, cA, data));
-    check(`the owner changing ${what}: 409 in words`, /^409 /.test(r) && msg.test(r), r);
-  }
-  check('the owner adding a description: saved (the boutique only sends one sometimes)', (await owner(() => productService.updateProduct(p.id, cA, { description: 'Pure silk from Kanchipuram' }))) === 'saved');
-  check('the owner archiving it from the shop: saved (the shop decides what it shows)', (await owner(() => productService.updateProduct(p.id, cA, { status: 'ARCHIVED' }))) === 'saved' && (await A('GET', `/items/${SILK}`)).data?.status === 'ARCHIVED');
-  await productService.updateProduct(p.id, cA, { status: 'ACTIVE' });
-  const vr: [string, Record<string, unknown>, RegExp][] = [
-    ['the colour', { colorName: 'Red' }, /The colour comes from your boutique app/],
-    ['the size', { size: 'XL' }, /The size comes from your boutique app/],
-    ['the purchase price', { costPrice: 1 }, /purchase price comes from your boutique app/],
-    ['the selling price', { sellingPrice: 1 }, /price comes from your boutique/]
-  ];
-  for (const [what, data, msg] of vr) {
-    const r = await owner(() => variantService.updateVariant(v.id, cA, data));
-    check(`the owner changing ${what} of a colour: 409 in words`, /^409 /.test(r) && msg.test(r), r);
-  }
-  check('the owner changing its reorder level: saved', (await owner(() => variantService.updateVariant(v.id, cA, { reorderLevel: 2000 }))) === 'saved');
-  check('the owner deleting the colour: 409, the colour is still there', /^409 .*Delete or archive it in the boutique app/.test(await owner(() => variantService.deleteVariant(v.id, cA))) && !!(await prisma.productVariant.findUnique({ where: { id: v.id } })));
-  check('the owner adding a colour: 409, nothing added', /^409 .*Add the colour there/.test(await owner(() => variantService.createVariant(p.id, cA, { colorName: 'Blue', size: 'Free', sku: `X-${S}`, sellingPrice: 450 })))
-    && (await prisma.productVariant.count({ where: { productId: p.id } })) === 1);
-  // Bulk updates answer row by row ({ updated, skipped, errors }) rather than failing the whole file.
-  const bp: any = await variantService.bulkUpdateVariants(cA, [{ sku: v.sku, sellingPrice: 1 }]);
-  check('a bulk price change on it: that row skipped, saying the price comes from the boutique', bp.updated === 0 && bp.skipped === 1 && /comes from your boutique/.test(bp.errors?.[0]?.reason ?? ''), bp);
-  const bc: any = await variantService.bulkUpdateVariants(cA, [{ sku: v.sku, costPrice: 1 }]);
-  check('a bulk cost change on it: that row skipped, in words', bc.updated === 0 && bc.skipped === 1 && /purchase price comes from your boutique app/.test(bc.errors?.[0]?.reason ?? ''), bc);
-  const now = (await prisma.productVariant.findUnique({ where: { id: v.id } }))!;
-  check('...the stored price and cost did not move', Number(now.sellingPrice) === Number(v.sellingPrice) && Number(now.costPrice) === Number(v.costPrice), [now.sellingPrice, now.costPrice]);
-  check('...and after all that the boutique still sees its own values', (await A('GET', `/items/${SILK}`)).data?.name === 'Kanchi silk' && (await A('GET', `/items/${SILK}`)).data?.sellingPrice === 450 && (await A('GET', `/items/${SILK}`)).data?.colour === 'Maroon');
-
-  console.log('\nA RETAIL ITEM OF THE SAME SHOP: UNCHANGED');
-  const rp = await prisma.product.create({ data: { clientId: cA, productCode: `RTL-${S}`, slug: `rtl-${S}`, title: 'Ready-made kurti', category: 'WOMEN' as any, productType: 'READY_TO_WEAR' as any, basePrice: 999, status: 'ACTIVE' as any } as any });
-  const rv = await prisma.productVariant.create({ data: { clientId: cA, productId: rp.id, sku: `RTL-${S}-M`, variantCode: `RTL-${S}-M`, colorName: 'Blue', size: 'M', sellingPrice: 999 } as any });
-  check('the owner renames and reprices a retail item', (await owner(() => productService.updateProduct(rp.id, cA, { title: 'Cotton kurti', basePrice: 899 }))) === 'saved');
-  check('...changes its colour, size and cost', (await owner(() => variantService.updateVariant(rv.id, cA, { colorName: 'Navy', size: 'L', costPrice: 400 }))) === 'saved');
-  check('...adds a colour and deletes one', (await owner(() => variantService.createVariant(rp.id, cA, { colorName: 'Red', size: 'M', sku: `RTL-${S}-R`, sellingPrice: 899 }))) === 'saved'
-    && (await owner(() => variantService.deleteVariant(rv.id, cA))) === 'saved');
+  // The owner's screens may change a boutique item since 27 Nov 2026 (no lock any more): verify-boutique-both-edit.ts.
 
   console.log('\nEACH BOUTIQUE ITS OWN LIMIT');
   await BUSY('POST', '/link', { shopName: 'Busy' });

@@ -58,6 +58,8 @@ export async function fillMissing(tx: Db, actor: Actor) {
 export async function scan(actor: Actor, raw: unknown) {
   const code = String(raw ?? '').trim();
   if (!code || code.length > 60) throw problem('Send code: what the scanner read (or the item code).');
+  // A piece the shop added a moment ago in a handed-over shop is the boutique's item already (27 Nov 2026).
+  await (await import('./index')).shareNewWithBoutique(actor.clientId);
   const select = { boutiqueRef: true, barcode: true, boutiqueDeletedAt: true } as const;
   // A barcode match wins over a code match (older Inventory items were never checked against boutique codes).
   const hit = await prisma.productVariant.findFirst({ where: { clientId: actor.clientId, barcode: code }, select })

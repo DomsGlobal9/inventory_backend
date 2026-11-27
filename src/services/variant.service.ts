@@ -185,6 +185,8 @@ export class VariantService {
     }
 
     await markProductForShopify(productId);
+    // A new colour of a boutique item reaches the boutique app (27 Nov 2026).
+    await (await import('./boutique/index')).shareNewWithBoutique(clientId, productId);
     return created;
   }
 
@@ -330,6 +332,8 @@ export class VariantService {
     }
 
     await markProductForShopify(productId);
+    // New colours of a boutique item (or of any product in a handed-over shop) reach the boutique app (27 Nov 2026).
+    await (await import('./boutique/index')).shareNewWithBoutique(clientId, productId);
     return { created, skipped, errors, adjusted, stockNotApplied };
   }
 
@@ -594,10 +598,11 @@ export class VariantService {
   }
 
   async deleteVariant(id: string, clientId: string) {
-    await guardColourDelete(clientId, id);
+    const tellBoutique = await guardColourDelete(clientId, id);
     // Read before it goes: afterwards there is no way back to its product.
     const before = await prisma.productVariant.findFirst({ where: { id, clientId }, select: { productId: true } });
     const result = await variantRepository.delete(id, clientId);
+    await tellBoutique();
     if (before) await markProductForShopify(before.productId);
     return result;
   }
