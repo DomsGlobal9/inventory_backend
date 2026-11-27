@@ -40,6 +40,11 @@ const TYPES = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png'
 
 // ── storage ─────────────────────────────────────────────────────────────────────────────────────
 http.createServer(async (req, res) => {
+  // Browsers upload straight to storage (a signed URL), so it must answer CORS like real Supabase storage does.
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || '*');
+  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
